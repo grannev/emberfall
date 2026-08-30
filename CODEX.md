@@ -83,9 +83,13 @@ over frameworks, generic containers, or unnecessary abstraction.
 
 - The player is never affected by gravity. Dirt, rock, and sand are solid for a
   circular player collider; liquids, gases, fire, and ash are passable.
-- Movement is split into steps no longer than 0.75 world cells to prevent
-  tunneling. Resolve embedding again after simulation because sand can enter the
-  player between movement updates.
+- WASD applies normalized thrust to persistent velocity. Linear drag and a speed
+  cap keep flight controllable without removing inertia.
+- Movement is split into steps no longer than 0.5 world cells to prevent
+  tunneling. Solid impacts reflect the blocked velocity component with limited
+  restitution and publish impact position/normal/strength for particles and
+  camera shake. Resolve embedding again after simulation because sand can enter
+  the player between movement updates.
 - The player has no health, damage, death, or respawn systems. Lava, fire, and
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.

@@ -73,7 +73,7 @@ make clean
 - water/lava reaction;
 - laser contact;
 - explosion event;
-- collision с тонкой rock-стеной;
+- collision и отскок с отрицательной velocity от тонкой rock-стены;
 - локализация fire внутри тестового блока dirt;
 - переход части chunks в sleeping state.
 

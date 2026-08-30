@@ -57,8 +57,8 @@ raylib input
 
 Содержит движение, collision и отрисовку игрока:
 
-- плавный полёт без гравитации;
-- circle-vs-cell collision;
+- инерционный полёт без гравитации;
+- упругий circle-vs-cell collision и impact events;
 - защита от tunneling с помощью substeps;
 - процедурная отрисовка квадратного пиксельного героя с плащом.
 

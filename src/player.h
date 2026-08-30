@@ -8,9 +8,17 @@
 typedef struct Player {
     Vector2 position;
     Vector2 velocity;
-    float speed;
+    Vector2 impactPosition;
+    Vector2 impactNormal;
+    float acceleration;
+    float maxSpeed;
+    float drag;
+    float restitution;
     float radius;
+    float impactStrength;
+    float impactTimer;
     bool facingRight;
+    bool thrusting;
 } Player;
 
 void PlayerInit(Player *player, Vector2 position);

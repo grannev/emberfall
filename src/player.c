@@ -13,9 +13,17 @@ void PlayerInit(Player *player, Vector2 position)
 
     player->position = position;
     player->velocity = (Vector2){0.0f, 0.0f};
-    player->speed = 92.0f;
-    player->radius = 4.5f;
+    player->impactPosition = position;
+    player->impactNormal = (Vector2){0.0f, 0.0f};
+    player->acceleration = 250.0f;
+    player->maxSpeed = 118.0f;
+    player->drag = 1.1f;
+    player->restitution = 0.34f;
+    player->radius = 3.2f;
+    player->impactStrength = 0.0f;
+    player->impactTimer = 0.0f;
     player->facingRight = true;
+    player->thrusting = false;
 }
 
 static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position)
@@ -52,14 +60,32 @@ static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 p
     return false;
 }
 
+static void PlayerRecordImpact(Player *player, Vector2 normal, float strength)
+{
+    if (strength <= player->impactStrength) {
+        return;
+    }
+
+    player->impactStrength = strength;
+    player->impactNormal = normal;
+    player->impactPosition = (Vector2){
+        player->position.x - normal.x * player->radius,
+        player->position.y - normal.y * player->radius
+    };
+    if (strength >= 14.0f) {
+        player->impactTimer = 0.12f;
+    }
+}
+
 void PlayerUpdate(Player *player, const World *world, float deltaTime)
 {
     Vector2 input = {0.0f, 0.0f};
-    Vector2 targetVelocity;
-    float length;
-    float response;
+    float inputLength;
+    float velocityLength;
+    float damping;
     float moveX;
     float moveY;
+    float stepTime;
     int moveSteps;
     int step;
 
@@ -67,46 +93,74 @@ void PlayerUpdate(Player *player, const World *world, float deltaTime)
         return;
     }
 
+    player->impactStrength = 0.0f;
+    player->impactNormal = (Vector2){0.0f, 0.0f};
+    player->impactTimer = fmaxf(0.0f, player->impactTimer - deltaTime);
+    player->thrusting = false;
+
     if (IsKeyDown(KEY_A)) input.x -= 1.0f;
     if (IsKeyDown(KEY_D)) input.x += 1.0f;
     if (IsKeyDown(KEY_W)) input.y -= 1.0f;
     if (IsKeyDown(KEY_S)) input.y += 1.0f;
 
-    length = sqrtf(input.x * input.x + input.y * input.y);
-    if (length > 0.0f) {
-        input.x /= length;
-        input.y /= length;
+    inputLength = sqrtf(input.x * input.x + input.y * input.y);
+    if (inputLength > 0.0f) {
+        input.x /= inputLength;
+        input.y /= inputLength;
+        player->velocity.x += input.x * player->acceleration * deltaTime;
+        player->velocity.y += input.y * player->acceleration * deltaTime;
+        player->thrusting = true;
     }
 
-    targetVelocity.x = input.x * player->speed;
-    targetVelocity.y = input.y * player->speed;
-    response = 1.0f - expf(-11.0f * deltaTime);
-    player->velocity.x += (targetVelocity.x - player->velocity.x) * response;
-    player->velocity.y += (targetVelocity.y - player->velocity.y) * response;
+    damping = expf(-player->drag * deltaTime);
+    player->velocity.x *= damping;
+    player->velocity.y *= damping;
+    velocityLength = sqrtf(player->velocity.x * player->velocity.x +
+                           player->velocity.y * player->velocity.y);
+    if (velocityLength > player->maxSpeed) {
+        float scale = player->maxSpeed / velocityLength;
+
+        player->velocity.x *= scale;
+        player->velocity.y *= scale;
+    }
 
     moveX = player->velocity.x * deltaTime;
     moveY = player->velocity.y * deltaTime;
-    moveSteps = (int)ceilf(fmaxf(fabsf(moveX), fabsf(moveY)) / 0.75f);
+    moveSteps = (int)ceilf(fmaxf(fabsf(moveX), fabsf(moveY)) / 0.5f);
     if (moveSteps < 1) {
         moveSteps = 1;
     }
+    stepTime = deltaTime / (float)moveSteps;
 
     for (step = 0; step < moveSteps; ++step) {
         Vector2 candidate = player->position;
+        float incomingSpeed;
 
-        candidate.x += moveX / (float)moveSteps;
+        candidate.x += player->velocity.x * stepTime;
         if (!PlayerCollidesAt(player, world, candidate)) {
             player->position.x = candidate.x;
         } else {
-            player->velocity.x = 0.0f;
+            Vector2 normal = {player->velocity.x > 0.0f ? -1.0f : 1.0f, 0.0f};
+
+            incomingSpeed = fabsf(player->velocity.x);
+            PlayerRecordImpact(player, normal, incomingSpeed);
+            player->velocity.x = incomingSpeed >= 14.0f
+                                     ? -player->velocity.x * player->restitution
+                                     : 0.0f;
         }
 
         candidate = player->position;
-        candidate.y += moveY / (float)moveSteps;
+        candidate.y += player->velocity.y * stepTime;
         if (!PlayerCollidesAt(player, world, candidate)) {
             player->position.y = candidate.y;
         } else {
-            player->velocity.y = 0.0f;
+            Vector2 normal = {0.0f, player->velocity.y > 0.0f ? -1.0f : 1.0f};
+
+            incomingSpeed = fabsf(player->velocity.y);
+            PlayerRecordImpact(player, normal, incomingSpeed);
+            player->velocity.y = incomingSpeed >= 14.0f
+                                     ? -player->velocity.y * player->restitution
+                                     : 0.0f;
         }
     }
 

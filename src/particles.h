@@ -28,6 +28,8 @@ void ParticlesUpdate(ParticleSystem *system, float deltaTime);
 void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2 direction);
+void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 normal,
+                          float strength);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 
 #endif

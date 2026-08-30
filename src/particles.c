@@ -130,6 +130,32 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2
     }
 }
 
+void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 normal,
+                          float strength)
+{
+    Vector2 tangent = {-normal.y, normal.x};
+    int count;
+    int i;
+
+    if (system == NULL || strength < 14.0f) {
+        return;
+    }
+
+    count = 5 + (int)Clamp(strength / 18.0f, 0.0f, 7.0f);
+    for (i = 0; i < count; ++i) {
+        float outward = 9.0f + RandomUnit() * fminf(strength * 0.42f, 42.0f);
+        float sideways = (RandomUnit() - 0.5f) * 34.0f;
+        Color color = i % 3 == 0 ? (Color){255, 190, 77, 255}
+                                 : (Color){132, 126, 119, 230};
+
+        ParticlesSpawnOne(system, position,
+                          (Vector2){normal.x * outward + tangent.x * sideways,
+                                    normal.y * outward + tangent.y * sideways},
+                          color, 0.18f + RandomUnit() * 0.25f,
+                          0.45f + RandomUnit() * 0.7f, 22.0f);
+    }
+}
+
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position)
 {
     int i;

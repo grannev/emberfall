@@ -51,12 +51,15 @@ static void DrawDebugHud(const World *world, const Player *player,
     const int panelWidth = 330;
     const int panelHeight = 140;
     float cooldown = powers->explosionCooldown;
+    float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
+                              player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
 
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
     DrawText(TextFormat("FPS: %d", GetFPS()), 24, 23, 20, RAYWHITE);
-    DrawText(TextFormat("PLAYER: %.1f, %.1f", player->position.x, player->position.y),
+    DrawText(TextFormat("PLAYER: %.1f, %.1f  V: %.0f", player->position.x,
+                        player->position.y, playerSpeed),
              24, 47, 18, (Color){174, 219, 248, 255});
     DrawText(TextFormat("ACTIVE: %d CELLS | %d CHUNKS", world->activeCells,
                         world->activeChunkCount), 24, 69, 18,
@@ -97,7 +100,9 @@ static void RunSmokePlayerProbe(World *world, bool *collisionObserved)
     PlayerInit(&probe, (Vector2){225.0f, 50.0f});
     probe.velocity.x = 180.0f;
     PlayerUpdate(&probe, world, 0.05f);
-    *collisionObserved = probe.position.x < 228.0f;
+    *collisionObserved = probe.position.x < 229.0f && probe.velocity.x < -10.0f &&
+                         probe.impactStrength > 80.0f &&
+                         probe.impactNormal.x < -0.5f;
     for (y = 44; y <= 56; ++y) {
         WorldSetCell(world, 232, y, MATERIAL_EMPTY);
     }
@@ -232,6 +237,14 @@ int main(int argc, char **argv)
         }
 
         PlayerUpdate(&player, &world, deltaTime);
+        if (player.impactStrength >= 14.0f) {
+            float impactShake = Clamp((player.impactStrength - 10.0f) * 0.025f,
+                                      0.0f, 2.6f);
+
+            cameraShake = fmaxf(cameraShake, impactShake);
+            ParticlesSpawnImpact(&particles, player.impactPosition,
+                                 player.impactNormal, player.impactStrength);
+        }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                                   (float)GetScreenHeight() * 0.5f};
