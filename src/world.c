@@ -529,16 +529,43 @@ Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D c
     return point;
 }
 
-void WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius, float deltaTime)
+LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
+                            float deltaTime)
 {
     Vector2 delta = {end.x - start.x, end.y - start.y};
     float length = sqrtf(delta.x * delta.x + delta.y * delta.y);
-    int steps = (int)ceilf(length / 1.25f);
+    int steps = (int)ceilf(length / 0.65f);
     int step;
     uint32_t stamp;
+    LaserResult result = {end, MATERIAL_EMPTY, false};
 
     if (world == NULL || world->cells == NULL || length < 0.001f) {
-        return;
+        result.position = start;
+        return result;
+    }
+
+    for (step = 0; step <= steps; ++step) {
+        float amount = (float)step / (float)steps;
+        int centerX = (int)floorf(start.x + delta.x * amount);
+        int centerY = (int)floorf(start.y + delta.y * amount);
+        CellMaterial material;
+
+        if (!WorldInBounds(world, centerX, centerY)) {
+            break;
+        }
+        material = WorldGetCell(world, centerX, centerY);
+        if (material == MATERIAL_DIRT || material == MATERIAL_SAND ||
+            material == MATERIAL_ROCK) {
+            result.position = (Vector2){start.x + delta.x * amount,
+                                        start.y + delta.y * amount};
+            result.material = material;
+            result.hit = true;
+            break;
+        }
+    }
+
+    if (!result.hit) {
+        return result;
     }
 
     stamp = ++world->effectSerial;
@@ -546,15 +573,15 @@ void WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius, flo
         stamp = ++world->effectSerial;
     }
 
-    for (step = 0; step <= steps; ++step) {
-        float amount = (float)step / (float)steps;
-        int centerX = (int)floorf(start.x + delta.x * amount);
-        int centerY = (int)floorf(start.y + delta.y * amount);
+    {
+        int centerX = (int)floorf(result.position.x);
+        int centerY = (int)floorf(result.position.y);
         int brush = (int)ceilf(radius);
-        int x;
         int y;
 
         for (y = centerY - brush; y <= centerY + brush; ++y) {
+            int x;
+
             for (x = centerX - brush; x <= centerX + brush; ++x) {
                 int dx = x - centerX;
                 int dy = y - centerY;
@@ -585,6 +612,8 @@ void WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius, flo
             }
         }
     }
+
+    return result;
 }
 
 const char *WorldMaterialName(CellMaterial material)

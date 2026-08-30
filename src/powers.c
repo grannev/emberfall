@@ -34,8 +34,10 @@ void PowersInit(PowerSystem *powers)
     powers->explosionCooldown = 0.0f;
     powers->explosionCooldownMax = 0.7f;
     powers->laserActive = false;
+    powers->laserHit = false;
     powers->laserStart = (Vector2){0.0f, 0.0f};
     powers->laserEnd = (Vector2){0.0f, 0.0f};
+    powers->laserHitMaterial = MATERIAL_EMPTY;
 }
 
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
@@ -51,6 +53,7 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
 
     powers->explosionCooldown = fmaxf(0.0f, powers->explosionCooldown - deltaTime);
     powers->laserActive = false;
+    powers->laserHit = false;
 
     if (directionLength > 0.001f) {
         direction.x /= directionLength;
@@ -60,17 +63,20 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
     }
 
     if (laserHeld) {
+        LaserResult result;
+        Vector2 maximumEnd;
+
         powers->current = POWER_LASER;
         powers->laserActive = true;
         powers->laserStart = origin;
-        powers->laserEnd = LaserEndAtWorldEdge(world, origin, direction, 280.0f);
-        WorldApplyLaser(world, powers->laserStart, powers->laserEnd, 2.25f, deltaTime);
+        maximumEnd = LaserEndAtWorldEdge(world, origin, direction, 280.0f);
+        result = WorldApplyLaser(world, powers->laserStart, maximumEnd, 2.25f, deltaTime);
+        powers->laserEnd = result.position;
+        powers->laserHit = result.hit;
+        powers->laserHitMaterial = result.material;
 
-        if (GetRandomValue(0, 2) == 0) {
-            float sparkDistance = fminf(directionLength, 115.0f);
-            Vector2 sparkPosition = {origin.x + direction.x * sparkDistance,
-                                     origin.y + direction.y * sparkDistance};
-            ParticlesSpawnLaserSparks(particles, sparkPosition, direction);
+        if (result.hit && GetRandomValue(0, 1) == 0) {
+            ParticlesSpawnLaserSparks(particles, result.position, direction);
         }
     }
 
@@ -99,7 +105,13 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
                    (Color){255, 81, 43, 210});
         DrawLineEx(powers->laserStart, powers->laserEnd, 0.55f,
                    (Color){255, 244, 188, 255});
-        DrawCircleV(powers->laserEnd, 2.2f, (Color){255, 165, 53, 220});
+        if (powers->laserHit) {
+            DrawCircleV(powers->laserEnd, 4.2f, (Color){255, 74, 24, 70});
+            DrawCircleV(powers->laserEnd, 2.5f, (Color){255, 161, 43, 190});
+            DrawCircleV(powers->laserEnd, 1.1f, (Color){255, 248, 203, 255});
+        } else {
+            DrawCircleV(powers->laserEnd, 0.9f, (Color){255, 198, 88, 180});
+        }
     }
 
     DrawCircleLinesV(aimPosition, 4.0f, crosshair);

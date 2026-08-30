@@ -67,8 +67,10 @@ over frameworks, generic containers, or unnecessary abstraction.
   interaction is more important than collision realism.
 - Movement uses delta time and remains smooth at varying render rates.
 - The camera follows the player and magnifies the world with crisp pixel edges.
-- Holding LMB maintains a laser toward the cursor. Dirt and sand break quickly;
-  rock takes sustained exposure and becomes lava.
+- Holding LMB traces a contact laser toward the cursor direction. It passes
+  through air and liquids, stops at the nearest dirt/sand/rock cell, applies one
+  local brush, and reports the hit point for glow and sparks. Rock takes
+  sustained exposure and becomes lava.
 - RMB explodes at the cursor with a visible cooldown. Some affected rock becomes
   lava.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.

@@ -18,8 +18,10 @@ typedef struct PowerSystem {
     float explosionCooldown;
     float explosionCooldownMax;
     bool laserActive;
+    bool laserHit;
     Vector2 laserStart;
     Vector2 laserEnd;
+    CellMaterial laserHitMaterial;
 } PowerSystem;
 
 void PowersInit(PowerSystem *powers);

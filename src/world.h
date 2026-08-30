@@ -28,6 +28,12 @@ typedef struct WorldReactionEvent {
     Vector2 position;
 } WorldReactionEvent;
 
+typedef struct LaserResult {
+    Vector2 position;
+    CellMaterial material;
+    bool hit;
+} LaserResult;
+
 typedef struct World {
     int width;
     int height;
@@ -53,7 +59,8 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);
 
-void WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius, float deltaTime);
+LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
+                            float deltaTime);
 const char *WorldMaterialName(CellMaterial material);
 
 #endif
