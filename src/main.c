@@ -67,9 +67,7 @@ static void DrawDebugHud(const World *world, const Player *player,
                         (int)cursorCell.y, WorldMaterialName(cursorMaterial),
                         WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
              24, 113, 18, (Color){186, 194, 205, 255});
-    if (powers->energy < powers->explosionEnergyCost) {
-        DrawText("EXPLOSION: LOW ENERGY", 24, 133, 14, ORANGE);
-    } else if (cooldown <= 0.0f) {
+    if (cooldown <= 0.0f) {
         DrawText("EXPLOSION: READY", 24, 133, 14, LIME);
     } else {
         DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 133, 14, LIGHTGRAY);
@@ -88,42 +86,7 @@ static void DrawControlsHint(void)
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
 }
 
-static void DrawStatusBar(int x, int y, int width, const char *label, float ratio,
-                          Color fill)
-{
-    ratio = Clamp(ratio, 0.0f, 1.0f);
-    DrawText(label, x, y, 15, RAYWHITE);
-    DrawRectangle(x, y + 17, width, 13, (Color){10, 14, 21, 220});
-    DrawRectangle(x + 2, y + 19, (int)((float)(width - 4) * ratio), 9, fill);
-    DrawRectangleLines(x, y + 17, width, 13, (Color){183, 201, 214, 220});
-}
-
-static void DrawPlayerStatus(const Player *player, const PowerSystem *powers)
-{
-    const int width = 210;
-    int x = GetScreenWidth() - width - 20;
-    int y = 20;
-    float healthRatio = player->health / player->maxHealth;
-    Color healthColor = healthRatio > 0.55f ? (Color){66, 207, 113, 255}
-                                           : (Color){239, 78, 65, 255};
-
-    DrawStatusBar(x, y, width, player->alive ? "HEALTH" : "RESPAWNING",
-                  healthRatio, healthColor);
-    DrawStatusBar(x, y + 38, width, "ENERGY", powers->energy / powers->maxEnergy,
-                  (Color){62, 164, 235, 255});
-    DrawStatusBar(x, y + 76, width,
-                  powers->laserOverheated ? "HEAT: OVERHEATED" : "LASER HEAT",
-                  powers->laserHeat / powers->maxLaserHeat,
-                  powers->laserOverheated ? (Color){255, 68, 41, 255}
-                                          : (Color){244, 154, 48, 255});
-    if (!player->alive) {
-        DrawText(TextFormat("%.1fs", player->respawnTimer), x + width - 44, y, 15,
-                 (Color){255, 181, 92, 255});
-    }
-}
-
-static void RunSmokePlayerProbes(World *world, bool *collisionObserved,
-                                 bool *hazardObserved)
+static void RunSmokePlayerProbe(World *world, bool *collisionObserved)
 {
     Player probe;
     int y;
@@ -139,11 +102,6 @@ static void RunSmokePlayerProbes(World *world, bool *collisionObserved,
         WorldSetCell(world, 232, y, MATERIAL_EMPTY);
     }
 
-    PlayerInit(&probe, (Vector2){225.5f, 50.5f});
-    WorldSetCell(world, 225, 50, MATERIAL_LAVA);
-    PlayerApplyWorldHazards(&probe, world);
-    *hazardObserved = probe.health < probe.maxHealth;
-    WorldSetCell(world, 225, 50, MATERIAL_EMPTY);
 }
 
 int main(int argc, char **argv)
@@ -164,7 +122,6 @@ int main(int argc, char **argv)
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
     bool smokeCollisionObserved = false;
-    bool smokeHazardObserved = false;
     int exitCode = 0;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
@@ -188,7 +145,7 @@ int main(int argc, char **argv)
 
     WorldGenerate(&world);
     if (smokeTest) {
-        RunSmokePlayerProbes(&world, &smokeCollisionObserved, &smokeHazardObserved);
+        RunSmokePlayerProbe(&world, &smokeCollisionObserved);
         WorldSetCell(&world, 252, 95, MATERIAL_WATER);
         WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
     }
@@ -225,12 +182,6 @@ int main(int argc, char **argv)
         }
 
         PlayerUpdate(&player, &world, deltaTime);
-        if (PlayerNeedsRespawn(&player)) {
-            PlayerInit(&player, (Vector2){245.0f, 66.0f});
-            PowersInit(&powers);
-            cameraFocus = player.position;
-            cameraShake = 0.0f;
-        }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                                   (float)GetScreenHeight() * 0.5f};
@@ -251,8 +202,8 @@ int main(int argc, char **argv)
 
         cursorCell = WorldScreenToCell(&world, GetMousePosition(), camera);
         aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
-        laserHeld = player.alive && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-        explosionPressed = player.alive && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+        laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+        explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
         if (smokeTest) {
             aimPosition = (Vector2){280.5f, 116.5f};
             cursorCell = (Vector2){280.0f, 116.0f};
@@ -291,7 +242,6 @@ int main(int argc, char **argv)
             GameAudioPlayReaction(&audio);
         }
         PlayerResolveWorldCollision(&player, &world);
-        PlayerApplyWorldHazards(&player, &world);
 
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
@@ -306,7 +256,6 @@ int main(int argc, char **argv)
         if (debugHud) {
             DrawDebugHud(&world, &player, &powers, cursorCell);
         }
-        DrawPlayerStatus(&player, &powers);
         DrawControlsHint();
         EndDrawing();
 
@@ -322,15 +271,14 @@ int main(int argc, char **argv)
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
-                      !smokeHazardObserved || powers.energy >= powers.maxEnergy ||
                       world.activeChunkCount <= 0 ||
                       world.activeChunkCount >= world.chunkColumns * world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
-                "hazard=%d energy=%.1f chunks=%d/%d\n",
+                "chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
-                smokeCollisionObserved, smokeHazardObserved, powers.energy,
-                world.activeChunkCount, world.chunkColumns * world.chunkRows);
+                smokeCollisionObserved, world.activeChunkCount,
+                world.chunkColumns * world.chunkRows);
         exitCode = 2;
     }
     WorldUnload(&world);

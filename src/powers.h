@@ -27,12 +27,6 @@ typedef struct PowerSystem {
     float explosionShockRadius;
     float shockwaveTime;
     float shockwaveDuration;
-    float energy;
-    float maxEnergy;
-    float explosionEnergyCost;
-    float laserHeat;
-    float maxLaserHeat;
-    bool laserOverheated;
 } PowerSystem;
 
 void PowersInit(PowerSystem *powers);

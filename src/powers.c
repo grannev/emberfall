@@ -43,12 +43,6 @@ void PowersInit(PowerSystem *powers)
     powers->explosionShockRadius = 42.0f;
     powers->shockwaveTime = 0.0f;
     powers->shockwaveDuration = 0.32f;
-    powers->energy = 100.0f;
-    powers->maxEnergy = 100.0f;
-    powers->explosionEnergyCost = 38.0f;
-    powers->laserHeat = 0.0f;
-    powers->maxLaserHeat = 100.0f;
-    powers->laserOverheated = false;
 }
 
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
@@ -57,7 +51,6 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
 {
     Vector2 direction = {aimPosition.x - origin.x, aimPosition.y - origin.y};
     float directionLength = sqrtf(direction.x * direction.x + direction.y * direction.y);
-    bool canUseLaser;
 
     if (powers == NULL || world == NULL) {
         return;
@@ -69,21 +62,6 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
     powers->laserHit = false;
     powers->explosionTriggered = false;
 
-    if (powers->laserOverheated) {
-        powers->laserHeat = fmaxf(0.0f, powers->laserHeat - 43.0f * deltaTime);
-        if (powers->laserHeat <= 34.0f) {
-            powers->laserOverheated = false;
-        }
-    }
-
-    canUseLaser = laserHeld && !powers->laserOverheated && powers->energy > 0.01f;
-    if (!canUseLaser) {
-        powers->energy = fminf(powers->maxEnergy, powers->energy + 19.0f * deltaTime);
-        if (!powers->laserOverheated) {
-            powers->laserHeat = fmaxf(0.0f, powers->laserHeat - 34.0f * deltaTime);
-        }
-    }
-
     if (directionLength > 0.001f) {
         direction.x /= directionLength;
         direction.y /= directionLength;
@@ -91,7 +69,7 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
         direction = (Vector2){1.0f, 0.0f};
     }
 
-    if (canUseLaser) {
+    if (laserHeld) {
         LaserResult result;
         Vector2 maximumEnd;
 
@@ -103,12 +81,6 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
         powers->laserEnd = result.position;
         powers->laserHit = result.hit;
         powers->laserHitMaterial = result.material;
-        powers->energy = fmaxf(0.0f, powers->energy - 13.0f * deltaTime);
-        powers->laserHeat = fminf(powers->maxLaserHeat,
-                                  powers->laserHeat + 31.0f * deltaTime);
-        if (powers->laserHeat >= powers->maxLaserHeat) {
-            powers->laserOverheated = true;
-        }
 
         if (result.hit && GetRandomValue(0, 1) == 0) {
             ParticlesSpawnLaserSparks(particles, result.position, direction);
@@ -117,14 +89,12 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
 
     if (explosionPressed) {
         powers->current = POWER_EXPLOSION;
-        if (powers->explosionCooldown <= 0.0f &&
-            powers->energy >= powers->explosionEnergyCost) {
+        if (powers->explosionCooldown <= 0.0f) {
             WorldDestroyCircle(world, (int)aimPosition.x, (int)aimPosition.y, 17, 0.38f);
             WorldApplyShockwave(world, (int)aimPosition.x, (int)aimPosition.y, 17,
                                 (int)powers->explosionShockRadius);
             ParticlesSpawnExplosion(particles, aimPosition);
             powers->explosionCooldown = powers->explosionCooldownMax;
-            powers->energy -= powers->explosionEnergyCost;
             powers->explosionTriggered = true;
             powers->explosionPosition = aimPosition;
             powers->shockwaveTime = powers->shockwaveDuration;
@@ -134,8 +104,7 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
 
 void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
 {
-    Color crosshair = powers != NULL && powers->explosionCooldown <= 0.0f &&
-                              powers->energy >= powers->explosionEnergyCost
+    Color crosshair = powers != NULL && powers->explosionCooldown <= 0.0f
                           ? (Color){255, 232, 118, 230}
                           : (Color){180, 188, 199, 190};
 
@@ -179,8 +148,5 @@ const char *PowersCurrentName(const PowerSystem *powers)
     if (powers == NULL) {
         return "UNKNOWN";
     }
-    if (powers->current == POWER_EXPLOSION) {
-        return "EXPLOSION (RMB)";
-    }
-    return powers->laserOverheated ? "LASER: OVERHEATED" : "LASER (LMB)";
+    return powers->current == POWER_EXPLOSION ? "EXPLOSION (RMB)" : "LASER (LMB)";
 }

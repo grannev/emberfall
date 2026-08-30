@@ -55,13 +55,11 @@ raylib input
 
 ### `player.c/.h`
 
-Содержит движение и жизненный цикл игрока:
+Содержит движение, collision и отрисовку игрока:
 
 - плавный полёт без гравитации;
 - circle-vs-cell collision;
 - защита от tunneling с помощью substeps;
-- урон от мира и собственного взрыва;
-- здоровье, invulnerability и respawn;
 - процедурная отрисовка персонажа.
 
 ### `powers.c/.h`
@@ -69,8 +67,7 @@ raylib input
 Хранит состояние способностей и координирует их эффекты:
 
 - трассировка контактного лазера;
-- energy и laser heat;
-- explosion cooldown и стоимость взрыва;
+- explosion cooldown;
 - разрушение мира и ударная волна;
 - события для camera shake, player impulse и audio;
 - world-space визуализация луча, прицела и кольца взрыва.
@@ -92,7 +89,7 @@ raylib input
 Текущий порядок в `main.c` важен:
 
 1. Ограничить `deltaTime` значением 0.05 секунды.
-2. Обработать `F1`, `R` и respawn.
+2. Обработать `F1` и `R`.
 3. Обновить игрока и collision относительно текущего мира.
 4. Обновить camera follow и затухание shake.
 5. Преобразовать позицию мыши из screen space в world/cell space.
@@ -103,9 +100,8 @@ raylib input
 10. Обработать reaction events: частицы пара и звук.
 11. Повторно разрешить collision игрока — динамический sand мог войти в его
     область во время simulation tick.
-12. Применить hazards.
-13. Обновить texture мира и отрисовать world-space объекты.
-14. Отрисовать debug и постоянный status HUD.
+12. Обновить texture мира и отрисовать world-space объекты.
+13. Отрисовать debug HUD.
 
 ## Владение памятью
 

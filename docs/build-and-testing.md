@@ -74,8 +74,6 @@ make clean
 - laser contact;
 - explosion event;
 - collision с тонкой rock-стеной;
-- hazard damage от lava;
-- расход energy;
 - переход части chunks в sleeping state.
 
 При отсутствии любого события процесс возвращает код 2 и печатает значения

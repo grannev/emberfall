@@ -27,8 +27,8 @@ The compiler is GCC in C11 mode with `-Wall -Wextra -Wpedantic`. Release uses
 debug configurations. For non-interactive runtime checks, the executable also
 accepts `--smoke-test`, writes `build/emberfall-smoke.png`, and closes after a
 few frames. It returns non-zero unless material reaction, laser contact,
-explosion, player collision, hazard damage, energy consumption, and chunk sleep
-were all observed. Use `make run RUN_ARGS=--smoke-test`; it still needs a
+explosion, player collision, and chunk sleep were all observed. Use
+`make run RUN_ARGS=--smoke-test`; it still needs a
 working display (for example Xvfb in headless environments).
 
 ## Source layout
@@ -37,7 +37,7 @@ working display (for example Xvfb in headless environments).
 - `src/world.c/.h`: materials, one-dimensional cell storage, generation,
   simulation, texture buffer, destruction helpers
 - `src/player.c/.h`: sub-stepped gravity-free flight, circle-vs-cell collision,
-  hazards, health/respawn, and player rendering
+  and player rendering
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
@@ -83,8 +83,9 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Movement is split into steps no longer than 0.75 world cells to prevent
   tunneling. Resolve embedding again after simulation because sand can enter the
   player between movement updates.
-- Lava, fire, and nearby self-explosions deal damage with brief invulnerability.
-  Death keeps the changed world and respawns the player after a short delay.
+- The player has no health, damage, death, or respawn systems. Lava, fire, and
+  self-explosions do not punish the player; this is intentionally a low-friction
+  sandbox.
 - Movement uses delta time and remains smooth at varying render rates.
 - The camera follows the player and magnifies the world with crisp pixel edges.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
@@ -95,10 +96,9 @@ over frameworks, generic containers, or unnecessary abstraction.
   terrain and turns some rock into lava; the outer shockwave pushes dynamic
   cells from outer bands inward and emits one event for player knockback,
   expanding-ring feedback, and camera shake.
-- Powers own a 0–100 energy resource. Laser use drains energy and accumulates
-  heat; overheating locks it until heat falls below the recovery threshold.
-  Explosions require both cooldown and enough energy. Keep these values visible
-  in the always-on status HUD.
+- Powers have no energy, ammunition, or overheat resource. The laser is always
+  available. Explosion keeps only its short input cooldown and physical
+  feedback.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
 - Laser, explosion, and material-reaction sounds are synthesized at startup; no
@@ -114,7 +114,7 @@ per-tick invariant. Update README controls or architecture notes when behavior o
 build commands change.
 
 Keep `docs/` synchronized with code. Changes to module ownership, public APIs,
-material behavior/thresholds, player collision, power costs, frame ordering,
+material behavior/thresholds, player collision, power behavior, frame ordering,
 build commands, or smoke-test coverage must update the corresponding document
 in the same commit. Do not treat the root README as the complete developer
 reference.

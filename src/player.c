@@ -15,11 +15,6 @@ void PlayerInit(Player *player, Vector2 position)
     player->velocity = (Vector2){0.0f, 0.0f};
     player->speed = 92.0f;
     player->radius = 4.5f;
-    player->health = 100.0f;
-    player->maxHealth = 100.0f;
-    player->invulnerability = 0.0f;
-    player->respawnTimer = 0.0f;
-    player->alive = true;
     player->facingRight = true;
 }
 
@@ -57,21 +52,6 @@ static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 p
     return false;
 }
 
-static void PlayerTakeDamage(Player *player, float damage)
-{
-    if (!player->alive || player->invulnerability > 0.0f || damage <= 0.0f) {
-        return;
-    }
-
-    player->health = fmaxf(0.0f, player->health - damage);
-    player->invulnerability = 0.28f;
-    if (player->health <= 0.0f) {
-        player->alive = false;
-        player->respawnTimer = 1.15f;
-        player->velocity = (Vector2){0.0f, 0.0f};
-    }
-}
-
 void PlayerUpdate(Player *player, const World *world, float deltaTime)
 {
     Vector2 input = {0.0f, 0.0f};
@@ -84,12 +64,6 @@ void PlayerUpdate(Player *player, const World *world, float deltaTime)
     int step;
 
     if (player == NULL || world == NULL) {
-        return;
-    }
-
-    player->invulnerability = fmaxf(0.0f, player->invulnerability - deltaTime);
-    if (!player->alive) {
-        player->respawnTimer = fmaxf(0.0f, player->respawnTimer - deltaTime);
         return;
     }
 
@@ -151,7 +125,7 @@ void PlayerResolveWorldCollision(Player *player, const World *world)
     Vector2 origin;
     int distance;
 
-    if (player == NULL || world == NULL || !player->alive ||
+    if (player == NULL || world == NULL ||
         !PlayerCollidesAt(player, world, player->position)) {
         return;
     }
@@ -174,48 +148,6 @@ void PlayerResolveWorldCollision(Player *player, const World *world)
             }
         }
     }
-}
-
-void PlayerApplyWorldHazards(Player *player, const World *world)
-{
-    int minimumX;
-    int maximumX;
-    int minimumY;
-    int maximumY;
-    int y;
-    bool touchesFire = false;
-    bool touchesLava = false;
-
-    if (player == NULL || world == NULL || !player->alive) {
-        return;
-    }
-
-    minimumX = (int)floorf(player->position.x - player->radius);
-    maximumX = (int)floorf(player->position.x + player->radius);
-    minimumY = (int)floorf(player->position.y - player->radius);
-    maximumY = (int)floorf(player->position.y + player->radius);
-
-    for (y = minimumY; y <= maximumY; ++y) {
-        int x;
-
-        for (x = minimumX; x <= maximumX; ++x) {
-            CellMaterial material = WorldGetCell(world, x, y);
-
-            touchesLava = touchesLava || material == MATERIAL_LAVA;
-            touchesFire = touchesFire || material == MATERIAL_FIRE;
-        }
-    }
-
-    if (touchesLava) {
-        PlayerTakeDamage(player, 24.0f);
-    } else if (touchesFire) {
-        PlayerTakeDamage(player, 11.0f);
-    }
-}
-
-bool PlayerNeedsRespawn(const Player *player)
-{
-    return player != NULL && !player->alive && player->respawnTimer <= 0.0f;
 }
 
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force)
@@ -245,7 +177,6 @@ void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, f
     strength = 1.0f - distance / radius;
     player->velocity.x += direction.x * force * strength;
     player->velocity.y += direction.y * force * strength;
-    PlayerTakeDamage(player, 30.0f * strength);
 }
 
 void PlayerDraw(const Player *player, Vector2 aimPosition)
@@ -257,9 +188,8 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     Vector2 capeTop;
     Vector2 capeBottom;
     Vector2 eye;
-    Color bodyColor;
 
-    if (player == NULL || !player->alive) {
+    if (player == NULL) {
         return;
     }
 
@@ -282,9 +212,7 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
                         player->position.y - aim.y * 10.0f};
     DrawTriangle(capeTop, capeTip, capeBottom, (Color){190, 35, 62, 255});
 
-    bodyColor = player->invulnerability > 0.0f ? (Color){130, 210, 255, 255}
-                                               : (Color){36, 139, 214, 255};
-    DrawCircleV(player->position, player->radius, bodyColor);
+    DrawCircleV(player->position, player->radius, (Color){36, 139, 214, 255});
     DrawCircleLinesV(player->position, player->radius, (Color){173, 224, 255, 255});
     eye = (Vector2){player->position.x + aim.x * 3.0f,
                     player->position.y + aim.y * 3.0f};

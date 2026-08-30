@@ -9,10 +9,10 @@ API, правила симуляции и порядок проверки изм
   поток данных.
 - [Мир и симуляция](world-simulation.md) — cells, материалы, температура,
   active chunks, генерация и рендеринг.
-- [Игрок и камера](player-and-camera.md) — полёт, collision, hazards, здоровье,
-  respawn и camera shake.
-- [Способности и эффекты](powers-and-effects.md) — лазер, взрыв, energy, heat,
-  частицы и процедурный звук.
+- [Игрок и камера](player-and-camera.md) — полёт, collision, модель персонажа и
+  camera shake.
+- [Способности и эффекты](powers-and-effects.md) — лазер, взрыв, частицы и
+  процедурный звук.
 - [Справочник API](api-reference.md) — структуры и публичные функции модулей.
 - [Сборка и тестирование](build-and-testing.md) — Makefile, артефакты,
   smoke-test и обязательная проверка изменений.

@@ -74,17 +74,14 @@ const char *WorldMaterialName(CellMaterial material);
 void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, const World *world, float deltaTime);
 void PlayerResolveWorldCollision(Player *player, const World *world);
-void PlayerApplyWorldHazards(Player *player, const World *world);
-bool PlayerNeedsRespawn(const Player *player);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
                                  float radius, float force);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
 ```
 
-Рекомендуемый порядок: `PlayerUpdate` до world ticks,
-`PlayerResolveWorldCollision` и `PlayerApplyWorldHazards` после них.
-`PlayerApplyExplosionImpulse` одновременно добавляет velocity и применяет
-ослабленный distance-based damage.
+Рекомендуемый порядок: `PlayerUpdate` до world ticks и
+`PlayerResolveWorldCollision` после них. `PlayerApplyExplosionImpulse` добавляет
+velocity с линейным ослаблением к краю shockwave, но не наносит урон.
 
 ## Powers API
 
