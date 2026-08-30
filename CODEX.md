@@ -35,7 +35,8 @@ still needs a working display (for example Xvfb in headless environments).
 - `src/main.c`: window, fixed-step loop, camera, input, HUD, reset flow
 - `src/world.c/.h`: materials, one-dimensional cell storage, generation,
   simulation, texture buffer, destruction helpers
-- `src/player.c/.h`: smooth gravity-free WASD flight and player rendering
+- `src/player.c/.h`: sub-stepped gravity-free flight, circle-vs-cell collision,
+  hazards, health/respawn, and player rendering
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
@@ -69,8 +70,13 @@ over frameworks, generic containers, or unnecessary abstraction.
 
 ## Gameplay invariants
 
-- The player is never affected by gravity and may pass through cells; sandbox
-  interaction is more important than collision realism.
+- The player is never affected by gravity. Dirt, rock, and sand are solid for a
+  circular player collider; liquids, gases, fire, and ash are passable.
+- Movement is split into steps no longer than 0.75 world cells to prevent
+  tunneling. Resolve embedding again after simulation because sand can enter the
+  player between movement updates.
+- Lava, fire, and nearby self-explosions deal damage with brief invulnerability.
+  Death keeps the changed world and respawns the player after a short delay.
 - Movement uses delta time and remains smooth at varying render rates.
 - The camera follows the player and magnifies the world with crisp pixel edges.
 - Holding LMB traces a contact laser toward the cursor direction. It passes

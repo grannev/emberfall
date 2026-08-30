@@ -15,17 +15,81 @@ void PlayerInit(Player *player, Vector2 position)
     player->velocity = (Vector2){0.0f, 0.0f};
     player->speed = 92.0f;
     player->radius = 4.5f;
+    player->health = 100.0f;
+    player->maxHealth = 100.0f;
+    player->invulnerability = 0.0f;
+    player->respawnTimer = 0.0f;
+    player->alive = true;
     player->facingRight = true;
 }
 
-void PlayerUpdate(Player *player, float deltaTime, int worldWidth, int worldHeight)
+static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position)
+{
+    int minimumX = (int)floorf(position.x - player->radius);
+    int maximumX = (int)floorf(position.x + player->radius);
+    int minimumY = (int)floorf(position.y - player->radius);
+    int maximumY = (int)floorf(position.y + player->radius);
+    int y;
+
+    for (y = minimumY; y <= maximumY; ++y) {
+        int x;
+
+        for (x = minimumX; x <= maximumX; ++x) {
+            float nearestX;
+            float nearestY;
+            float dx;
+            float dy;
+
+            if (!WorldMaterialIsSolid(WorldGetCell(world, x, y))) {
+                continue;
+            }
+
+            nearestX = Clamp(position.x, (float)x, (float)x + 1.0f);
+            nearestY = Clamp(position.y, (float)y, (float)y + 1.0f);
+            dx = position.x - nearestX;
+            dy = position.y - nearestY;
+            if (dx * dx + dy * dy < player->radius * player->radius) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static void PlayerTakeDamage(Player *player, float damage)
+{
+    if (!player->alive || player->invulnerability > 0.0f || damage <= 0.0f) {
+        return;
+    }
+
+    player->health = fmaxf(0.0f, player->health - damage);
+    player->invulnerability = 0.28f;
+    if (player->health <= 0.0f) {
+        player->alive = false;
+        player->respawnTimer = 1.15f;
+        player->velocity = (Vector2){0.0f, 0.0f};
+    }
+}
+
+void PlayerUpdate(Player *player, const World *world, float deltaTime)
 {
     Vector2 input = {0.0f, 0.0f};
     Vector2 targetVelocity;
     float length;
     float response;
+    float moveX;
+    float moveY;
+    int moveSteps;
+    int step;
 
-    if (player == NULL) {
+    if (player == NULL || world == NULL) {
+        return;
+    }
+
+    player->invulnerability = fmaxf(0.0f, player->invulnerability - deltaTime);
+    if (!player->alive) {
+        player->respawnTimer = fmaxf(0.0f, player->respawnTimer - deltaTime);
         return;
     }
 
@@ -46,16 +110,112 @@ void PlayerUpdate(Player *player, float deltaTime, int worldWidth, int worldHeig
     player->velocity.x += (targetVelocity.x - player->velocity.x) * response;
     player->velocity.y += (targetVelocity.y - player->velocity.y) * response;
 
-    player->position.x += player->velocity.x * deltaTime;
-    player->position.y += player->velocity.y * deltaTime;
+    moveX = player->velocity.x * deltaTime;
+    moveY = player->velocity.y * deltaTime;
+    moveSteps = (int)ceilf(fmaxf(fabsf(moveX), fabsf(moveY)) / 0.75f);
+    if (moveSteps < 1) {
+        moveSteps = 1;
+    }
+
+    for (step = 0; step < moveSteps; ++step) {
+        Vector2 candidate = player->position;
+
+        candidate.x += moveX / (float)moveSteps;
+        if (!PlayerCollidesAt(player, world, candidate)) {
+            player->position.x = candidate.x;
+        } else {
+            player->velocity.x = 0.0f;
+        }
+
+        candidate = player->position;
+        candidate.y += moveY / (float)moveSteps;
+        if (!PlayerCollidesAt(player, world, candidate)) {
+            player->position.y = candidate.y;
+        } else {
+            player->velocity.y = 0.0f;
+        }
+    }
+
     player->position.x = Clamp(player->position.x, player->radius,
-                               (float)worldWidth - player->radius);
+                               (float)world->width - player->radius);
     player->position.y = Clamp(player->position.y, player->radius,
-                               (float)worldHeight - player->radius);
+                               (float)world->height - player->radius);
 
     if (fabsf(player->velocity.x) > 1.0f) {
         player->facingRight = player->velocity.x > 0.0f;
     }
+}
+
+void PlayerResolveWorldCollision(Player *player, const World *world)
+{
+    Vector2 origin;
+    int distance;
+
+    if (player == NULL || world == NULL || !player->alive ||
+        !PlayerCollidesAt(player, world, player->position)) {
+        return;
+    }
+
+    origin = player->position;
+    for (distance = 1; distance <= 18; ++distance) {
+        int direction;
+
+        for (direction = 0; direction < 16; ++direction) {
+            float angle = (float)direction / 16.0f * 2.0f * PI;
+            Vector2 candidate = {
+                origin.x + cosf(angle) * (float)distance,
+                origin.y + sinf(angle) * (float)distance
+            };
+
+            if (!PlayerCollidesAt(player, world, candidate)) {
+                player->position = candidate;
+                player->velocity = (Vector2){0.0f, 0.0f};
+                return;
+            }
+        }
+    }
+}
+
+void PlayerApplyWorldHazards(Player *player, const World *world)
+{
+    int minimumX;
+    int maximumX;
+    int minimumY;
+    int maximumY;
+    int y;
+    bool touchesFire = false;
+    bool touchesLava = false;
+
+    if (player == NULL || world == NULL || !player->alive) {
+        return;
+    }
+
+    minimumX = (int)floorf(player->position.x - player->radius);
+    maximumX = (int)floorf(player->position.x + player->radius);
+    minimumY = (int)floorf(player->position.y - player->radius);
+    maximumY = (int)floorf(player->position.y + player->radius);
+
+    for (y = minimumY; y <= maximumY; ++y) {
+        int x;
+
+        for (x = minimumX; x <= maximumX; ++x) {
+            CellMaterial material = WorldGetCell(world, x, y);
+
+            touchesLava = touchesLava || material == MATERIAL_LAVA;
+            touchesFire = touchesFire || material == MATERIAL_FIRE;
+        }
+    }
+
+    if (touchesLava) {
+        PlayerTakeDamage(player, 24.0f);
+    } else if (touchesFire) {
+        PlayerTakeDamage(player, 11.0f);
+    }
+}
+
+bool PlayerNeedsRespawn(const Player *player)
+{
+    return player != NULL && !player->alive && player->respawnTimer <= 0.0f;
 }
 
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force)
@@ -85,6 +245,7 @@ void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, f
     strength = 1.0f - distance / radius;
     player->velocity.x += direction.x * force * strength;
     player->velocity.y += direction.y * force * strength;
+    PlayerTakeDamage(player, 30.0f * strength);
 }
 
 void PlayerDraw(const Player *player, Vector2 aimPosition)
@@ -96,8 +257,9 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     Vector2 capeTop;
     Vector2 capeBottom;
     Vector2 eye;
+    Color bodyColor;
 
-    if (player == NULL) {
+    if (player == NULL || !player->alive) {
         return;
     }
 
@@ -120,7 +282,9 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
                         player->position.y - aim.y * 10.0f};
     DrawTriangle(capeTop, capeTip, capeBottom, (Color){190, 35, 62, 255});
 
-    DrawCircleV(player->position, player->radius, (Color){36, 139, 214, 255});
+    bodyColor = player->invulnerability > 0.0f ? (Color){130, 210, 255, 255}
+                                               : (Color){36, 139, 214, 255};
+    DrawCircleV(player->position, player->radius, bodyColor);
     DrawCircleLinesV(player->position, player->radius, (Color){173, 224, 255, 255});
     eye = (Vector2){player->position.x + aim.x * 3.0f,
                     player->position.y + aim.y * 3.0f};

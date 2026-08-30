@@ -84,6 +84,27 @@ static void DrawControlsHint(void)
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
 }
 
+static void DrawPlayerStatus(const Player *player)
+{
+    const int width = 210;
+    const int height = 18;
+    int x = GetScreenWidth() - width - 20;
+    int y = 20;
+    float healthRatio = player->health / player->maxHealth;
+    Color healthColor = healthRatio > 0.55f ? (Color){66, 207, 113, 255}
+                                           : (Color){239, 78, 65, 255};
+
+    DrawText(player->alive ? "HEALTH" : "RESPAWNING", x, y - 2, 16, RAYWHITE);
+    DrawRectangle(x, y + 18, width, height, (Color){10, 14, 21, 220});
+    DrawRectangle(x + 2, y + 20, (int)((float)(width - 4) * healthRatio), height - 4,
+                  healthColor);
+    DrawRectangleLines(x, y + 18, width, height, (Color){183, 201, 214, 230});
+    if (!player->alive) {
+        DrawText(TextFormat("%.1fs", player->respawnTimer), x + width - 44, y - 2, 16,
+                 (Color){255, 181, 92, 255});
+    }
+}
+
 int main(int argc, char **argv)
 {
     World world;
@@ -159,7 +180,13 @@ int main(int argc, char **argv)
             cameraShake = 0.0f;
         }
 
-        PlayerUpdate(&player, deltaTime, world.width, world.height);
+        PlayerUpdate(&player, &world, deltaTime);
+        if (PlayerNeedsRespawn(&player)) {
+            PlayerInit(&player, (Vector2){245.0f, 66.0f});
+            PowersInit(&powers);
+            cameraFocus = player.position;
+            cameraShake = 0.0f;
+        }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                                   (float)GetScreenHeight() * 0.5f};
@@ -180,8 +207,8 @@ int main(int argc, char **argv)
 
         cursorCell = WorldScreenToCell(&world, GetMousePosition(), camera);
         aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
-        laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-        explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+        laserHeld = player.alive && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+        explosionPressed = player.alive && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
         if (smokeTest) {
             aimPosition = (Vector2){280.5f, 116.5f};
             cursorCell = (Vector2){280.0f, 116.0f};
@@ -219,6 +246,8 @@ int main(int argc, char **argv)
         if (materialReaction) {
             GameAudioPlayReaction(&audio);
         }
+        PlayerResolveWorldCollision(&player, &world);
+        PlayerApplyWorldHazards(&player, &world);
 
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
@@ -233,6 +262,7 @@ int main(int argc, char **argv)
         if (debugHud) {
             DrawDebugHud(&world, &player, &powers, cursorCell);
         }
+        DrawPlayerStatus(&player);
         DrawControlsHint();
         EndDrawing();
 
