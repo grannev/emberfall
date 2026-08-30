@@ -87,6 +87,9 @@ over frameworks, generic containers, or unnecessary abstraction.
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.
 - Movement uses delta time and remains smooth at varying render rates.
+- Player rendering is a code-native flying humanoid made from raylib primitives:
+  preserve its readable head, torso, limbs, emblem, and trailing cape. The model
+  rotates toward the cursor while the collider remains a simple circle.
 - The camera follows the player and magnifies the world with crisp pixel edges.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one

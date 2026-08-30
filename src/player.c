@@ -179,42 +179,152 @@ void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, f
     player->velocity.y += direction.y * force * strength;
 }
 
+static Vector2 PlayerLocalPoint(Vector2 origin, Vector2 forward, Vector2 side,
+                                float forwardOffset, float sideOffset)
+{
+    return (Vector2){origin.x + forward.x * forwardOffset + side.x * sideOffset,
+                     origin.y + forward.y * forwardOffset + side.y * sideOffset};
+}
+
+static void PlayerDrawLimb(Vector2 start, Vector2 end, float width, Color color,
+                           Color outline)
+{
+    DrawLineEx(start, end, width + 1.4f, outline);
+    DrawLineEx(start, end, width, color);
+}
+
+static void PlayerDrawQuad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color,
+                           Color outline)
+{
+    DrawTriangle(a, b, c, color);
+    DrawTriangle(a, c, d, color);
+    DrawLineEx(a, b, 0.8f, outline);
+    DrawLineEx(b, c, 0.8f, outline);
+    DrawLineEx(c, d, 0.8f, outline);
+    DrawLineEx(d, a, 0.8f, outline);
+}
+
 void PlayerDraw(const Player *player, Vector2 aimPosition)
 {
-    Vector2 aim;
-    float aimLength;
-    Vector2 perpendicular;
-    Vector2 capeTip;
-    Vector2 capeTop;
-    Vector2 capeBottom;
-    Vector2 eye;
+    const Color outline = (Color){18, 30, 49, 255};
+    const Color suit = (Color){35, 126, 203, 255};
+    const Color suitLight = (Color){74, 180, 235, 255};
+    const Color cape = (Color){190, 35, 62, 255};
+    const Color capeShadow = (Color){126, 24, 48, 255};
+    const Color skin = (Color){242, 187, 139, 255};
+    const Color emblem = (Color){255, 221, 76, 255};
+    Vector2 forward;
+    Vector2 side;
+    Vector2 capeUpper;
+    Vector2 capeLower;
+    Vector2 capeTailUpper;
+    Vector2 capeTailMiddle;
+    Vector2 capeTailLower;
+    Vector2 rearFoot;
+    Vector2 frontFoot;
+    Vector2 rearHip;
+    Vector2 frontHip;
+    Vector2 rearShoulder;
+    Vector2 frontShoulder;
+    Vector2 rearHand;
+    Vector2 frontHand;
+    Vector2 torsoUpperRear;
+    Vector2 torsoUpperFront;
+    Vector2 torsoLowerFront;
+    Vector2 torsoLowerRear;
+    Vector2 head;
+    Vector2 face;
+    Vector2 visorStart;
+    Vector2 visorEnd;
+    Vector2 chest;
+    float forwardLength;
+    float flutter;
 
     if (player == NULL) {
         return;
     }
 
-    aim = (Vector2){aimPosition.x - player->position.x,
-                    aimPosition.y - player->position.y};
-    aimLength = sqrtf(aim.x * aim.x + aim.y * aim.y);
-    if (aimLength < 0.001f) {
-        aim = (Vector2){player->facingRight ? 1.0f : -1.0f, 0.0f};
+    forward = (Vector2){aimPosition.x - player->position.x,
+                        aimPosition.y - player->position.y};
+    forwardLength = sqrtf(forward.x * forward.x + forward.y * forward.y);
+    if (forwardLength < 0.001f) {
+        forward = (Vector2){player->facingRight ? 1.0f : -1.0f, 0.0f};
     } else {
-        aim.x /= aimLength;
-        aim.y /= aimLength;
+        forward.x /= forwardLength;
+        forward.y /= forwardLength;
     }
-    perpendicular = (Vector2){-aim.y, aim.x};
+    side = (Vector2){-forward.y, forward.x};
+    flutter = sinf((float)GetTime() * 7.0f + player->position.x * 0.08f) * 1.1f;
 
-    capeTop = (Vector2){player->position.x - aim.x * 2.0f + perpendicular.x * 3.0f,
-                        player->position.y - aim.y * 2.0f + perpendicular.y * 3.0f};
-    capeBottom = (Vector2){player->position.x - aim.x * 2.0f - perpendicular.x * 3.0f,
-                           player->position.y - aim.y * 2.0f - perpendicular.y * 3.0f};
-    capeTip = (Vector2){player->position.x - aim.x * 10.0f,
-                        player->position.y - aim.y * 10.0f};
-    DrawTriangle(capeTop, capeTip, capeBottom, (Color){190, 35, 62, 255});
+    capeUpper = PlayerLocalPoint(player->position, forward, side, 0.2f, 2.8f);
+    capeLower = PlayerLocalPoint(player->position, forward, side, 0.2f, -2.8f);
+    capeTailUpper = PlayerLocalPoint(player->position, forward, side, -9.8f,
+                                     4.3f + flutter);
+    capeTailMiddle = PlayerLocalPoint(player->position, forward, side, -11.5f,
+                                      0.4f + flutter * 0.7f);
+    capeTailLower = PlayerLocalPoint(player->position, forward, side, -9.2f,
+                                     -4.1f + flutter * 0.35f);
+    DrawTriangle(capeUpper, capeTailUpper, capeTailMiddle, cape);
+    DrawTriangle(capeUpper, capeTailMiddle, capeLower, cape);
+    DrawTriangle(capeLower, capeTailMiddle, capeTailLower, capeShadow);
+    DrawLineEx(capeUpper, capeTailUpper, 0.9f, outline);
+    DrawLineEx(capeTailUpper, capeTailMiddle, 0.9f, outline);
+    DrawLineEx(capeTailMiddle, capeTailLower, 0.9f, outline);
+    DrawLineEx(capeTailLower, capeLower, 0.9f, outline);
 
-    DrawCircleV(player->position, player->radius, (Color){36, 139, 214, 255});
-    DrawCircleLinesV(player->position, player->radius, (Color){173, 224, 255, 255});
-    eye = (Vector2){player->position.x + aim.x * 3.0f,
-                    player->position.y + aim.y * 3.0f};
-    DrawCircleV(eye, 1.2f, (Color){255, 241, 126, 255});
+    rearHip = PlayerLocalPoint(player->position, forward, side, -3.0f, 1.1f);
+    frontHip = PlayerLocalPoint(player->position, forward, side, -3.0f, -1.1f);
+    rearFoot = PlayerLocalPoint(player->position, forward, side, -8.5f,
+                                2.0f + flutter * 0.2f);
+    frontFoot = PlayerLocalPoint(player->position, forward, side, -9.0f,
+                                 -2.0f + flutter * 0.12f);
+    PlayerDrawLimb(rearHip, rearFoot, 2.1f, suitLight, outline);
+    PlayerDrawLimb(frontHip, frontFoot, 2.3f, suit, outline);
+    DrawCircleV(rearFoot, 1.25f, outline);
+    DrawCircleV(frontFoot, 1.35f, outline);
+    DrawLineEx(rearFoot,
+               PlayerLocalPoint(rearFoot, forward, side, 1.2f, 0.0f), 1.3f,
+               capeShadow);
+    DrawLineEx(frontFoot,
+               PlayerLocalPoint(frontFoot, forward, side, 1.3f, 0.0f), 1.4f,
+               capeShadow);
+
+    rearShoulder = PlayerLocalPoint(player->position, forward, side, 0.8f, 2.4f);
+    frontShoulder = PlayerLocalPoint(player->position, forward, side, 0.8f, -2.4f);
+    rearHand = PlayerLocalPoint(player->position, forward, side, 7.2f, 2.0f);
+    frontHand = PlayerLocalPoint(player->position, forward, side, 8.6f, -1.2f);
+    PlayerDrawLimb(rearShoulder, rearHand, 1.8f, suitLight, outline);
+    PlayerDrawLimb(frontShoulder, frontHand, 2.0f, suit, outline);
+
+    torsoUpperRear = PlayerLocalPoint(player->position, forward, side, 1.1f, 2.5f);
+    torsoUpperFront = PlayerLocalPoint(player->position, forward, side, 1.1f, -2.5f);
+    torsoLowerFront = PlayerLocalPoint(player->position, forward, side, -3.2f, -1.5f);
+    torsoLowerRear = PlayerLocalPoint(player->position, forward, side, -3.2f, 1.5f);
+    PlayerDrawQuad(torsoUpperRear, torsoUpperFront, torsoLowerFront,
+                   torsoLowerRear, suit, outline);
+
+    DrawCircleV(rearHand, 1.15f, outline);
+    DrawCircleV(rearHand, 0.75f, skin);
+    DrawCircleV(frontHand, 1.25f, outline);
+    DrawCircleV(frontHand, 0.85f, skin);
+
+    head = PlayerLocalPoint(player->position, forward, side, 4.0f, 0.0f);
+    face = PlayerLocalPoint(head, forward, side, 0.45f, 0.0f);
+    DrawCircleV(PlayerLocalPoint(head, forward, side, -0.35f, 0.0f), 2.7f,
+                outline);
+    DrawCircleV(face, 2.35f, skin);
+    DrawLineEx(PlayerLocalPoint(head, forward, side, -1.1f, 2.0f),
+               PlayerLocalPoint(head, forward, side, 0.3f, 2.3f), 1.0f,
+               (Color){72, 43, 34, 255});
+
+    visorStart = PlayerLocalPoint(head, forward, side, 1.25f, -1.35f);
+    visorEnd = PlayerLocalPoint(head, forward, side, 1.25f, 1.35f);
+    DrawLineEx(visorStart, visorEnd, 1.3f, outline);
+    DrawLineEx(visorStart, visorEnd, 0.65f, emblem);
+
+    chest = PlayerLocalPoint(player->position, forward, side, 0.0f, 0.0f);
+    DrawCircleV(chest, 1.15f, outline);
+    DrawTriangle(PlayerLocalPoint(chest, forward, side, 0.85f, 0.0f),
+                 PlayerLocalPoint(chest, forward, side, -0.55f, 0.75f),
+                 PlayerLocalPoint(chest, forward, side, -0.55f, -0.75f), emblem);
 }
