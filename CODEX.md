@@ -41,6 +41,7 @@ working display (for example Xvfb in headless environments).
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
+- `docs/`: Russian developer documentation; `docs/README.md` is its index
 
 Keep module APIs small and data-oriented. Prefer direct C structs and functions
 over frameworks, generic containers, or unnecessary abstraction.
@@ -111,3 +112,9 @@ Preserve user changes and avoid unrelated rewrites. Use `rg` for code search and
 simulation change is subtle, verify both the material result and the one-update-
 per-tick invariant. Update README controls or architecture notes when behavior or
 build commands change.
+
+Keep `docs/` synchronized with code. Changes to module ownership, public APIs,
+material behavior/thresholds, player collision, power costs, frame ordering,
+build commands, or smoke-test coverage must update the corresponding document
+in the same commit. Do not treat the root README as the complete developer
+reference.
