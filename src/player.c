@@ -179,29 +179,11 @@ void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, f
     player->velocity.y += direction.y * force * strength;
 }
 
-static Vector2 PlayerLocalPoint(Vector2 origin, Vector2 forward, Vector2 side,
-                                float forwardOffset, float sideOffset)
+static void PlayerDrawPixelBlock(int x, int y, int width, int height, Color color,
+                                 Color outline)
 {
-    return (Vector2){origin.x + forward.x * forwardOffset + side.x * sideOffset,
-                     origin.y + forward.y * forwardOffset + side.y * sideOffset};
-}
-
-static void PlayerDrawLimb(Vector2 start, Vector2 end, float width, Color color,
-                           Color outline)
-{
-    DrawLineEx(start, end, width + 1.4f, outline);
-    DrawLineEx(start, end, width, color);
-}
-
-static void PlayerDrawQuad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color,
-                           Color outline)
-{
-    DrawTriangle(a, b, c, color);
-    DrawTriangle(a, c, d, color);
-    DrawLineEx(a, b, 0.8f, outline);
-    DrawLineEx(b, c, 0.8f, outline);
-    DrawLineEx(c, d, 0.8f, outline);
-    DrawLineEx(d, a, 0.8f, outline);
+    DrawRectangle(x - 1, y - 1, width + 2, height + 2, outline);
+    DrawRectangle(x, y, width, height, color);
 }
 
 void PlayerDraw(const Player *player, Vector2 aimPosition)
@@ -213,118 +195,71 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     const Color capeShadow = (Color){126, 24, 48, 255};
     const Color skin = (Color){242, 187, 139, 255};
     const Color emblem = (Color){255, 221, 76, 255};
-    Vector2 forward;
-    Vector2 side;
-    Vector2 capeUpper;
-    Vector2 capeLower;
-    Vector2 capeTailUpper;
-    Vector2 capeTailMiddle;
-    Vector2 capeTailLower;
-    Vector2 rearFoot;
-    Vector2 frontFoot;
-    Vector2 rearHip;
-    Vector2 frontHip;
-    Vector2 rearShoulder;
-    Vector2 frontShoulder;
-    Vector2 rearHand;
-    Vector2 frontHand;
-    Vector2 torsoUpperRear;
-    Vector2 torsoUpperFront;
-    Vector2 torsoLowerFront;
-    Vector2 torsoLowerRear;
-    Vector2 head;
-    Vector2 face;
-    Vector2 visorStart;
-    Vector2 visorEnd;
-    Vector2 chest;
-    float forwardLength;
-    float flutter;
+    const Color hair = (Color){72, 43, 34, 255};
+    float aimX;
+    float aimY;
+    bool facingRight;
+    int centerX;
+    int centerY;
+    int eyeX;
+    int eyeY;
+    int flutter;
 
     if (player == NULL) {
         return;
     }
 
-    forward = (Vector2){aimPosition.x - player->position.x,
-                        aimPosition.y - player->position.y};
-    forwardLength = sqrtf(forward.x * forward.x + forward.y * forward.y);
-    if (forwardLength < 0.001f) {
-        forward = (Vector2){player->facingRight ? 1.0f : -1.0f, 0.0f};
+    aimX = aimPosition.x - player->position.x;
+    aimY = aimPosition.y - player->position.y;
+    facingRight = fabsf(aimX) > 0.5f ? aimX > 0.0f : player->facingRight;
+    centerX = (int)floorf(player->position.x);
+    centerY = (int)floorf(player->position.y);
+    flutter = ((int)(GetTime() * 6.0) & 1);
+
+    /* The stepped cape is drawn first so the square body stays readable. */
+    if (facingRight) {
+        DrawRectangle(centerX - 8, centerY - 3, 6, 10, outline);
+        DrawRectangle(centerX - 9, centerY + 1 + flutter, 5, 7, outline);
+        DrawRectangle(centerX - 7, centerY - 2, 5, 7, cape);
+        DrawRectangle(centerX - 8, centerY + 1 + flutter, 5, 5, cape);
+        DrawRectangle(centerX - 7, centerY + 5 + flutter, 3, 2, capeShadow);
     } else {
-        forward.x /= forwardLength;
-        forward.y /= forwardLength;
+        DrawRectangle(centerX + 2, centerY - 3, 6, 10, outline);
+        DrawRectangle(centerX + 4, centerY + 1 + flutter, 5, 7, outline);
+        DrawRectangle(centerX + 2, centerY - 2, 5, 7, cape);
+        DrawRectangle(centerX + 3, centerY + 1 + flutter, 5, 5, cape);
+        DrawRectangle(centerX + 4, centerY + 5 + flutter, 3, 2, capeShadow);
     }
-    side = (Vector2){-forward.y, forward.x};
-    flutter = sinf((float)GetTime() * 7.0f + player->position.x * 0.08f) * 1.1f;
 
-    capeUpper = PlayerLocalPoint(player->position, forward, side, 0.2f, 2.8f);
-    capeLower = PlayerLocalPoint(player->position, forward, side, 0.2f, -2.8f);
-    capeTailUpper = PlayerLocalPoint(player->position, forward, side, -9.8f,
-                                     4.3f + flutter);
-    capeTailMiddle = PlayerLocalPoint(player->position, forward, side, -11.5f,
-                                      0.4f + flutter * 0.7f);
-    capeTailLower = PlayerLocalPoint(player->position, forward, side, -9.2f,
-                                     -4.1f + flutter * 0.35f);
-    DrawTriangle(capeUpper, capeTailUpper, capeTailMiddle, cape);
-    DrawTriangle(capeUpper, capeTailMiddle, capeLower, cape);
-    DrawTriangle(capeLower, capeTailMiddle, capeTailLower, capeShadow);
-    DrawLineEx(capeUpper, capeTailUpper, 0.9f, outline);
-    DrawLineEx(capeTailUpper, capeTailMiddle, 0.9f, outline);
-    DrawLineEx(capeTailMiddle, capeTailLower, 0.9f, outline);
-    DrawLineEx(capeTailLower, capeLower, 0.9f, outline);
+    /* Legs and boots use whole-cell rectangles for a deliberately chunky pose. */
+    PlayerDrawPixelBlock(centerX - 3, centerY + 3, 3, 5, suitLight, outline);
+    PlayerDrawPixelBlock(centerX + 1, centerY + 3, 3, 5, suit, outline);
+    DrawRectangle(centerX - 3, centerY + 7, 3, 2, capeShadow);
+    DrawRectangle(centerX + 1, centerY + 7, 3, 2, capeShadow);
 
-    rearHip = PlayerLocalPoint(player->position, forward, side, -3.0f, 1.1f);
-    frontHip = PlayerLocalPoint(player->position, forward, side, -3.0f, -1.1f);
-    rearFoot = PlayerLocalPoint(player->position, forward, side, -8.5f,
-                                2.0f + flutter * 0.2f);
-    frontFoot = PlayerLocalPoint(player->position, forward, side, -9.0f,
-                                 -2.0f + flutter * 0.12f);
-    PlayerDrawLimb(rearHip, rearFoot, 2.1f, suitLight, outline);
-    PlayerDrawLimb(frontHip, frontFoot, 2.3f, suit, outline);
-    DrawCircleV(rearFoot, 1.25f, outline);
-    DrawCircleV(frontFoot, 1.35f, outline);
-    DrawLineEx(rearFoot,
-               PlayerLocalPoint(rearFoot, forward, side, 1.2f, 0.0f), 1.3f,
-               capeShadow);
-    DrawLineEx(frontFoot,
-               PlayerLocalPoint(frontFoot, forward, side, 1.3f, 0.0f), 1.4f,
-               capeShadow);
+    if (facingRight) {
+        PlayerDrawPixelBlock(centerX - 5, centerY - 1, 3, 6, suitLight, outline);
+        PlayerDrawPixelBlock(centerX + 2, centerY - 1, 5, 3, suit, outline);
+        DrawRectangle(centerX + 7, centerY, 2, 2, skin);
+    } else {
+        PlayerDrawPixelBlock(centerX + 2, centerY - 1, 3, 6, suitLight, outline);
+        PlayerDrawPixelBlock(centerX - 7, centerY - 1, 5, 3, suit, outline);
+        DrawRectangle(centerX - 9, centerY, 2, 2, skin);
+    }
 
-    rearShoulder = PlayerLocalPoint(player->position, forward, side, 0.8f, 2.4f);
-    frontShoulder = PlayerLocalPoint(player->position, forward, side, 0.8f, -2.4f);
-    rearHand = PlayerLocalPoint(player->position, forward, side, 7.2f, 2.0f);
-    frontHand = PlayerLocalPoint(player->position, forward, side, 8.6f, -1.2f);
-    PlayerDrawLimb(rearShoulder, rearHand, 1.8f, suitLight, outline);
-    PlayerDrawLimb(frontShoulder, frontHand, 2.0f, suit, outline);
+    PlayerDrawPixelBlock(centerX - 3, centerY - 2, 6, 7, suit, outline);
+    DrawRectangle(centerX - 2, centerY + 3, 4, 1, capeShadow);
+    DrawRectangle(centerX - 1, centerY, 2, 2, emblem);
 
-    torsoUpperRear = PlayerLocalPoint(player->position, forward, side, 1.1f, 2.5f);
-    torsoUpperFront = PlayerLocalPoint(player->position, forward, side, 1.1f, -2.5f);
-    torsoLowerFront = PlayerLocalPoint(player->position, forward, side, -3.2f, -1.5f);
-    torsoLowerRear = PlayerLocalPoint(player->position, forward, side, -3.2f, 1.5f);
-    PlayerDrawQuad(torsoUpperRear, torsoUpperFront, torsoLowerFront,
-                   torsoLowerRear, suit, outline);
-
-    DrawCircleV(rearHand, 1.15f, outline);
-    DrawCircleV(rearHand, 0.75f, skin);
-    DrawCircleV(frontHand, 1.25f, outline);
-    DrawCircleV(frontHand, 0.85f, skin);
-
-    head = PlayerLocalPoint(player->position, forward, side, 4.0f, 0.0f);
-    face = PlayerLocalPoint(head, forward, side, 0.45f, 0.0f);
-    DrawCircleV(PlayerLocalPoint(head, forward, side, -0.35f, 0.0f), 2.7f,
-                outline);
-    DrawCircleV(face, 2.35f, skin);
-    DrawLineEx(PlayerLocalPoint(head, forward, side, -1.1f, 2.0f),
-               PlayerLocalPoint(head, forward, side, 0.3f, 2.3f), 1.0f,
-               (Color){72, 43, 34, 255});
-
-    visorStart = PlayerLocalPoint(head, forward, side, 1.25f, -1.35f);
-    visorEnd = PlayerLocalPoint(head, forward, side, 1.25f, 1.35f);
-    DrawLineEx(visorStart, visorEnd, 1.3f, outline);
-    DrawLineEx(visorStart, visorEnd, 0.65f, emblem);
-
-    chest = PlayerLocalPoint(player->position, forward, side, 0.0f, 0.0f);
-    DrawCircleV(chest, 1.15f, outline);
-    DrawTriangle(PlayerLocalPoint(chest, forward, side, 0.85f, 0.0f),
-                 PlayerLocalPoint(chest, forward, side, -0.55f, 0.75f),
-                 PlayerLocalPoint(chest, forward, side, -0.55f, -0.75f), emblem);
+    PlayerDrawPixelBlock(centerX - 3, centerY - 8, 6, 6, skin, outline);
+    DrawRectangle(centerX - 3, centerY - 8, 6, 2, hair);
+    eyeY = centerY - 5;
+    if (aimY > 6.0f) {
+        ++eyeY;
+    } else if (aimY < -6.0f) {
+        --eyeY;
+    }
+    eyeX = facingRight ? centerX + 1 : centerX - 2;
+    DrawRectangle(eyeX, eyeY, 1, 1, outline);
+    DrawRectangle(eyeX, eyeY - 1, 1, 1, emblem);
 }

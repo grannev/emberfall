@@ -27,9 +27,9 @@ The compiler is GCC in C11 mode with `-Wall -Wextra -Wpedantic`. Release uses
 debug configurations. For non-interactive runtime checks, the executable also
 accepts `--smoke-test`, writes `build/emberfall-smoke.png`, and closes after a
 few frames. It returns non-zero unless material reaction, laser contact,
-explosion, player collision, and chunk sleep were all observed. Use
-`make run RUN_ARGS=--smoke-test`; it still needs a
-working display (for example Xvfb in headless environments).
+explosion, player collision, contained fire propagation, and chunk sleep were
+all observed. Use `make run RUN_ARGS=--smoke-test`; it still needs a working
+display (for example Xvfb in headless environments).
 
 ## Source layout
 
@@ -69,6 +69,9 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Every non-empty cell carries temperature. Laser, lava, and fire add heat;
   thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
   Never reintroduce a separate rock-damage counter.
+- Keep passive heat from one fire cell below the dirt ignition budget over its
+  full lifetime. Fire may burn a local cluster, but it must not consume an
+  unlimited connected dirt layer; the smoke-test has a containment probe.
 - `DIRT` and `ROCK` are static. Sand, water, lava, steam, smoke, fire, and ash
   participate in cell simulation. Steam/smoke/fire rise; ash falls.
 - Water/lava contact turns water into a physical steam cell, solidifies one lava
@@ -87,9 +90,10 @@ over frameworks, generic containers, or unnecessary abstraction.
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.
 - Movement uses delta time and remains smooth at varying render rates.
-- Player rendering is a code-native flying humanoid made from raylib primitives:
-  preserve its readable head, torso, limbs, emblem, and trailing cape. The model
-  rotates toward the cursor while the collider remains a simple circle.
+- Player rendering is a code-native, square pixel humanoid made from whole-cell
+  rectangles. Preserve its block head, body, limbs, emblem, and stepped cape.
+  Mirror it toward the cursor instead of freely rotating it; the collider stays
+  a simple circle and does not follow the visible silhouette.
 - The camera follows the player and magnifies the world with crisp pixel edges.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one
