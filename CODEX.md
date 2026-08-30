@@ -57,6 +57,9 @@ over frameworks, generic containers, or unnecessary abstraction.
   the `updatedTick` mechanism when adding or changing materials.
 - `DIRT` and `ROCK` are static. `SAND`, `WATER`, and `LAVA` are dynamic. Lava is
   intentionally slower and burns dirt.
+- Water/lava contact consumes one water cell, solidifies one lava cell into
+  rock, and appends a reaction to the fixed-capacity event buffer. Main consumes
+  those events after every fixed tick to spawn steam; do not allocate events.
 
 ## Gameplay invariants
 

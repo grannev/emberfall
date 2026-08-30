@@ -22,6 +22,12 @@ typedef struct Cell {
     uint8_t rockDamage;
 } Cell;
 
+#define MAX_WORLD_REACTIONS 64
+
+typedef struct WorldReactionEvent {
+    Vector2 position;
+} WorldReactionEvent;
+
 typedef struct World {
     int width;
     int height;
@@ -31,6 +37,8 @@ typedef struct World {
     uint32_t tick;
     uint32_t effectSerial;
     int activeCells;
+    WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
+    int reactionCount;
 } World;
 
 bool WorldInit(World *world, int width, int height);

@@ -14,6 +14,7 @@ typedef struct Particle {
     float life;
     float maxLife;
     float size;
+    float gravity;
     bool active;
 } Particle;
 
@@ -27,5 +28,6 @@ void ParticlesUpdate(ParticleSystem *system, float deltaTime);
 void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2 direction);
+void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 
 #endif

@@ -168,7 +168,12 @@ int main(int argc, char **argv)
 
         simulationAccumulator += deltaTime;
         while (simulationAccumulator >= SIMULATION_STEP) {
+            int reaction;
+
             WorldUpdate(&world);
+            for (reaction = 0; reaction < world.reactionCount; ++reaction) {
+                ParticlesSpawnSteam(&particles, world.reactions[reaction].position);
+            }
             simulationAccumulator -= SIMULATION_STEP;
         }
 

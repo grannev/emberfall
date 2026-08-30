@@ -12,7 +12,8 @@ static float RandomUnit(void)
 }
 
 static void ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, Color color, float life, float size)
+                              Vector2 velocity, Color color, float life, float size,
+                              float gravity)
 {
     Particle *particle;
 
@@ -24,6 +25,7 @@ static void ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
     particle->life = life;
     particle->maxLife = life;
     particle->size = size;
+    particle->gravity = gravity;
     particle->active = true;
 }
 
@@ -56,7 +58,7 @@ void ParticlesUpdate(ParticleSystem *system, float deltaTime)
             continue;
         }
 
-        particle->velocity.y += 30.0f * deltaTime;
+        particle->velocity.y += particle->gravity * deltaTime;
         particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
         particle->position.x += particle->velocity.x * deltaTime;
         particle->position.y += particle->velocity.y * deltaTime;
@@ -104,7 +106,7 @@ void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position)
         }
         ParticlesSpawnOne(system, position,
                           (Vector2){cosf(angle) * speed, sinf(angle) * speed},
-                          color, life, 0.7f + RandomUnit() * 1.5f);
+                          color, life, 0.7f + RandomUnit() * 1.5f, 30.0f);
     }
 }
 
@@ -124,6 +126,27 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2
         ParticlesSpawnOne(system, position,
                           (Vector2){cosf(angle) * speed, sinf(angle) * speed},
                           (Color){255, 225, 90, 255}, 0.12f + RandomUnit() * 0.18f,
-                          0.45f + RandomUnit() * 0.65f);
+                          0.45f + RandomUnit() * 0.65f, 18.0f);
+    }
+}
+
+void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position)
+{
+    int i;
+
+    if (system == NULL) {
+        return;
+    }
+
+    for (i = 0; i < 7; ++i) {
+        float horizontal = (RandomUnit() - 0.5f) * 18.0f;
+        float upward = -10.0f - RandomUnit() * 24.0f;
+        Color color = i % 3 == 0 ? (Color){188, 218, 228, 215}
+                                 : (Color){224, 232, 226, 190};
+
+        ParticlesSpawnOne(system, position,
+                          (Vector2){horizontal, upward}, color,
+                          0.45f + RandomUnit() * 0.65f,
+                          0.65f + RandomUnit() * 1.25f, -10.0f);
     }
 }

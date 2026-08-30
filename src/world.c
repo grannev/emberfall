@@ -187,6 +187,73 @@ static void WorldBurnDirt(World *world, int x, int y)
     }
 }
 
+static void WorldRecordReaction(World *world, int x1, int y1, int x2, int y2)
+{
+    WorldReactionEvent *event;
+
+    if (world->reactionCount >= MAX_WORLD_REACTIONS) {
+        return;
+    }
+
+    event = &world->reactions[world->reactionCount++];
+    event->position = (Vector2){((float)x1 + (float)x2 + 1.0f) * 0.5f,
+                                ((float)y1 + (float)y2 + 1.0f) * 0.5f};
+}
+
+static bool WorldTryMaterialReaction(World *world, int x, int y)
+{
+    static const int offsets[8][2] = {
+        {0, 1}, {1, 0}, {0, -1}, {-1, 0},
+        {1, 1}, {-1, 1}, {1, -1}, {-1, -1}
+    };
+    CellMaterial material = WorldGetCell(world, x, y);
+    CellMaterial targetMaterial;
+    int firstOffset;
+    int i;
+
+    if (material != MATERIAL_WATER && material != MATERIAL_LAVA) {
+        return false;
+    }
+    targetMaterial = material == MATERIAL_WATER ? MATERIAL_LAVA : MATERIAL_WATER;
+    firstOffset = (int)(CoordinateHash(x, y) % 8u);
+
+    for (i = 0; i < 8; ++i) {
+        int offsetIndex = (firstOffset + i) % 8;
+        int targetX = x + offsets[offsetIndex][0];
+        int targetY = y + offsets[offsetIndex][1];
+        int waterX;
+        int waterY;
+        int lavaX;
+        int lavaY;
+
+        if (!WorldInBounds(world, targetX, targetY) ||
+            WorldGetCell(world, targetX, targetY) != targetMaterial) {
+            continue;
+        }
+
+        if (material == MATERIAL_WATER) {
+            waterX = x;
+            waterY = y;
+            lavaX = targetX;
+            lavaY = targetY;
+        } else {
+            waterX = targetX;
+            waterY = targetY;
+            lavaX = x;
+            lavaY = y;
+        }
+
+        WorldSetCellRaw(world, lavaX, lavaY, MATERIAL_ROCK);
+        WorldSetCellRaw(world, waterX, waterY, MATERIAL_EMPTY);
+        WorldCell(world, lavaX, lavaY)->updatedTick = world->tick;
+        WorldCell(world, waterX, waterY)->updatedTick = world->tick;
+        WorldRecordReaction(world, waterX, waterY, lavaX, lavaY);
+        return true;
+    }
+
+    return false;
+}
+
 bool WorldInit(World *world, int width, int height)
 {
     Image image;
@@ -330,6 +397,7 @@ void WorldUpdate(World *world)
         return;
     }
 
+    world->reactionCount = 0;
     ++world->tick;
     if (world->tick == 0u) {
         world->tick = 1u;
@@ -355,11 +423,15 @@ void WorldUpdate(World *world)
                     WorldUpdateSand(world, x, y, direction);
                     break;
                 case MATERIAL_WATER:
-                    WorldUpdateLiquid(world, x, y, direction, false);
+                    if (!WorldTryMaterialReaction(world, x, y)) {
+                        WorldUpdateLiquid(world, x, y, direction, false);
+                    }
                     break;
                 case MATERIAL_LAVA:
-                    WorldBurnDirt(world, x, y);
-                    WorldUpdateLiquid(world, x, y, direction, true);
+                    if (!WorldTryMaterialReaction(world, x, y)) {
+                        WorldBurnDirt(world, x, y);
+                        WorldUpdateLiquid(world, x, y, direction, true);
+                    }
                     break;
                 default:
                     break;
