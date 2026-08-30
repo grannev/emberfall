@@ -98,6 +98,10 @@ int main(int argc, char **argv)
     int smokeFrames = 0;
     Vector2 cameraFocus;
     float cameraShake = 0.0f;
+    bool smokeReactionObserved = false;
+    bool smokeLaserHitObserved = false;
+    bool smokeExplosionObserved = false;
+    int exitCode = 0;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "EMBERFALL - pixel physics sandbox");
@@ -119,6 +123,10 @@ int main(int argc, char **argv)
     }
 
     WorldGenerate(&world);
+    if (smokeTest) {
+        WorldSetCell(&world, 252, 95, MATERIAL_WATER);
+        WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
+    }
     PlayerInit(&player, (Vector2){245.0f, 66.0f});
     PowersInit(&powers);
     ParticlesInit(&particles);
@@ -182,6 +190,10 @@ int main(int argc, char **argv)
         }
         PowersUpdate(&powers, &world, &particles, player.position, aimPosition, deltaTime,
                      laserHeld, explosionPressed);
+        if (smokeTest) {
+            smokeLaserHitObserved = smokeLaserHitObserved || powers.laserHit;
+            smokeExplosionObserved = smokeExplosionObserved || powers.explosionTriggered;
+        }
         if (powers.explosionTriggered) {
             PlayerApplyExplosionImpulse(&player, powers.explosionPosition,
                                         powers.explosionShockRadius, 145.0f);
@@ -197,6 +209,8 @@ int main(int argc, char **argv)
 
             WorldUpdate(&world);
             materialReaction = materialReaction || world.reactionCount > 0;
+            smokeReactionObserved = smokeReactionObserved ||
+                                    (smokeTest && world.reactionCount > 0);
             for (reaction = 0; reaction < world.reactionCount; ++reaction) {
                 ParticlesSpawnSteam(&particles, world.reactions[reaction].position);
             }
@@ -232,8 +246,15 @@ int main(int argc, char **argv)
         }
     }
 
+    if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
+                      !smokeExplosionObserved)) {
+        fprintf(stderr,
+                "Smoke test failed: reaction=%d laser_hit=%d explosion=%d\n",
+                smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved);
+        exitCode = 2;
+    }
     WorldUnload(&world);
     GameAudioUnload(&audio);
     CloseWindow();
-    return 0;
+    return exitCode;
 }
