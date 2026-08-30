@@ -6,6 +6,7 @@
 #include <raylib.h>
 #include <raymath.h>
 
+#include "audio.h"
 #include "particles.h"
 #include "player.h"
 #include "powers.h"
@@ -89,6 +90,7 @@ int main(int argc, char **argv)
     Player player;
     PowerSystem powers;
     ParticleSystem particles;
+    GameAudio audio;
     Camera2D camera = {0};
     float simulationAccumulator = 0.0f;
     bool debugHud = true;
@@ -107,9 +109,11 @@ int main(int argc, char **argv)
     SetWindowMinSize(640, 360);
     SetTargetFPS(120);
     SetExitKey(KEY_ESCAPE);
+    (void)GameAudioInit(&audio);
 
     if (!WorldInit(&world, WORLD_WIDTH, WORLD_HEIGHT)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
+        GameAudioUnload(&audio);
         CloseWindow();
         return 1;
     }
@@ -132,6 +136,7 @@ int main(int argc, char **argv)
         Vector2 aimPosition;
         bool laserHeld;
         bool explosionPressed;
+        bool materialReaction = false;
 
         if (IsKeyPressed(KEY_F1)) {
             debugHud = !debugHud;
@@ -181,7 +186,9 @@ int main(int argc, char **argv)
             PlayerApplyExplosionImpulse(&player, powers.explosionPosition,
                                         powers.explosionShockRadius, 145.0f);
             cameraShake = 4.8f;
+            GameAudioPlayExplosion(&audio);
         }
+        GameAudioUpdate(&audio, powers.laserActive, deltaTime);
         ParticlesUpdate(&particles, deltaTime);
 
         simulationAccumulator += deltaTime;
@@ -189,10 +196,14 @@ int main(int argc, char **argv)
             int reaction;
 
             WorldUpdate(&world);
+            materialReaction = materialReaction || world.reactionCount > 0;
             for (reaction = 0; reaction < world.reactionCount; ++reaction) {
                 ParticlesSpawnSteam(&particles, world.reactions[reaction].position);
             }
             simulationAccumulator -= SIMULATION_STEP;
+        }
+        if (materialReaction) {
+            GameAudioPlayReaction(&audio);
         }
 
         BeginDrawing();
@@ -222,6 +233,7 @@ int main(int argc, char **argv)
     }
 
     WorldUnload(&world);
+    GameAudioUnload(&audio);
     CloseWindow();
     return 0;
 }

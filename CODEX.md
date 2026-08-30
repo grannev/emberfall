@@ -37,6 +37,7 @@ display (for example Xvfb in headless environments).
 - `src/player.c/.h`: smooth gravity-free WASD flight and player rendering
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool
+- `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
 
 Keep module APIs small and data-oriented. Prefer direct C structs and functions
 over frameworks, generic containers, or unnecessary abstraction.
@@ -77,6 +78,9 @@ over frameworks, generic containers, or unnecessary abstraction.
   expanding-ring feedback, and camera shake.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
+- Laser, explosion, and material-reaction sounds are synthesized at startup; no
+  external assets are required. Audio failure must remain non-fatal, and no wave
+  memory may be allocated in the frame loop.
 
 ## Change discipline
 

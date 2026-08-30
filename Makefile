@@ -2,7 +2,7 @@ CC = gcc
 PKG_CONFIG ?= pkg-config
 
 APP := emberfall
-SOURCES := src/main.c src/world.c src/player.c src/powers.c src/particles.c
+SOURCES := src/main.c src/world.c src/player.c src/powers.c src/particles.c src/audio.c
 CONFIG ?= release
 RUN_ARGS ?=
 BUILD_DIR := build/$(CONFIG)
