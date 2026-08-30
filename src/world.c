@@ -7,6 +7,8 @@
 
 #include <raymath.h>
 
+static void WorldCountActiveState(World *world);
+
 static bool WorldInBounds(const World *world, int x, int y)
 {
     return x >= 0 && x < world->width && y >= 0 && y < world->height;
@@ -25,6 +27,36 @@ static Cell *WorldCell(World *world, int x, int y)
 static const Cell *WorldCellConst(const World *world, int x, int y)
 {
     return &world->cells[WorldIndex(world, x, y)];
+}
+
+static void WorldWakeCellAndNeighbors(World *world, int x, int y)
+{
+    int centerChunkX;
+    int centerChunkY;
+    int chunkY;
+
+    if (world->activeChunks == NULL || world->nextActiveChunks == NULL ||
+        !WorldInBounds(world, x, y)) {
+        return;
+    }
+
+    centerChunkX = x / WORLD_CHUNK_SIZE;
+    centerChunkY = y / WORLD_CHUNK_SIZE;
+    for (chunkY = centerChunkY - 1; chunkY <= centerChunkY + 1; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = centerChunkX - 1; chunkX <= centerChunkX + 1; ++chunkX) {
+            size_t index;
+
+            if (chunkX < 0 || chunkX >= world->chunkColumns ||
+                chunkY < 0 || chunkY >= world->chunkRows) {
+                continue;
+            }
+            index = (size_t)chunkY * (size_t)world->chunkColumns + (size_t)chunkX;
+            world->activeChunks[index] = 1u;
+            world->nextActiveChunks[index] = 1u;
+        }
+    }
 }
 
 static bool MaterialIsDynamic(CellMaterial material)
@@ -59,6 +91,7 @@ static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
     cell->effectStamp = 0;
+    WorldWakeCellAndNeighbors(world, x, y);
 }
 
 static void WorldFillEllipse(World *world, int centerX, int centerY,
@@ -141,6 +174,8 @@ static void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
     *to = moving;
     to->updatedTick = world->tick;
     from->updatedTick = world->tick;
+    WorldWakeCellAndNeighbors(world, fromX, fromY);
+    WorldWakeCellAndNeighbors(world, toX, toY);
 }
 
 static bool WorldTryMoveInto(World *world, int x, int y, int targetX, int targetY,
@@ -229,6 +264,7 @@ static void WorldHeatNeighbors(World *world, int x, int y, float heat)
         if (WorldInBounds(world, targetX, targetY) &&
             WorldGetCell(world, targetX, targetY) != MATERIAL_EMPTY) {
             WorldCell(world, targetX, targetY)->temperature += heat;
+            WorldWakeCellAndNeighbors(world, targetX, targetY);
         }
     }
 }
@@ -434,6 +470,7 @@ bool WorldInit(World *world, int width, int height)
 {
     Image image;
     size_t cellCount;
+    size_t chunkCount;
 
     if (world == NULL || width <= 0 || height <= 0) {
         return false;
@@ -442,13 +479,21 @@ bool WorldInit(World *world, int width, int height)
     memset(world, 0, sizeof(*world));
     world->width = width;
     world->height = height;
+    world->chunkColumns = (width + WORLD_CHUNK_SIZE - 1) / WORLD_CHUNK_SIZE;
+    world->chunkRows = (height + WORLD_CHUNK_SIZE - 1) / WORLD_CHUNK_SIZE;
     cellCount = (size_t)width * (size_t)height;
+    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     world->cells = calloc(cellCount, sizeof(*world->cells));
     world->pixels = malloc(cellCount * sizeof(*world->pixels));
+    world->activeChunks = calloc(chunkCount, sizeof(*world->activeChunks));
+    world->nextActiveChunks = calloc(chunkCount, sizeof(*world->nextActiveChunks));
 
-    if (world->cells == NULL || world->pixels == NULL) {
+    if (world->cells == NULL || world->pixels == NULL || world->activeChunks == NULL ||
+        world->nextActiveChunks == NULL) {
         free(world->cells);
         free(world->pixels);
+        free(world->activeChunks);
+        free(world->nextActiveChunks);
         memset(world, 0, sizeof(*world));
         return false;
     }
@@ -459,6 +504,8 @@ bool WorldInit(World *world, int width, int height)
     if (world->texture.id == 0u) {
         free(world->cells);
         free(world->pixels);
+        free(world->activeChunks);
+        free(world->nextActiveChunks);
         memset(world, 0, sizeof(*world));
         return false;
     }
@@ -479,6 +526,8 @@ void WorldUnload(World *world)
     }
     free(world->cells);
     free(world->pixels);
+    free(world->activeChunks);
+    free(world->nextActiveChunks);
     memset(world, 0, sizeof(*world));
 }
 
@@ -488,13 +537,22 @@ void WorldGenerate(World *world)
     int x;
     int y;
     int cave;
+    size_t cellIndex;
+    size_t cellCount;
+    size_t chunkCount;
 
     if (world == NULL || world->cells == NULL || world->width > 512) {
         return;
     }
 
-    memset(world->cells, 0,
-           (size_t)world->width * (size_t)world->height * sizeof(*world->cells));
+    cellCount = (size_t)world->width * (size_t)world->height;
+    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
+    memset(world->cells, 0, cellCount * sizeof(*world->cells));
+    memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
+    memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
+    for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
+        world->cells[cellIndex].temperature = 20.0f;
+    }
     world->tick = 0;
     world->effectSerial = 0;
 
@@ -561,83 +619,163 @@ void WorldGenerate(World *world)
             WorldSetCellRaw(world, x, y, MATERIAL_DIRT);
         }
     }
+    WorldCountActiveState(world);
+}
+
+static void WorldUpdateCellAt(World *world, int x, int y)
+{
+    Cell *cell = WorldCell(world, x, y);
+    int direction = ((CoordinateHash(x, y) + world->tick) & 1u) != 0u ? 1 : -1;
+
+    if (cell->updatedTick == world->tick) {
+        return;
+    }
+    if (MaterialIsDynamic(cell->material) || fabsf(cell->temperature - 20.0f) > 0.5f) {
+        WorldWakeCellAndNeighbors(world, x, y);
+    }
+    if (WorldUpdateTemperatureState(world, x, y)) {
+        return;
+    }
+
+    switch (cell->material) {
+        case MATERIAL_SAND:
+            WorldUpdateSand(world, x, y, direction);
+            break;
+        case MATERIAL_WATER:
+            if (!WorldTryMaterialReaction(world, x, y)) {
+                WorldUpdateLiquid(world, x, y, direction, false);
+            }
+            break;
+        case MATERIAL_LAVA:
+            if (!WorldTryMaterialReaction(world, x, y)) {
+                WorldHeatNeighbors(world, x, y, 7.0f);
+                WorldBurnDirt(world, x, y);
+                WorldUpdateLiquid(world, x, y, direction, true);
+            }
+            break;
+        case MATERIAL_STEAM:
+            WorldUpdateGas(world, x, y, direction, false);
+            break;
+        case MATERIAL_SMOKE:
+            WorldUpdateGas(world, x, y, direction, true);
+            break;
+        case MATERIAL_FIRE:
+            WorldUpdateFire(world, x, y, direction);
+            break;
+        case MATERIAL_ASH:
+            WorldUpdateSand(world, x, y, direction);
+            break;
+        default:
+            break;
+    }
+}
+
+static void WorldCountActiveState(World *world)
+{
+    int chunkY;
+
+    world->activeCells = 0;
+    world->activeChunkCount = 0;
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
+                                (size_t)chunkX;
+            int minimumX;
+            int maximumX;
+            int minimumY;
+            int maximumY;
+            int y;
+
+            if (world->activeChunks[chunkIndex] == 0u) {
+                continue;
+            }
+            ++world->activeChunkCount;
+            minimumX = chunkX * WORLD_CHUNK_SIZE;
+            maximumX = minimumX + WORLD_CHUNK_SIZE;
+            minimumY = chunkY * WORLD_CHUNK_SIZE;
+            maximumY = minimumY + WORLD_CHUNK_SIZE;
+            if (maximumX > world->width) maximumX = world->width;
+            if (maximumY > world->height) maximumY = world->height;
+
+            for (y = minimumY; y < maximumY; ++y) {
+                int x;
+
+                for (x = minimumX; x < maximumX; ++x) {
+                    if (MaterialIsDynamic(WorldGetCell(world, x, y))) {
+                        ++world->activeCells;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void WorldUpdate(World *world)
 {
-    int y;
-    size_t index;
-    size_t cellCount;
+    size_t chunkCount;
+    int chunkY;
 
-    if (world == NULL || world->cells == NULL) {
+    if (world == NULL || world->cells == NULL || world->activeChunks == NULL ||
+        world->nextActiveChunks == NULL) {
         return;
     }
 
+    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
+    memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     world->reactionCount = 0;
     ++world->tick;
     if (world->tick == 0u) {
         world->tick = 1u;
     }
 
-    for (y = world->height - 1; y >= 0; --y) {
-        bool reverse = ((world->tick + (uint32_t)y) & 1u) != 0u;
-        int start = reverse ? world->width - 1 : 0;
-        int end = reverse ? -1 : world->width;
-        int step = reverse ? -1 : 1;
-        int x;
+    for (chunkY = world->chunkRows - 1; chunkY >= 0; --chunkY) {
+        int minimumY = chunkY * WORLD_CHUNK_SIZE;
+        int maximumY = minimumY + WORLD_CHUNK_SIZE - 1;
+        int y;
 
-        for (x = start; x != end; x += step) {
-            Cell *cell = WorldCell(world, x, y);
-            int direction = ((CoordinateHash(x, y) + world->tick) & 1u) != 0u ? 1 : -1;
+        if (maximumY >= world->height) maximumY = world->height - 1;
+        for (y = maximumY; y >= minimumY; --y) {
+            bool reverse = ((world->tick + (uint32_t)y) & 1u) != 0u;
+            int chunkStart = reverse ? world->chunkColumns - 1 : 0;
+            int chunkEnd = reverse ? -1 : world->chunkColumns;
+            int chunkStep = reverse ? -1 : 1;
+            int chunkX;
 
-            if (cell->updatedTick == world->tick) {
-                continue;
-            }
-            if (WorldUpdateTemperatureState(world, x, y)) {
-                continue;
-            }
+            for (chunkX = chunkStart; chunkX != chunkEnd; chunkX += chunkStep) {
+                size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
+                                    (size_t)chunkX;
+                int minimumX;
+                int maximumX;
+                int start;
+                int end;
+                int step;
+                int x;
 
-            switch (cell->material) {
-                case MATERIAL_SAND:
-                    WorldUpdateSand(world, x, y, direction);
-                    break;
-                case MATERIAL_WATER:
-                    if (!WorldTryMaterialReaction(world, x, y)) {
-                        WorldUpdateLiquid(world, x, y, direction, false);
-                    }
-                    break;
-                case MATERIAL_LAVA:
-                    if (!WorldTryMaterialReaction(world, x, y)) {
-                        WorldHeatNeighbors(world, x, y, 7.0f);
-                        WorldBurnDirt(world, x, y);
-                        WorldUpdateLiquid(world, x, y, direction, true);
-                    }
-                    break;
-                case MATERIAL_STEAM:
-                    WorldUpdateGas(world, x, y, direction, false);
-                    break;
-                case MATERIAL_SMOKE:
-                    WorldUpdateGas(world, x, y, direction, true);
-                    break;
-                case MATERIAL_FIRE:
-                    WorldUpdateFire(world, x, y, direction);
-                    break;
-                case MATERIAL_ASH:
-                    WorldUpdateSand(world, x, y, direction);
-                    break;
-                default:
-                    break;
+                if (world->activeChunks[chunkIndex] == 0u) {
+                    continue;
+                }
+                minimumX = chunkX * WORLD_CHUNK_SIZE;
+                maximumX = minimumX + WORLD_CHUNK_SIZE;
+                if (maximumX > world->width) maximumX = world->width;
+                start = reverse ? maximumX - 1 : minimumX;
+                end = reverse ? minimumX - 1 : maximumX;
+                step = reverse ? -1 : 1;
+
+                for (x = start; x != end; x += step) {
+                    WorldUpdateCellAt(world, x, y);
+                }
             }
         }
     }
 
-    world->activeCells = 0;
-    cellCount = (size_t)world->width * (size_t)world->height;
-    for (index = 0; index < cellCount; ++index) {
-        if (MaterialIsDynamic(world->cells[index].material)) {
-            ++world->activeCells;
-        }
+    {
+        uint8_t *previousChunks = world->activeChunks;
+        world->activeChunks = world->nextActiveChunks;
+        world->nextActiveChunks = previousChunks;
     }
+    WorldCountActiveState(world);
 }
 
 void WorldDraw(World *world)
@@ -876,12 +1014,15 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
 
                 if (cell->material == MATERIAL_DIRT) {
                     cell->temperature += deltaTime * 2500.0f;
+                    WorldWakeCellAndNeighbors(world, x, y);
                     (void)WorldTryThermalTransition(world, x, y);
                 } else if (cell->material == MATERIAL_SAND) {
                     cell->temperature += deltaTime * 3100.0f;
+                    WorldWakeCellAndNeighbors(world, x, y);
                     (void)WorldTryThermalTransition(world, x, y);
                 } else if (cell->material == MATERIAL_ROCK) {
                     cell->temperature += deltaTime * 1080.0f;
+                    WorldWakeCellAndNeighbors(world, x, y);
                     (void)WorldTryThermalTransition(world, x, y);
                 }
             }

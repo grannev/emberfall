@@ -58,12 +58,14 @@ static void DrawDebugHud(const World *world, const Player *player,
     DrawText(TextFormat("FPS: %d", GetFPS()), 24, 23, 20, RAYWHITE);
     DrawText(TextFormat("PLAYER: %.1f, %.1f", player->position.x, player->position.y),
              24, 47, 18, (Color){174, 219, 248, 255});
-    DrawText(TextFormat("ACTIVE CELLS: %d", world->activeCells), 24, 69, 18,
+    DrawText(TextFormat("ACTIVE: %d CELLS | %d CHUNKS", world->activeCells,
+                        world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
     DrawText(TextFormat("POWER: %s", PowersCurrentName(powers)), 24, 91, 18,
              (Color){255, 126, 86, 255});
-    DrawText(TextFormat("CURSOR: %d, %d  %s", (int)cursorCell.x, (int)cursorCell.y,
-                        WorldMaterialName(cursorMaterial)),
+    DrawText(TextFormat("CURSOR: %d, %d  %s  %.0fC", (int)cursorCell.x,
+                        (int)cursorCell.y, WorldMaterialName(cursorMaterial),
+                        WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
              24, 113, 18, (Color){186, 194, 205, 255});
     if (powers->energy < powers->explosionEnergyCost) {
         DrawText("EXPLOSION: LOW ENERGY", 24, 133, 14, ORANGE);

@@ -6,6 +6,8 @@
 
 #include <raylib.h>
 
+#define WORLD_CHUNK_SIZE 32
+
 typedef enum CellMaterial {
     MATERIAL_EMPTY = 0,
     MATERIAL_DIRT,
@@ -50,6 +52,11 @@ typedef struct World {
     int activeCells;
     WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
     int reactionCount;
+    int chunkColumns;
+    int chunkRows;
+    int activeChunkCount;
+    uint8_t *activeChunks;
+    uint8_t *nextActiveChunks;
 } World;
 
 bool WorldInit(World *world, int width, int height);

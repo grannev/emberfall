@@ -58,6 +58,12 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Alternate horizontal traversal to avoid a permanent liquid bias.
 - A moved cell must not simulate more than once in the same fixed tick; preserve
   the `updatedTick` mechanism when adding or changing materials.
+- Simulation uses persistent 32×32 active-chunk and next-active-chunk arrays.
+  Movement, heat, destruction, material changes, and public cell writes must
+  wake the affected cell and neighboring chunks in both buffers. Dynamic or hot
+  cells keep their area awake; static ambient chunks are allowed to sleep.
+- Active-chunk buffers are allocated in `WorldInit`, swapped after a fixed tick,
+  and freed in `WorldUnload`. Never allocate chunk state in the frame loop.
 - Every non-empty cell carries temperature. Laser, lava, and fire add heat;
   thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
   Never reintroduce a separate rock-damage counter.
