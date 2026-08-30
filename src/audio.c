@@ -11,7 +11,8 @@
 typedef enum SynthKind {
     SYNTH_LASER = 0,
     SYNTH_EXPLOSION,
-    SYNTH_REACTION
+    SYNTH_REACTION,
+    SYNTH_DRILL
 } SynthKind;
 
 static float SynthNoise(uint32_t *state)
@@ -41,6 +42,13 @@ static float SynthSample(SynthKind kind, float time, float duration, uint32_t *n
         float rumble = sinf(time * 2.0f * PI * rumbleFrequency) * 0.58f;
         float noise = SynthNoise(noiseState) * 0.72f;
         return (rumble + noise) * decay * release * 0.72f;
+    }
+
+    if (kind == SYNTH_DRILL) {
+        float grind = sinf(time * 2.0f * PI * 61.0f) * 0.52f;
+        float rasp = sinf(time * 2.0f * PI * 147.0f) * 0.26f;
+        float grit = SynthNoise(noiseState) * 0.5f;
+        return (grind + rasp + grit) * envelope * 0.5f;
     }
 
     {
@@ -93,32 +101,47 @@ bool GameAudioInit(GameAudio *audio)
     audio->laser = SynthCreateSound(SYNTH_LASER, 0.14f);
     audio->explosion = SynthCreateSound(SYNTH_EXPLOSION, 0.58f);
     audio->reaction = SynthCreateSound(SYNTH_REACTION, 0.34f);
+    audio->drill = SynthCreateSound(SYNTH_DRILL, 0.18f);
     SetMasterVolume(0.72f);
 
     if (IsSoundValid(audio->laser)) SetSoundVolume(audio->laser, 0.34f);
     if (IsSoundValid(audio->explosion)) SetSoundVolume(audio->explosion, 0.72f);
     if (IsSoundValid(audio->reaction)) SetSoundVolume(audio->reaction, 0.28f);
+    if (IsSoundValid(audio->drill)) SetSoundVolume(audio->drill, 0.3f);
     return true;
 }
 
-void GameAudioUpdate(GameAudio *audio, bool laserActive, float deltaTime)
+/* Laser and drill are held states: retrigger the short wave while the state
+   lasts and stop it the moment it ends, instead of stacking one-shots. */
+static void GameAudioHold(Sound sound, bool active)
+{
+    if (!IsSoundValid(sound)) {
+        return;
+    }
+
+    if (active) {
+        if (!IsSoundPlaying(sound)) {
+            PlaySound(sound);
+        }
+    } else if (IsSoundPlaying(sound)) {
+        StopSound(sound);
+    }
+}
+
+void GameAudioUpdate(GameAudio *audio, bool laserActive, bool drilling,
+                     float deltaTime)
 {
     if (audio == NULL) {
         return;
     }
 
     audio->reactionCooldown = fmaxf(0.0f, audio->reactionCooldown - deltaTime);
-    if (!audio->ready || !IsSoundValid(audio->laser)) {
+    if (!audio->ready) {
         return;
     }
 
-    if (laserActive) {
-        if (!IsSoundPlaying(audio->laser)) {
-            PlaySound(audio->laser);
-        }
-    } else if (IsSoundPlaying(audio->laser)) {
-        StopSound(audio->laser);
-    }
+    GameAudioHold(audio->laser, laserActive);
+    GameAudioHold(audio->drill, drilling);
 }
 
 void GameAudioPlayExplosion(GameAudio *audio)
@@ -149,6 +172,7 @@ void GameAudioUnload(GameAudio *audio)
         if (IsSoundValid(audio->laser)) UnloadSound(audio->laser);
         if (IsSoundValid(audio->explosion)) UnloadSound(audio->explosion);
         if (IsSoundValid(audio->reaction)) UnloadSound(audio->reaction);
+        if (IsSoundValid(audio->drill)) UnloadSound(audio->drill);
         CloseAudioDevice();
     }
     memset(audio, 0, sizeof(*audio));

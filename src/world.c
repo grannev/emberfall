@@ -8,6 +8,13 @@
 #include <raymath.h>
 
 #define FIRE_NEIGHBOR_HEAT_PER_TICK 0.65f
+/* Resting temperature of every cell. A cell more than half a degree away from
+   it counts as thermally active and keeps its chunk awake, so fresh storage
+   must start here — zeroed cells would read as hot and never let chunks sleep. */
+#define AMBIENT_TEMPERATURE 20.0f
+/* Friction heat left on a drilled tunnel wall. Deliberately below the water
+   steam point (108) and far below the dirt ignition point (175). */
+#define DRILL_WALL_TEMPERATURE 96.0f
 
 static void WorldCountActiveState(World *world);
 
@@ -57,28 +64,15 @@ static void WorldWakeCellAndNeighbors(World *world, int x, int y)
             index = (size_t)chunkY * (size_t)world->chunkColumns + (size_t)chunkX;
             world->activeChunks[index] = 1u;
             world->nextActiveChunks[index] = 1u;
+            if (world->dirtyChunks != NULL) {
+                world->dirtyChunks[index] = 1u;
+            }
         }
     }
 }
 
-static bool MaterialIsDynamic(CellMaterial material)
-{
-    return material == MATERIAL_SAND || material == MATERIAL_WATER ||
-           material == MATERIAL_LAVA || material == MATERIAL_STEAM ||
-           material == MATERIAL_SMOKE || material == MATERIAL_FIRE ||
-           material == MATERIAL_ASH;
-}
-
-static float MaterialInitialTemperature(CellMaterial material)
-{
-    switch (material) {
-        case MATERIAL_LAVA: return 900.0f;
-        case MATERIAL_FIRE: return 650.0f;
-        case MATERIAL_STEAM: return 125.0f;
-        case MATERIAL_SMOKE: return 75.0f;
-        default: return 20.0f;
-    }
-}
+static bool MaterialIsDynamic(CellMaterial material);
+static float MaterialInitialTemperature(CellMaterial material);
 
 static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
 {
@@ -125,45 +119,178 @@ static uint32_t CoordinateHash(int x, int y)
     return value;
 }
 
-static Color MaterialColor(CellMaterial material, int x, int y)
-{
-    int variation = (int)(CoordinateHash(x, y) % 13u) - 6;
+/* Everything a material *is* lives in this one table; only what a material
+   *does* per tick stays as code. Adding a material used to mean finding seven
+   separate switch statements, and a forgotten case failed silently. */
+typedef struct MaterialInfo {
+    const char *name;
+    Color color;
+    /* Per-channel spread of the coordinate-hash variation, in halves, so a
+       material can dither one channel harder than another. */
+    signed char variationR;
+    signed char variationG;
+    signed char variationB;
+    float initialTemperature;
+    /* Relaxation toward selfHeatTarget, plus a flat per-tick drop for materials
+       that simply cool off. */
+    float selfHeatTarget;
+    float selfHeatRate;
+    float linearCoolRate;
+    /* Thermal phase change. phaseOnCooling flips the comparison. */
+    CellMaterial phaseTarget;
+    float phaseThreshold;
+    bool phaseOnCooling;
+    bool dynamic;
+    bool solid;
+} MaterialInfo;
 
-    switch (material) {
-        case MATERIAL_DIRT:
-            return (Color){(unsigned char)(111 + variation),
-                           (unsigned char)(73 + variation / 2), 43, 255};
-        case MATERIAL_ROCK:
-            return (Color){(unsigned char)(72 + variation),
-                           (unsigned char)(77 + variation),
-                           (unsigned char)(86 + variation), 255};
-        case MATERIAL_SAND:
-            return (Color){(unsigned char)(218 + variation),
-                           (unsigned char)(184 + variation), 91, 255};
-        case MATERIAL_WATER:
-            return (Color){32, (unsigned char)(111 + variation),
-                           (unsigned char)(190 + variation), 225};
-        case MATERIAL_LAVA:
-            return (Color){245, (unsigned char)(73 + variation * 2), 18, 255};
-        case MATERIAL_STEAM:
-            return (Color){(unsigned char)(204 + variation),
-                           (unsigned char)(222 + variation), 229, 178};
-        case MATERIAL_SMOKE:
-            return (Color){(unsigned char)(83 + variation),
-                           (unsigned char)(88 + variation),
-                           (unsigned char)(94 + variation), 205};
-        case MATERIAL_FIRE:
-            return (Color){255, (unsigned char)(132 + variation * 3), 24, 245};
-        case MATERIAL_ASH:
-            return (Color){(unsigned char)(112 + variation),
-                           (unsigned char)(108 + variation),
-                           (unsigned char)(104 + variation), 255};
-        case MATERIAL_EMPTY:
-        default: {
-            unsigned char glow = (unsigned char)(10 + (y * 10) / 288);
-            return (Color){5, glow, (unsigned char)(18 + glow), 255};
-        }
+static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
+    [MATERIAL_EMPTY] = {
+        .name = "EMPTY", .color = {5, 10, 18, 255},
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_EMPTY,
+    },
+    [MATERIAL_DIRT] = {
+        .name = "DIRT", .color = {111, 73, 43, 255},
+        .variationR = 2, .variationG = 1,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_FIRE, .phaseThreshold = 175.0f,
+        .solid = true,
+    },
+    [MATERIAL_ROCK] = {
+        .name = "ROCK", .color = {72, 77, 86, 255},
+        .variationR = 2, .variationG = 2, .variationB = 2,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_LAVA, .phaseThreshold = 720.0f,
+        .solid = true,
+    },
+    [MATERIAL_SAND] = {
+        .name = "SAND", .color = {218, 184, 91, 255},
+        .variationR = 2, .variationG = 2,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_EMPTY, .phaseThreshold = 280.0f,
+        .dynamic = true, .solid = true,
+    },
+    [MATERIAL_WATER] = {
+        .name = "WATER", .color = {32, 111, 190, 225},
+        .variationG = 2, .variationB = 2,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_STEAM, .phaseThreshold = 108.0f,
+        .dynamic = true,
+    },
+    [MATERIAL_LAVA] = {
+        .name = "LAVA", .color = {245, 73, 18, 255},
+        .variationG = 4,
+        .initialTemperature = 900.0f,
+        .selfHeatTarget = 900.0f, .selfHeatRate = 0.08f,
+        .phaseTarget = MATERIAL_LAVA,
+        .dynamic = true,
+    },
+    [MATERIAL_STEAM] = {
+        .name = "STEAM", .color = {204, 222, 229, 178},
+        .variationR = 2, .variationG = 2,
+        .initialTemperature = 125.0f,
+        .linearCoolRate = 0.42f,
+        .phaseTarget = MATERIAL_WATER, .phaseThreshold = 58.0f,
+        .phaseOnCooling = true,
+        .dynamic = true,
+    },
+    [MATERIAL_SMOKE] = {
+        .name = "SMOKE", .color = {83, 88, 94, 205},
+        .variationR = 2, .variationG = 2, .variationB = 2,
+        .initialTemperature = 75.0f,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_SMOKE,
+        .dynamic = true,
+    },
+    [MATERIAL_FIRE] = {
+        .name = "FIRE", .color = {255, 132, 24, 245},
+        .variationG = 6,
+        .initialTemperature = 650.0f,
+        .selfHeatTarget = 650.0f, .selfHeatRate = 0.12f,
+        .phaseTarget = MATERIAL_FIRE,
+        .dynamic = true,
+    },
+    [MATERIAL_ASH] = {
+        .name = "ASH", .color = {112, 108, 104, 255},
+        .variationR = 2, .variationG = 2, .variationB = 2,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        .phaseTarget = MATERIAL_ASH,
+        .dynamic = true,
+    },
+};
+
+static const MaterialInfo *MaterialAt(CellMaterial material)
+{
+    if (material < 0 || material >= MATERIAL_COUNT) {
+        return &MATERIALS[MATERIAL_EMPTY];
     }
+    return &MATERIALS[material];
+}
+
+static bool MaterialIsDynamic(CellMaterial material)
+{
+    return MaterialAt(material)->dynamic;
+}
+
+static float MaterialInitialTemperature(CellMaterial material)
+{
+    return MaterialAt(material)->initialTemperature;
+}
+
+static unsigned char ChannelWithVariation(unsigned char base, signed char spread,
+                                         int variation)
+{
+    int value = (int)base + variation * (int)spread / 2;
+
+    return (unsigned char)Clamp((float)value, 0.0f, 255.0f);
+}
+
+/* Solid cells glow toward ember as they approach their own phase threshold, so
+   a laser preheating rock and a freshly drilled tunnel wall are both readable. */
+static Color MaterialHeatTint(Color base, const MaterialInfo *info, float temperature)
+{
+    float heat;
+
+    if (temperature < 60.0f || !info->solid || info->phaseOnCooling ||
+        info->phaseThreshold <= 60.0f) {
+        return base;
+    }
+
+    /* Square root keeps the low end readable: rock melts at 720, so a linear
+       ramp would hide every temperature a drill or a short laser burst leaves. */
+    heat = sqrtf(Clamp((temperature - 60.0f) / (info->phaseThreshold - 60.0f),
+                       0.0f, 1.0f));
+    base.r = (unsigned char)((float)base.r + (245.0f - (float)base.r) * heat);
+    base.g = (unsigned char)((float)base.g + (96.0f - (float)base.g) * heat * 0.8f);
+    base.b = (unsigned char)((float)base.b * (1.0f - heat * 0.75f));
+    return base;
+}
+
+static Color MaterialPixel(const World *world, const Cell *cell, int x, int y)
+{
+    const MaterialInfo *info = MaterialAt(cell->material);
+    Color color = info->color;
+    int variation;
+
+    if (cell->material == MATERIAL_EMPTY) {
+        /* Empty space is a depth gradient rather than a flat colour. */
+        unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
+
+        return (Color){5, glow, (unsigned char)(18 + glow), 255};
+    }
+
+    variation = (int)(CoordinateHash(x, y) % 13u) - 6;
+    color.r = ChannelWithVariation(color.r, info->variationR, variation);
+    color.g = ChannelWithVariation(color.g, info->variationG, variation);
+    color.b = ChannelWithVariation(color.b, info->variationB, variation);
+    return MaterialHeatTint(color, info, cell->temperature);
 }
 
 static void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
@@ -274,29 +401,16 @@ static void WorldHeatNeighbors(World *world, int x, int y, float heat)
 static bool WorldTryThermalTransition(World *world, int x, int y)
 {
     Cell *cell = WorldCell(world, x, y);
-    CellMaterial next = cell->material;
-
-    switch (cell->material) {
-        case MATERIAL_DIRT:
-            if (cell->temperature >= 175.0f) next = MATERIAL_FIRE;
-            break;
-        case MATERIAL_SAND:
-            if (cell->temperature >= 280.0f) next = MATERIAL_EMPTY;
-            break;
-        case MATERIAL_ROCK:
-            if (cell->temperature >= 720.0f) next = MATERIAL_LAVA;
-            break;
-        case MATERIAL_WATER:
-            if (cell->temperature >= 108.0f) next = MATERIAL_STEAM;
-            break;
-        case MATERIAL_STEAM:
-            if (cell->temperature <= 58.0f) next = MATERIAL_WATER;
-            break;
-        default:
-            break;
-    }
+    const MaterialInfo *info = MaterialAt(cell->material);
+    CellMaterial next = info->phaseTarget;
+    bool crossed;
 
     if (next == cell->material) {
+        return false;
+    }
+    crossed = info->phaseOnCooling ? cell->temperature <= info->phaseThreshold
+                                   : cell->temperature >= info->phaseThreshold;
+    if (!crossed) {
         return false;
     }
 
@@ -308,23 +422,15 @@ static bool WorldTryThermalTransition(World *world, int x, int y)
 static bool WorldUpdateTemperatureState(World *world, int x, int y)
 {
     Cell *cell = WorldCell(world, x, y);
+    const MaterialInfo *info = MaterialAt(cell->material);
 
-    switch (cell->material) {
-        case MATERIAL_EMPTY:
-            return false;
-        case MATERIAL_LAVA:
-            cell->temperature += (900.0f - cell->temperature) * 0.08f;
-            break;
-        case MATERIAL_FIRE:
-            cell->temperature += (650.0f - cell->temperature) * 0.12f;
-            break;
-        case MATERIAL_STEAM:
-            cell->temperature -= 0.42f;
-            break;
-        default:
-            cell->temperature += (20.0f - cell->temperature) * 0.006f;
-            break;
+    if (cell->material == MATERIAL_EMPTY) {
+        return false;
     }
+
+    cell->temperature += (info->selfHeatTarget - cell->temperature) *
+                         info->selfHeatRate;
+    cell->temperature -= info->linearCoolRate;
 
     return WorldTryThermalTransition(world, x, y);
 }
@@ -471,7 +577,6 @@ static bool WorldTryMaterialReaction(World *world, int x, int y)
 
 bool WorldInit(World *world, int width, int height)
 {
-    Image image;
     size_t cellCount;
     size_t chunkCount;
 
@@ -490,26 +595,49 @@ bool WorldInit(World *world, int width, int height)
     world->pixels = malloc(cellCount * sizeof(*world->pixels));
     world->activeChunks = calloc(chunkCount, sizeof(*world->activeChunks));
     world->nextActiveChunks = calloc(chunkCount, sizeof(*world->nextActiveChunks));
+    world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
+    if (world->dirtyChunks != NULL) {
+        /* Nothing has been uploaded yet, so every chunk owes the texture a
+           first full write. */
+        memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
+    }
+    if (world->cells != NULL) {
+        size_t cellIndex;
+
+        for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
+            world->cells[cellIndex].temperature = AMBIENT_TEMPERATURE;
+        }
+    }
 
     if (world->cells == NULL || world->pixels == NULL || world->activeChunks == NULL ||
-        world->nextActiveChunks == NULL) {
+        world->nextActiveChunks == NULL || world->dirtyChunks == NULL) {
         free(world->cells);
         free(world->pixels);
         free(world->activeChunks);
         free(world->nextActiveChunks);
+        free(world->dirtyChunks);
         memset(world, 0, sizeof(*world));
         return false;
     }
 
-    image = GenImageColor(width, height, BLACK);
+    return true;
+}
+
+bool WorldInitRenderer(World *world)
+{
+    Image image;
+
+    if (world == NULL || world->cells == NULL) {
+        return false;
+    }
+    if (world->texture.id != 0u) {
+        return true;
+    }
+
+    image = GenImageColor(world->width, world->height, BLACK);
     world->texture = LoadTextureFromImage(image);
     UnloadImage(image);
     if (world->texture.id == 0u) {
-        free(world->cells);
-        free(world->pixels);
-        free(world->activeChunks);
-        free(world->nextActiveChunks);
-        memset(world, 0, sizeof(*world));
         return false;
     }
 
@@ -531,6 +659,7 @@ void WorldUnload(World *world)
     free(world->pixels);
     free(world->activeChunks);
     free(world->nextActiveChunks);
+    free(world->dirtyChunks);
     memset(world, 0, sizeof(*world));
 }
 
@@ -553,8 +682,9 @@ void WorldGenerate(World *world)
     memset(world->cells, 0, cellCount * sizeof(*world->cells));
     memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
+    memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
     for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
-        world->cells[cellIndex].temperature = 20.0f;
+        world->cells[cellIndex].temperature = AMBIENT_TEMPERATURE;
     }
     world->tick = 0;
     world->effectSerial = 0;
@@ -633,7 +763,8 @@ static void WorldUpdateCellAt(World *world, int x, int y)
     if (cell->updatedTick == world->tick) {
         return;
     }
-    if (MaterialIsDynamic(cell->material) || fabsf(cell->temperature - 20.0f) > 0.5f) {
+    if (MaterialIsDynamic(cell->material) ||
+        fabsf(cell->temperature - AMBIENT_TEMPERATURE) > 0.5f) {
         WorldWakeCellAndNeighbors(world, x, y);
     }
     if (WorldUpdateTemperatureState(world, x, y)) {
@@ -677,7 +808,6 @@ static void WorldCountActiveState(World *world)
 {
     int chunkY;
 
-    world->activeCells = 0;
     world->activeChunkCount = 0;
     for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
         int chunkX;
@@ -685,31 +815,9 @@ static void WorldCountActiveState(World *world)
         for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
             size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
                                 (size_t)chunkX;
-            int minimumX;
-            int maximumX;
-            int minimumY;
-            int maximumY;
-            int y;
 
-            if (world->activeChunks[chunkIndex] == 0u) {
-                continue;
-            }
-            ++world->activeChunkCount;
-            minimumX = chunkX * WORLD_CHUNK_SIZE;
-            maximumX = minimumX + WORLD_CHUNK_SIZE;
-            minimumY = chunkY * WORLD_CHUNK_SIZE;
-            maximumY = minimumY + WORLD_CHUNK_SIZE;
-            if (maximumX > world->width) maximumX = world->width;
-            if (maximumY > world->height) maximumY = world->height;
-
-            for (y = minimumY; y < maximumY; ++y) {
-                int x;
-
-                for (x = minimumX; x < maximumX; ++x) {
-                    if (MaterialIsDynamic(WorldGetCell(world, x, y))) {
-                        ++world->activeCells;
-                    }
-                }
+            if (world->activeChunks[chunkIndex] != 0u) {
+                ++world->activeChunkCount;
             }
         }
     }
@@ -775,6 +883,14 @@ void WorldUpdate(World *world)
 
     {
         uint8_t *previousChunks = world->activeChunks;
+        size_t chunkIndex;
+
+        /* Mark the set that was actually simulated, not the one that will run
+           next tick: a chunk that settles and goes to sleep still owes the
+           texture its final frame. */
+        for (chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex) {
+            world->dirtyChunks[chunkIndex] |= world->activeChunks[chunkIndex];
+        }
         world->activeChunks = world->nextActiveChunks;
         world->nextActiveChunks = previousChunks;
     }
@@ -783,22 +899,127 @@ void WorldUpdate(World *world)
 
 void WorldDraw(World *world)
 {
-    int x;
-    int y;
+    size_t chunkCount;
+    int minimumRow;
+    int maximumRow;
+    int chunkY;
 
-    if (world == NULL || world->pixels == NULL || world->texture.id == 0u) {
+    if (world == NULL || world->pixels == NULL || world->dirtyChunks == NULL ||
+        world->texture.id == 0u) {
         return;
     }
 
-    for (y = 0; y < world->height; ++y) {
-        for (x = 0; x < world->width; ++x) {
-            world->pixels[WorldIndex(world, x, y)] =
-                MaterialColor(WorldGetCell(world, x, y), x, y);
+    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
+    minimumRow = world->chunkRows;
+    maximumRow = -1;
+
+    /* Rebuild only the chunks that changed. The simulation sleeps on a settled
+       world, and so must the renderer. */
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        bool rowDirty = false;
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
+                                (size_t)chunkX;
+            int minimumX;
+            int maximumX;
+            int minimumY;
+            int maximumY;
+            int y;
+
+            if (world->dirtyChunks[chunkIndex] == 0u) {
+                continue;
+            }
+            rowDirty = true;
+            minimumX = chunkX * WORLD_CHUNK_SIZE;
+            maximumX = minimumX + WORLD_CHUNK_SIZE;
+            minimumY = chunkY * WORLD_CHUNK_SIZE;
+            maximumY = minimumY + WORLD_CHUNK_SIZE;
+            if (maximumX > world->width) maximumX = world->width;
+            if (maximumY > world->height) maximumY = world->height;
+
+            for (y = minimumY; y < maximumY; ++y) {
+                int x;
+
+                for (x = minimumX; x < maximumX; ++x) {
+                    world->pixels[WorldIndex(world, x, y)] =
+                        MaterialPixel(world, WorldCellConst(world, x, y), x, y);
+                }
+            }
+        }
+
+        if (rowDirty) {
+            if (chunkY < minimumRow) minimumRow = chunkY;
+            if (chunkY > maximumRow) maximumRow = chunkY;
         }
     }
 
-    UpdateTexture(world->texture, world->pixels);
+    if (maximumRow >= 0) {
+        /* One upload covering the dirty rows. A full-width band keeps the
+           source rows contiguous, so no staging copy is needed. */
+        int bandStart = minimumRow * WORLD_CHUNK_SIZE;
+        int bandEnd = (maximumRow + 1) * WORLD_CHUNK_SIZE;
+        Rectangle band;
+
+        if (bandEnd > world->height) {
+            bandEnd = world->height;
+        }
+        band = (Rectangle){0.0f, (float)bandStart, (float)world->width,
+                           (float)(bandEnd - bandStart)};
+        UpdateTextureRec(world->texture, band,
+                         &world->pixels[WorldIndex(world, 0, bandStart)]);
+        memset(world->dirtyChunks, 0, chunkCount * sizeof(*world->dirtyChunks));
+    }
+
     DrawTexture(world->texture, 0, 0, WHITE);
+}
+
+/* Walking cells to produce one debug number is not worth doing every tick, so
+   the exact count is computed only when something actually asks for it. */
+int WorldCountDynamicCells(const World *world)
+{
+    int count = 0;
+    int chunkY;
+
+    if (world == NULL || world->cells == NULL || world->activeChunks == NULL) {
+        return 0;
+    }
+
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
+                                (size_t)chunkX;
+            int minimumX;
+            int maximumX;
+            int minimumY;
+            int maximumY;
+            int y;
+
+            if (world->activeChunks[chunkIndex] == 0u) {
+                continue;
+            }
+            minimumX = chunkX * WORLD_CHUNK_SIZE;
+            maximumX = minimumX + WORLD_CHUNK_SIZE;
+            minimumY = chunkY * WORLD_CHUNK_SIZE;
+            maximumY = minimumY + WORLD_CHUNK_SIZE;
+            if (maximumX > world->width) maximumX = world->width;
+            if (maximumY > world->height) maximumY = world->height;
+
+            for (y = minimumY; y < maximumY; ++y) {
+                int x;
+
+                for (x = minimumX; x < maximumX; ++x) {
+                    if (MaterialIsDynamic(WorldGetCell(world, x, y))) {
+                        ++count;
+                    }
+                }
+            }
+        }
+    }
+    return count;
 }
 
 CellMaterial WorldGetCell(const World *world, int x, int y)
@@ -817,10 +1038,19 @@ float WorldGetTemperature(const World *world, int x, int y)
     return WorldCellConst(world, x, y)->temperature;
 }
 
+void WorldSetTemperature(World *world, int x, int y, float temperature)
+{
+    if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
+        return;
+    }
+
+    WorldCell(world, x, y)->temperature = temperature;
+    WorldWakeCellAndNeighbors(world, x, y);
+}
+
 bool WorldMaterialIsSolid(CellMaterial material)
 {
-    return material == MATERIAL_DIRT || material == MATERIAL_ROCK ||
-           material == MATERIAL_SAND;
+    return MaterialAt(material)->solid;
 }
 
 void WorldSetCell(World *world, int x, int y, CellMaterial material)
@@ -861,6 +1091,56 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
             }
         }
     }
+}
+
+int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
+{
+    int destroyed = 0;
+    int radiusSquared = radius * radius;
+    int rimSquared = (radius + 1) * (radius + 1);
+    int y;
+
+    if (world == NULL || world->cells == NULL || radius < 0) {
+        return 0;
+    }
+
+    for (y = centerY - radius - 1; y <= centerY + radius + 1; ++y) {
+        int x;
+
+        for (x = centerX - radius - 1; x <= centerX + radius + 1; ++x) {
+            int dx = x - centerX;
+            int dy = y - centerY;
+            int distanceSquared = dx * dx + dy * dy;
+            Cell *cell;
+
+            if (distanceSquared > rimSquared || !WorldInBounds(world, x, y)) {
+                continue;
+            }
+
+            cell = WorldCell(world, x, y);
+            if (distanceSquared > radiusSquared ||
+                !WorldMaterialIsSolid(cell->material)) {
+                /* Everything the drill cannot cut is only warmed. The cap stays
+                   under every phase threshold, so a tunnel can never ignite
+                   dirt or boil water on its own. */
+                if (cell->material != MATERIAL_EMPTY &&
+                    cell->temperature < DRILL_WALL_TEMPERATURE) {
+                    cell->temperature = DRILL_WALL_TEMPERATURE;
+                    WorldWakeCellAndNeighbors(world, x, y);
+                }
+                continue;
+            }
+
+            if (GetRandomValue(0, 99) < 3) {
+                WorldSetCellRaw(world, x, y, MATERIAL_ASH);
+            } else {
+                WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+            }
+            ++destroyed;
+        }
+    }
+
+    return destroyed;
 }
 
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
@@ -1037,17 +1317,5 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
 
 const char *WorldMaterialName(CellMaterial material)
 {
-    switch (material) {
-        case MATERIAL_DIRT: return "DIRT";
-        case MATERIAL_ROCK: return "ROCK";
-        case MATERIAL_SAND: return "SAND";
-        case MATERIAL_WATER: return "WATER";
-        case MATERIAL_LAVA: return "LAVA";
-        case MATERIAL_STEAM: return "STEAM";
-        case MATERIAL_SMOKE: return "SMOKE";
-        case MATERIAL_FIRE: return "FIRE";
-        case MATERIAL_ASH: return "ASH";
-        case MATERIAL_EMPTY:
-        default: return "EMPTY";
-    }
+    return MaterialAt(material)->name;
 }

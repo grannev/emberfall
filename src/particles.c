@@ -77,8 +77,19 @@ void ParticlesDraw(const ParticleSystem *system)
         const Particle *particle = &system->particles[i];
 
         if (particle->active) {
+            /* Whole cells keep particles on the same pixel grid as the world
+               texture and the player model; circles would blur across it. */
             Color color = Fade(particle->color, particle->life / particle->maxLife);
-            DrawCircleV(particle->position, particle->size, color);
+            int extent = (int)(particle->size + 0.5f);
+            int x;
+            int y;
+
+            if (extent < 1) {
+                extent = 1;
+            }
+            x = (int)floorf(particle->position.x) - (extent - 1) / 2;
+            y = (int)floorf(particle->position.y) - (extent - 1) / 2;
+            DrawRectangle(x, y, extent, extent, color);
         }
     }
 }
@@ -153,6 +164,75 @@ void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 norm
                                     normal.y * outward + tangent.y * sideways},
                           color, 0.18f + RandomUnit() * 0.25f,
                           0.45f + RandomUnit() * 0.7f, 22.0f);
+    }
+}
+
+void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
+                              Vector2 velocity)
+{
+    float speed = sqrtf(velocity.x * velocity.x + velocity.y * velocity.y);
+    Vector2 direction;
+    Vector2 tangent;
+    int i;
+
+    if (system == NULL || speed < 1.0f) {
+        return;
+    }
+
+    direction = (Vector2){velocity.x / speed, velocity.y / speed};
+    tangent = (Vector2){-direction.y, direction.x};
+    position.x -= direction.x * 4.0f;
+    position.y -= direction.y * 4.0f;
+    for (i = 0; i < 3; ++i) {
+        float spread = (RandomUnit() - 0.5f) * 5.0f;
+        float backward = 12.0f + RandomUnit() * 24.0f;
+        Color color = i == 0 ? (Color){113, 229, 234, 220}
+                             : (Color){210, 241, 238, 175};
+
+        ParticlesSpawnOne(system,
+                          (Vector2){position.x + tangent.x * spread,
+                                    position.y + tangent.y * spread},
+                          (Vector2){-direction.x * backward + tangent.x * spread,
+                                    -direction.y * backward + tangent.y * spread},
+                          color, 0.12f + RandomUnit() * 0.16f,
+                          0.35f + RandomUnit() * 0.55f, 0.0f);
+    }
+}
+
+void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
+                               Vector2 velocity, int destroyedCells)
+{
+    float speed = sqrtf(velocity.x * velocity.x + velocity.y * velocity.y);
+    Vector2 direction;
+    Vector2 tangent;
+    int count;
+    int i;
+
+    if (system == NULL || destroyedCells <= 0 || speed < 1.0f) {
+        return;
+    }
+
+    direction = (Vector2){velocity.x / speed, velocity.y / speed};
+    tangent = (Vector2){-direction.y, direction.x};
+    count = 5 + destroyedCells / 3;
+    if (count > 18) count = 18;
+    for (i = 0; i < count; ++i) {
+        float backward = 18.0f + RandomUnit() * 58.0f;
+        float sideways = (RandomUnit() - 0.5f) * 72.0f;
+        Color color;
+
+        if (i % 4 == 0) {
+            color = (Color){239, 111, 39, 245};
+        } else if (i % 3 == 0) {
+            color = (Color){116, 92, 67, 235};
+        } else {
+            color = (Color){111, 116, 124, 235};
+        }
+        ParticlesSpawnOne(system, position,
+                          (Vector2){-direction.x * backward + tangent.x * sideways,
+                                    -direction.y * backward + tangent.y * sideways},
+                          color, 0.2f + RandomUnit() * 0.34f,
+                          0.45f + RandomUnit() * 0.9f, 24.0f);
     }
 }
 

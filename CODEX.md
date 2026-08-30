@@ -27,19 +27,21 @@ The compiler is GCC in C11 mode with `-Wall -Wextra -Wpedantic`. Release uses
 debug configurations. For non-interactive runtime checks, the executable also
 accepts `--smoke-test`, writes `build/emberfall-smoke.png`, and closes after a
 few frames. It returns non-zero unless material reaction, laser contact,
-explosion, player collision, contained fire propagation, and chunk sleep were
-all observed. Use `make run RUN_ARGS=--smoke-test`; it still needs a working
-display (for example Xvfb in headless environments).
+explosion, player collision bounce, boost drilling, contained fire propagation,
+and chunk sleep were all observed. The smoke path must not steer the live player;
+drive extra coverage from the dedicated probes instead. Use
+`make run RUN_ARGS=--smoke-test`; it still needs a working display (for example
+Xvfb in headless environments).
 
 ## Source layout
 
 - `src/main.c`: window, fixed-step loop, camera, input, HUD, reset flow
 - `src/world.c/.h`: materials, one-dimensional cell storage, generation,
   simulation, texture buffer, destruction helpers
-- `src/player.c/.h`: sub-stepped gravity-free flight, circle-vs-cell collision,
-  and player rendering
+- `src/player.c/.h`: sub-stepped gravity-free flight, boost drilling,
+  circle-vs-cell collision, and state-based player rendering
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
-- `src/particles.c/.h`: fixed-capacity particle pool
+- `src/particles.c/.h`: fixed-capacity particle pool drawn as whole cells
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
 - `docs/`: Russian developer documentation; `docs/README.md` is its index
 
@@ -69,6 +71,14 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Every non-empty cell carries temperature. Laser, lava, and fire add heat;
   thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
   Never reintroduce a separate rock-damage counter.
+- `WorldDrillCircle` removes only solid cells, leaves a small fraction as ash,
+  and merely warms everything it cannot cut. That wall temperature must stay
+  below the water steam point and the dirt ignition point, so drilling can never
+  start a fire or boil water on its own.
+- Solid cells are tinted toward ember as their temperature approaches their own
+  phase threshold, on a non-linear ramp so modest heat stays visible. Cells at
+  ambient temperature must skip the tint entirely; the texture buffer is rebuilt
+  every frame and cannot afford per-cell work that does not early-out.
 - Keep passive heat from one fire cell below the dirt ignition budget over its
   full lifetime. Fire may burn a local cluster, but it must not consume an
   unlimited connected dirt layer; the smoke-test has a containment probe.
@@ -85,6 +95,14 @@ over frameworks, generic containers, or unnecessary abstraction.
   circular player collider; liquids, gases, fire, and ash are passable.
 - WASD applies normalized thrust to persistent velocity. Linear drag and a speed
   cap keep flight controllable without removing inertia.
+- Shift plus directional input activates boost acceleration and its higher speed
+  cap. Boost survives the loss of directional input for a short grace window so
+  releasing WASD inside a tunnel does not drop the drill into a wall. Above the
+  drill threshold, every movement substep clears a circle ahead of the collider
+  through `WorldDrillCircle`; the out-of-bounds world boundary remains
+  indestructible. Each cut cell costs speed, but the resistance is floored just
+  above the drill threshold so a boost can never stall inside solid terrain.
+  Boost has no energy resource or cooldown.
 - Movement is split into steps no longer than 0.5 world cells to prevent
   tunneling. Solid impacts reflect the blocked velocity component with limited
   restitution and publish impact position/normal/strength for particles and
@@ -96,9 +114,16 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Movement uses delta time and remains smooth at varying render rates.
 - Player rendering is a compact, code-native pixel humanoid made from whole-cell
   rectangles. Preserve its dark helmet/suit, cyan accent, separate limbs, and
-  orange stepped cape. Mirror it toward the cursor instead of freely rotating
-  it; velocity shifts the cape and thrust animates the legs. The collider stays
-  a simple circle and does not follow the visible silhouette.
+  orange stepped cape. Head/arm aim follows the cursor independently, while
+  velocity determines the cape side and vertical bend. The cape root and tail
+  must keep overlapping at every wave offset so the cape never splits into a
+  detached block, and body parts drawn over the cape must show a lit fill rather
+  than only their dark outline. Impact feedback brightens the fills and keeps the
+  rim dark; never recolour the outline itself, which floods the model and erases
+  the silhouette. Preserve separate idle, thrust, boost, drill, and impact
+  feedback driven by `animationTime`; do not use wall-clock time for player
+  animation. The collider stays a simple circle and does not follow the
+  visible silhouette.
 - Visual references may guide scale, contrast, or broad genre language, but do
   not reproduce another game's character sprite, exact silhouette, palette, or
   animation one-for-one. Emberfall must keep an original character design.
@@ -116,9 +141,10 @@ over frameworks, generic containers, or unnecessary abstraction.
   feedback.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
-- Laser, explosion, and material-reaction sounds are synthesized at startup; no
-  external assets are required. Audio failure must remain non-fatal, and no wave
-  memory may be allocated in the frame loop.
+- Laser, explosion, material-reaction, and drill sounds are synthesized at
+  startup; no external assets are required. Laser and drill are held states
+  driven by `GameAudioUpdate`, not stacked one-shots. Audio failure must remain
+  non-fatal, and no wave memory may be allocated in the frame loop.
 
 ## Change discipline
 

@@ -74,6 +74,9 @@ make clean
 - laser contact;
 - explosion event;
 - collision и отскок с отрицательной velocity от тонкой rock-стены;
+- boost-разгон и проход сквозь rock-блок толщиной 11 cells; та же проба
+  прогоняет boost trail и drill debris particles, поэтому основной цикл больше
+  не подменяет ввод игрока;
 - локализация fire внутри тестового блока dirt;
 - переход части chunks в sleeping state.
 

@@ -48,6 +48,7 @@ void WorldSetCell(World *world, int x, int y, CellMaterial material);
 ```c
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
+int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
 void WorldApplyShockwave(World *world, int centerX, int centerY,
                          int innerRadius, int outerRadius);
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end,
@@ -59,6 +60,12 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end,
 - `position` — конец луча или точку контакта;
 - `material` — материал первого контакта;
 - `hit` — был ли найден solid target.
+
+`WorldDrillCircle` удаляет только solid cells (dirt, rock, sand) в границах
+окружности и возвращает число реально удалённых cells. Небольшая доля из них
+остаётся ash вместо empty. Жидкости и газы не удаляются, а cells на границе
+тоннеля получают остаточный нагрев. Внешняя граница мира игнорируется и остаётся
+неразрушимой.
 
 ### Coordinates и labels
 
@@ -72,7 +79,8 @@ const char *WorldMaterialName(CellMaterial material);
 
 ```c
 void PlayerInit(Player *player, Vector2 position);
-void PlayerUpdate(Player *player, const World *world, float deltaTime);
+void PlayerUpdate(Player *player, World *world, Vector2 input,
+                  bool boostHeld, float deltaTime);
 void PlayerResolveWorldCollision(Player *player, const World *world);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
                                  float radius, float force);
@@ -110,6 +118,10 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position,
                                Vector2 direction);
 void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position,
                           Vector2 normal, float strength);
+void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
+                              Vector2 velocity);
+void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
+                               Vector2 velocity, int destroyedCells);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 ```
 
@@ -120,7 +132,8 @@ void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 
 ```c
 bool GameAudioInit(GameAudio *audio);
-void GameAudioUpdate(GameAudio *audio, bool laserActive, float deltaTime);
+void GameAudioUpdate(GameAudio *audio, bool laserActive, bool drilling,
+                     float deltaTime);
 void GameAudioPlayExplosion(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioUnload(GameAudio *audio);

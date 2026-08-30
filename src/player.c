@@ -15,15 +15,27 @@ void PlayerInit(Player *player, Vector2 position)
     player->velocity = (Vector2){0.0f, 0.0f};
     player->impactPosition = position;
     player->impactNormal = (Vector2){0.0f, 0.0f};
+    player->drillPosition = position;
     player->acceleration = 250.0f;
     player->maxSpeed = 118.0f;
+    player->boostAcceleration = 540.0f;
+    player->boostMaxSpeed = 235.0f;
+    player->boostDrag = 0.38f;
+    player->boostGrace = 0.0f;
+    player->drillSpeed = 92.0f;
+    player->drillResistance = 0.004f;
     player->drag = 1.1f;
     player->restitution = 0.34f;
     player->radius = 3.2f;
     player->impactStrength = 0.0f;
     player->impactTimer = 0.0f;
+    player->animationTime = 0.0f;
+    player->boostTrailTimer = 0.0f;
+    player->drilledCells = 0;
     player->facingRight = true;
     player->thrusting = false;
+    player->boosting = false;
+    player->boostTrailEmitted = false;
 }
 
 static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position)
@@ -77,15 +89,54 @@ static void PlayerRecordImpact(Player *player, Vector2 normal, float strength)
     }
 }
 
-void PlayerUpdate(Player *player, const World *world, float deltaTime)
+static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
 {
-    Vector2 input = {0.0f, 0.0f};
+    float speed = sqrtf(player->velocity.x * player->velocity.x +
+                        player->velocity.y * player->velocity.y);
+    Vector2 direction;
+    Vector2 drillPoint;
+    int destroyed;
+
+    if (!player->boosting || speed < player->drillSpeed) {
+        return;
+    }
+
+    direction = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
+    drillPoint = (Vector2){nextPosition.x + direction.x * player->radius * 0.7f,
+                           nextPosition.y + direction.y * player->radius * 0.7f};
+    destroyed = WorldDrillCircle(world, (int)floorf(drillPoint.x),
+                                 (int)floorf(drillPoint.y),
+                                 (int)ceilf(player->radius));
+    if (destroyed > 0) {
+        /* Cutting terrain costs speed, but never enough to fall under the drill
+           threshold: a boost that stalls would leave the player buried. */
+        float floorSpeed = player->drillSpeed * 1.05f;
+        float slowed = speed * expf(-(float)destroyed * player->drillResistance);
+        float scale;
+
+        if (slowed < floorSpeed) {
+            slowed = fminf(speed, floorSpeed);
+        }
+        scale = slowed / speed;
+        player->velocity.x *= scale;
+        player->velocity.y *= scale;
+        player->drilledCells += destroyed;
+        player->drillPosition = drillPoint;
+    }
+}
+
+void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
+                  float deltaTime)
+{
     float inputLength;
     float velocityLength;
+    float acceleration;
+    float speedLimit;
     float damping;
     float moveX;
     float moveY;
     float stepTime;
+    bool wasBoosting;
     int moveSteps;
     int step;
 
@@ -96,32 +147,66 @@ void PlayerUpdate(Player *player, const World *world, float deltaTime)
     player->impactStrength = 0.0f;
     player->impactNormal = (Vector2){0.0f, 0.0f};
     player->impactTimer = fmaxf(0.0f, player->impactTimer - deltaTime);
+    player->drilledCells = 0;
+    player->boostTrailEmitted = false;
     player->thrusting = false;
-
-    if (IsKeyDown(KEY_A)) input.x -= 1.0f;
-    if (IsKeyDown(KEY_D)) input.x += 1.0f;
-    if (IsKeyDown(KEY_W)) input.y -= 1.0f;
-    if (IsKeyDown(KEY_S)) input.y += 1.0f;
+    wasBoosting = player->boosting;
 
     inputLength = sqrtf(input.x * input.x + input.y * input.y);
     if (inputLength > 0.0f) {
         input.x /= inputLength;
         input.y /= inputLength;
-        player->velocity.x += input.x * player->acceleration * deltaTime;
-        player->velocity.y += input.y * player->acceleration * deltaTime;
         player->thrusting = true;
     }
+    /* Boost outlives the directional input for a moment, so letting go of WASD
+       inside a tunnel coasts out instead of dropping the drill into a wall. */
+    if (boostHeld && player->thrusting) {
+        player->boostGrace = 0.14f;
+    } else {
+        player->boostGrace = fmaxf(0.0f, player->boostGrace - deltaTime);
+    }
+    player->boosting = boostHeld && (player->thrusting || player->boostGrace > 0.0f);
+    acceleration = player->boosting ? player->boostAcceleration
+                                    : player->acceleration;
+    speedLimit = player->boosting ? player->boostMaxSpeed : player->maxSpeed;
+    if (player->thrusting) {
+        if (player->boosting && !wasBoosting) {
+            player->velocity.x += input.x * 34.0f;
+            player->velocity.y += input.y * 34.0f;
+        }
+        player->velocity.x += input.x * acceleration * deltaTime;
+        player->velocity.y += input.y * acceleration * deltaTime;
+    }
 
-    damping = expf(-player->drag * deltaTime);
+    damping = expf(-(player->boosting ? player->boostDrag : player->drag) *
+                   deltaTime);
     player->velocity.x *= damping;
     player->velocity.y *= damping;
     velocityLength = sqrtf(player->velocity.x * player->velocity.x +
                            player->velocity.y * player->velocity.y);
-    if (velocityLength > player->maxSpeed) {
-        float scale = player->maxSpeed / velocityLength;
+    if (velocityLength > speedLimit) {
+        float reducedSpeed = player->boosting
+                                 ? speedLimit
+                                 : fmaxf(speedLimit, velocityLength - 180.0f * deltaTime);
+        float scale = reducedSpeed / velocityLength;
 
         player->velocity.x *= scale;
         player->velocity.y *= scale;
+        velocityLength = reducedSpeed;
+    }
+
+    player->animationTime += deltaTime *
+                             (player->boosting ? 2.4f
+                                               : 1.0f + fminf(velocityLength / 90.0f,
+                                                              0.8f));
+    if (player->boosting && velocityLength >= player->drillSpeed * 0.65f) {
+        player->boostTrailTimer -= deltaTime;
+        if (player->boostTrailTimer <= 0.0f) {
+            player->boostTrailEmitted = true;
+            player->boostTrailTimer = 0.025f;
+        }
+    } else {
+        player->boostTrailTimer = 0.0f;
     }
 
     moveX = player->velocity.x * deltaTime;
@@ -134,8 +219,13 @@ void PlayerUpdate(Player *player, const World *world, float deltaTime)
 
     for (step = 0; step < moveSteps; ++step) {
         Vector2 candidate = player->position;
+        Vector2 nextPosition = {
+            player->position.x + player->velocity.x * stepTime,
+            player->position.y + player->velocity.y * stepTime
+        };
         float incomingSpeed;
 
+        PlayerDrillAhead(player, world, nextPosition);
         candidate.x += player->velocity.x * stepTime;
         if (!PlayerCollidesAt(player, world, candidate)) {
             player->position.x = candidate.x;
@@ -242,21 +332,27 @@ static void PlayerDrawPixelBlock(int x, int y, int width, int height, Color colo
 
 void PlayerDraw(const Player *player, Vector2 aimPosition)
 {
-    const Color darkOutline = (Color){15, 20, 28, 255};
-    const Color suit = (Color){43, 50, 61, 255};
-    const Color suitLight = (Color){72, 82, 96, 255};
+    static const int capeWave[4] = {0, -1, 0, 1};
+    const Color outline = (Color){15, 20, 28, 255};
     const Color cape = (Color){235, 86, 31, 255};
     const Color capeShadow = (Color){143, 45, 27, 255};
     const Color skin = (Color){224, 170, 119, 255};
-    const Color accent = (Color){67, 206, 218, 255};
-    Color outline;
+    Color suit = (Color){43, 50, 61, 255};
+    Color suitLight = (Color){72, 82, 96, 255};
+    Color accent = (Color){67, 206, 218, 255};
     float aimX;
     float aimY;
+    float speed;
     bool facingRight;
+    bool capeOnLeft;
     int centerX;
     int centerY;
+    int animationFrame;
+    int idleFrame;
     int tailOffsetY;
     int legFrame;
+    int armOffsetY;
+    int boostExtension;
     int eyeX;
     int eyeY;
 
@@ -266,27 +362,81 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
 
     aimX = aimPosition.x - player->position.x;
     aimY = aimPosition.y - player->position.y;
+    speed = sqrtf(player->velocity.x * player->velocity.x +
+                  player->velocity.y * player->velocity.y);
     facingRight = fabsf(aimX) > 0.5f ? aimX > 0.0f : player->facingRight;
+    capeOnLeft = fabsf(player->velocity.x) > 20.0f
+                     ? player->velocity.x > 0.0f
+                     : facingRight;
     centerX = (int)floorf(player->position.x);
     centerY = (int)floorf(player->position.y);
-    tailOffsetY = (int)roundf(Clamp(-player->velocity.y / 36.0f, -2.0f, 2.0f));
-    legFrame = player->thrusting ? ((int)(GetTime() * 10.0) & 1) : 0;
-    outline = player->impactTimer > 0.0f ? (Color){255, 179, 65, 255}
-                                        : darkOutline;
+    animationFrame = (int)(player->animationTime * 7.0f) & 3;
+    idleFrame = (int)(player->animationTime * 3.0f) & 3;
+    if (!player->thrusting && speed < 5.0f && idleFrame == 2) {
+        ++centerY;
+    }
+    tailOffsetY = (int)roundf(Clamp(-player->velocity.y / 40.0f +
+                                        (float)capeWave[animationFrame],
+                                    -2.0f, 2.0f));
+    legFrame = player->thrusting && !player->boosting ? animationFrame & 1 : 0;
+    armOffsetY = aimY > 5.0f ? 1 : (aimY < -5.0f ? -1 : 0);
+    boostExtension = player->boosting ? 2 : 0;
+    if (player->impactTimer > 0.0f) {
+        /* Flash the lit fills and leave the rim dark: recolouring the outline
+           floods most of the model and erases the silhouette. */
+        suit = (Color){186, 104, 34, 255};
+        suitLight = (Color){255, 190, 88, 255};
+        accent = (Color){255, 240, 190, 255};
+    }
 
-    /* A small stepped cape trails the aim direction and reacts to vertical speed. */
-    if (facingRight) {
-        DrawRectangle(centerX - 5, centerY - 3, 4, 8, outline);
-        DrawRectangle(centerX - 6, centerY + tailOffsetY, 3, 6, outline);
-        DrawRectangle(centerX - 4, centerY - 2, 3, 6, cape);
-        DrawRectangle(centerX - 5, centerY + 1 + tailOffsetY, 2, 4, cape);
-        DrawRectangle(centerX - 5, centerY + 4 + tailOffsetY, 2, 2, capeShadow);
+    if (player->boosting && speed > 40.0f) {
+        Vector2 direction = {player->velocity.x / speed, player->velocity.y / speed};
+        Vector2 side = {-direction.y, direction.x};
+        int streak;
+
+        /* Three tapering dashes read as speed lines instead of lone pixels. */
+        for (streak = 0; streak < 3; ++streak) {
+            float distance = 7.0f + (float)streak * 4.0f;
+            float sideOffset = (float)capeWave[(animationFrame + streak) & 3] * 2.0f;
+            Color streakColor = streak == 0 ? (Color){91, 224, 231, 210}
+                                            : (Color){179, 239, 237, 130};
+            int length = 3 - streak;
+            int segment;
+
+            for (segment = 0; segment < length; ++segment) {
+                float back = distance + (float)segment;
+                int x = (int)floorf(player->position.x - direction.x * back +
+                                    side.x * sideOffset);
+                int y = (int)floorf(player->position.y - direction.y * back +
+                                    side.y * sideOffset);
+
+                DrawRectangle(x, y, 1, 1, streakColor);
+            }
+        }
+    }
+
+    /* Shoulder root and bending tail share three cells, so the cape stays one
+       connected shape at every wave offset instead of splitting into a blob. */
+    if (capeOnLeft) {
+        DrawRectangle(centerX - 5, centerY - 4, 5, 9, outline);
+        DrawRectangle(centerX - 6 - boostExtension, centerY - 2 + tailOffsetY,
+                      4 + boostExtension, 7, outline);
+        DrawRectangle(centerX - 4, centerY - 3, 3, 7, cape);
+        DrawRectangle(centerX - 5 - boostExtension, centerY - 1 + tailOffsetY,
+                      2 + boostExtension, 5, cape);
+        DrawRectangle(centerX - 5 - boostExtension,
+                      centerY + 2 + tailOffsetY + capeWave[animationFrame],
+                      2 + boostExtension, 2, capeShadow);
     } else {
-        DrawRectangle(centerX + 1, centerY - 3, 4, 8, outline);
-        DrawRectangle(centerX + 3, centerY + tailOffsetY, 3, 6, outline);
-        DrawRectangle(centerX + 1, centerY - 2, 3, 6, cape);
-        DrawRectangle(centerX + 3, centerY + 1 + tailOffsetY, 2, 4, cape);
-        DrawRectangle(centerX + 3, centerY + 4 + tailOffsetY, 2, 2, capeShadow);
+        DrawRectangle(centerX + 1, centerY - 4, 5, 9, outline);
+        DrawRectangle(centerX + 3, centerY - 2 + tailOffsetY,
+                      4 + boostExtension, 7, outline);
+        DrawRectangle(centerX + 2, centerY - 3, 3, 7, cape);
+        DrawRectangle(centerX + 4, centerY - 1 + tailOffsetY,
+                      2 + boostExtension, 5, cape);
+        DrawRectangle(centerX + 4,
+                      centerY + 2 + tailOffsetY + capeWave[animationFrame],
+                      2 + boostExtension, 2, capeShadow);
     }
 
     DrawRectangle(centerX - 2, centerY + 1, 2, 5 + legFrame, outline);
@@ -296,24 +446,28 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     DrawRectangle(centerX - 2, centerY + 5 + legFrame, 2, 1, capeShadow);
     DrawRectangle(centerX + 1, centerY + 5, 2, 1, capeShadow);
 
-    /* The rear arm hangs down; the front arm points toward the cursor. */
+    /* The rear arm hangs down in the darker tone; the lit front arm points at
+       the cursor, so the aim pose stays readable against the world. */
     if (facingRight) {
-        DrawRectangle(centerX - 3, centerY - 2, 2, 5, outline);
-        DrawRectangle(centerX - 2, centerY - 1, 1, 3, suitLight);
-        DrawRectangle(centerX + 1, centerY - 2, 5, 2, outline);
-        DrawRectangle(centerX + 2, centerY - 1, 3, 1, suit);
-        DrawRectangle(centerX + 5, centerY - 1, 1, 1, skin);
+        DrawRectangle(centerX - 3, centerY - 2 + legFrame, 2, 5, outline);
+        DrawRectangle(centerX - 3, centerY - 1 + legFrame, 1, 3, suit);
+        DrawRectangle(centerX + 1, centerY - 2 + armOffsetY, 5, 2, outline);
+        DrawRectangle(centerX + 2, centerY - 1 + armOffsetY, 3, 1, suitLight);
+        DrawRectangle(centerX + 5, centerY - 1 + armOffsetY, 1, 1, skin);
     } else {
-        DrawRectangle(centerX + 1, centerY - 2, 2, 5, outline);
-        DrawRectangle(centerX + 1, centerY - 1, 1, 3, suitLight);
-        DrawRectangle(centerX - 5, centerY - 2, 5, 2, outline);
-        DrawRectangle(centerX - 4, centerY - 1, 3, 1, suit);
-        DrawRectangle(centerX - 5, centerY - 1, 1, 1, skin);
+        DrawRectangle(centerX + 2, centerY - 2 + legFrame, 2, 5, outline);
+        DrawRectangle(centerX + 3, centerY - 1 + legFrame, 1, 3, suit);
+        DrawRectangle(centerX - 5, centerY - 2 + armOffsetY, 5, 2, outline);
+        DrawRectangle(centerX - 4, centerY - 1 + armOffsetY, 3, 1, suitLight);
+        DrawRectangle(centerX - 5, centerY - 1 + armOffsetY, 1, 1, skin);
     }
 
     PlayerDrawPixelBlock(centerX - 1, centerY - 3, 3, 5, suit, outline);
     DrawRectangle(centerX - 1, centerY + 1, 3, 1, capeShadow);
-    DrawRectangle(centerX, centerY - 1, 1, 2, accent);
+    DrawRectangle(centerX, centerY - 1, 1, 2,
+                  player->boosting && (animationFrame & 1) != 0
+                      ? (Color){194, 250, 239, 255}
+                      : accent);
 
     PlayerDrawPixelBlock(centerX - 1, centerY - 7, 3, 3, suitLight, outline);
     eyeY = centerY - 6;
@@ -325,4 +479,20 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     eyeX = facingRight ? centerX + 1 : centerX - 1;
     DrawRectangle(eyeX, centerY - 6, 1, 2, skin);
     DrawRectangle(eyeX, eyeY, 1, 1, accent);
+
+    if (player->drilledCells > 0 && speed > 0.001f) {
+        Vector2 direction = {player->velocity.x / speed, player->velocity.y / speed};
+        Vector2 side = {-direction.y, direction.x};
+        int spark;
+
+        for (spark = -1; spark <= 1; ++spark) {
+            int x = (int)floorf(player->drillPosition.x +
+                                side.x * (float)spark * 2.5f);
+            int y = (int)floorf(player->drillPosition.y +
+                                side.y * (float)spark * 2.5f);
+
+            DrawRectangle(x, y, spark == 0 ? 2 : 1, spark == 0 ? 2 : 1,
+                          spark == 0 ? (Color){255, 206, 75, 245} : accent);
+        }
+    }
 }

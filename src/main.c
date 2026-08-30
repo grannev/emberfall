@@ -58,10 +58,12 @@ static void DrawDebugHud(const World *world, const Player *player,
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
     DrawText(TextFormat("FPS: %d", GetFPS()), 24, 23, 20, RAYWHITE);
-    DrawText(TextFormat("PLAYER: %.1f, %.1f  V: %.0f", player->position.x,
-                        player->position.y, playerSpeed),
+    DrawText(TextFormat("PLAYER: %.1f, %.1f  V: %.0f%s", player->position.x,
+                        player->position.y, playerSpeed,
+                        player->boosting ? " BOOST" : ""),
              24, 47, 18, (Color){174, 219, 248, 255});
-    DrawText(TextFormat("ACTIVE: %d CELLS | %d CHUNKS", world->activeCells,
+    DrawText(TextFormat("ACTIVE: %d CELLS | %d CHUNKS",
+                        WorldCountDynamicCells(world),
                         world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
     DrawText(TextFormat("POWER: %s", PowersCurrentName(powers)), 24, 91, 18,
@@ -79,7 +81,8 @@ static void DrawDebugHud(const World *world, const Player *player,
 
 static void DrawControlsHint(void)
 {
-    const char *hint = "WASD fly  |  LMB laser  |  RMB explosion  |  R regenerate  |  F1 HUD";
+    const char *hint =
+        "WASD fly  |  Shift boost/drill  |  LMB laser  |  RMB explosion  |  R regenerate  |  F1 HUD";
     int fontSize = 18;
     int width = MeasureText(hint, fontSize);
     int x = (GetScreenWidth() - width) / 2;
@@ -89,9 +92,13 @@ static void DrawControlsHint(void)
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
 }
 
-static void RunSmokePlayerProbe(World *world, bool *collisionObserved)
+static void RunSmokePlayerProbe(World *world, ParticleSystem *particles,
+                                bool *collisionObserved, bool *drillObserved)
 {
     Player probe;
+    int drilledCells = 0;
+    int step;
+    int x;
     int y;
 
     for (y = 44; y <= 56; ++y) {
@@ -99,12 +106,38 @@ static void RunSmokePlayerProbe(World *world, bool *collisionObserved)
     }
     PlayerInit(&probe, (Vector2){225.0f, 50.0f});
     probe.velocity.x = 180.0f;
-    PlayerUpdate(&probe, world, 0.05f);
+    PlayerUpdate(&probe, world, (Vector2){0.0f, 0.0f}, false, 0.05f);
     *collisionObserved = probe.position.x < 229.0f && probe.velocity.x < -10.0f &&
                          probe.impactStrength > 80.0f &&
                          probe.impactNormal.x < -0.5f;
     for (y = 44; y <= 56; ++y) {
         WorldSetCell(world, 232, y, MATERIAL_EMPTY);
+    }
+
+    for (x = 232; x <= 242; ++x) {
+        for (y = 44; y <= 56; ++y) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
+        }
+    }
+    PlayerInit(&probe, (Vector2){212.0f, 50.0f});
+    for (step = 0; step < 10; ++step) {
+        PlayerUpdate(&probe, world, (Vector2){1.0f, 0.0f}, true, 0.05f);
+        drilledCells += probe.drilledCells;
+        /* Drive the same feedback the frame loop does, so the boost trail and
+           drill debris paths stay covered without steering the live player. */
+        if (probe.boostTrailEmitted) {
+            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity);
+        }
+        if (probe.drilledCells > 0) {
+            ParticlesSpawnDrillDebris(particles, probe.drillPosition,
+                                      probe.velocity, probe.drilledCells);
+        }
+    }
+    *drillObserved = probe.position.x > 242.0f && drilledCells > 20;
+    for (x = 232; x <= 242; ++x) {
+        for (y = 44; y <= 56; ++y) {
+            WorldSetCell(world, x, y, MATERIAL_EMPTY);
+        }
     }
 }
 
@@ -175,6 +208,7 @@ int main(int argc, char **argv)
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
     bool smokeCollisionObserved = false;
+    bool smokeDrillObserved = false;
     bool smokeFireContained = false;
     int exitCode = 0;
 
@@ -190,23 +224,28 @@ int main(int argc, char **argv)
     SetExitKey(KEY_ESCAPE);
     (void)GameAudioInit(&audio);
 
-    if (!WorldInit(&world, WORLD_WIDTH, WORLD_HEIGHT)) {
+    if (!WorldInit(&world, WORLD_WIDTH, WORLD_HEIGHT) || !WorldInitRenderer(&world)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
+        WorldUnload(&world);
         GameAudioUnload(&audio);
         CloseWindow();
         return 1;
     }
 
     WorldGenerate(&world);
-    if (smokeTest) {
-        smokeFireContained = RunSmokeFireContainmentProbe();
-        RunSmokePlayerProbe(&world, &smokeCollisionObserved);
-        WorldSetCell(&world, 252, 95, MATERIAL_WATER);
-        WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
-    }
     PlayerInit(&player, (Vector2){245.0f, 66.0f});
     PowersInit(&powers);
     ParticlesInit(&particles);
+    if (smokeTest) {
+        smokeFireContained = RunSmokeFireContainmentProbe();
+        RunSmokePlayerProbe(&world, &particles, &smokeCollisionObserved,
+                            &smokeDrillObserved);
+        /* The probe has exercised the spawn paths; drop what it emitted so the
+           reference screenshot starts from a clean frame. */
+        ParticlesInit(&particles);
+        WorldSetCell(&world, 252, 95, MATERIAL_WATER);
+        WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
+    }
     cameraFocus = player.position;
     camera.target = cameraFocus;
     camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
@@ -219,8 +258,10 @@ int main(int argc, char **argv)
         Vector2 desiredCamera;
         Vector2 cursorCell;
         Vector2 aimPosition;
+        Vector2 moveInput = {0.0f, 0.0f};
         bool laserHeld;
         bool explosionPressed;
+        bool boostHeld;
         bool materialReaction = false;
 
         if (IsKeyPressed(KEY_F1)) {
@@ -236,7 +277,12 @@ int main(int argc, char **argv)
             cameraShake = 0.0f;
         }
 
-        PlayerUpdate(&player, &world, deltaTime);
+        if (IsKeyDown(KEY_A)) moveInput.x -= 1.0f;
+        if (IsKeyDown(KEY_D)) moveInput.x += 1.0f;
+        if (IsKeyDown(KEY_W)) moveInput.y -= 1.0f;
+        if (IsKeyDown(KEY_S)) moveInput.y += 1.0f;
+        boostHeld = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        PlayerUpdate(&player, &world, moveInput, boostHeld, deltaTime);
         if (player.impactStrength >= 14.0f) {
             float impactShake = Clamp((player.impactStrength - 10.0f) * 0.025f,
                                       0.0f, 2.6f);
@@ -244,6 +290,17 @@ int main(int argc, char **argv)
             cameraShake = fmaxf(cameraShake, impactShake);
             ParticlesSpawnImpact(&particles, player.impactPosition,
                                  player.impactNormal, player.impactStrength);
+        }
+        if (player.boostTrailEmitted) {
+            ParticlesSpawnBoostTrail(&particles, player.position, player.velocity);
+        }
+        if (player.drilledCells > 0) {
+            float drillShake = Clamp(0.25f + (float)player.drilledCells * 0.025f,
+                                     0.0f, 1.4f);
+
+            cameraShake = fmaxf(cameraShake, drillShake);
+            ParticlesSpawnDrillDebris(&particles, player.drillPosition,
+                                      player.velocity, player.drilledCells);
         }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
@@ -285,7 +342,8 @@ int main(int argc, char **argv)
             cameraShake = 4.8f;
             GameAudioPlayExplosion(&audio);
         }
-        GameAudioUpdate(&audio, powers.laserActive, deltaTime);
+        GameAudioUpdate(&audio, powers.laserActive, player.drilledCells > 0,
+                        deltaTime);
         ParticlesUpdate(&particles, deltaTime);
 
         simulationAccumulator += deltaTime;
@@ -334,15 +392,15 @@ int main(int argc, char **argv)
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
-                      !smokeFireContained ||
+                      !smokeDrillObserved || !smokeFireContained ||
                       world.activeChunkCount <= 0 ||
                       world.activeChunkCount >= world.chunkColumns * world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
-                "fire_contained=%d chunks=%d/%d\n",
+                "drill=%d fire_contained=%d chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
-                smokeCollisionObserved, smokeFireContained, world.activeChunkCount,
-                world.chunkColumns * world.chunkRows);
+                smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
+                world.activeChunkCount, world.chunkColumns * world.chunkRows);
         exitCode = 2;
     }
     WorldUnload(&world);

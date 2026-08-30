@@ -18,7 +18,8 @@ typedef enum CellMaterial {
     MATERIAL_STEAM,
     MATERIAL_SMOKE,
     MATERIAL_FIRE,
-    MATERIAL_ASH
+    MATERIAL_ASH,
+    MATERIAL_COUNT
 } CellMaterial;
 
 typedef struct Cell {
@@ -49,7 +50,6 @@ typedef struct World {
     Texture2D texture;
     uint32_t tick;
     uint32_t effectSerial;
-    int activeCells;
     WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
     int reactionCount;
     int chunkColumns;
@@ -57,20 +57,30 @@ typedef struct World {
     int activeChunkCount;
     uint8_t *activeChunks;
     uint8_t *nextActiveChunks;
+    /* Chunks whose pixels changed since the last upload. The simulation already
+       tracks where work happens; the renderer reuses that instead of rebuilding
+       the whole texture every frame. */
+    uint8_t *dirtyChunks;
 } World;
 
 bool WorldInit(World *world, int width, int height);
+/* Creates the GPU texture. Separate from WorldInit so the simulation can run
+   headlessly in tests, where no window or GL context exists. */
+bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
 void WorldUpdate(World *world);
 void WorldDraw(World *world);
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
+int WorldCountDynamicCells(const World *world);
 float WorldGetTemperature(const World *world, int x, int y);
+void WorldSetTemperature(World *world, int x, int y, float temperature);
 bool WorldMaterialIsSolid(CellMaterial material);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
+int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);

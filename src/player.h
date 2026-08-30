@@ -10,19 +10,32 @@ typedef struct Player {
     Vector2 velocity;
     Vector2 impactPosition;
     Vector2 impactNormal;
+    Vector2 drillPosition;
     float acceleration;
     float maxSpeed;
+    float boostAcceleration;
+    float boostMaxSpeed;
+    float boostDrag;
+    float boostGrace;
+    float drillSpeed;
+    float drillResistance;
     float drag;
     float restitution;
     float radius;
     float impactStrength;
     float impactTimer;
+    float animationTime;
+    float boostTrailTimer;
+    int drilledCells;
     bool facingRight;
     bool thrusting;
+    bool boosting;
+    bool boostTrailEmitted;
 } Player;
 
 void PlayerInit(Player *player, Vector2 position);
-void PlayerUpdate(Player *player, const World *world, float deltaTime);
+void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
+                  float deltaTime);
 void PlayerResolveWorldCollision(Player *player, const World *world);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
