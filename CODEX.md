@@ -94,10 +94,14 @@ over frameworks, generic containers, or unnecessary abstraction.
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.
 - Movement uses delta time and remains smooth at varying render rates.
-- Player rendering is a code-native, square pixel humanoid made from whole-cell
-  rectangles. Preserve its block head, body, limbs, emblem, and stepped cape.
-  Mirror it toward the cursor instead of freely rotating it; the collider stays
+- Player rendering is a compact, code-native pixel humanoid made from whole-cell
+  rectangles. Preserve its dark helmet/suit, cyan accent, separate limbs, and
+  orange stepped cape. Mirror it toward the cursor instead of freely rotating
+  it; velocity shifts the cape and thrust animates the legs. The collider stays
   a simple circle and does not follow the visible silhouette.
+- Visual references may guide scale, contrast, or broad genre language, but do
+  not reproduce another game's character sprite, exact silhouette, palette, or
+  animation one-for-one. Emberfall must keep an original character design.
 - The camera follows the player and magnifies the world with crisp pixel edges.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one

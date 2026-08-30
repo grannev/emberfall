@@ -242,22 +242,23 @@ static void PlayerDrawPixelBlock(int x, int y, int width, int height, Color colo
 
 void PlayerDraw(const Player *player, Vector2 aimPosition)
 {
-    const Color outline = (Color){18, 30, 49, 255};
-    const Color suit = (Color){35, 126, 203, 255};
-    const Color suitLight = (Color){74, 180, 235, 255};
-    const Color cape = (Color){190, 35, 62, 255};
-    const Color capeShadow = (Color){126, 24, 48, 255};
-    const Color skin = (Color){242, 187, 139, 255};
-    const Color emblem = (Color){255, 221, 76, 255};
-    const Color hair = (Color){72, 43, 34, 255};
+    const Color darkOutline = (Color){15, 20, 28, 255};
+    const Color suit = (Color){43, 50, 61, 255};
+    const Color suitLight = (Color){72, 82, 96, 255};
+    const Color cape = (Color){235, 86, 31, 255};
+    const Color capeShadow = (Color){143, 45, 27, 255};
+    const Color skin = (Color){224, 170, 119, 255};
+    const Color accent = (Color){67, 206, 218, 255};
+    Color outline;
     float aimX;
     float aimY;
     bool facingRight;
     int centerX;
     int centerY;
+    int tailOffsetY;
+    int legFrame;
     int eyeX;
     int eyeY;
-    int flutter;
 
     if (player == NULL) {
         return;
@@ -268,52 +269,60 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     facingRight = fabsf(aimX) > 0.5f ? aimX > 0.0f : player->facingRight;
     centerX = (int)floorf(player->position.x);
     centerY = (int)floorf(player->position.y);
-    flutter = ((int)(GetTime() * 6.0) & 1);
+    tailOffsetY = (int)roundf(Clamp(-player->velocity.y / 36.0f, -2.0f, 2.0f));
+    legFrame = player->thrusting ? ((int)(GetTime() * 10.0) & 1) : 0;
+    outline = player->impactTimer > 0.0f ? (Color){255, 179, 65, 255}
+                                        : darkOutline;
 
-    /* The stepped cape is drawn first so the square body stays readable. */
+    /* A small stepped cape trails the aim direction and reacts to vertical speed. */
     if (facingRight) {
-        DrawRectangle(centerX - 8, centerY - 3, 6, 10, outline);
-        DrawRectangle(centerX - 9, centerY + 1 + flutter, 5, 7, outline);
-        DrawRectangle(centerX - 7, centerY - 2, 5, 7, cape);
-        DrawRectangle(centerX - 8, centerY + 1 + flutter, 5, 5, cape);
-        DrawRectangle(centerX - 7, centerY + 5 + flutter, 3, 2, capeShadow);
+        DrawRectangle(centerX - 5, centerY - 3, 4, 8, outline);
+        DrawRectangle(centerX - 6, centerY + tailOffsetY, 3, 6, outline);
+        DrawRectangle(centerX - 4, centerY - 2, 3, 6, cape);
+        DrawRectangle(centerX - 5, centerY + 1 + tailOffsetY, 2, 4, cape);
+        DrawRectangle(centerX - 5, centerY + 4 + tailOffsetY, 2, 2, capeShadow);
     } else {
-        DrawRectangle(centerX + 2, centerY - 3, 6, 10, outline);
-        DrawRectangle(centerX + 4, centerY + 1 + flutter, 5, 7, outline);
-        DrawRectangle(centerX + 2, centerY - 2, 5, 7, cape);
-        DrawRectangle(centerX + 3, centerY + 1 + flutter, 5, 5, cape);
-        DrawRectangle(centerX + 4, centerY + 5 + flutter, 3, 2, capeShadow);
+        DrawRectangle(centerX + 1, centerY - 3, 4, 8, outline);
+        DrawRectangle(centerX + 3, centerY + tailOffsetY, 3, 6, outline);
+        DrawRectangle(centerX + 1, centerY - 2, 3, 6, cape);
+        DrawRectangle(centerX + 3, centerY + 1 + tailOffsetY, 2, 4, cape);
+        DrawRectangle(centerX + 3, centerY + 4 + tailOffsetY, 2, 2, capeShadow);
     }
 
-    /* Legs and boots use whole-cell rectangles for a deliberately chunky pose. */
-    PlayerDrawPixelBlock(centerX - 3, centerY + 3, 3, 5, suitLight, outline);
-    PlayerDrawPixelBlock(centerX + 1, centerY + 3, 3, 5, suit, outline);
-    DrawRectangle(centerX - 3, centerY + 7, 3, 2, capeShadow);
-    DrawRectangle(centerX + 1, centerY + 7, 3, 2, capeShadow);
+    DrawRectangle(centerX - 2, centerY + 1, 2, 5 + legFrame, outline);
+    DrawRectangle(centerX - 1, centerY + 2, 1, 3 + legFrame, suitLight);
+    DrawRectangle(centerX + 1, centerY + 1 + legFrame, 2, 5 - legFrame, outline);
+    DrawRectangle(centerX + 1, centerY + 2 + legFrame, 1, 3 - legFrame, suit);
+    DrawRectangle(centerX - 2, centerY + 5 + legFrame, 2, 1, capeShadow);
+    DrawRectangle(centerX + 1, centerY + 5, 2, 1, capeShadow);
 
+    /* The rear arm hangs down; the front arm points toward the cursor. */
     if (facingRight) {
-        PlayerDrawPixelBlock(centerX - 5, centerY - 1, 3, 6, suitLight, outline);
-        PlayerDrawPixelBlock(centerX + 2, centerY - 1, 5, 3, suit, outline);
-        DrawRectangle(centerX + 7, centerY, 2, 2, skin);
+        DrawRectangle(centerX - 3, centerY - 2, 2, 5, outline);
+        DrawRectangle(centerX - 2, centerY - 1, 1, 3, suitLight);
+        DrawRectangle(centerX + 1, centerY - 2, 5, 2, outline);
+        DrawRectangle(centerX + 2, centerY - 1, 3, 1, suit);
+        DrawRectangle(centerX + 5, centerY - 1, 1, 1, skin);
     } else {
-        PlayerDrawPixelBlock(centerX + 2, centerY - 1, 3, 6, suitLight, outline);
-        PlayerDrawPixelBlock(centerX - 7, centerY - 1, 5, 3, suit, outline);
-        DrawRectangle(centerX - 9, centerY, 2, 2, skin);
+        DrawRectangle(centerX + 1, centerY - 2, 2, 5, outline);
+        DrawRectangle(centerX + 1, centerY - 1, 1, 3, suitLight);
+        DrawRectangle(centerX - 5, centerY - 2, 5, 2, outline);
+        DrawRectangle(centerX - 4, centerY - 1, 3, 1, suit);
+        DrawRectangle(centerX - 5, centerY - 1, 1, 1, skin);
     }
 
-    PlayerDrawPixelBlock(centerX - 3, centerY - 2, 6, 7, suit, outline);
-    DrawRectangle(centerX - 2, centerY + 3, 4, 1, capeShadow);
-    DrawRectangle(centerX - 1, centerY, 2, 2, emblem);
+    PlayerDrawPixelBlock(centerX - 1, centerY - 3, 3, 5, suit, outline);
+    DrawRectangle(centerX - 1, centerY + 1, 3, 1, capeShadow);
+    DrawRectangle(centerX, centerY - 1, 1, 2, accent);
 
-    PlayerDrawPixelBlock(centerX - 3, centerY - 8, 6, 6, skin, outline);
-    DrawRectangle(centerX - 3, centerY - 8, 6, 2, hair);
-    eyeY = centerY - 5;
-    if (aimY > 6.0f) {
+    PlayerDrawPixelBlock(centerX - 1, centerY - 7, 3, 3, suitLight, outline);
+    eyeY = centerY - 6;
+    if (aimY > 5.0f) {
         ++eyeY;
-    } else if (aimY < -6.0f) {
+    } else if (aimY < -5.0f) {
         --eyeY;
     }
-    eyeX = facingRight ? centerX + 1 : centerX - 2;
-    DrawRectangle(eyeX, eyeY, 1, 1, outline);
-    DrawRectangle(eyeX, eyeY - 1, 1, 1, emblem);
+    eyeX = facingRight ? centerX + 1 : centerX - 1;
+    DrawRectangle(eyeX, centerY - 6, 1, 2, skin);
+    DrawRectangle(eyeX, eyeY, 1, 1, accent);
 }
