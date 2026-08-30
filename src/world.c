@@ -403,7 +403,7 @@ void WorldUpdate(World *world)
         world->tick = 1u;
     }
 
-    for (y = world->height - 2; y >= 0; --y) {
+    for (y = world->height - 1; y >= 0; --y) {
         bool reverse = ((world->tick + (uint32_t)y) & 1u) != 0u;
         int start = reverse ? world->width - 1 : 0;
         int end = reverse ? -1 : world->width;
