@@ -65,7 +65,9 @@ static void DrawDebugHud(const World *world, const Player *player,
     DrawText(TextFormat("CURSOR: %d, %d  %s", (int)cursorCell.x, (int)cursorCell.y,
                         WorldMaterialName(cursorMaterial)),
              24, 113, 18, (Color){186, 194, 205, 255});
-    if (cooldown <= 0.0f) {
+    if (powers->energy < powers->explosionEnergyCost) {
+        DrawText("EXPLOSION: LOW ENERGY", 24, 133, 14, ORANGE);
+    } else if (cooldown <= 0.0f) {
         DrawText("EXPLOSION: READY", 24, 133, 14, LIME);
     } else {
         DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 133, 14, LIGHTGRAY);
@@ -84,23 +86,36 @@ static void DrawControlsHint(void)
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
 }
 
-static void DrawPlayerStatus(const Player *player)
+static void DrawStatusBar(int x, int y, int width, const char *label, float ratio,
+                          Color fill)
+{
+    ratio = Clamp(ratio, 0.0f, 1.0f);
+    DrawText(label, x, y, 15, RAYWHITE);
+    DrawRectangle(x, y + 17, width, 13, (Color){10, 14, 21, 220});
+    DrawRectangle(x + 2, y + 19, (int)((float)(width - 4) * ratio), 9, fill);
+    DrawRectangleLines(x, y + 17, width, 13, (Color){183, 201, 214, 220});
+}
+
+static void DrawPlayerStatus(const Player *player, const PowerSystem *powers)
 {
     const int width = 210;
-    const int height = 18;
     int x = GetScreenWidth() - width - 20;
     int y = 20;
     float healthRatio = player->health / player->maxHealth;
     Color healthColor = healthRatio > 0.55f ? (Color){66, 207, 113, 255}
                                            : (Color){239, 78, 65, 255};
 
-    DrawText(player->alive ? "HEALTH" : "RESPAWNING", x, y - 2, 16, RAYWHITE);
-    DrawRectangle(x, y + 18, width, height, (Color){10, 14, 21, 220});
-    DrawRectangle(x + 2, y + 20, (int)((float)(width - 4) * healthRatio), height - 4,
-                  healthColor);
-    DrawRectangleLines(x, y + 18, width, height, (Color){183, 201, 214, 230});
+    DrawStatusBar(x, y, width, player->alive ? "HEALTH" : "RESPAWNING",
+                  healthRatio, healthColor);
+    DrawStatusBar(x, y + 38, width, "ENERGY", powers->energy / powers->maxEnergy,
+                  (Color){62, 164, 235, 255});
+    DrawStatusBar(x, y + 76, width,
+                  powers->laserOverheated ? "HEAT: OVERHEATED" : "LASER HEAT",
+                  powers->laserHeat / powers->maxLaserHeat,
+                  powers->laserOverheated ? (Color){255, 68, 41, 255}
+                                          : (Color){244, 154, 48, 255});
     if (!player->alive) {
-        DrawText(TextFormat("%.1fs", player->respawnTimer), x + width - 44, y - 2, 16,
+        DrawText(TextFormat("%.1fs", player->respawnTimer), x + width - 44, y, 15,
                  (Color){255, 181, 92, 255});
     }
 }
@@ -262,7 +277,7 @@ int main(int argc, char **argv)
         if (debugHud) {
             DrawDebugHud(&world, &player, &powers, cursorCell);
         }
-        DrawPlayerStatus(&player);
+        DrawPlayerStatus(&player, &powers);
         DrawControlsHint();
         EndDrawing();
 

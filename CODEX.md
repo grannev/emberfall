@@ -87,6 +87,10 @@ over frameworks, generic containers, or unnecessary abstraction.
   terrain and turns some rock into lava; the outer shockwave pushes dynamic
   cells from outer bands inward and emits one event for player knockback,
   expanding-ring feedback, and camera shake.
+- Powers own a 0–100 energy resource. Laser use drains energy and accumulates
+  heat; overheating locks it until heat falls below the recovery threshold.
+  Explosions require both cooldown and enough energy. Keep these values visible
+  in the always-on status HUD.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
 - Laser, explosion, and material-reaction sounds are synthesized at startup; no
