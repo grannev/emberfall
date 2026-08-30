@@ -122,6 +122,30 @@ static void DrawPlayerStatus(const Player *player, const PowerSystem *powers)
     }
 }
 
+static void RunSmokePlayerProbes(World *world, bool *collisionObserved,
+                                 bool *hazardObserved)
+{
+    Player probe;
+    int y;
+
+    for (y = 44; y <= 56; ++y) {
+        WorldSetCell(world, 232, y, MATERIAL_ROCK);
+    }
+    PlayerInit(&probe, (Vector2){225.0f, 50.0f});
+    probe.velocity.x = 180.0f;
+    PlayerUpdate(&probe, world, 0.05f);
+    *collisionObserved = probe.position.x < 228.0f;
+    for (y = 44; y <= 56; ++y) {
+        WorldSetCell(world, 232, y, MATERIAL_EMPTY);
+    }
+
+    PlayerInit(&probe, (Vector2){225.5f, 50.5f});
+    WorldSetCell(world, 225, 50, MATERIAL_LAVA);
+    PlayerApplyWorldHazards(&probe, world);
+    *hazardObserved = probe.health < probe.maxHealth;
+    WorldSetCell(world, 225, 50, MATERIAL_EMPTY);
+}
+
 int main(int argc, char **argv)
 {
     World world;
@@ -139,6 +163,8 @@ int main(int argc, char **argv)
     bool smokeReactionObserved = false;
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
+    bool smokeCollisionObserved = false;
+    bool smokeHazardObserved = false;
     int exitCode = 0;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
@@ -162,6 +188,7 @@ int main(int argc, char **argv)
 
     WorldGenerate(&world);
     if (smokeTest) {
+        RunSmokePlayerProbes(&world, &smokeCollisionObserved, &smokeHazardObserved);
         WorldSetCell(&world, 252, 95, MATERIAL_WATER);
         WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
     }
@@ -294,10 +321,16 @@ int main(int argc, char **argv)
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
-                      !smokeExplosionObserved)) {
+                      !smokeExplosionObserved || !smokeCollisionObserved ||
+                      !smokeHazardObserved || powers.energy >= powers.maxEnergy ||
+                      world.activeChunkCount <= 0 ||
+                      world.activeChunkCount >= world.chunkColumns * world.chunkRows)) {
         fprintf(stderr,
-                "Smoke test failed: reaction=%d laser_hit=%d explosion=%d\n",
-                smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved);
+                "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
+                "hazard=%d energy=%.1f chunks=%d/%d\n",
+                smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
+                smokeCollisionObserved, smokeHazardObserved, powers.energy,
+                world.activeChunkCount, world.chunkColumns * world.chunkRows);
         exitCode = 2;
     }
     WorldUnload(&world);

@@ -42,8 +42,9 @@ make debug
 ```
 
 Короткий автоматический smoke-test открывает игру на несколько кадров,
-проверяет реакцию water/lava, попадание лазера и событие взрыва, после чего
-сохраняет `build/emberfall-smoke.png`:
+проверяет реакцию water/lava, попадание лазера, взрыв, player collision,
+hazards, расход energy и засыпание chunks, затем сохраняет
+`build/emberfall-smoke.png`:
 
 ```sh
 make run RUN_ARGS=--smoke-test

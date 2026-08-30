@@ -26,9 +26,10 @@ The compiler is GCC in C11 mode with `-Wall -Wextra -Wpedantic`. Release uses
 `-O2`; debug uses `-g -O0`. Before handing off changes, build both release and
 debug configurations. For non-interactive runtime checks, the executable also
 accepts `--smoke-test`, writes `build/emberfall-smoke.png`, and closes after a
-few frames. It returns non-zero unless a water/lava reaction, laser contact, and
-explosion event were all observed. Use `make run RUN_ARGS=--smoke-test`; it
-still needs a working display (for example Xvfb in headless environments).
+few frames. It returns non-zero unless material reaction, laser contact,
+explosion, player collision, hazard damage, energy consumption, and chunk sleep
+were all observed. Use `make run RUN_ARGS=--smoke-test`; it still needs a
+working display (for example Xvfb in headless environments).
 
 ## Source layout
 
