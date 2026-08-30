@@ -12,14 +12,19 @@ typedef enum CellMaterial {
     MATERIAL_ROCK,
     MATERIAL_SAND,
     MATERIAL_WATER,
-    MATERIAL_LAVA
+    MATERIAL_LAVA,
+    MATERIAL_STEAM,
+    MATERIAL_SMOKE,
+    MATERIAL_FIRE,
+    MATERIAL_ASH
 } CellMaterial;
 
 typedef struct Cell {
     CellMaterial material;
     uint32_t updatedTick;
     uint32_t effectStamp;
-    uint8_t rockDamage;
+    float temperature;
+    uint16_t lifetime;
 } Cell;
 
 #define MAX_WORLD_REACTIONS 64
@@ -54,6 +59,8 @@ void WorldUpdate(World *world);
 void WorldDraw(World *world);
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
+float WorldGetTemperature(const World *world, int x, int y);
+bool WorldMaterialIsSolid(CellMaterial material);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);

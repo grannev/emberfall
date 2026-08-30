@@ -30,7 +30,20 @@ static const Cell *WorldCellConst(const World *world, int x, int y)
 static bool MaterialIsDynamic(CellMaterial material)
 {
     return material == MATERIAL_SAND || material == MATERIAL_WATER ||
-           material == MATERIAL_LAVA;
+           material == MATERIAL_LAVA || material == MATERIAL_STEAM ||
+           material == MATERIAL_SMOKE || material == MATERIAL_FIRE ||
+           material == MATERIAL_ASH;
+}
+
+static float MaterialInitialTemperature(CellMaterial material)
+{
+    switch (material) {
+        case MATERIAL_LAVA: return 900.0f;
+        case MATERIAL_FIRE: return 650.0f;
+        case MATERIAL_STEAM: return 125.0f;
+        case MATERIAL_SMOKE: return 75.0f;
+        default: return 20.0f;
+    }
 }
 
 static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
@@ -43,7 +56,8 @@ static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
 
     cell = WorldCell(world, x, y);
     cell->material = material;
-    cell->rockDamage = 0;
+    cell->temperature = MaterialInitialTemperature(material);
+    cell->lifetime = 0;
     cell->effectStamp = 0;
 }
 
@@ -96,6 +110,19 @@ static Color MaterialColor(CellMaterial material, int x, int y)
                            (unsigned char)(190 + variation), 225};
         case MATERIAL_LAVA:
             return (Color){245, (unsigned char)(73 + variation * 2), 18, 255};
+        case MATERIAL_STEAM:
+            return (Color){(unsigned char)(204 + variation),
+                           (unsigned char)(222 + variation), 229, 178};
+        case MATERIAL_SMOKE:
+            return (Color){(unsigned char)(83 + variation),
+                           (unsigned char)(88 + variation),
+                           (unsigned char)(94 + variation), 205};
+        case MATERIAL_FIRE:
+            return (Color){255, (unsigned char)(132 + variation * 3), 24, 245};
+        case MATERIAL_ASH:
+            return (Color){(unsigned char)(112 + variation),
+                           (unsigned char)(108 + variation),
+                           (unsigned char)(104 + variation), 255};
         case MATERIAL_EMPTY:
         default: {
             unsigned char glow = (unsigned char)(10 + (y * 10) / 288);
@@ -166,6 +193,152 @@ static void WorldUpdateLiquid(World *world, int x, int y, int direction, bool vi
     (void)WorldTryMoveInto(world, x, y, x - direction, y, false);
 }
 
+static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool slow)
+{
+    if (slow && ((world->tick + (uint32_t)x + (uint32_t)y) & 1u) != 0u) {
+        return;
+    }
+
+    if (WorldTryMoveInto(world, x, y, x, y - 1, false)) {
+        return;
+    }
+    if (WorldTryMoveInto(world, x, y, x + direction, y - 1, false)) {
+        return;
+    }
+    if (WorldTryMoveInto(world, x, y, x - direction, y - 1, false)) {
+        return;
+    }
+    if (WorldTryMoveInto(world, x, y, x + direction, y, false)) {
+        return;
+    }
+    (void)WorldTryMoveInto(world, x, y, x - direction, y, false);
+}
+
+static void WorldHeatNeighbors(World *world, int x, int y, float heat)
+{
+    static const int offsets[8][2] = {
+        {0, 1}, {1, 0}, {0, -1}, {-1, 0},
+        {1, 1}, {-1, 1}, {1, -1}, {-1, -1}
+    };
+    int i;
+
+    for (i = 0; i < 8; ++i) {
+        int targetX = x + offsets[i][0];
+        int targetY = y + offsets[i][1];
+
+        if (WorldInBounds(world, targetX, targetY) &&
+            WorldGetCell(world, targetX, targetY) != MATERIAL_EMPTY) {
+            WorldCell(world, targetX, targetY)->temperature += heat;
+        }
+    }
+}
+
+static bool WorldTryThermalTransition(World *world, int x, int y)
+{
+    Cell *cell = WorldCell(world, x, y);
+    CellMaterial next = cell->material;
+
+    switch (cell->material) {
+        case MATERIAL_DIRT:
+            if (cell->temperature >= 175.0f) next = MATERIAL_FIRE;
+            break;
+        case MATERIAL_SAND:
+            if (cell->temperature >= 280.0f) next = MATERIAL_EMPTY;
+            break;
+        case MATERIAL_ROCK:
+            if (cell->temperature >= 720.0f) next = MATERIAL_LAVA;
+            break;
+        case MATERIAL_WATER:
+            if (cell->temperature >= 108.0f) next = MATERIAL_STEAM;
+            break;
+        case MATERIAL_STEAM:
+            if (cell->temperature <= 58.0f) next = MATERIAL_WATER;
+            break;
+        default:
+            break;
+    }
+
+    if (next == cell->material) {
+        return false;
+    }
+
+    WorldSetCellRaw(world, x, y, next);
+    WorldCell(world, x, y)->updatedTick = world->tick;
+    return true;
+}
+
+static bool WorldUpdateTemperatureState(World *world, int x, int y)
+{
+    Cell *cell = WorldCell(world, x, y);
+
+    switch (cell->material) {
+        case MATERIAL_EMPTY:
+            return false;
+        case MATERIAL_LAVA:
+            cell->temperature += (900.0f - cell->temperature) * 0.08f;
+            break;
+        case MATERIAL_FIRE:
+            cell->temperature += (650.0f - cell->temperature) * 0.12f;
+            break;
+        case MATERIAL_STEAM:
+            cell->temperature -= 0.42f;
+            break;
+        default:
+            cell->temperature += (20.0f - cell->temperature) * 0.006f;
+            break;
+    }
+
+    return WorldTryThermalTransition(world, x, y);
+}
+
+static void WorldUpdateGas(World *world, int x, int y, int direction, bool smoke)
+{
+    Cell *cell = WorldCell(world, x, y);
+    uint16_t maximumLife = smoke
+                               ? (uint16_t)(150u + CoordinateHash(x, y) % 100u)
+                               : 420u;
+
+    if (cell->lifetime < UINT16_MAX) {
+        ++cell->lifetime;
+    }
+    if (cell->lifetime >= maximumLife) {
+        WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+        WorldCell(world, x, y)->updatedTick = world->tick;
+        return;
+    }
+
+    WorldUpdateGasMotion(world, x, y, direction, smoke);
+}
+
+static void WorldUpdateFire(World *world, int x, int y, int direction)
+{
+    Cell *cell = WorldCell(world, x, y);
+    uint16_t maximumLife = (uint16_t)(42u + CoordinateHash(x, y) % 48u);
+
+    if (cell->lifetime < UINT16_MAX) {
+        ++cell->lifetime;
+    }
+    WorldHeatNeighbors(world, x, y, 11.0f);
+
+    if (cell->lifetime % 12u == 0u && WorldGetCell(world, x, y - 1) == MATERIAL_EMPTY) {
+        WorldSetCellRaw(world, x, y - 1, MATERIAL_SMOKE);
+        WorldCell(world, x, y - 1)->updatedTick = world->tick;
+    }
+
+    if (cell->lifetime >= maximumLife) {
+        CellMaterial residue = (CoordinateHash(x, y) + world->tick) % 4u == 0u
+                                   ? MATERIAL_ASH
+                                   : MATERIAL_SMOKE;
+        WorldSetCellRaw(world, x, y, residue);
+        WorldCell(world, x, y)->updatedTick = world->tick;
+        return;
+    }
+
+    if (cell->lifetime > 8u) {
+        WorldUpdateGasMotion(world, x, y, direction, true);
+    }
+}
+
 static void WorldBurnDirt(World *world, int x, int y)
 {
     static const int offsets[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
@@ -181,7 +354,8 @@ static void WorldBurnDirt(World *world, int x, int y)
 
         if (WorldInBounds(world, targetX, targetY) &&
             WorldGetCell(world, targetX, targetY) == MATERIAL_DIRT) {
-            WorldSetCellRaw(world, targetX, targetY, MATERIAL_EMPTY);
+            WorldSetCellRaw(world, targetX, targetY, MATERIAL_FIRE);
+            WorldCell(world, targetX, targetY)->updatedTick = world->tick;
             break;
         }
     }
@@ -244,7 +418,9 @@ static bool WorldTryMaterialReaction(World *world, int x, int y)
         }
 
         WorldSetCellRaw(world, lavaX, lavaY, MATERIAL_ROCK);
-        WorldSetCellRaw(world, waterX, waterY, MATERIAL_EMPTY);
+        WorldSetCellRaw(world, waterX, waterY, MATERIAL_STEAM);
+        WorldCell(world, lavaX, lavaY)->temperature = 185.0f;
+        WorldCell(world, waterX, waterY)->temperature = 125.0f;
         WorldCell(world, lavaX, lavaY)->updatedTick = world->tick;
         WorldCell(world, waterX, waterY)->updatedTick = world->tick;
         WorldRecordReaction(world, waterX, waterY, lavaX, lavaY);
@@ -417,6 +593,9 @@ void WorldUpdate(World *world)
             if (cell->updatedTick == world->tick) {
                 continue;
             }
+            if (WorldUpdateTemperatureState(world, x, y)) {
+                continue;
+            }
 
             switch (cell->material) {
                 case MATERIAL_SAND:
@@ -429,9 +608,22 @@ void WorldUpdate(World *world)
                     break;
                 case MATERIAL_LAVA:
                     if (!WorldTryMaterialReaction(world, x, y)) {
+                        WorldHeatNeighbors(world, x, y, 7.0f);
                         WorldBurnDirt(world, x, y);
                         WorldUpdateLiquid(world, x, y, direction, true);
                     }
+                    break;
+                case MATERIAL_STEAM:
+                    WorldUpdateGas(world, x, y, direction, false);
+                    break;
+                case MATERIAL_SMOKE:
+                    WorldUpdateGas(world, x, y, direction, true);
+                    break;
+                case MATERIAL_FIRE:
+                    WorldUpdateFire(world, x, y, direction);
+                    break;
+                case MATERIAL_ASH:
+                    WorldUpdateSand(world, x, y, direction);
                     break;
                 default:
                     break;
@@ -474,6 +666,20 @@ CellMaterial WorldGetCell(const World *world, int x, int y)
         return MATERIAL_ROCK;
     }
     return WorldCellConst(world, x, y)->material;
+}
+
+float WorldGetTemperature(const World *world, int x, int y)
+{
+    if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
+        return 20.0f;
+    }
+    return WorldCellConst(world, x, y)->temperature;
+}
+
+bool WorldMaterialIsSolid(CellMaterial material)
+{
+    return material == MATERIAL_DIRT || material == MATERIAL_ROCK ||
+           material == MATERIAL_SAND;
 }
 
 void WorldSetCell(World *world, int x, int y, CellMaterial material)
@@ -668,16 +874,15 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
                 }
                 cell->effectStamp = stamp;
 
-                if (cell->material == MATERIAL_DIRT || cell->material == MATERIAL_SAND) {
-                    WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+                if (cell->material == MATERIAL_DIRT) {
+                    cell->temperature += deltaTime * 2500.0f;
+                    (void)WorldTryThermalTransition(world, x, y);
+                } else if (cell->material == MATERIAL_SAND) {
+                    cell->temperature += deltaTime * 3100.0f;
+                    (void)WorldTryThermalTransition(world, x, y);
                 } else if (cell->material == MATERIAL_ROCK) {
-                    int damage = (int)ceilf(deltaTime * 70.0f);
-                    int total = (int)cell->rockDamage + damage;
-
-                    cell->rockDamage = (uint8_t)(total > 255 ? 255 : total);
-                    if (cell->rockDamage >= 42u) {
-                        WorldSetCellRaw(world, x, y, MATERIAL_LAVA);
-                    }
+                    cell->temperature += deltaTime * 1080.0f;
+                    (void)WorldTryThermalTransition(world, x, y);
                 }
             }
         }
@@ -694,6 +899,10 @@ const char *WorldMaterialName(CellMaterial material)
         case MATERIAL_SAND: return "SAND";
         case MATERIAL_WATER: return "WATER";
         case MATERIAL_LAVA: return "LAVA";
+        case MATERIAL_STEAM: return "STEAM";
+        case MATERIAL_SMOKE: return "SMOKE";
+        case MATERIAL_FIRE: return "FIRE";
+        case MATERIAL_ASH: return "ASH";
         case MATERIAL_EMPTY:
         default: return "EMPTY";
     }

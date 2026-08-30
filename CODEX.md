@@ -57,11 +57,15 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Alternate horizontal traversal to avoid a permanent liquid bias.
 - A moved cell must not simulate more than once in the same fixed tick; preserve
   the `updatedTick` mechanism when adding or changing materials.
-- `DIRT` and `ROCK` are static. `SAND`, `WATER`, and `LAVA` are dynamic. Lava is
-  intentionally slower and burns dirt.
-- Water/lava contact consumes one water cell, solidifies one lava cell into
-  rock, and appends a reaction to the fixed-capacity event buffer. Main consumes
-  those events after every fixed tick to spawn steam; do not allocate events.
+- Every non-empty cell carries temperature. Laser, lava, and fire add heat;
+  thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
+  Never reintroduce a separate rock-damage counter.
+- `DIRT` and `ROCK` are static. Sand, water, lava, steam, smoke, fire, and ash
+  participate in cell simulation. Steam/smoke/fire rise; ash falls.
+- Water/lava contact turns water into a physical steam cell, solidifies one lava
+  cell into rock, and appends a reaction to the fixed-capacity event buffer.
+  Main consumes those events after every fixed tick for extra particles/audio;
+  do not allocate events.
 
 ## Gameplay invariants
 
