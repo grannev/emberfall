@@ -101,7 +101,55 @@ static void RunSmokePlayerProbe(World *world, bool *collisionObserved)
     for (y = 44; y <= 56; ++y) {
         WorldSetCell(world, 232, y, MATERIAL_EMPTY);
     }
+}
 
+static bool RunSmokeFireContainmentProbe(void)
+{
+    const int minimumX = 8;
+    const int maximumX = 40;
+    const int minimumY = 8;
+    const int maximumY = 24;
+    const int initialFireRadius = 1;
+    const int minimumRemainingDirt = 480;
+    World probe;
+    int remainingDirt = 0;
+    int tick;
+    int y;
+
+    if (!WorldInit(&probe, 48, 32)) {
+        return false;
+    }
+
+    for (y = minimumY; y <= maximumY; ++y) {
+        int x;
+
+        for (x = minimumX; x <= maximumX; ++x) {
+            WorldSetCell(&probe, x, y, MATERIAL_DIRT);
+        }
+    }
+    for (y = 16 - initialFireRadius; y <= 16 + initialFireRadius; ++y) {
+        int x;
+
+        for (x = 24 - initialFireRadius; x <= 24 + initialFireRadius; ++x) {
+            WorldSetCell(&probe, x, y, MATERIAL_FIRE);
+        }
+    }
+
+    for (tick = 0; tick < 240; ++tick) {
+        WorldUpdate(&probe);
+    }
+
+    for (y = minimumY; y <= maximumY; ++y) {
+        int x;
+
+        for (x = minimumX; x <= maximumX; ++x) {
+            if (WorldGetCell(&probe, x, y) == MATERIAL_DIRT) {
+                ++remainingDirt;
+            }
+        }
+    }
+    WorldUnload(&probe);
+    return remainingDirt >= minimumRemainingDirt;
 }
 
 int main(int argc, char **argv)
@@ -122,6 +170,7 @@ int main(int argc, char **argv)
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
     bool smokeCollisionObserved = false;
+    bool smokeFireContained = false;
     int exitCode = 0;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
@@ -145,6 +194,7 @@ int main(int argc, char **argv)
 
     WorldGenerate(&world);
     if (smokeTest) {
+        smokeFireContained = RunSmokeFireContainmentProbe();
         RunSmokePlayerProbe(&world, &smokeCollisionObserved);
         WorldSetCell(&world, 252, 95, MATERIAL_WATER);
         WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
@@ -271,13 +321,14 @@ int main(int argc, char **argv)
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
+                      !smokeFireContained ||
                       world.activeChunkCount <= 0 ||
                       world.activeChunkCount >= world.chunkColumns * world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
-                "chunks=%d/%d\n",
+                "fire_contained=%d chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
-                smokeCollisionObserved, world.activeChunkCount,
+                smokeCollisionObserved, smokeFireContained, world.activeChunkCount,
                 world.chunkColumns * world.chunkRows);
         exitCode = 2;
     }

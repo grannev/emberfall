@@ -7,6 +7,8 @@
 
 #include <raymath.h>
 
+#define FIRE_NEIGHBOR_HEAT_PER_TICK 0.65f
+
 static void WorldCountActiveState(World *world);
 
 static bool WorldInBounds(const World *world, int x, int y)
@@ -354,7 +356,8 @@ static void WorldUpdateFire(World *world, int x, int y, int direction)
     if (cell->lifetime < UINT16_MAX) {
         ++cell->lifetime;
     }
-    WorldHeatNeighbors(world, x, y, 11.0f);
+    /* One burning cell cannot ignite an unlimited chain of ordinary dirt. */
+    WorldHeatNeighbors(world, x, y, FIRE_NEIGHBOR_HEAT_PER_TICK);
 
     if (cell->lifetime % 12u == 0u && WorldGetCell(world, x, y - 1) == MATERIAL_EMPTY) {
         WorldSetCellRaw(world, x, y - 1, MATERIAL_SMOKE);
