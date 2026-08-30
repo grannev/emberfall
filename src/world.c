@@ -516,6 +516,76 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
     }
 }
 
+void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
+                         int outerRadius)
+{
+    uint32_t stamp;
+    int band;
+
+    if (world == NULL || world->cells == NULL || innerRadius < 0 ||
+        outerRadius <= innerRadius) {
+        return;
+    }
+
+    stamp = ++world->effectSerial;
+    if (stamp == 0u) {
+        stamp = ++world->effectSerial;
+    }
+
+    /* Outer bands move first, so displaced cells cannot be pushed twice. */
+    for (band = outerRadius; band > innerRadius; --band) {
+        int y;
+
+        for (y = centerY - band; y <= centerY + band; ++y) {
+            int x;
+
+            for (x = centerX - band; x <= centerX + band; ++x) {
+                float dx = (float)(x - centerX);
+                float dy = (float)(y - centerY);
+                float distanceSquared = dx * dx + dy * dy;
+                float distance;
+                float directionX;
+                float directionY;
+                float strength;
+                int pushDistance;
+                int push;
+                Cell *cell;
+
+                if (!WorldInBounds(world, x, y) ||
+                    distanceSquared > (float)(band * band) ||
+                    distanceSquared <= (float)((band - 1) * (band - 1))) {
+                    continue;
+                }
+
+                cell = WorldCell(world, x, y);
+                if (!MaterialIsDynamic(cell->material) || cell->effectStamp == stamp) {
+                    continue;
+                }
+
+                distance = sqrtf(distanceSquared);
+                directionX = dx / distance;
+                directionY = dy / distance;
+                strength = 1.0f - (distance - (float)innerRadius) /
+                                      (float)(outerRadius - innerRadius);
+                pushDistance = 2 + (int)(Clamp(strength, 0.0f, 1.0f) * 10.0f);
+                cell->effectStamp = stamp;
+
+                for (push = pushDistance; push >= 1; --push) {
+                    int targetX = (int)roundf((float)x + directionX * (float)push);
+                    int targetY = (int)roundf((float)y + directionY * (float)push);
+
+                    if ((targetX != x || targetY != y) &&
+                        WorldInBounds(world, targetX, targetY) &&
+                        WorldGetCell(world, targetX, targetY) == MATERIAL_EMPTY) {
+                        WorldMoveCell(world, x, y, targetX, targetY);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera)
 {
     Vector2 point = GetScreenToWorld2D(screenPosition, camera);

@@ -13,6 +13,7 @@ typedef struct Player {
 
 void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, float deltaTime, int worldWidth, int worldHeight);
+void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
 
 #endif

@@ -58,6 +58,35 @@ void PlayerUpdate(Player *player, float deltaTime, int worldWidth, int worldHeig
     }
 }
 
+void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force)
+{
+    Vector2 direction;
+    float distance;
+    float strength;
+
+    if (player == NULL || radius <= 0.0f) {
+        return;
+    }
+
+    direction = (Vector2){player->position.x - center.x, player->position.y - center.y};
+    distance = sqrtf(direction.x * direction.x + direction.y * direction.y);
+    if (distance >= radius) {
+        return;
+    }
+
+    if (distance < 0.001f) {
+        direction = (Vector2){0.0f, -1.0f};
+        distance = 0.0f;
+    } else {
+        direction.x /= distance;
+        direction.y /= distance;
+    }
+
+    strength = 1.0f - distance / radius;
+    player->velocity.x += direction.x * force * strength;
+    player->velocity.y += direction.y * force * strength;
+}
+
 void PlayerDraw(const Player *player, Vector2 aimPosition)
 {
     Vector2 aim;

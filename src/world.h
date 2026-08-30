@@ -57,6 +57,8 @@ CellMaterial WorldGetCell(const World *world, int x, int y);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
+void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
+                         int outerRadius);
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);
 
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,

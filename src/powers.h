@@ -22,6 +22,11 @@ typedef struct PowerSystem {
     Vector2 laserStart;
     Vector2 laserEnd;
     CellMaterial laserHitMaterial;
+    bool explosionTriggered;
+    Vector2 explosionPosition;
+    float explosionShockRadius;
+    float shockwaveTime;
+    float shockwaveDuration;
 } PowerSystem;
 
 void PowersInit(PowerSystem *powers);

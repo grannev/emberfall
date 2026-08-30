@@ -94,6 +94,8 @@ int main(int argc, char **argv)
     bool debugHud = true;
     bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
     int smokeFrames = 0;
+    Vector2 cameraFocus;
+    float cameraShake = 0.0f;
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "EMBERFALL - pixel physics sandbox");
@@ -116,7 +118,8 @@ int main(int argc, char **argv)
     PlayerInit(&player, (Vector2){245.0f, 66.0f});
     PowersInit(&powers);
     ParticlesInit(&particles);
-    camera.target = player.position;
+    cameraFocus = player.position;
+    camera.target = cameraFocus;
     camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                               (float)GetScreenHeight() * 0.5f};
     camera.rotation = 0.0f;
@@ -139,6 +142,8 @@ int main(int argc, char **argv)
             PowersInit(&powers);
             ParticlesInit(&particles);
             simulationAccumulator = 0.0f;
+            cameraFocus = player.position;
+            cameraShake = 0.0f;
         }
 
         PlayerUpdate(&player, deltaTime, world.width, world.height);
@@ -147,10 +152,18 @@ int main(int argc, char **argv)
                                   (float)GetScreenHeight() * 0.5f};
         camera.zoom = CameraZoomForWindow();
         desiredCamera = ClampCameraTarget(player.position, camera.zoom, &world);
-        camera.target.x += (desiredCamera.x - camera.target.x) *
-                           (1.0f - expf(-8.0f * deltaTime));
-        camera.target.y += (desiredCamera.y - camera.target.y) *
-                           (1.0f - expf(-8.0f * deltaTime));
+        cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
+                         (1.0f - expf(-8.0f * deltaTime));
+        cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
+                         (1.0f - expf(-8.0f * deltaTime));
+        cameraShake *= expf(-9.0f * deltaTime);
+        if (cameraShake < 0.02f) {
+            cameraShake = 0.0f;
+        }
+        camera.target = (Vector2){
+            cameraFocus.x + ((float)GetRandomValue(-1000, 1000) / 1000.0f) * cameraShake,
+            cameraFocus.y + ((float)GetRandomValue(-1000, 1000) / 1000.0f) * cameraShake
+        };
 
         cursorCell = WorldScreenToCell(&world, GetMousePosition(), camera);
         aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
@@ -164,6 +177,11 @@ int main(int argc, char **argv)
         }
         PowersUpdate(&powers, &world, &particles, player.position, aimPosition, deltaTime,
                      laserHeld, explosionPressed);
+        if (powers.explosionTriggered) {
+            PlayerApplyExplosionImpulse(&player, powers.explosionPosition,
+                                        powers.explosionShockRadius, 145.0f);
+            cameraShake = 4.8f;
+        }
         ParticlesUpdate(&particles, deltaTime);
 
         simulationAccumulator += deltaTime;

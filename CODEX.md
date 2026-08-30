@@ -71,8 +71,10 @@ over frameworks, generic containers, or unnecessary abstraction.
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one
   local brush, and reports the hit point for glow and sparks. Rock takes
   sustained exposure and becomes lava.
-- RMB explodes at the cursor with a visible cooldown. Some affected rock becomes
-  lava.
+- RMB explodes at the cursor with a visible cooldown. The inner radius removes
+  terrain and turns some rock into lava; the outer shockwave pushes dynamic
+  cells from outer bands inward and emits one event for player knockback,
+  expanding-ring feedback, and camera shake.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
 

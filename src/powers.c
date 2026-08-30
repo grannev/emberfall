@@ -38,6 +38,11 @@ void PowersInit(PowerSystem *powers)
     powers->laserStart = (Vector2){0.0f, 0.0f};
     powers->laserEnd = (Vector2){0.0f, 0.0f};
     powers->laserHitMaterial = MATERIAL_EMPTY;
+    powers->explosionTriggered = false;
+    powers->explosionPosition = (Vector2){0.0f, 0.0f};
+    powers->explosionShockRadius = 42.0f;
+    powers->shockwaveTime = 0.0f;
+    powers->shockwaveDuration = 0.32f;
 }
 
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
@@ -52,8 +57,10 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
     }
 
     powers->explosionCooldown = fmaxf(0.0f, powers->explosionCooldown - deltaTime);
+    powers->shockwaveTime = fmaxf(0.0f, powers->shockwaveTime - deltaTime);
     powers->laserActive = false;
     powers->laserHit = false;
+    powers->explosionTriggered = false;
 
     if (directionLength > 0.001f) {
         direction.x /= directionLength;
@@ -84,8 +91,13 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
         powers->current = POWER_EXPLOSION;
         if (powers->explosionCooldown <= 0.0f) {
             WorldDestroyCircle(world, (int)aimPosition.x, (int)aimPosition.y, 17, 0.38f);
+            WorldApplyShockwave(world, (int)aimPosition.x, (int)aimPosition.y, 17,
+                                (int)powers->explosionShockRadius);
             ParticlesSpawnExplosion(particles, aimPosition);
             powers->explosionCooldown = powers->explosionCooldownMax;
+            powers->explosionTriggered = true;
+            powers->explosionPosition = aimPosition;
+            powers->shockwaveTime = powers->shockwaveDuration;
         }
     }
 }
@@ -112,6 +124,16 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
         } else {
             DrawCircleV(powers->laserEnd, 0.9f, (Color){255, 198, 88, 180});
         }
+    }
+
+    if (powers->shockwaveTime > 0.0f) {
+        float progress = 1.0f - powers->shockwaveTime / powers->shockwaveDuration;
+        float radius = 17.0f + (powers->explosionShockRadius - 17.0f) * progress;
+        Color ring = Fade((Color){255, 207, 118, 255}, 1.0f - progress);
+
+        DrawCircleLinesV(powers->explosionPosition, radius, ring);
+        DrawCircleLinesV(powers->explosionPosition, radius + 0.8f,
+                         Fade(ring, 0.35f));
     }
 
     DrawCircleLinesV(aimPosition, 4.0f, crosshair);
