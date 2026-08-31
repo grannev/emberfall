@@ -297,8 +297,10 @@ void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
                                     position.y + tangent.y * spread},
                           (Vector2){-direction.x * backward + tangent.x * spread,
                                     -direction.y * backward + tangent.y * spread},
-                          color, 0.12f + RandomUnit(system) * (0.12f + stage * 0.04f),
-                          0.35f + RandomUnit(system) * (0.45f + stage * 0.22f), 0.0f);
+                          color,
+                          0.12f + RandomUnit(system) * (0.12f + (float)stage * 0.04f),
+                          0.35f + RandomUnit(system) * (0.45f + (float)stage * 0.22f),
+                          0.0f);
     }
 }
 

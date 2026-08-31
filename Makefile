@@ -28,7 +28,7 @@ TEST_TARGET := $(BUILD_DIR)/$(TEST_APP)
 BENCH_TARGET := $(BUILD_DIR)/$(BENCH_APP)
 
 CPPFLAGS += $(shell $(PKG_CONFIG) --cflags raylib 2>/dev/null)
-CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wformat=2
+CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wformat=2 -Wconversion
 LDLIBS += $(shell $(PKG_CONFIG) --libs raylib 2>/dev/null) -lm
 
 ifeq ($(CONFIG),debug)
@@ -46,7 +46,8 @@ else
     CFLAGS += $(CFLAGS_COMMON) -O2
 endif
 
-.PHONY: all run debug clean check-raylib test bench asan ubsan profile
+.PHONY: all run debug clean check-raylib test bench asan ubsan profile \
+	compile_commands.json
 
 all: check-raylib $(TARGET)
 
@@ -93,7 +94,21 @@ ubsan:
 profile:
 	$(MAKE) CONFIG=profile all
 
+# clangd and other tooling read this; regenerating it is cheap and needs no
+# extra dependency, because every translation unit is compiled the same way.
+compile_commands.json:
+	@printf '[\n' > $@
+	@first=1; for source in $(SOURCES) $(TEST_SOURCES) $(BENCH_SOURCES); do \
+		case " $$seen " in *" $$source "*) continue;; esac; \
+		seen="$$seen $$source"; \
+		if [ $$first -eq 0 ]; then printf ',\n' >> $@; fi; first=0; \
+		printf '  {"directory": "%s", "file": "%s", "command": "$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc -c %s"}' \
+			"$(CURDIR)" "$$source" "$$source" >> $@; \
+	done
+	@printf '\n]\n' >> $@
+	@echo "wrote $@"
+
 clean:
-	rm -rf build
+	rm -rf build compile_commands.json
 
 -include $(OBJECTS:.o=.d)

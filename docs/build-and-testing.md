@@ -29,7 +29,10 @@ pkg-config --libs raylib
 make
 ```
 
-Флаги: `-std=c11 -Wall -Wextra -Wpedantic -O2`.
+Флаги: `-std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wformat=2 -Wconversion -O2`.
+Предупреждений должно быть ноль — включая `-Wconversion`, который проект держит
+чистым: сейчас это три исправленных неявных `int → float` и ни одного шумного
+срабатывания.
 
 Результат: `build/release/emberfall`.
 
@@ -39,7 +42,7 @@ make
 make debug
 ```
 
-Флаги: `-std=c11 -Wall -Wextra -Wpedantic -g -O0`.
+Флаги: те же плюс `-g -O0`.
 
 Результат: `build/debug/emberfall`.
 
@@ -85,6 +88,19 @@ make profile
 `asan` и `ubsan` собирают приложение и запускают весь headless test suite.
 `profile` создаёт бинарник с `-pg` в `build/profile/emberfall`; после обычного
 запуска его `gmon.out` можно анализировать через `gprof`.
+
+`make bench` печатает отдельную строку `lighting`: стоимость `WorldUpdateLighting`
+на неподвижной сцене, на движущемся фонаре игрока и при бурении каждый кадр.
+Свет работает целиком на CPU, поэтому измеряется без GL-контекста.
+
+### Tooling
+
+```sh
+make compile_commands.json
+```
+
+Файл нужен clangd и другим инструментам. Он не хранится в репозитории и
+удаляется через `make clean`.
 
 Собирает и запускает `tests/world_tests.c` — headless-набор проверок CPU-side
 gameplay. Результат: `build/release/emberfall-tests`.

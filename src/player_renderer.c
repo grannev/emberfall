@@ -305,7 +305,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
 
             if (ringRadius > 1.0f) {
                 DrawCircleLinesV(player->position, ringRadius,
-                                 Fade(ring, alpha / (1.0f + ringIndex * 0.35f)));
+                                 Fade(ring, alpha / (1.0f + (float)ringIndex * 0.35f)));
             }
         }
     }

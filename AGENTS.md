@@ -4,7 +4,9 @@ Emberfall is a C11 + raylib side-view sandbox built around a large cellular
 world. raylib is the platform, input, rendering, and audio backend; the
 long-term boundary is a headless-testable gameplay core below those systems.
 
-Start with `README.md`, then `docs/README.md`. Detailed system documents contain
+Start with `README.md`, then `docs/README.md`. `docs/adr/` records why the
+current architecture is what it is, including approaches that were implemented,
+measured, and rejected — read the relevant record before undoing one of them. Detailed system documents contain
 the historical reasons behind non-obvious tuning and prior bug fixes; read the
 relevant one before changing simulation, player movement, abilities, or
 rendering. Performance measurements live in `docs/performance.md`. This file is
@@ -21,6 +23,7 @@ make bench           # deterministic 10-scenario benchmark plus lighting
 make asan
 make ubsan
 make profile
+make compile_commands.json   # for clangd
 xvfb-run -a make run RUN_ARGS=--smoke-test
 make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 ```
