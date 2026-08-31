@@ -5,6 +5,7 @@
 
 #include <raylib.h>
 
+#include "rng.h"
 #include "world.h"
 
 #define MAX_PARTICLES 1024
@@ -35,9 +36,12 @@ typedef struct Particle {
 typedef struct ParticleSystem {
     Particle particles[MAX_PARTICLES];
     int nextParticle;
+    Rng rng;
 } ParticleSystem;
 
-void ParticlesInit(ParticleSystem *system);
+/* `seed` makes debris reproducible: settling particles write real cells, so
+   their randomness is gameplay state, not decoration. */
+void ParticlesInit(ParticleSystem *system, uint64_t seed);
 void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2 direction);

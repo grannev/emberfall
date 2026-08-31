@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <time.h>
+
 #include <raymath.h>
 
 #define DEFAULT_WORLD_WIDTH 16384
@@ -35,23 +37,42 @@ bool GameInit(GameState *game, GameConfig config)
     if (!WorldInit(&game->world, config.worldWidth, config.worldHeight)) {
         return false;
     }
-    GameReset(game);
+    /* A session with no configured seed still has to be describable after the
+       fact, so one is drawn once here and every world in the session follows
+       from it. The debug HUD shows the world's seed for that reason. */
+    RngSeed(&game->seedSequence,
+            config.seed != 0u ? config.seed : (uint64_t)time(NULL));
+    GameRegenerate(game);
     return true;
 }
 
-void GameReset(GameState *game)
+/* Independent streams derived from the world seed, so that adding a draw to
+   one system cannot shift what another produces. */
+#define GAME_RNG_STREAM_POWERS 11u
+#define GAME_RNG_STREAM_PARTICLES 12u
+
+void GameReset(GameState *game, uint64_t seed)
 {
     if (game == NULL || game->world.cells == NULL) {
         return;
     }
 
-    WorldGenerate(&game->world);
+    game->worldSeed = seed;
+    WorldGenerate(&game->world, seed);
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
-    PowersInit(&game->powers);
-    ParticlesInit(&game->particles);
+    PowersInit(&game->powers, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
+    ParticlesInit(&game->particles, RngStreamSeed(seed, GAME_RNG_STREAM_PARTICLES));
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
+}
+
+void GameRegenerate(GameState *game)
+{
+    if (game == NULL) {
+        return;
+    }
+    GameReset(game, RngNext(&game->seedSequence));
 }
 
 static void GameActivatePlayerRegion(GameState *game)
@@ -196,7 +217,7 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     }
     deltaTime = Clamp(deltaTime, 0.0f, 0.05f);
     if (input->regeneratePressed) {
-        GameReset(game);
+        GameRegenerate(game);
     }
 
     PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,

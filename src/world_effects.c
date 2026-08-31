@@ -40,7 +40,7 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
             }
 
             material = WorldMaterialAt(world, x, y);
-            if (material == MATERIAL_ROCK && GetRandomValue(0, 999) < chance) {
+            if (material == MATERIAL_ROCK && RngRange(&world->rng, 0, 999) < chance) {
                 WorldSetCellRaw(world, x, y, MATERIAL_LAVA);
             } else {
                 WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
@@ -87,7 +87,7 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
                 continue;
             }
 
-            if (GetRandomValue(0, 99) < 3) {
+            if (RngRange(&world->rng, 0, 99) < 3) {
                 WorldSetCellRaw(world, x, y, MATERIAL_ASH);
             } else {
                 WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
@@ -238,7 +238,7 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                        in one or two presses. The exposure check above still
                        limits this to the face, so more power cannot hollow the
                        hill out behind its surface. */
-                    if ((float)GetRandomValue(0, 999) < strength * 160.0f) {
+                    if ((float)RngRange(&world->rng, 0, 999) < strength * 160.0f) {
                         WorldSetCellRaw(world, x, y, MATERIAL_ASH);
                     }
                     continue;

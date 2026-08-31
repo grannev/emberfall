@@ -143,6 +143,9 @@ chunks видно в debug HUD.
   `GameInput` и публикует transient `GameEvents` без allocation
 - `src/input.c` — единственное преобразование raw raylib keyboard/mouse в
   gameplay-oriented input
+- `src/rng.h` — детерминированный seeded RNG; gameplay не берёт из
+  process-wide генератора raylib, поэтому seed плюс последовательность input
+  воспроизводит сессию целиком
 - `src/world.h` + `src/world_*.c` + `src/materials.c` — модуль мира, разделённый
   по ответственностям: storage и chunks, правила движения, теплопередача,
   генерация, свет, эффекты способностей и CPU-подготовка dirty chunks. Таблица

@@ -8,7 +8,8 @@
 ```c
 GameConfig GameDefaultConfig(void);
 bool GameInit(GameState *game, GameConfig config);
-void GameReset(GameState *game);
+void GameReset(GameState *game, uint64_t seed);
+void GameRegenerate(GameState *game);
 void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
                 GameEventBuffer *events);
 void GameUnload(GameState *game);
@@ -41,7 +42,7 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 ```c
 bool WorldInit(World *world, int width, int height);
 void WorldUnload(World *world);
-void WorldGenerate(World *world);
+void WorldGenerate(World *world, uint64_t seed);
 Vector2 WorldPlayerSpawn(const World *world);
 void WorldActivateRegion(World *world, Rectangle region);
 ```
@@ -49,6 +50,10 @@ void WorldActivateRegion(World *world, Rectangle region);
 - `WorldInit` выделяет cells, два active-chunk buffer, отдельные буферы
   pixel/light dirty chunks и поля света, затем выставляет всем cells ambient
   temperature. `World` не владеет GPU ресурсами и работает без окна.
+- `WorldGenerate` детерминирована: один и тот же seed всегда даёт один и тот
+  же мир. Он сохраняется в `World.seed`, а `World.rng` получает отдельный поток
+  для последующих мутаций мира, чтобы взрывы и бурение не сдвигали рельеф,
+  который производит seed.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
   выделяет память и оставляет simulation chunks спящими.
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
@@ -197,7 +202,7 @@ velocity с линейным ослаблением к краю shockwave, но 
 ## Powers API
 
 ```c
-void PowersInit(PowerSystem *powers);
+void PowersInit(PowerSystem *powers, uint64_t seed);
 void PowersUpdate(PowerSystem *powers, World *world,
                   ParticleSystem *particles, Vector2 origin,
                   Vector2 aimPosition, float deltaTime,
@@ -216,7 +221,7 @@ const char *PowersCurrentName(const PowerSystem *powers);
 ## Particle API
 
 ```c
-void ParticlesInit(ParticleSystem *system);
+void ParticlesInit(ParticleSystem *system, uint64_t seed);
 void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position,

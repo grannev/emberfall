@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <raylib.h>
@@ -105,13 +106,14 @@ static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
     return target;
 }
 
-static void DrawDebugHud(const World *world, const Player *player,
-                         const PowerSystem *powers,
-                         const GameEventBuffer *events,
+static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                          const Renderer *renderer, Vector2 cursorCell)
 {
+    const World *world = &game->world;
+    const Player *player = &game->player;
+    const PowerSystem *powers = &game->powers;
     const int panelWidth = 380;
-    const int panelHeight = 184;
+    const int panelHeight = 202;
     float cooldown = powers->explosionCooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
@@ -146,10 +148,14 @@ static void DrawDebugHud(const World *world, const Player *player,
                         (double)renderStats->uploadedBytes / 1024.0,
                         renderStats->preparationMilliseconds),
              24, 153, 14, (Color){166, 183, 223, 255});
+    /* The seed is here so that a bug report is reproducible: it plus the
+       inputs is the whole state of a session. */
+    DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
+             24, 171, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 171, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 189, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 171, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 189, 14,
                  LIGHTGRAY);
     }
 }
@@ -352,13 +358,15 @@ static void PresentGameEvents(const GameEventBuffer *events, GameAudio *audio,
 
 int main(int argc, char **argv)
 {
+    GameConfig config = GameDefaultConfig();
     GameState game = {0};
     GameEventBuffer events = {0};
     GameAudio audio = {0};
     Renderer renderer = {0};
     Camera2D camera = {0};
     bool debugHud = true;
-    bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
+    bool smokeTest = false;
+    int argument;
     int smokeFrames = 0;
     Vector2 cameraFocus;
     Vector2 smokeAim = {0.0f, 0.0f};
@@ -372,6 +380,24 @@ int main(int argc, char **argv)
     bool smokeFireContained = false;
     int exitCode = 0;
 
+    for (argument = 1; argument < argc; ++argument) {
+        if (strcmp(argv[argument], "--smoke-test") == 0) {
+            smokeTest = true;
+        } else if (strcmp(argv[argument], "--seed") == 0 && argument + 1 < argc) {
+            /* Replays a reported world exactly. strtoull takes 0x forms, which
+               is how the debug HUD prints the seed. */
+            config.seed = strtoull(argv[++argument], NULL, 0);
+        } else {
+            fprintf(stderr, "usage: %s [--smoke-test] [--seed VALUE]\n", argv[0]);
+            return 1;
+        }
+    }
+    /* The smoke test must produce the same frame every run, or its reference
+       screenshot is worthless as a comparison. */
+    if (smokeTest && config.seed == 0u) {
+        config.seed = 0x00e6be11u;
+    }
+
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "EMBERFALL - pixel physics sandbox");
     if (!IsWindowReady()) {
@@ -384,7 +410,7 @@ int main(int argc, char **argv)
     SetExitKey(KEY_ESCAPE);
     (void)GameAudioInit(&audio);
 
-    if (!GameInit(&game, GameDefaultConfig()) ||
+    if (!GameInit(&game, config) ||
         !RendererInit(&renderer, &game)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
         RendererUnload(&renderer);
@@ -400,7 +426,7 @@ int main(int argc, char **argv)
                             &smokeDrillObserved);
         /* The probe has exercised the spawn paths; drop what it emitted so the
            reference screenshot starts from a clean frame. */
-        ParticlesInit(&game.particles);
+        ParticlesInit(&game.particles, game.worldSeed);
         /* Build the laser/explosion target relative to the spawn instead of at
            fixed coordinates: generation is randomised, so a hardcoded point is
            not guaranteed to contain terrain. */
@@ -508,8 +534,7 @@ int main(int argc, char **argv)
         EndMode2D();
 
         if (debugHud) {
-            DrawDebugHud(&game.world, &game.player, &game.powers, &events,
-                         &renderer, cursorCell);
+            DrawDebugHud(&game, &events, &renderer, cursorCell);
         }
         DrawControlsHint();
         EndDrawing();

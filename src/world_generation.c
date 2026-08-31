@@ -42,10 +42,10 @@ typedef struct SurfaceProfile {
     float phase[3];
 } SurfaceProfile;
 
-static float RandomRange(float minimum, float maximum)
-{
-    return minimum + (float)GetRandomValue(0, 10000) / 10000.0f * (maximum - minimum);
-}
+/* Generation draws from a stream of its own rather than from World.rng, so
+   that later gameplay effects cannot shift the terrain a seed produces. */
+#define WORLD_RNG_STREAM_TERRAIN 1u
+#define WORLD_RNG_STREAM_EFFECTS 2u
 
 static int SurfaceHeightAt(const SurfaceProfile *profile, int x)
 {
@@ -70,8 +70,9 @@ static void WorldPlacePocket(World *world, int centerX, int centerY,
     WorldFillEllipse(world, centerX, centerY + 2, radiusX - 2, radiusY - 2, fill);
 }
 
-void WorldGenerate(World *world)
+void WorldGenerate(World *world, uint64_t seed)
 {
+    Rng rng;
     SurfaceProfile profile;
     float areaRatio;
     int caveCount;
@@ -90,6 +91,9 @@ void WorldGenerate(World *world)
         return;
     }
 
+    world->seed = seed;
+    RngSeed(&rng, RngStreamSeed(seed, WORLD_RNG_STREAM_TERRAIN));
+    RngSeed(&world->rng, RngStreamSeed(seed, WORLD_RNG_STREAM_EFFECTS));
     cellCount = (size_t)world->width * (size_t)world->height;
     chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     memset(world->cells, 0, cellCount * sizeof(*world->cells));
@@ -111,11 +115,11 @@ void WorldGenerate(World *world)
     profile.amplitude[0] = (float)world->height * 0.045f;
     profile.amplitude[1] = (float)world->height * 0.031f;
     profile.amplitude[2] = (float)world->height * 0.014f;
-    profile.frequency[0] = RandomRange(0.008f, 0.014f);
-    profile.frequency[1] = RandomRange(0.026f, 0.042f);
-    profile.frequency[2] = RandomRange(0.070f, 0.110f);
+    profile.frequency[0] = RngFloat(&rng, 0.008f, 0.014f);
+    profile.frequency[1] = RngFloat(&rng, 0.026f, 0.042f);
+    profile.frequency[2] = RngFloat(&rng, 0.070f, 0.110f);
     for (octave = 0; octave < 3; ++octave) {
-        profile.phase[octave] = RandomRange(0.0f, 6.283f);
+        profile.phase[octave] = RngFloat(&rng, 0.0f, 6.283f);
     }
     dirtDepth = (int)((float)world->height * 0.20f);
 
@@ -151,48 +155,48 @@ void WorldGenerate(World *world)
        hollowed-out chamber rather than the identical egg a single ellipse
        gives. */
     for (feature = 0; feature < caveCount; ++feature) {
-        int centerX = GetRandomValue(20, world->width - 21);
-        int centerY = GetRandomValue((int)((float)world->height * 0.48f),
+        int centerX = RngRange(&rng, 20, world->width - 21);
+        int centerY = RngRange(&rng, (int)((float)world->height * 0.48f),
                                      (int)((float)world->height * 0.91f));
-        int lobes = GetRandomValue(2, 4);
+        int lobes = RngRange(&rng, 2, 4);
         int lobe;
 
         for (lobe = 0; lobe < lobes; ++lobe) {
-            int radiusX = GetRandomValue(8, 24);
-            int radiusY = GetRandomValue(5, 13);
+            int radiusX = RngRange(&rng, 8, 24);
+            int radiusY = RngRange(&rng, 5, 13);
 
             WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
                              MATERIAL_EMPTY);
-            centerX += GetRandomValue(-18, 18);
-            centerY += GetRandomValue(-9, 9);
+            centerX += RngRange(&rng, -18, 18);
+            centerY += RngRange(&rng, -9, 9);
         }
     }
 
     /* Water sits above the lava band so the two only meet when the player digs
        between them. */
     for (feature = 0; feature < pocketCount; ++feature) {
-        int centerX = GetRandomValue(40, world->width - 41);
-        int centerY = GetRandomValue((int)((float)world->height * 0.55f),
+        int centerX = RngRange(&rng, 40, world->width - 41);
+        int centerY = RngRange(&rng, (int)((float)world->height * 0.55f),
                                      (int)((float)world->height * 0.70f));
 
-        WorldPlacePocket(world, centerX, centerY, GetRandomValue(18, 30),
-                         GetRandomValue(11, 18), MATERIAL_WATER);
+        WorldPlacePocket(world, centerX, centerY, RngRange(&rng, 18, 30),
+                         RngRange(&rng, 11, 18), MATERIAL_WATER);
     }
     for (feature = 0; feature < pocketCount; ++feature) {
-        int centerX = GetRandomValue(40, world->width - 41);
-        int centerY = GetRandomValue((int)((float)world->height * 0.78f),
+        int centerX = RngRange(&rng, 40, world->width - 41);
+        int centerY = RngRange(&rng, (int)((float)world->height * 0.78f),
                                      (int)((float)world->height * 0.93f));
 
-        WorldPlacePocket(world, centerX, centerY, GetRandomValue(16, 27),
-                         GetRandomValue(9, 14), MATERIAL_LAVA);
+        WorldPlacePocket(world, centerX, centerY, RngRange(&rng, 16, 27),
+                         RngRange(&rng, 9, 14), MATERIAL_LAVA);
     }
 
     /* Loose sand banks on the surface, which immediately demonstrate falling
        cell physics wherever the player happens to start. */
     for (feature = 0; feature < bankCount; ++feature) {
-        int bankWidth = GetRandomValue(48, 92);
-        int bankStart = GetRandomValue(4, world->width - bankWidth - 5);
-        int bankDepth = GetRandomValue(12, 24);
+        int bankWidth = RngRange(&rng, 48, 92);
+        int bankStart = RngRange(&rng, 4, world->width - bankWidth - 5);
+        int bankDepth = RngRange(&rng, 12, 24);
         int column;
 
         for (column = 0; column < bankWidth; ++column) {
@@ -212,9 +216,9 @@ void WorldGenerate(World *world)
         /* Wide and low enough to read as a standing butte. Narrow, tall columns
            looked like stray needles poking out of the skyline. One height for
            the whole pillar: rolling it per column made them ragged. */
-        int pillarWidth = GetRandomValue(15, 28);
-        int pillarX = GetRandomValue(4, world->width - pillarWidth - 5);
-        int pillarHeight = GetRandomValue(16, 34);
+        int pillarWidth = RngRange(&rng, 15, 28);
+        int pillarX = RngRange(&rng, 4, world->width - pillarWidth - 5);
+        int pillarHeight = RngRange(&rng, 16, 34);
         int column;
 
         for (column = 0; column < pillarWidth; ++column) {

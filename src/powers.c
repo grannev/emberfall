@@ -26,12 +26,13 @@ static Vector2 LaserEndAtWorldEdge(const World *world, Vector2 origin, Vector2 d
                      origin.y + direction.y * length};
 }
 
-void PowersInit(PowerSystem *powers)
+void PowersInit(PowerSystem *powers, uint64_t seed)
 {
     if (powers == NULL) {
         return;
     }
 
+    RngSeed(&powers->rng, seed);
     powers->current = POWER_LASER;
     powers->explosionCooldown = 0.0f;
     powers->explosionCooldownMax = 0.7f;
@@ -106,7 +107,7 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
         powers->laserHit = result.hit;
         powers->laserHitMaterial = result.material;
 
-        if (result.hit && GetRandomValue(0, 1) == 0) {
+        if (result.hit && RngRange(&powers->rng, 0, 1) == 0) {
             ParticlesSpawnLaserSparks(particles, result.position, direction);
         }
     }

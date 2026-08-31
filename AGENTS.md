@@ -22,6 +22,7 @@ make asan
 make ubsan
 make profile
 xvfb-run -a make run RUN_ARGS=--smoke-test
+make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 ```
 
 ## Invariants
@@ -36,6 +37,10 @@ xvfb-run -a make run RUN_ARGS=--smoke-test
   leave the collider embedded.
 - World mutations, particles, and events use persistent/fixed-capacity storage;
   normal update and render loops must not allocate from the heap.
+- Gameplay randomness is seeded and explicit. A seed plus a sequence of
+  `GameInput` values must replay identically. Never call `GetRandomValue` from
+  gameplay code — draw from the owning system's `Rng` (see `src/rng.h`).
+  Presentation-only jitter may still use raylib's generator.
 - Preserve the original Emberfall character and gameplay. References are not a
   license to copy another game's sprite, UI, assets, levels, or lore.
 

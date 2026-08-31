@@ -6,6 +6,8 @@
 
 #include <raylib.h>
 
+#include "rng.h"
+
 #define WORLD_CHUNK_SIZE 32
 /* Light is solved on a coarser grid than the cells. Eight divides the chunk
    size, so every light cell belongs to exactly one chunk and the dirty-chunk
@@ -68,6 +70,13 @@ typedef struct World {
     Cell *cells;
     uint32_t tick;
     uint32_t effectSerial;
+    /* The seed the current terrain was generated from, and the stream every
+       later world mutation draws from. Both are part of the world's state on
+       purpose: a world plus the inputs applied to it must replay identically,
+       and that is impossible if an effect draws from a generator shared with
+       the frame loop. */
+    uint64_t seed;
+    Rng rng;
     WorldTickStats lastTickStats;
     WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
     int reactionCount;
@@ -117,7 +126,10 @@ typedef struct World {
 
 bool WorldInit(World *world, int width, int height);
 void WorldUnload(World *world);
-void WorldGenerate(World *world);
+/* Generates terrain from `seed` and stores it. The same seed always produces
+   the same world, which is what makes bug reports, regression tests and
+   benchmark scenarios repeatable. */
+void WorldGenerate(World *world, uint64_t seed);
 Vector2 WorldPlayerSpawn(const World *world);
 /* Wakes generated dynamic or heated cells inside a streamed gameplay region.
    Actual cell mutations wake themselves regardless of this region. */

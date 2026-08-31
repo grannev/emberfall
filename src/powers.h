@@ -6,6 +6,7 @@
 #include <raylib.h>
 
 #include "particles.h"
+#include "rng.h"
 #include "world.h"
 
 typedef enum PowerKind {
@@ -17,6 +18,7 @@ typedef enum PowerKind {
 
 typedef struct PowerSystem {
     PowerKind current;
+    Rng rng;
     float explosionCooldown;
     float explosionCooldownMax;
     bool laserActive;
@@ -55,7 +57,7 @@ typedef struct PowerSystem {
     float shockwaveDuration;
 } PowerSystem;
 
-void PowersInit(PowerSystem *powers);
+void PowersInit(PowerSystem *powers, uint64_t seed);
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
                   Vector2 origin, Vector2 aimPosition, float deltaTime,
                   bool laserHeld, bool explosionPressed, bool forcePressed,

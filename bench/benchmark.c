@@ -137,8 +137,7 @@ static void FillRectangle(World *world, int firstX, int firstY, int lastX,
 
 static void PrepareScenario(BenchContext *context)
 {
-    SetRandomSeed(BENCH_SEED);
-    WorldGenerate(context->world);
+    WorldGenerate(context->world, BENCH_SEED);
     ResetWorkFlags(context->world);
 }
 
@@ -410,15 +409,13 @@ int main(int argc, char **argv)
         return 1;
     }
     initialized = NowSeconds();
-    SetRandomSeed(BENCH_SEED);
-    WorldGenerate(&world);
+    WorldGenerate(&world, BENCH_SEED);
     generated = NowSeconds();
-    SetRandomSeed(BENCH_SEED);
-    WorldGenerate(&world);
+    WorldGenerate(&world, BENCH_SEED);
     regenerated = NowSeconds();
 
-    printf("Emberfall headless benchmark: %dx%d, %d ticks/scenario, seed=%u\n",
-           world.width, world.height, ticks, BENCH_SEED);
+    printf("Emberfall headless benchmark: %dx%d, %d ticks/scenario, seed=0x%llx\n",
+           world.width, world.height, ticks, (unsigned long long)BENCH_SEED);
     printf("startup: init=%.3f ms  generate=%.3f ms  regenerate=%.3f ms\n",
            (initialized - start) * 1000.0,
            (generated - initialized) * 1000.0,

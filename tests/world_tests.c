@@ -119,8 +119,7 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     Rectangle wholeWorld = {0.0f, 0.0f, 64.0f, 64.0f};
 
     CHECK(WorldInit(&world, 64, 64), "world allocation failed");
-    SetRandomSeed(0xE6BEu);
-    WorldGenerate(&world);
+    WorldGenerate(&world, 0xE6BEu);
 
     WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 4, "first preparation visited %d/4 chunks",
@@ -179,7 +178,7 @@ static void test_game_update_publishes_transient_events(void)
     config.worldHeight = 144;
     config.activeRadiusX = 96.0f;
     config.activeRadiusY = 72.0f;
-    SetRandomSeed(0xE6BEu);
+    config.seed = 0xE6BEu;
     CHECK(GameInit(&game, config), "game allocation failed");
 
     input.aimWorld = (Vector2){game.player.position.x + 20.0f,
@@ -200,6 +199,133 @@ static void test_game_update_publishes_transient_events(void)
     CHECK(!HasGameEvent(&events, GAME_EVENT_EXPLOSION),
           "one-frame explosion event leaked into the next update");
     GameUnload(&game);
+}
+
+/* --- determinism --------------------------------------------------------- */
+
+/* A cheap order-sensitive digest of everything the simulation owns. Comparing
+   whole worlds cell by cell would work too, but a single number makes a failure
+   message readable and keeps the two-world comparisons below short. */
+static uint64_t WorldDigest(const World *world)
+{
+    uint64_t digest = 0xcbf29ce484222325ull;
+    int y;
+
+    for (y = 0; y < world->height; ++y) {
+        int x;
+
+        for (x = 0; x < world->width; ++x) {
+            const Cell *cell = &world->cells[(size_t)y * (size_t)world->width +
+                                             (size_t)x];
+
+            digest = (digest ^ (uint64_t)cell->material) * 0x100000001b3ull;
+            digest = (digest ^ (uint64_t)(int64_t)(cell->temperature * 16.0f)) *
+                     0x100000001b3ull;
+        }
+    }
+    return digest;
+}
+
+static void test_the_same_seed_always_generates_the_same_world(void)
+{
+    World first;
+    World second;
+
+    CHECK(WorldInit(&first, 256, 144), "world allocation failed");
+    CHECK(WorldInit(&second, 256, 144), "world allocation failed");
+    WorldGenerate(&first, 0x51EDu);
+    WorldGenerate(&second, 0x51EDu);
+
+    CHECK(first.seed == 0x51EDu && second.seed == 0x51EDu,
+          "the world did not record the seed it was generated from");
+    CHECK(WorldDigest(&first) == WorldDigest(&second),
+          "the same seed produced two different worlds");
+    WorldUnload(&first);
+    WorldUnload(&second);
+}
+
+static void test_regenerating_one_world_from_a_seed_reproduces_it(void)
+{
+    World world;
+    uint64_t first;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    WorldGenerate(&world, 0x51EDu);
+    first = WorldDigest(&world);
+    WorldGenerate(&world, 0xA11CEu);
+    CHECK(WorldDigest(&world) != first, "two seeds produced the same world");
+    WorldGenerate(&world, 0x51EDu);
+    CHECK(WorldDigest(&world) == first,
+          "regenerating from the original seed did not restore the world");
+    WorldUnload(&world);
+}
+
+/* Generation must not be perturbed by anything drawn later, which is why
+   terrain and gameplay effects use separate streams off the same seed. */
+static void test_world_effects_cannot_shift_the_terrain_a_seed_produces(void)
+{
+    World world;
+    uint64_t clean;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    WorldGenerate(&world, 0x51EDu);
+    clean = WorldDigest(&world);
+
+    WorldGenerate(&world, 0x51EDu);
+    WorldDrillCircle(&world, 128, 100, 6);
+    WorldDestroyCircle(&world, 60, 100, 8, 0.5f);
+    WorldGenerate(&world, 0x51EDu);
+    CHECK(WorldDigest(&world) == clean,
+          "drawing from the effect stream changed the terrain of a seed");
+    WorldUnload(&world);
+}
+
+/* The whole point of a seeded game: a bug report is a seed plus a list of
+   inputs, and a regression test can replay one exactly. */
+static void test_a_seeded_session_replays_identically(void)
+{
+    GameConfig config = GameDefaultConfig();
+    GameState first;
+    GameState second;
+    GameEventBuffer events = {0};
+    int step;
+
+    config.worldWidth = 256;
+    config.worldHeight = 144;
+    config.activeRadiusX = 96.0f;
+    config.activeRadiusY = 72.0f;
+    config.seed = 0x1234u;
+    CHECK(GameInit(&first, config), "game allocation failed");
+    CHECK(GameInit(&second, config), "game allocation failed");
+    CHECK(first.worldSeed == second.worldSeed,
+          "the same configured seed produced two different worlds");
+
+    for (step = 0; step < 40; ++step) {
+        GameInput input = {0};
+
+        input.move = (Vector2){1.0f, step % 7 == 0 ? -1.0f : 0.0f};
+        input.boostHeld = step > 5;
+        input.laserHeld = step % 5 == 0;
+        input.explosionPressed = step == 12;
+        input.forcePressed = step == 20;
+        input.chillHeld = step % 11 == 0;
+        input.aimWorld = (Vector2){first.player.position.x + 30.0f,
+                                   first.player.position.y + 8.0f};
+        GameUpdate(&first, &input, config.fixedStep, &events);
+        input.aimWorld = (Vector2){second.player.position.x + 30.0f,
+                                   second.player.position.y + 8.0f};
+        GameUpdate(&second, &input, config.fixedStep, &events);
+    }
+
+    CHECK(first.player.position.x == second.player.position.x &&
+              first.player.position.y == second.player.position.y,
+          "replay diverged: player at %.4f,%.4f vs %.4f,%.4f",
+          first.player.position.x, first.player.position.y,
+          second.player.position.x, second.player.position.y);
+    CHECK(WorldDigest(&first.world) == WorldDigest(&second.world),
+          "replay diverged: the two worlds no longer match");
+    GameUnload(&first);
+    GameUnload(&second);
 }
 
 /* --- material table ----------------------------------------------------- */
@@ -660,8 +786,7 @@ static void test_generation_streams_only_requested_dynamic_regions(void)
     int chunkY;
 
     CHECK(WorldInit(&world, 512, 288), "world allocation failed");
-    SetRandomSeed(0xE6BEu);
-    WorldGenerate(&world);
+    WorldGenerate(&world, 0xE6BEu);
     totalChunks = world.chunkColumns * world.chunkRows;
 
     /* Generated terrain has not interacted yet, so a huge map begins asleep.
@@ -1019,8 +1144,8 @@ static void test_configured_force_power_hits_far_and_hard(void)
     CHECK(WorldInit(&world, 192, 72), "world allocation failed");
     FillRect(&world, 30, 30, 40, 40, MATERIAL_SAND);
     before = CountMaterial(&world, MATERIAL_SAND);
-    PowersInit(&powers);
-    ParticlesInit(&particles);
+    PowersInit(&powers, 0xE6BEu);
+    ParticlesInit(&particles, 0xE6BEu);
 
     PowersUpdate(&powers, &world, &particles, (Vector2){20.0f, 35.0f},
                  (Vector2){150.0f, 35.0f}, 1.0f / 60.0f, false, false, true,
@@ -1134,7 +1259,7 @@ static void test_bouncing_particles_do_not_pass_through_terrain(void)
 
     CHECK(WorldInit(&world, 128, 64), "world allocation failed");
     FillRect(&world, 70, 0, 127, 63, MATERIAL_ROCK);
-    ParticlesInit(&particles);
+    ParticlesInit(&particles, 0xE6BEu);
 
     /* Impact sparks fired straight at a rock wall from open air. */
     ParticlesSpawnImpact(&particles, (Vector2){50.0f, 32.0f},
@@ -1168,7 +1293,7 @@ static void test_drill_debris_settles_as_ash_without_overwriting_terrain(void)
     CHECK(WorldInit(&world, 128, 64), "world allocation failed");
     FillRect(&world, 0, 40, 127, 63, MATERIAL_ROCK);
     rockBefore = CountMaterial(&world, MATERIAL_ROCK);
-    ParticlesInit(&particles);
+    ParticlesInit(&particles, 0xE6BEu);
 
     for (step = 0; step < 40; ++step) {
         ParticlesSpawnDrillDebris(&particles, (Vector2){64.0f, 30.0f},
@@ -1198,7 +1323,7 @@ static void test_passing_particles_ignore_terrain(void)
 
     CHECK(WorldInit(&world, 128, 64), "world allocation failed");
     FillRect(&world, 0, 20, 127, 24, MATERIAL_ROCK);
-    ParticlesInit(&particles);
+    ParticlesInit(&particles, 0xE6BEu);
 
     /* Steam is a gas effect: a rock ceiling must not stop it, or reaction plumes
        would pile up against the lid of a pocket instead of drifting. */
@@ -1424,6 +1549,10 @@ int main(void)
     RUN(test_world_render_preparation_is_headless_and_incremental);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
+    RUN(test_the_same_seed_always_generates_the_same_world);
+    RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
+    RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
+    RUN(test_a_seeded_session_replays_identically);
     RUN(test_every_material_has_table_data);
     RUN(test_material_table_passes_its_own_validation);
     RUN(test_every_material_carries_its_own_cryo_rate);
