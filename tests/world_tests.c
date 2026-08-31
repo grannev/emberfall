@@ -16,6 +16,7 @@
 #include "abilities.h"
 #include "world.h"
 #include "dynamic_terrain.h"
+#include "terrain_extraction.h"
 #include "world_components.h"
 #include "world_render_data.h"
 
@@ -1494,6 +1495,485 @@ static void test_the_detector_never_changes_the_world(void)
     WorldUnload(&world);
 }
 
+/* --- world to body extraction ------------------------------------------- */
+
+/* Extraction is the first thing that joins the detector to the body store, and
+   its one hard promise is atomicity: either it completes, or the world is
+   exactly as it was. Most of these tests are therefore failure tests that
+   compare a digest across the attempt. */
+
+static TerrainExtractResult ExtractAt(World *world, DynamicTerrainSystem *system,
+                                      Rectangle region, int seedX, int seedY)
+{
+    WorldComponentResult component =
+        WorldFindComponent(world, &componentWorkspace, region, seedX, seedY,
+                           WORLD_COMPONENT_MAX_CELLS);
+
+    return TerrainExtractComponent(world, system, &componentWorkspace, component);
+}
+
+/* An island of two materials at two temperatures, so a test can tell whether
+   the body kept what it was given rather than merely the right number of
+   cells. */
+static void BuildExtractableIsland(World *world)
+{
+    FillRect(world, 40, 30, 47, 35, MATERIAL_ROCK);
+    FillRect(world, 44, 30, 47, 32, MATERIAL_ICE);
+    WorldSetTemperature(world, 41, 34, 640.0f);
+    WorldSetTemperature(world, 45, 31, -14.0f);
+}
+
+static void test_extraction_moves_an_island_out_of_the_world(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    const TerrainBody *body;
+    int rockBefore;
+    int iceBefore;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    BuildExtractableIsland(&world);
+    rockBefore = CountMaterial(&world, MATERIAL_ROCK);
+    iceBefore = CountMaterial(&world, MATERIAL_ICE);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+    body = DynamicTerrainGetConst(&terrain, extracted.body);
+    CHECK(body != NULL, "extraction returned an unusable handle");
+
+    /* The static world no longer holds any of it. */
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == 0 &&
+              CountMaterial(&world, MATERIAL_ICE) == 0,
+          "extraction left %d rock and %d ice cells behind",
+          CountMaterial(&world, MATERIAL_ROCK),
+          CountMaterial(&world, MATERIAL_ICE));
+
+    /* And the body holds all of it: nothing was lost in transit. */
+    CHECK(body->cellCount == rockBefore + iceBefore,
+          "body holds %d cells, the island had %d", body->cellCount,
+          rockBefore + iceBefore);
+    CHECK(extracted.cellCount == body->cellCount,
+          "the result claims %d cells but the body has %d", extracted.cellCount,
+          body->cellCount);
+    CHECK(DynamicTerrainStatistics(&terrain)->extractionsSucceeded == 1 &&
+              DynamicTerrainStatistics(&terrain)->extractionsFailed == 0,
+          "counters read %d succeeded / %d failed",
+          DynamicTerrainStatistics(&terrain)->extractionsSucceeded,
+          DynamicTerrainStatistics(&terrain)->extractionsFailed);
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+static void test_extraction_conserves_materials_and_heat(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    const TerrainBody *body;
+    int rock = 0;
+    int ice = 0;
+    int localX;
+    int localY;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    BuildExtractableIsland(&world);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+    body = DynamicTerrainGetConst(&terrain, extracted.body);
+
+    for (localY = 0; localY < body->height; ++localY) {
+        for (localX = 0; localX < body->width; ++localX) {
+            CellMaterial material =
+                DynamicTerrainCellAt(&terrain, extracted.body, localX, localY);
+
+            if (material == MATERIAL_ROCK) ++rock;
+            if (material == MATERIAL_ICE) ++ice;
+        }
+    }
+    /* The island is 8x6 rock with a 4x3 corner replaced by ice. */
+    CHECK(rock == 8 * 6 - 4 * 3 && ice == 4 * 3,
+          "body holds %d rock and %d ice, expected %d and %d", rock, ice,
+          8 * 6 - 4 * 3, 4 * 3);
+
+    /* Temperature travels as the float the world held, exactly. */
+    CHECK(DynamicTerrainTemperatureAt(&terrain, extracted.body, 1, 4) == 640.0f,
+          "the hot cell arrived at %.3f instead of 640",
+          (double)DynamicTerrainTemperatureAt(&terrain, extracted.body, 1, 4));
+    CHECK(DynamicTerrainTemperatureAt(&terrain, extracted.body, 5, 1) == -14.0f,
+          "the frozen cell arrived at %.3f instead of -14",
+          (double)DynamicTerrainTemperatureAt(&terrain, extracted.body, 5, 1));
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* Local (0,0) is the component's bounding-box corner and the body's origin is
+   its centre of mass, so the documented transform has to round-trip. */
+static void test_extraction_places_the_body_where_the_island_was(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    const TerrainBody *body;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A uniform 8x6 block, whose centre of mass is its middle. */
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+    body = DynamicTerrainGetConst(&terrain, extracted.body);
+
+    CHECK(body->sourceX == 40 && body->sourceY == 30,
+          "the body came from %d,%d instead of 40,30", body->sourceX,
+          body->sourceY);
+    CHECK(body->width == 8 && body->height == 6, "raster is %dx%d, expected 8x6",
+          body->width, body->height);
+    CHECK(body->minimumX == 0 && body->maximumX == 7 && body->minimumY == 0 &&
+              body->maximumY == 5,
+          "local bounds are %d..%d, %d..%d", body->minimumX, body->maximumX,
+          body->minimumY, body->maximumY);
+    CHECK(fabsf(body->centerOfMass.x - 4.0f) < 0.001f &&
+              fabsf(body->centerOfMass.y - 3.0f) < 0.001f,
+          "local centre of mass is %.3f,%.3f instead of 4,3",
+          (double)body->centerOfMass.x, (double)body->centerOfMass.y);
+    /* The world position of that centre: 40 + 4, 30 + 3. */
+    CHECK(fabsf(body->position.x - 44.0f) < 0.001f &&
+              fabsf(body->position.y - 33.0f) < 0.001f,
+          "the body sits at %.3f,%.3f instead of 44,33", (double)body->position.x,
+          (double)body->position.y);
+    CHECK(body->angle == 0.0f && body->velocity.x == 0.0f &&
+              body->velocity.y == 0.0f && body->angularVelocity == 0.0f,
+          "a freshly extracted body is already moving");
+    CHECK(body->mass > 0.0f && body->inertia > 0.0f,
+          "mass %.3f and inertia %.3f were not finalised", (double)body->mass,
+          (double)body->inertia);
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* Clearing goes through the ordinary world write path, so the chunks that held
+   the island must be scheduled and marked for a pixel rebuild — otherwise the
+   island would still be on screen after being torn out. */
+static void test_extraction_wakes_and_dirties_the_chunks_it_emptied(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    size_t chunkIndex;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+
+    /* Settle first, then clear the flags, so what the extraction sets is the
+       only thing left to see. */
+    Tick(&world, 3);
+    chunkIndex = (size_t)(30 / WORLD_CHUNK_SIZE) * (size_t)world.chunkColumns +
+                 (size_t)(40 / WORLD_CHUNK_SIZE);
+    memset(world.dirtyChunks, 0,
+           (size_t)world.chunkColumns * (size_t)world.chunkRows);
+    memset(world.lightDirtyChunks, 0,
+           (size_t)world.chunkColumns * (size_t)world.chunkRows);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+    CHECK(world.dirtyChunks[chunkIndex] != 0u,
+          "the emptied chunk was not marked for a pixel rebuild");
+    CHECK(world.lightDirtyChunks[chunkIndex] != 0u,
+          "the emptied chunk did not have its light inputs invalidated");
+    CHECK(world.activeChunks[chunkIndex] != 0u,
+          "the emptied chunk was not scheduled for simulation");
+    CHECK(world.activeChunkCount > 0, "extraction scheduled nothing at all");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+static void test_extraction_crosses_a_chunk_boundary(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    const TerrainBody *body;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    CHECK(28 / WORLD_CHUNK_SIZE != 40 / WORLD_CHUNK_SIZE,
+          "the fixture no longer straddles a chunk border");
+    FillRect(&world, 28, 28, 40, 40, MATERIAL_DIRT);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 30, 30);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+    body = DynamicTerrainGetConst(&terrain, extracted.body);
+    CHECK(body->cellCount == 13 * 13,
+          "a body across a chunk border holds %d of 169 cells", body->cellCount);
+    CHECK(CountMaterial(&world, MATERIAL_DIRT) == 0,
+          "%d dirt cells survived on the far side of the chunk border",
+          CountMaterial(&world, MATERIAL_DIRT));
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* Every refusal must leave the world byte-for-byte as it was, and must not
+   strand a half-filled body in the store. */
+static void CheckExtractionRefused(World *world, DynamicTerrainSystem *system,
+                                   TerrainExtractResult extracted,
+                                   TerrainExtractStatus expected,
+                                   uint64_t digestBefore, int bodiesBefore,
+                                   const char *what)
+{
+    CHECK(extracted.status == expected, "%s reported %s instead of %s", what,
+          TerrainExtractStatusName(extracted.status),
+          TerrainExtractStatusName(expected));
+    CHECK(WorldDigest(world) == digestBefore, "%s changed the world", what);
+    CHECK(DynamicTerrainGet(system, extracted.body) == NULL,
+          "%s handed back a live body", what);
+    CHECK(DynamicTerrainStatistics(system)->activeBodies == bodiesBefore,
+          "%s left %d bodies allocated instead of %d", what,
+          DynamicTerrainStatistics(system)->activeBodies, bodiesBefore);
+}
+
+static void test_an_anchored_component_is_never_extracted(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A floor spanning the map touches the border, so it is anchored. */
+    FillRect(&world, 0, 80, 127, 95, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    CheckExtractionRefused(&world, &terrain,
+                           ExtractAt(&world, &terrain, WholeWorld(&world), 60, 88),
+                           TERRAIN_EXTRACT_NOT_DETACHED, before, 0,
+                           "extracting anchored ground");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+static void test_an_unknown_component_is_never_extracted(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A bar that runs out of the query region: the detector cannot prove it
+       free, so extraction must not guess. */
+    FillRect(&world, 10, 40, 100, 40, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    CheckExtractionRefused(
+        &world, &terrain,
+        ExtractAt(&world, &terrain, (Rectangle){20.0f, 30.0f, 21.0f, 21.0f}, 30, 40),
+        TERRAIN_EXTRACT_NOT_DETACHED, before, 0,
+        "extracting an unknown component");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+static void test_a_component_the_detector_refused_is_never_extracted(void)
+{
+    World world;
+    WorldComponentResult component;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 30, 30, 60, 60, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    /* A budget too small for the block: the detector reports TOO_LARGE, and
+       that is not a licence to tear out whatever it managed to walk. */
+    component = WorldFindComponent(&world, &componentWorkspace,
+                                   WholeWorld(&world), 40, 40, 64);
+    CHECK(component.status == WORLD_COMPONENT_TOO_LARGE,
+          "the fixture no longer produces TOO_LARGE");
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_NOT_DETACHED, before, 0,
+        "extracting a truncated component");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+static void test_extraction_without_a_free_body_slot_changes_nothing(void)
+{
+    World world;
+    uint64_t before;
+    int index;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        CHECK(DynamicTerrainGet(&terrain,
+                                DynamicTerrainAllocBody(&terrain, 2, 2)) != NULL,
+              "could not fill slot %d", index);
+    }
+
+    CheckExtractionRefused(&world, &terrain,
+                           ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34),
+                           TERRAIN_EXTRACT_NO_BODY_SLOT, before,
+                           MAX_TERRAIN_BODIES, "extracting with a full store");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == 8 * 6,
+          "a refused extraction removed rock from the world");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* A ring: few enough cells to pass the detector, but a bounding box larger than
+   any body's raster. The store must say so rather than tear out what fits. */
+static void test_a_component_too_wide_for_a_body_changes_nothing(void)
+{
+    World world;
+    WorldComponentResult component;
+    Rectangle region = {30.0f, 20.0f, 128.0f, 90.0f};
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 200, 140), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 30, 20, 157, 20, MATERIAL_ROCK);
+    FillRect(&world, 30, 109, 157, 109, MATERIAL_ROCK);
+    FillRect(&world, 30, 20, 30, 109, MATERIAL_ROCK);
+    FillRect(&world, 157, 20, 157, 109, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    component = WorldFindComponent(&world, &componentWorkspace, region, 60, 20,
+                                   WORLD_COMPONENT_MAX_CELLS);
+    CHECK(component.status == WORLD_COMPONENT_DETACHED,
+          "the ring fixture reported %s", ComponentStatusName(component.status));
+    CHECK((component.maximumX - component.minimumX + 1) *
+                  (component.maximumY - component.minimumY + 1) >
+              TERRAIN_BODY_RASTER_CAPACITY,
+          "the ring no longer exceeds a body raster");
+    CHECK(component.cellCount < MAX_TERRAIN_BODY_CELLS,
+          "the ring was meant to fail on its bounding box, not its cell count");
+
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_CELL_CAPACITY, before, 0, "extracting an oversized ring");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* A fabricated result is the one input the detector cannot vouch for, so the
+   preflight has to stand on its own. */
+static void test_a_malformed_component_changes_nothing(void)
+{
+    World world;
+    WorldComponentResult component;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+    before = WorldDigest(&world);
+
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 0, 0, 0, 0, 0};
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_INVALID, before, 0, "extracting an empty component");
+
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 39, 35};
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_INVALID, before, 0, "extracting inverted bounds");
+
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 200, 35};
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_INVALID, before, 0, "extracting bounds outside the world");
+
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(NULL, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_INVALID, before, 0, "extracting from no world");
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* The detector runs at one moment and extraction at another. If the world moved
+   on in between, the recorded cells are stale and copying them would put a hole
+   inside a body of rock. */
+static void test_a_component_the_world_has_moved_past_changes_nothing(void)
+{
+    World world;
+    WorldComponentResult component;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+
+    component = WorldFindComponent(&world, &componentWorkspace,
+                                   WholeWorld(&world), 41, 34,
+                                   WORLD_COMPONENT_MAX_CELLS);
+    CHECK(component.status == WORLD_COMPONENT_DETACHED, "the fixture reported %s",
+          ComponentStatusName(component.status));
+
+    /* Something else eats one of its cells between the search and the commit. */
+    WorldSetCell(&world, 43, 32, MATERIAL_EMPTY);
+    before = WorldDigest(&world);
+
+    CheckExtractionRefused(
+        &world, &terrain,
+        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
+        TERRAIN_EXTRACT_WORLD_CHANGED, before, 0,
+        "extracting a component the world moved past");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == 8 * 6 - 1,
+          "the stale extraction removed rock anyway: %d cells left",
+          CountMaterial(&world, MATERIAL_ROCK));
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
+/* Extraction, then a reset: the bodies go with the world they were cut from,
+   and the store is reusable afterwards. */
+static void test_reset_after_extraction_returns_the_store_to_empty(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+
+    DynamicTerrainReset(&terrain);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "reset left %d bodies after an extraction",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    CHECK(DynamicTerrainGet(&terrain, extracted.body) == NULL,
+          "an extracted body's handle survived the reset");
+    /* Outcome counters are session figures and outlive a reset. */
+    CHECK(DynamicTerrainStatistics(&terrain)->extractionsSucceeded == 1,
+          "reset erased the extraction counter");
+
+    /* And the store still works. */
+    FillRect(&world, 60, 30, 67, 35, MATERIAL_ROCK);
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 61, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK,
+          "extraction after a reset reported %s",
+          TerrainExtractStatusName(extracted.status));
+    DynamicTerrainUnload(&terrain);
+    WorldUnload(&world);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -2878,6 +3358,19 @@ int main(void)
     RUN(test_a_component_larger_than_the_budget_is_too_large);
     RUN(test_an_oversized_or_malformed_query_is_refused);
     RUN(test_the_detector_never_changes_the_world);
+    RUN(test_extraction_moves_an_island_out_of_the_world);
+    RUN(test_extraction_conserves_materials_and_heat);
+    RUN(test_extraction_places_the_body_where_the_island_was);
+    RUN(test_extraction_wakes_and_dirties_the_chunks_it_emptied);
+    RUN(test_extraction_crosses_a_chunk_boundary);
+    RUN(test_an_anchored_component_is_never_extracted);
+    RUN(test_an_unknown_component_is_never_extracted);
+    RUN(test_a_component_the_detector_refused_is_never_extracted);
+    RUN(test_extraction_without_a_free_body_slot_changes_nothing);
+    RUN(test_a_component_too_wide_for_a_body_changes_nothing);
+    RUN(test_a_malformed_component_changes_nothing);
+    RUN(test_a_component_the_world_has_moved_past_changes_nothing);
+    RUN(test_reset_after_extraction_returns_the_store_to_empty);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);
