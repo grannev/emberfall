@@ -28,10 +28,17 @@ debug configurations. For non-interactive runtime checks, the executable also
 accepts `--smoke-test`, writes `build/emberfall-smoke.png`, and closes after a
 few frames. It returns non-zero unless material reaction, laser contact,
 explosion, player collision bounce, boost drilling, contained fire propagation,
-and chunk sleep were all observed. The smoke path must not steer the live player;
-drive extra coverage from the dedicated probes instead. Use
-`make run RUN_ARGS=--smoke-test`; it still needs a working display (for example
-Xvfb in headless environments).
+and chunk sleep were all observed. The smoke path must not steer the live player,
+and must not depend on where generation happened to put terrain; drive extra
+coverage from the dedicated probes instead. Use `make run RUN_ARGS=--smoke-test`;
+it still needs a working display (for example Xvfb in headless environments).
+
+`make test` builds and runs `tests/world_tests.c`, a headless suite over the
+simulation core. It never opens a window: `WorldInit` allocates only CPU state
+and `WorldInitRenderer` — the one function needing a GL context — is not called.
+Keep it that way, and add a test whenever a simulation invariant is discovered or
+changed. Run it before handing off; it is far cheaper and broader than the smoke
+test.
 
 ## Source layout
 
@@ -50,12 +57,16 @@ over frameworks, generic containers, or unnecessary abstraction.
 
 ## World invariants
 
-- The simulation grid is 512×288 unless a deliberate design change requires
-  otherwise.
+- The simulation grid is 1536×864 unless a deliberate design change requires
+  otherwise. Generation must stay parameterised by `world->width`/`height`: no
+  fixed-size buffers and no literal feature coordinates. Feature sizes stay
+  absolute and their counts scale with area, so a larger world gets more terrain
+  of the same scale rather than the same layout stretched out.
 - Store all cells in one contiguous allocation using `y * width + x` indexing.
-- Keep one persistent `Color` buffer and render the world with one Texture2D
-  updated by `UpdateTexture`; never render cells with per-cell DrawRectangle
-  calls.
+- Keep one persistent `Color` buffer and render the world with one Texture2D;
+  never render cells with per-cell DrawRectangle calls. `WorldDraw` rebuilds only
+  dirty chunks and uploads one full-width row band through `UpdateTextureRec`.
+  Incremental drawing must stay pixel-identical to a full rebuild.
 - Use nearest-neighbor texture filtering.
 - Do not allocate heap memory in the frame loop.
 - Update falling materials from bottom to top.
@@ -63,22 +74,33 @@ over frameworks, generic containers, or unnecessary abstraction.
 - A moved cell must not simulate more than once in the same fixed tick; preserve
   the `updatedTick` mechanism when adding or changing materials.
 - Simulation uses persistent 32×32 active-chunk and next-active-chunk arrays.
-  Movement, heat, destruction, material changes, and public cell writes must
-  wake the affected cell and neighboring chunks in both buffers. Dynamic or hot
-  cells keep their area awake; static ambient chunks are allowed to sleep.
+  Movement, heat, destruction, material changes, and public cell writes must wake
+  the affected cell in both buffers. A chunk stays awake because something
+  actually happened in it, never merely because it contains a dynamic or hot
+  cell: a settled sand pile and the interior of a lava lake are allowed to sleep,
+  and whatever later disturbs them wakes the surrounding chunks on its way
+  through. A cell only influences its immediate neighbours, so it wakes an
+  adjacent chunk only when it sits against that chunk's border.
 - Active-chunk buffers are allocated in `WorldInit`, swapped after a fixed tick,
   and freed in `WorldUnload`. Never allocate chunk state in the frame loop.
 - Every non-empty cell carries temperature. Laser, lava, and fire add heat;
   thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
   Never reintroduce a separate rock-damage counter.
+- What a material *is* belongs in the `MATERIALS` table; only what it *does* per
+  tick belongs in code. Adding a material means adding one table entry, and every
+  entry needs a name — a gap is zero-filled and silently reads back as EMPTY.
+- Passive heat from lava is capped below rock's melt threshold, and a saturated
+  neighbour is skipped rather than reheated. Without that ceiling one pocket
+  turns the entire map to lava, the same failure the fire budget prevents, and
+  its ever-growing boundary never lets chunks sleep.
 - `WorldDrillCircle` removes only solid cells, leaves a small fraction as ash,
   and merely warms everything it cannot cut. That wall temperature must stay
   below the water steam point and the dirt ignition point, so drilling can never
   start a fire or boil water on its own.
 - Solid cells are tinted toward ember as their temperature approaches their own
   phase threshold, on a non-linear ramp so modest heat stays visible. Cells at
-  ambient temperature must skip the tint entirely; the texture buffer is rebuilt
-  every frame and cannot afford per-cell work that does not early-out.
+  ambient temperature must skip the tint entirely: it runs for every cell of
+  every dirty chunk and cannot afford per-cell work that does not early-out.
 - Keep passive heat from one fire cell below the dirt ignition budget over its
   full lifetime. Fire may burn a local cluster, but it must not consume an
   unlimited connected dirt layer; the smoke-test has a containment probe.

@@ -111,7 +111,8 @@ raylib input
 | `World.cells` | `WorldInit` | `WorldUnload` |
 | `World.pixels` | `WorldInit` | `WorldUnload` |
 | chunk buffers | `WorldInit` | `WorldUnload` |
-| world `Texture2D` | `WorldInit` | `WorldUnload` |
+| буфер грязных chunks | `WorldInit` | `WorldUnload` |
+| world `Texture2D` | `WorldInitRenderer` | `WorldUnload` |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
@@ -121,7 +122,7 @@ Heap allocation в frame loop запрещён. Размеры world buffers и 
 ## Координатные пространства
 
 - Cell/world space использует одну world unit на одну cell.
-- World texture имеет размер 512×288 и рисуется в начале world space.
+- World texture имеет размер 1536×864 и рисуется в начале world space.
 - Камера показывает логическую область 320×180 и масштабирует её к окну.
 - `TEXTURE_FILTER_POINT` сохраняет nearest-neighbor вид.
 - `WorldScreenToCell` применяет `GetScreenToWorld2D`, округляет вниз и ограничивает

@@ -8,6 +8,16 @@
 #include <raymath.h>
 
 #define FIRE_NEIGHBOR_HEAT_PER_TICK 0.65f
+/* Lava heats whatever it touches, but a rock cell must never reach its melt
+   threshold from lava alone: otherwise one pocket turns the entire map to lava,
+   the way an unbudgeted fire would burn every connected dirt cell. Rock relaxes
+   toward ambient at 0.6% of the gap per tick, so at the 720C threshold it sheds
+   about 4.2C per tick. Keeping the per-neighbour contribution well under that
+   share leaves a boundary cell glowing near 700C forever without melting. */
+#define LAVA_NEIGHBOR_HEAT_PER_TICK 3.0f
+/* The cap, not the rate, is what keeps a pocket from melting its lining: even
+   a cell heated from eight sides at once lands well under rock's 720C. */
+#define LAVA_PASSIVE_HEAT_CAP 660.0f
 /* Resting temperature of every cell. A cell more than half a degree away from
    it counts as thermally active and keeps its chunk awake, so fresh storage
    must start here — zeroed cells would read as hot and never let chunks sleep. */
@@ -42,6 +52,10 @@ static void WorldWakeCellAndNeighbors(World *world, int x, int y)
 {
     int centerChunkX;
     int centerChunkY;
+    int minimumChunkX;
+    int maximumChunkX;
+    int minimumChunkY;
+    int maximumChunkY;
     int chunkY;
 
     if (world->activeChunks == NULL || world->nextActiveChunks == NULL ||
@@ -49,12 +63,22 @@ static void WorldWakeCellAndNeighbors(World *world, int x, int y)
         return;
     }
 
+    /* A cell only ever influences its immediate neighbours, so it needs to wake
+       an adjacent chunk only when it sits against that chunk's border. Waking a
+       full 3x3 block from the middle of a chunk marked nine chunks - over nine
+       thousand cells - for a change that could not leave one of them. */
     centerChunkX = x / WORLD_CHUNK_SIZE;
     centerChunkY = y / WORLD_CHUNK_SIZE;
-    for (chunkY = centerChunkY - 1; chunkY <= centerChunkY + 1; ++chunkY) {
+    minimumChunkX = centerChunkX - (x % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
+    maximumChunkX = centerChunkX +
+                    (x % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
+    minimumChunkY = centerChunkY - (y % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
+    maximumChunkY = centerChunkY +
+                    (y % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
+    for (chunkY = minimumChunkY; chunkY <= maximumChunkY; ++chunkY) {
         int chunkX;
 
-        for (chunkX = centerChunkX - 1; chunkX <= centerChunkX + 1; ++chunkX) {
+        for (chunkX = minimumChunkX; chunkX <= maximumChunkX; ++chunkX) {
             size_t index;
 
             if (chunkX < 0 || chunkX >= world->chunkColumns ||
@@ -378,7 +402,8 @@ static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool
     (void)WorldTryMoveInto(world, x, y, x - direction, y, false);
 }
 
-static void WorldHeatNeighbors(World *world, int x, int y, float heat)
+/* cap <= 0 means the source imposes no ceiling of its own. */
+static void WorldHeatNeighbors(World *world, int x, int y, float heat, float cap)
 {
     static const int offsets[8][2] = {
         {0, 1}, {1, 0}, {0, -1}, {-1, 0},
@@ -392,7 +417,15 @@ static void WorldHeatNeighbors(World *world, int x, int y, float heat)
 
         if (WorldInBounds(world, targetX, targetY) &&
             WorldGetCell(world, targetX, targetY) != MATERIAL_EMPTY) {
-            WorldCell(world, targetX, targetY)->temperature += heat;
+            Cell *target = WorldCell(world, targetX, targetY);
+
+            /* Once a neighbour has saturated, more heat can neither change it
+               nor ever push it over a threshold. Skipping it lets a settled
+               lava lake stop waking its surroundings every single tick. */
+            if (cap > 0.0f && target->temperature >= cap) {
+                continue;
+            }
+            target->temperature += heat;
             WorldWakeCellAndNeighbors(world, targetX, targetY);
         }
     }
@@ -463,7 +496,7 @@ static void WorldUpdateFire(World *world, int x, int y, int direction)
         ++cell->lifetime;
     }
     /* One burning cell cannot ignite an unlimited chain of ordinary dirt. */
-    WorldHeatNeighbors(world, x, y, FIRE_NEIGHBOR_HEAT_PER_TICK);
+    WorldHeatNeighbors(world, x, y, FIRE_NEIGHBOR_HEAT_PER_TICK, 0.0f);
 
     if (cell->lifetime % 12u == 0u && WorldGetCell(world, x, y - 1) == MATERIAL_EMPTY) {
         WorldSetCellRaw(world, x, y - 1, MATERIAL_SMOKE);
@@ -663,17 +696,61 @@ void WorldUnload(World *world)
     memset(world, 0, sizeof(*world));
 }
 
+/* The surface is a sum of three sine octaves with randomised phase, evaluated
+   per column. Keeping it a function instead of a precomputed array is what
+   removes the old fixed 512-wide stack buffer and its width limit. */
+typedef struct SurfaceProfile {
+    float base;
+    float amplitude[3];
+    float frequency[3];
+    float phase[3];
+} SurfaceProfile;
+
+static float RandomRange(float minimum, float maximum)
+{
+    return minimum + (float)GetRandomValue(0, 10000) / 10000.0f * (maximum - minimum);
+}
+
+static int SurfaceHeightAt(const SurfaceProfile *profile, int x)
+{
+    float height = profile->base;
+    int octave;
+
+    for (octave = 0; octave < 3; ++octave) {
+        height += sinf((float)x * profile->frequency[octave] +
+                       profile->phase[octave]) * profile->amplitude[octave];
+    }
+    return (int)height;
+}
+
+/* A rock-lined pocket holding a liquid: the shell keeps the contents from
+   draining into whatever caves the generator carved next to it. */
+static void WorldPlacePocket(World *world, int centerX, int centerY,
+                             int radiusX, int radiusY, CellMaterial fill)
+{
+    WorldFillEllipse(world, centerX, centerY, radiusX + 4, radiusY + 4,
+                     MATERIAL_ROCK);
+    WorldFillEllipse(world, centerX, centerY, radiusX, radiusY, MATERIAL_EMPTY);
+    WorldFillEllipse(world, centerX, centerY + 2, radiusX - 2, radiusY - 2, fill);
+}
+
 void WorldGenerate(World *world)
 {
-    int surface[512];
+    SurfaceProfile profile;
+    float areaRatio;
+    int caveCount;
+    int pocketCount;
+    int bankCount;
+    int pillarCount;
+    int dirtDepth;
+    int feature;
+    int octave;
     int x;
-    int y;
-    int cave;
     size_t cellIndex;
     size_t cellCount;
     size_t chunkCount;
 
-    if (world == NULL || world->cells == NULL || world->width > 512) {
+    if (world == NULL || world->cells == NULL) {
         return;
     }
 
@@ -689,86 +766,180 @@ void WorldGenerate(World *world)
     world->tick = 0;
     world->effectSerial = 0;
 
-    for (x = 0; x < world->width; ++x) {
-        float rolling = sinf((float)x * 0.035f) * 9.0f +
-                        sinf((float)x * 0.011f + 1.7f) * 13.0f;
-        surface[x] = 103 + (int)rolling;
+    /* Layout is expressed as fractions of the world, but feature sizes stay
+       absolute: a larger world gets more caves and pockets of the same scale,
+       not the same layout stretched out. */
+    profile.base = (float)world->height * 0.36f;
+    profile.amplitude[0] = (float)world->height * 0.045f;
+    profile.amplitude[1] = (float)world->height * 0.031f;
+    profile.amplitude[2] = (float)world->height * 0.014f;
+    profile.frequency[0] = RandomRange(0.008f, 0.014f);
+    profile.frequency[1] = RandomRange(0.026f, 0.042f);
+    profile.frequency[2] = RandomRange(0.070f, 0.110f);
+    for (octave = 0; octave < 3; ++octave) {
+        profile.phase[octave] = RandomRange(0.0f, 6.283f);
+    }
+    dirtDepth = (int)((float)world->height * 0.20f);
 
-        for (y = surface[x]; y < world->height; ++y) {
-            int depth = y - surface[x];
-            CellMaterial material = depth > 58 + (int)(CoordinateHash(x, y) % 17u)
-                                    ? MATERIAL_ROCK
-                                    : MATERIAL_DIRT;
+    for (x = 0; x < world->width; ++x) {
+        int surfaceY = SurfaceHeightAt(&profile, x);
+        int y;
+
+        if (surfaceY < 1) {
+            surfaceY = 1;
+        }
+        for (y = surfaceY; y < world->height; ++y) {
+            int depth = y - surfaceY;
+            CellMaterial material =
+                depth > dirtDepth + (int)(CoordinateHash(x, y) % 17u)
+                    ? MATERIAL_ROCK
+                    : MATERIAL_DIRT;
+
             WorldSetCellRaw(world, x, y, material);
         }
     }
 
-    for (cave = 0; cave < 31; ++cave) {
+    areaRatio = (float)world->width * (float)world->height / (512.0f * 288.0f);
+    caveCount = (int)(31.0f * areaRatio);
+    pocketCount = (int)(2.0f * areaRatio);
+    bankCount = (int)(0.9f * areaRatio);
+    pillarCount = (int)(1.0f * areaRatio);
+    if (caveCount < 1) caveCount = 1;
+    if (pocketCount < 1) pocketCount = 1;
+    if (bankCount < 1) bankCount = 1;
+    if (pillarCount < 1) pillarCount = 1;
+
+    /* Each cave is a short chain of overlapping ellipses, which reads as a
+       hollowed-out chamber rather than the identical egg a single ellipse
+       gives. */
+    for (feature = 0; feature < caveCount; ++feature) {
         int centerX = GetRandomValue(20, world->width - 21);
-        int centerY = GetRandomValue(139, world->height - 25);
-        int radiusX = GetRandomValue(8, 28);
-        int radiusY = GetRandomValue(5, 15);
+        int centerY = GetRandomValue((int)((float)world->height * 0.48f),
+                                     (int)((float)world->height * 0.91f));
+        int lobes = GetRandomValue(2, 4);
+        int lobe;
 
-        WorldFillEllipse(world, centerX, centerY, radiusX, radiusY, MATERIAL_EMPTY);
-    }
+        for (lobe = 0; lobe < lobes; ++lobe) {
+            int radiusX = GetRandomValue(8, 24);
+            int radiusY = GetRandomValue(5, 13);
 
-    /* A loose sand bank which immediately demonstrates falling-cell physics. */
-    for (x = 132; x < 202 && x < world->width; ++x) {
-        int sandTop = surface[x] - 1 - (int)(8.0f * sinf((float)(x - 132) / 70.0f * PI));
-        for (y = sandTop; y < surface[x] + 18 && y < world->height; ++y) {
-            WorldSetCellRaw(world, x, y, MATERIAL_SAND);
+            WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
+                             MATERIAL_EMPTY);
+            centerX += GetRandomValue(-18, 18);
+            centerY += GetRandomValue(-9, 9);
         }
     }
 
-    /* Enclosed water cavern. */
-    WorldFillEllipse(world, 82, 176, 34, 22, MATERIAL_ROCK);
-    WorldFillEllipse(world, 82, 173, 30, 18, MATERIAL_EMPTY);
-    for (y = 171; y <= 188; ++y) {
-        for (x = 52; x <= 112; ++x) {
-            float dx = (float)(x - 82) / 30.0f;
-            float dy = (float)(y - 173) / 18.0f;
-            if (dx * dx + dy * dy <= 1.0f) {
-                WorldSetCellRaw(world, x, y, MATERIAL_WATER);
+    /* Water sits above the lava band so the two only meet when the player digs
+       between them. */
+    for (feature = 0; feature < pocketCount; ++feature) {
+        int centerX = GetRandomValue(40, world->width - 41);
+        int centerY = GetRandomValue((int)((float)world->height * 0.55f),
+                                     (int)((float)world->height * 0.70f));
+
+        WorldPlacePocket(world, centerX, centerY, GetRandomValue(18, 30),
+                         GetRandomValue(11, 18), MATERIAL_WATER);
+    }
+    for (feature = 0; feature < pocketCount; ++feature) {
+        int centerX = GetRandomValue(40, world->width - 41);
+        int centerY = GetRandomValue((int)((float)world->height * 0.78f),
+                                     (int)((float)world->height * 0.93f));
+
+        WorldPlacePocket(world, centerX, centerY, GetRandomValue(16, 27),
+                         GetRandomValue(9, 14), MATERIAL_LAVA);
+    }
+
+    /* Loose sand banks on the surface, which immediately demonstrate falling
+       cell physics wherever the player happens to start. */
+    for (feature = 0; feature < bankCount; ++feature) {
+        int bankWidth = GetRandomValue(48, 92);
+        int bankStart = GetRandomValue(4, world->width - bankWidth - 5);
+        int bankDepth = GetRandomValue(12, 24);
+        int column;
+
+        for (column = 0; column < bankWidth; ++column) {
+            int worldX = bankStart + column;
+            int surfaceY = SurfaceHeightAt(&profile, worldX);
+            int crown = (int)(8.0f * sinf((float)column / (float)bankWidth * PI));
+            int y;
+
+            for (y = surfaceY - 1 - crown; y < surfaceY + bankDepth; ++y) {
+                WorldSetCellRaw(world, worldX, y, MATERIAL_SAND);
             }
         }
     }
 
-    /* A rock-lined lava pocket near the deep right side. */
-    WorldFillEllipse(world, 421, 235, 31, 18, MATERIAL_ROCK);
-    WorldFillEllipse(world, 421, 232, 27, 14, MATERIAL_EMPTY);
-    for (y = 231; y <= 245; ++y) {
-        for (x = 394; x <= 448; ++x) {
-            float dx = (float)(x - 421) / 27.0f;
-            float dy = (float)(y - 232) / 14.0f;
-            if (dx * dx + dy * dy <= 1.0f) {
-                WorldSetCellRaw(world, x, y, MATERIAL_LAVA);
+    /* Breakable dirt pillars: obvious first laser and drill targets. */
+    for (feature = 0; feature < pillarCount; ++feature) {
+        /* Wide and low enough to read as a standing butte. Narrow, tall columns
+           looked like stray needles poking out of the skyline. One height for
+           the whole pillar: rolling it per column made them ragged. */
+        int pillarWidth = GetRandomValue(15, 28);
+        int pillarX = GetRandomValue(4, world->width - pillarWidth - 5);
+        int pillarHeight = GetRandomValue(16, 34);
+        int column;
+
+        for (column = 0; column < pillarWidth; ++column) {
+            int worldX = pillarX + column;
+            int surfaceY = SurfaceHeightAt(&profile, worldX);
+            int y;
+
+            for (y = surfaceY - pillarHeight; y < surfaceY + 48; ++y) {
+                WorldSetCellRaw(world, worldX, y, MATERIAL_DIRT);
             }
         }
     }
 
-    /* Breakable dirt columns make good first laser targets. */
-    for (x = 274; x < 284; ++x) {
-        for (y = 74; y < 151; ++y) {
-            WorldSetCellRaw(world, x, y, MATERIAL_DIRT);
-        }
-    }
     WorldCountActiveState(world);
+}
+
+Vector2 WorldPlayerSpawn(const World *world)
+{
+    int x;
+    int y;
+
+    if (world == NULL || world->cells == NULL) {
+        return (Vector2){0.0f, 0.0f};
+    }
+
+    /* Drop straight down from the middle of the sky and stop short of the first
+       solid cell, so the spawn is open air whatever the generator produced. */
+    x = world->width / 2;
+    for (y = 0; y < world->height; ++y) {
+        if (WorldMaterialIsSolid(WorldGetCell(world, x, y))) {
+            break;
+        }
+    }
+    y -= 10;
+    if (y < 4) {
+        y = 4;
+    }
+    return (Vector2){(float)x + 0.5f, (float)y + 0.5f};
 }
 
 static void WorldUpdateCellAt(World *world, int x, int y)
 {
     Cell *cell = WorldCell(world, x, y);
     int direction = ((CoordinateHash(x, y) + world->tick) & 1u) != 0u ? 1 : -1;
+    float temperatureBefore;
 
     if (cell->updatedTick == world->tick) {
         return;
     }
-    if (MaterialIsDynamic(cell->material) ||
-        fabsf(cell->temperature - AMBIENT_TEMPERATURE) > 0.5f) {
-        WorldWakeCellAndNeighbors(world, x, y);
-    }
+
+    /* A chunk stays awake because something actually happened in it, not merely
+       because it contains a dynamic or hot cell. Movement and material changes
+       already wake their own neighbourhood, so a meaningful temperature change
+       is the remaining case. This is what lets a settled sand pile or the
+       interior of a lava lake sleep while its boundary keeps working: whatever
+       later disturbs them - a drill, an explosion, a cell moving nearby - wakes
+       the surrounding chunks on its way through. */
+    temperatureBefore = cell->temperature;
     if (WorldUpdateTemperatureState(world, x, y)) {
         return;
+    }
+    if (fabsf(cell->temperature - temperatureBefore) > 0.05f) {
+        WorldWakeCellAndNeighbors(world, x, y);
     }
 
     switch (cell->material) {
@@ -782,7 +953,8 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             break;
         case MATERIAL_LAVA:
             if (!WorldTryMaterialReaction(world, x, y)) {
-                WorldHeatNeighbors(world, x, y, 7.0f);
+                WorldHeatNeighbors(world, x, y, LAVA_NEIGHBOR_HEAT_PER_TICK,
+                                   LAVA_PASSIVE_HEAT_CAP);
                 WorldBurnDirt(world, x, y);
                 WorldUpdateLiquid(world, x, y, direction, true);
             }

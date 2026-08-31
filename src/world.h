@@ -69,6 +69,7 @@ bool WorldInit(World *world, int width, int height);
 bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
+Vector2 WorldPlayerSpawn(const World *world);
 void WorldUpdate(World *world);
 void WorldDraw(World *world);
 

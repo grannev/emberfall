@@ -12,8 +12,8 @@
 #include "powers.h"
 #include "world.h"
 
-#define WORLD_WIDTH 512
-#define WORLD_HEIGHT 288
+#define WORLD_WIDTH 1536
+#define WORLD_HEIGHT 864
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
 #define VIEW_WIDTH 320.0f
@@ -141,6 +141,29 @@ static void RunSmokePlayerProbe(World *world, ParticleSystem *particles,
     }
 }
 
+/* Guarantees the smoke run has terrain under the cursor to burn, plus a
+   water/lava pair that must react, wherever the world generator put things. */
+static void SetupSmokeTarget(World *world, Vector2 aim)
+{
+    int centerX = (int)aim.x;
+    int centerY = (int)aim.y;
+    int x;
+    int y;
+
+    for (y = centerY - 10; y <= centerY + 22; ++y) {
+        for (x = centerX - 20; x <= centerX + 20; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_DIRT);
+        }
+    }
+    for (y = centerY - 26; y < centerY - 10; ++y) {
+        for (x = centerX - 20; x <= centerX + 20; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_EMPTY);
+        }
+    }
+    WorldSetCell(world, centerX - 6, centerY - 12, MATERIAL_WATER);
+    WorldSetCell(world, centerX - 5, centerY - 12, MATERIAL_LAVA);
+}
+
 static bool RunSmokeFireContainmentProbe(void)
 {
     const int minimumX = 8;
@@ -203,6 +226,7 @@ int main(int argc, char **argv)
     bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
     int smokeFrames = 0;
     Vector2 cameraFocus;
+    Vector2 smokeAim = {0.0f, 0.0f};
     float cameraShake = 0.0f;
     bool smokeReactionObserved = false;
     bool smokeLaserHitObserved = false;
@@ -233,7 +257,7 @@ int main(int argc, char **argv)
     }
 
     WorldGenerate(&world);
-    PlayerInit(&player, (Vector2){245.0f, 66.0f});
+    PlayerInit(&player, WorldPlayerSpawn(&world));
     PowersInit(&powers);
     ParticlesInit(&particles);
     if (smokeTest) {
@@ -243,8 +267,11 @@ int main(int argc, char **argv)
         /* The probe has exercised the spawn paths; drop what it emitted so the
            reference screenshot starts from a clean frame. */
         ParticlesInit(&particles);
-        WorldSetCell(&world, 252, 95, MATERIAL_WATER);
-        WorldSetCell(&world, 253, 95, MATERIAL_LAVA);
+        /* Build the laser/explosion target relative to the spawn instead of at
+           fixed coordinates: generation is randomised, so a hardcoded point is
+           not guaranteed to contain terrain. */
+        smokeAim = (Vector2){player.position.x + 14.0f, player.position.y + 40.0f};
+        SetupSmokeTarget(&world, smokeAim);
     }
     cameraFocus = player.position;
     camera.target = cameraFocus;
@@ -269,7 +296,7 @@ int main(int argc, char **argv)
         }
         if (IsKeyPressed(KEY_R)) {
             WorldGenerate(&world);
-            PlayerInit(&player, (Vector2){245.0f, 66.0f});
+            PlayerInit(&player, WorldPlayerSpawn(&world));
             PowersInit(&powers);
             ParticlesInit(&particles);
             simulationAccumulator = 0.0f;
@@ -325,8 +352,8 @@ int main(int argc, char **argv)
         laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
         explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
         if (smokeTest) {
-            aimPosition = (Vector2){280.5f, 116.5f};
-            cursorCell = (Vector2){280.0f, 116.0f};
+            aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
+            cursorCell = smokeAim;
             laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
             explosionPressed = smokeFrames == 5;
         }

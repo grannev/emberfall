@@ -270,6 +270,77 @@ static void test_one_fire_cell_cannot_consume_a_whole_dirt_field(void)
     }
 }
 
+static void test_a_lava_pocket_cannot_consume_its_rock_lining(void)
+{
+    World world;
+    int lavaBefore;
+    int rockBefore;
+
+    CHECK(WorldInit(&world, 128, 128), "world allocation failed");
+    FillRect(&world, 0, 0, 127, 127, MATERIAL_ROCK);
+    FillRect(&world, 40, 50, 79, 69, MATERIAL_LAVA);
+    lavaBefore = CountMaterial(&world, MATERIAL_LAVA);
+    rockBefore = CountMaterial(&world, MATERIAL_ROCK);
+
+    /* Lava heats what it touches, but rock must asymptote below its melt point.
+       Without that budget a single pocket turns the whole map to lava, exactly
+       as an unbudgeted fire would burn every connected dirt cell. */
+    Tick(&world, 3000);
+
+    CHECK(CountMaterial(&world, MATERIAL_LAVA) == lavaBefore,
+          "lava grew from %d to %d cells", lavaBefore,
+          CountMaterial(&world, MATERIAL_LAVA));
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == rockBefore,
+          "lava melted %d rock cells",
+          rockBefore - CountMaterial(&world, MATERIAL_ROCK));
+    WorldUnload(&world);
+}
+
+static void test_lava_still_ignites_dirt_it_touches(void)
+{
+    World world;
+    bool burned = false;
+    int tick;
+
+    /* The melt budget must not make lava thermally inert: dirt ignites far
+       below rock's threshold and still has to catch. */
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    FillRect(&world, 0, 0, 63, 63, MATERIAL_DIRT);
+    FillRect(&world, 28, 28, 35, 35, MATERIAL_LAVA);
+
+    for (tick = 0; tick < 600 && !burned; ++tick) {
+        WorldUpdate(&world);
+        burned = CountMaterial(&world, MATERIAL_FIRE) > 0 ||
+                 CountMaterial(&world, MATERIAL_DIRT) < 64 * 64 - 64;
+    }
+    CHECK(burned, "lava never ignited the dirt around it");
+    WorldUnload(&world);
+}
+
+static void test_settled_cells_sleep_but_wake_when_disturbed(void)
+{
+    World world;
+    int settledChunks;
+
+    CHECK(WorldInit(&world, 128, 128), "world allocation failed");
+    FillRect(&world, 0, 100, 127, 127, MATERIAL_ROCK);
+    FillRect(&world, 40, 90, 60, 99, MATERIAL_SAND);
+    Tick(&world, 400);
+    settledChunks = world.activeChunkCount;
+
+    /* A pile that cannot move is not work: it must let its chunks sleep. */
+    CHECK(settledChunks == 0, "settled sand kept %d chunks awake", settledChunks);
+
+    /* ...but pulling the floor out from under it has to wake it again. */
+    FillRect(&world, 40, 100, 60, 127, MATERIAL_EMPTY);
+    WorldUpdate(&world);
+    CHECK(world.activeChunkCount > 0, "removing the floor woke nothing");
+    Tick(&world, 200);
+    CHECK(WorldGetCell(&world, 50, 127) == MATERIAL_SAND,
+          "sand did not fall into the space that opened below it");
+    WorldUnload(&world);
+}
+
 /* --- drilling ---------------------------------------------------------- */
 
 static void test_drill_removes_solids_and_leaves_liquids(void)
@@ -509,6 +580,9 @@ int main(void)
     RUN(test_water_becomes_steam_above_its_threshold);
     RUN(test_water_and_lava_react_into_steam_and_rock);
     RUN(test_one_fire_cell_cannot_consume_a_whole_dirt_field);
+    RUN(test_a_lava_pocket_cannot_consume_its_rock_lining);
+    RUN(test_lava_still_ignites_dirt_it_touches);
+    RUN(test_settled_cells_sleep_but_wake_when_disturbed);
     RUN(test_drill_removes_solids_and_leaves_liquids);
     RUN(test_drill_returns_the_number_of_cells_it_removed);
     RUN(test_drill_cannot_breach_the_world_boundary);

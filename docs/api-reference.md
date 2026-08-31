@@ -9,14 +9,22 @@
 
 ```c
 bool WorldInit(World *world, int width, int height);
+bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
+Vector2 WorldPlayerSpawn(const World *world);
 ```
 
-- `WorldInit` выделяет cells, pixels, два chunk buffer и создаёт texture. Требует
-  уже открытого raylib window/OpenGL context.
+- `WorldInit` выделяет cells, pixels, два chunk buffer и буфер грязных chunks и
+  выставляет всем cells ambient temperature. Он не трогает GPU, поэтому вызывается
+  и без окна.
+- `WorldInitRenderer` создаёт Texture2D. Это единственная функция мира, требующая
+  открытого raylib window/OpenGL context; headless-тесты её не вызывают, и это
+  разделение нужно сохранить.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
   выделяет память.
+- `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
+  чтобы вызывающий код не знал о форме рельефа.
 - `WorldUnload` выгружает texture и освобождает все world allocations.
 
 ### Simulation и rendering
@@ -27,8 +35,10 @@ void WorldDraw(World *world);
 ```
 
 - `WorldUpdate` выполняет ровно один fixed tick.
-- `WorldDraw` обновляет полный Color buffer и texture, затем рисует её в world
-  origin. Вызывать внутри `BeginMode2D`.
+- `WorldDraw` пересчитывает Color buffer только для грязных chunks, загружает
+  одним `UpdateTextureRec` полосу строк во всю ширину и рисует texture в world
+  origin. Вызывать внутри `BeginMode2D`. Результат обязан быть попиксельно
+  идентичен полному перестроению.
 
 ### Cell access
 
@@ -37,7 +47,12 @@ CellMaterial WorldGetCell(const World *world, int x, int y);
 float WorldGetTemperature(const World *world, int x, int y);
 bool WorldMaterialIsSolid(CellMaterial material);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
+void WorldSetTemperature(World *world, int x, int y, float temperature);
+int WorldCountDynamicCells(const World *world);
 ```
+
+`WorldCountDynamicCells` считает динамические cells по запросу и линейно проходит
+весь мир, поэтому вызывается для HUD и тестов, а не каждый tick.
 
 `WorldSetCell` сбрасывает temperature/lifetime к начальному состоянию материала
 и пробуждает chunks. Для изменения только температуры внутри world module нужно
