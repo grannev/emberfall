@@ -179,6 +179,10 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         int reaction;
 
         WorldUpdate(&game->world);
+        /* On the fixed step, beside the world: bodies must advance at the same
+           rate the simulation does, never at the renderer's frame rate. No body
+           exists yet, so this is a walk of thirty-two empty slots. */
+        DynamicTerrainUpdate(&game->dynamicTerrain, game->config.fixedStep);
         for (reaction = 0; reaction < game->world.reactionCount; ++reaction) {
             Vector2 position = game->world.reactions[reaction].position;
 

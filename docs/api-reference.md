@@ -243,7 +243,24 @@ float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
 void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
                                 TerrainBodyHandle handle);
 const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *system);
+
+DynamicTerrainConfig DynamicTerrainDefaultConfig(void);
+void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime);
+void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+void DynamicTerrainSetVelocity(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                               Vector2 velocity, float angularVelocity);
+void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                                Vector2 impulse, Vector2 worldPoint);
+
+/* The transform every other system must read rather than re-derive. */
+Vector2 TerrainBodyLocalToWorld(const TerrainBody *body, float localX, float localY);
+Vector2 TerrainBodyWorldToLocal(const TerrainBody *body, float worldX, float worldY);
 ```
+
+`DynamicTerrainUpdate` вызывается на фиксированном шаге из `GameAdvanceWorld`,
+не с frame delta. `World` он не получает: тела ни с чем не сталкиваются до
+EF-DYN-006. Спящие тела пропускаются целиком. Обход — плоский по 32 слотам, без
+аллокаций и без обхода растра: тело движется как единый transform.
 
 Объявлено в `dynamic_terrain.h`; владеет подсистемой `GameState`. Ни одна
 функция не принимает `World` — изменить мир подсистема не может по сигнатуре.

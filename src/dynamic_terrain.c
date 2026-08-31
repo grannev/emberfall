@@ -32,6 +32,31 @@
    handle cannot name body zero by accident. */
 #define TERRAIN_BODY_FIRST_GENERATION 1u
 
+/* Starting values, not settled ones. Gravity sits between the 18-30 cells/s^2
+   that particle debris uses and something that reads as a slab of rock rather
+   than grit; it will want retuning once EF-DYN-005 makes bodies visible, and
+   the point of gathering it here is that retuning is then one edit.
+
+   linearSleepSpeed is deliberately under gravity * (1/60) = 2.0, so a body in
+   free fall can never satisfy the sleep condition. Until collision exists there
+   is nothing to hold a body still, so sleep is mostly inert; it matters from
+   EF-DYN-006 onward, when a body resting on the ground has its gravity
+   cancelled. */
+DynamicTerrainConfig DynamicTerrainDefaultConfig(void)
+{
+    DynamicTerrainConfig config;
+
+    config.gravity = 120.0f;
+    config.linearDamping = 0.15f;
+    config.angularDamping = 0.40f;
+    config.maximumSpeed = 900.0f;
+    config.maximumAngularSpeed = 12.0f;
+    config.linearSleepSpeed = 1.5f;
+    config.angularSleepSpeed = 0.05f;
+    config.sleepDelay = 0.5f;
+    return config;
+}
+
 static bool TerrainSlotIsLive(const DynamicTerrainSystem *system,
                               TerrainBodyHandle handle)
 {
@@ -56,6 +81,7 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
         return false;
     }
     memset(system, 0, sizeof(*system));
+    system->config = DynamicTerrainDefaultConfig();
     for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
         system->bodies[index].generation = TERRAIN_BODY_FIRST_GENERATION;
     }
@@ -98,6 +124,8 @@ void DynamicTerrainReset(DynamicTerrainSystem *system)
     }
     system->stats.activeBodies = 0;
     system->stats.allocatedDynamicCells = 0;
+    system->stats.awakeBodies = 0;
+    system->stats.sleepingBodies = 0;
 }
 
 TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
@@ -137,6 +165,7 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
     }
     body->active = true;
     body->awake = true;
+    body->sleepTimer = 0.0f;
     body->width = width;
     body->height = height;
     /* An empty body has no extent. Finalize will set real bounds once cells
@@ -361,6 +390,209 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
         }
     }
     body->inertia = inertia;
+}
+
+
+/* ---- kinematics ---------------------------------------------------------
+ *
+ * Semi-implicit Euler: velocity is advanced first and then used to advance
+ * position. It is the standard choice for this and it is stable where explicit
+ * Euler is not, at no extra cost.
+ *
+ * A whole body moves as one transform. Nothing here walks a body's raster —
+ * that is the property that keeps a scene of bodies costing what the bodies
+ * cost rather than what their cells cost, and it must survive every later
+ * change to this file.
+ */
+
+static bool TerrainFinite(float value)
+{
+    return value == value && value > -HUGE_VALF && value < HUGE_VALF;
+}
+
+static bool TerrainFiniteVector(Vector2 value)
+{
+    return TerrainFinite(value.x) && TerrainFinite(value.y);
+}
+
+/* Keeps the angle in (-PI, PI]. Left to grow, a body spinning for a few minutes
+   loses the precision that makes its rotation smooth. */
+static float TerrainNormaliseAngle(float angle)
+{
+    while (angle > PI) {
+        angle -= 2.0f * PI;
+    }
+    while (angle <= -PI) {
+        angle += 2.0f * PI;
+    }
+    return angle;
+}
+
+static void TerrainClampSpeeds(TerrainBody *body,
+                               const DynamicTerrainConfig *config)
+{
+    float speed = sqrtf(body->velocity.x * body->velocity.x +
+                        body->velocity.y * body->velocity.y);
+
+    if (config->maximumSpeed > 0.0f && speed > config->maximumSpeed) {
+        float scale = config->maximumSpeed / speed;
+
+        body->velocity.x *= scale;
+        body->velocity.y *= scale;
+    }
+    if (config->maximumAngularSpeed > 0.0f) {
+        if (body->angularVelocity > config->maximumAngularSpeed) {
+            body->angularVelocity = config->maximumAngularSpeed;
+        } else if (body->angularVelocity < -config->maximumAngularSpeed) {
+            body->angularVelocity = -config->maximumAngularSpeed;
+        }
+    }
+}
+
+static void TerrainIntegrateBody(TerrainBody *body,
+                                 const DynamicTerrainConfig *config, float deltaTime)
+{
+    /* exp(-k * dt) rather than a per-call multiplier: the fraction shed depends
+       on elapsed time, so halving the step and doubling the count gives the
+       same answer. */
+    float linearRetained = expf(-config->linearDamping * deltaTime);
+    float angularRetained = expf(-config->angularDamping * deltaTime);
+
+    body->velocity.y += config->gravity * deltaTime;
+    body->velocity.x *= linearRetained;
+    body->velocity.y *= linearRetained;
+    body->angularVelocity *= angularRetained;
+    TerrainClampSpeeds(body, config);
+
+    body->position.x += body->velocity.x * deltaTime;
+    body->position.y += body->velocity.y * deltaTime;
+    body->angle = TerrainNormaliseAngle(body->angle +
+                                        body->angularVelocity * deltaTime);
+}
+
+static void TerrainUpdateSleep(TerrainBody *body,
+                               const DynamicTerrainConfig *config, float deltaTime)
+{
+    float speed = sqrtf(body->velocity.x * body->velocity.x +
+                        body->velocity.y * body->velocity.y);
+
+    if (speed >= config->linearSleepSpeed ||
+        fabsf(body->angularVelocity) >= config->angularSleepSpeed) {
+        body->sleepTimer = 0.0f;
+        return;
+    }
+    body->sleepTimer += deltaTime;
+    if (body->sleepTimer >= config->sleepDelay) {
+        /* Zeroing on the way down leaves no residual drift for a body that is
+           no longer being integrated, so a sleeping transform is exactly the
+           one a reader sees. */
+        body->awake = false;
+        body->sleepTimer = 0.0f;
+        body->velocity = (Vector2){0.0f, 0.0f};
+        body->angularVelocity = 0.0f;
+    }
+}
+
+void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime)
+{
+    int index;
+
+    if (system == NULL || system->material == NULL) {
+        return;
+    }
+    /* A bad step is a caller bug. Refusing it keeps one from being hidden by a
+       silent clamp, and 0.25 s is far beyond any fixed step this game uses. */
+    if (!TerrainFinite(deltaTime) || deltaTime <= 0.0f || deltaTime > 0.25f) {
+        return;
+    }
+
+    system->stats.awakeBodies = 0;
+    system->stats.sleepingBodies = 0;
+    /* A flat walk of thirty-two slots. A compact list of awake bodies would be
+       asymptotically tidier and, at this size, slower and harder to keep
+       correct than the scan it replaces. */
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        TerrainBody *body = &system->bodies[index];
+
+        if (!body->active) {
+            continue;
+        }
+        if (!body->awake) {
+            ++system->stats.sleepingBodies;
+            continue;
+        }
+        TerrainIntegrateBody(body, &system->config, deltaTime);
+        TerrainUpdateSleep(body, &system->config, deltaTime);
+        if (body->awake) {
+            ++system->stats.awakeBodies;
+        } else {
+            ++system->stats.sleepingBodies;
+        }
+    }
+}
+
+void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle)
+{
+    TerrainBody *body = DynamicTerrainGet(system, handle);
+
+    if (body == NULL) {
+        return;
+    }
+    body->awake = true;
+    body->sleepTimer = 0.0f;
+}
+
+void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,
+                               TerrainBodyHandle handle, Vector2 velocity,
+                               float angularVelocity)
+{
+    TerrainBody *body = DynamicTerrainGet(system, handle);
+
+    if (body == NULL || !TerrainFiniteVector(velocity) ||
+        !TerrainFinite(angularVelocity)) {
+        return;
+    }
+    body->velocity = velocity;
+    body->angularVelocity = angularVelocity;
+    TerrainClampSpeeds(body, &system->config);
+    body->awake = true;
+    body->sleepTimer = 0.0f;
+}
+
+void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system,
+                                TerrainBodyHandle handle, Vector2 impulse,
+                                Vector2 worldPoint)
+{
+    TerrainBody *body = DynamicTerrainGet(system, handle);
+    float leverX;
+    float leverY;
+
+    if (body == NULL || !TerrainFiniteVector(impulse) ||
+        !TerrainFiniteVector(worldPoint)) {
+        return;
+    }
+    /* A body with no mass cannot be pushed and a body with no inertia cannot be
+       turned. Neither can arise from an extraction — every solid material has a
+       density — but dividing by them would poison the transform with NaN, and a
+       NaN body never recovers. */
+    if (!(body->mass > 0.0f) || !(body->inertia > 0.0f)) {
+        return;
+    }
+
+    body->velocity.x += impulse.x / body->mass;
+    body->velocity.y += impulse.y / body->mass;
+
+    /* The 2D cross product of the lever arm with the impulse. Applying an
+       impulse through the centre of mass gives a zero lever and therefore no
+       spin, which is the correct special case rather than one worth writing. */
+    leverX = worldPoint.x - body->position.x;
+    leverY = worldPoint.y - body->position.y;
+    body->angularVelocity += (leverX * impulse.y - leverY * impulse.x) /
+                             body->inertia;
+
+    TerrainClampSpeeds(body, &system->config);
+    body->awake = true;
+    body->sleepTimer = 0.0f;
 }
 
 const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *system)
