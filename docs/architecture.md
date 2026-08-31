@@ -147,16 +147,19 @@ cross-module call в самый горячий цикл проекта; benchmar
 
 `Renderer` — presentation owner, создаваемый в `main.c`. Он компонует:
 
-- `WorldRenderer` — единственный владелец world `Texture2D`, dirty uploads и
-  renderer counters;
+- `WorldRenderer` — единственный владелец GPU-состояния мира: кэш страниц
+  256×256 cells, dirty uploads и renderer counters. Резидентны только видимые
+  страницы, поэтому размер мира больше не ограничен `GL_MAX_TEXTURE_SIZE`;
 - `player_renderer` — процедурную модель героя и speed/impact effects;
 - `ability_renderer` — beams, force cone, shockwave и прицел;
 - `particle_renderer` — чтение фиксированного particle pool.
 
 `WorldPrepareVisible` — узкий внутренний CPU bridge: world готовит один
-stack-backed блок 32×32 и синхронно отдаёт его `WorldRenderer`. GPU calls,
-`Draw*` и texture lifecycle в `World` отсутствуют. Persistent full-world
-`Color` buffer удалён.
+stack-backed блок 32×32 и синхронно отдаёт его `WorldRenderer`. Visitor
+возвращает `bool`: chunk, который renderer не смог разместить (его страница не
+резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
+GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
+full-world `Color` buffer удалён.
 
 ### `audio.c/.h`
 
@@ -191,7 +194,7 @@ device не является фатальной.
 | буфер грязных chunks | `WorldInit` | `WorldUnload` |
 | буфер грязных световых chunks | `WorldInit` | `WorldUnload` |
 | поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
-| world `Texture2D` | `RendererInit -> WorldRendererInit` | `RendererUnload` |
+| кэш страниц мира (`Texture2D` × N) | `WorldRendererInit`, растёт под размер вида | `RendererUnload` |
 | chunk upload staging 32×32 | stack внутри `WorldPrepareVisible` | возврат из вызова |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |

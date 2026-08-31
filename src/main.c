@@ -145,10 +145,12 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (unsigned int)events->count,
                         (unsigned int)events->dropped),
              24, 135, 14, (Color){150, 205, 178, 255});
-    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms",
+    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u",
                         renderStats->textureUploads,
                         (double)renderStats->uploadedBytes / 1024.0,
-                        renderStats->preparationMilliseconds),
+                        renderStats->preparationMilliseconds,
+                        renderStats->visiblePages, renderStats->residentPages,
+                        renderStats->pageBinds),
              24, 153, 14, (Color){166, 183, 223, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */

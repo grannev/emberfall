@@ -23,11 +23,10 @@ destruction, boost drilling, force, cryo и mixed chaos. Время каждог
 сценарием.
 
 GPU uploads и render preparation в headless таблице помечены `n/a`, потому что
-benchmark намеренно не создаёт GL context. Runtime `WorldRendererStats` уже
-показывает dirty regions, texture uploads, uploaded bytes и совокупное время
-CPU preparation/upload в debug HUD. Отдельный воспроизводимый renderer
-benchmark будет добавлен вместе с render paging, чтобы измерять реальный cache,
-а не giant-texture implementation, которая уже запланирована к удалению.
+benchmark намеренно не создаёт GL context. Runtime `WorldRendererStats`
+показывает dirty regions, texture uploads, uploaded bytes, число видимых и
+резидентных страниц, число привязок страниц за кадр и совокупное время CPU
+preparation/upload — всё это выводится в debug HUD строкой `RENDER`.
 
 ## Baseline 2026-08-31
 
@@ -84,7 +83,8 @@ startup выше steady state.
   можно только с before/after benchmark и regression tests. Закрыто: 12 B,
   162 MiB.
 - **Подтверждено как архитектурный limit:** одна texture шириной 16384 зависит
-  от GPU maximum texture size и не масштабируется дальше.
+  от GPU maximum texture size и не масштабируется дальше. Закрыто render
+  paging-ом: резидентны только видимые страницы 256×256.
 - **Частично подтверждено:** sleeping world не обрабатывает cells, но каждый
   tick всё равно сканирует 13 824 chunk flags; это видно по 0,59 ms settled.
   Закрыто active chunk scheduler-ом: settled world стоит 0.000 ms.
@@ -378,3 +378,33 @@ typedef struct Cell {
 Структурные счётчики совпали во всех сценариях. Wall-clock в пределах разброса
 машины; ускорение не заявляется, хотя `WorldInit` ожидаемо стал вдвое дешевле
 (68 → 36 ms), потому что нулевой инициализации подлежит на 54 MiB меньше.
+
+## После render paging
+
+Гипотеза «одна texture шириной 16384 — плохое long-term limitation»
+подтверждена и закрыта. Единственная world-texture заменена кэшем страниц
+256×256 cells: резидентны только те страницы, которые видит камера.
+
+| | До | После |
+|---|---|---|
+| Texture objects | 1 × 16384×864 | до 12–24 × 256×256 |
+| VRAM для world | ~54.0 MiB, всегда | 0.25 MiB на резидентную страницу |
+| Типичный кадр (окно 1280×720) | 54.0 MiB | 4 видимых страницы, 12 слотов = 3.0 MiB |
+| Предел ширины мира | `GL_MAX_TEXTURE_SIZE` | память и симуляция |
+
+Кэш растёт под размер вида (окно + zoom) и не уменьшается, поэтому resize
+выделяет текстуры один раз, а установившийся рендер не аллоцирует ничего.
+Вытеснение — LRU, при этом страница, уже заявленная в этом кадре, вытеснена
+быть не может. Панорамирование стоит одной загрузки страницы на переднем крае
+вместо чего-либо, пропорционального карте.
+
+Важная деталь корректности: `WorldRenderChunkVisitor` теперь возвращает
+`bool`. Chunk, который renderer не смог разместить, **сохраняет** свой dirty
+flag и перестраивается в кадре, когда его страница станет резидентной. Иначе он
+был бы тихо потерян, и на экране остались бы устаревшие пиксели до следующего
+случайного изменения этого chunk — баг, который проявился бы только на машине с
+меньшим кэшем страниц, чем у разработчика.
+`test_a_refused_chunk_keeps_its_dirty_flag` закрывает это.
+
+Симуляция не менялась; benchmark headless и страниц не создаёт. CPU estimate и
+RSS прежние: 167.22 / 167.00 MiB.

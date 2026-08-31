@@ -71,9 +71,10 @@ coherent phase with an explanatory message.
   world size; timing assertions do not belong in tests.
 - Baseline CPU allocation was 275.12 MiB before GPU state: 216 MiB cells,
   54 MiB persistent pixels, 5.06 MiB lighting, and minor metadata. The
-  persistent pixel buffer has been removed; current estimate is 221.12 MiB.
-  The remaining giant texture belongs to `WorldRenderer` and is the next
-  rendering scalability target.
+  persistent pixel buffer is gone and `Cell` is packed to 12 bytes, so the
+  current estimate is 167.22 MiB. The giant world texture is gone as well:
+  `WorldRenderer` keeps a cache of 256x256 pages and only the visible ones are
+  resident, so world size is no longer bounded by `GL_MAX_TEXTURE_SIZE`.
 - Refactoring is deliberately phased. Do not combine game/input/events, world
   decomposition, Cell layout, active scheduling, and render paging into one
   rewrite. Keep every intermediate commit playable and measured.

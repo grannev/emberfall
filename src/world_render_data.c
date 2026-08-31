@@ -88,6 +88,39 @@ static Color MaterialPixel(const World *world, const Cell *cell, int x, int y,
     return color;
 }
 
+void WorldMarkRegionDirty(World *world, Rectangle region)
+{
+    int firstChunkX;
+    int lastChunkX;
+    int firstChunkY;
+    int lastChunkY;
+    int chunkY;
+
+    if (world == NULL || world->dirtyChunks == NULL || region.width <= 0.0f ||
+        region.height <= 0.0f) {
+        return;
+    }
+
+    firstChunkX = (int)floorf(region.x / (float)WORLD_CHUNK_SIZE);
+    lastChunkX = (int)floorf((region.x + region.width - 1.0f) /
+                             (float)WORLD_CHUNK_SIZE);
+    firstChunkY = (int)floorf(region.y / (float)WORLD_CHUNK_SIZE);
+    lastChunkY = (int)floorf((region.y + region.height - 1.0f) /
+                             (float)WORLD_CHUNK_SIZE);
+    if (firstChunkX < 0) firstChunkX = 0;
+    if (firstChunkY < 0) firstChunkY = 0;
+    if (lastChunkX > world->chunkColumns - 1) lastChunkX = world->chunkColumns - 1;
+    if (lastChunkY > world->chunkRows - 1) lastChunkY = world->chunkRows - 1;
+
+    for (chunkY = firstChunkY; chunkY <= lastChunkY; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = firstChunkX; chunkX <= lastChunkX; ++chunkX) {
+            world->dirtyChunks[WorldChunkIndex(world, chunkX, chunkY)] = 1u;
+        }
+    }
+}
+
 void WorldPrepareVisible(World *world, Rectangle visible,
                          WorldRenderChunkVisitor visitor, void *context)
 {
@@ -148,7 +181,6 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             if (world->dirtyChunks[chunkIndex] == 0u) {
                 continue;
             }
-            world->dirtyChunks[chunkIndex] = 0u;
             minimumX = chunkX * WORLD_CHUNK_SIZE;
             maximumX = minimumX + WORLD_CHUNK_SIZE;
             minimumY = chunkY * WORLD_CHUNK_SIZE;
@@ -215,11 +247,13 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                change moves tens of MiB. A 32x32 stack staging block keeps the
                source contiguous without any frame allocation and uploads only
                the chunk that was rebuilt. */
-            visitor(context,
-                    (Rectangle){(float)minimumX, (float)minimumY,
-                                (float)(maximumX - minimumX),
-                                (float)(maximumY - minimumY)},
-                    uploadPixels);
+            if (visitor(context,
+                        (Rectangle){(float)minimumX, (float)minimumY,
+                                    (float)(maximumX - minimumX),
+                                    (float)(maximumY - minimumY)},
+                        uploadPixels)) {
+                world->dirtyChunks[chunkIndex] = 0u;
+            }
         }
     }
 }

@@ -102,14 +102,20 @@ typedef struct RenderProbe {
     uint64_t pixels;
 } RenderProbe;
 
-static void CaptureRenderChunk(void *context, Rectangle bounds,
+static bool CaptureRenderChunk(void *context, Rectangle bounds,
                                const Color *pixels)
 {
     RenderProbe *probe = context;
 
-    CHECK(pixels != NULL, "render visitor received no staging pixels");
+    if (pixels == NULL) {
+        ++testsFailed;
+        fprintf(stderr, "FAIL %s: render visitor received no staging pixels\n",
+                currentTest);
+        return false;
+    }
     ++probe->regions;
     probe->pixels += (uint64_t)bounds.width * (uint64_t)bounds.height;
+    return true;
 }
 
 static void test_world_render_preparation_is_headless_and_incremental(void)
@@ -137,6 +143,43 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 1,
           "one local edit rebuilt %d chunks instead of one", probe.regions);
+    WorldUnload(&world);
+}
+
+/* A chunk the renderer cannot place must keep its dirty flag. Dropping it
+   instead leaves stale pixels on screen until something unrelated happens to
+   change that chunk again, which is exactly the kind of bug that only shows up
+   on a machine with a smaller page cache than the one it was written on. */
+static bool RefuseRenderChunk(void *context, Rectangle bounds, const Color *pixels)
+{
+    (void)bounds;
+    (void)pixels;
+    ++(*(int *)context);
+    return false;
+}
+
+static void test_a_refused_chunk_keeps_its_dirty_flag(void)
+{
+    World world;
+    RenderProbe probe = {0};
+    Rectangle wholeWorld = {0.0f, 0.0f, 64.0f, 64.0f};
+    int refused = 0;
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    WorldGenerate(&world, 0xE6BEu);
+
+    WorldPrepareVisible(&world, wholeWorld, RefuseRenderChunk, &refused);
+    CHECK(refused == 4, "first preparation offered %d/4 chunks", refused);
+
+    /* Nothing was accepted, so the same four chunks must still be owed. */
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    CHECK(probe.regions == 4,
+          "a refused chunk was forgotten: %d/4 offered again", probe.regions);
+
+    probe = (RenderProbe){0};
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    CHECK(probe.regions == 0,
+          "an accepted chunk was rebuilt again: %d chunks", probe.regions);
     WorldUnload(&world);
 }
 
@@ -1832,6 +1875,7 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 int main(void)
 {
     RUN(test_world_render_preparation_is_headless_and_incremental);
+    RUN(test_a_refused_chunk_keeps_its_dirty_flag);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_the_same_seed_always_generates_the_same_world);
