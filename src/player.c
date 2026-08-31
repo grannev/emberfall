@@ -16,6 +16,7 @@ void PlayerInit(Player *player, Vector2 position)
     player->impactPosition = position;
     player->impactNormal = (Vector2){0.0f, 0.0f};
     player->drillPosition = position;
+    player->drillMaterial = MATERIAL_EMPTY;
     player->acceleration = 250.0f;
     player->maxSpeed = 118.0f;
     player->boostAcceleration = 540.0f;
@@ -89,6 +90,17 @@ static void PlayerRecordImpact(Player *player, Vector2 normal, float strength)
     }
 }
 
+/* Records what is about to be cut. Sampling before the cut is the point: after
+   it the cell is empty and there is nothing left to identify. */
+static void PlayerRecordDrillMaterial(Player *player, const World *world, Vector2 at)
+{
+    CellMaterial material = WorldGetCell(world, (int)floorf(at.x), (int)floorf(at.y));
+
+    if (WorldMaterialIsSolid(material)) {
+        player->drillMaterial = material;
+    }
+}
+
 /* Clears whatever blocks the collider at `at`, widening until it is actually
    free. One pass is not enough on its own: WorldDrillCircle measures an integer
    radius from a floored centre, while the collider is a float circle measured to
@@ -99,6 +111,8 @@ static int PlayerCutFree(Player *player, World *world, Vector2 at)
     int base = (int)ceilf(player->radius);
     int removed = 0;
     int attempt;
+
+    PlayerRecordDrillMaterial(player, world, at);
 
     for (attempt = 0; attempt < 3; ++attempt) {
         removed += WorldDrillCircle(world, (int)floorf(at.x), (int)floorf(at.y),
@@ -145,6 +159,7 @@ static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
     direction = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
     drillPoint = (Vector2){nextPosition.x + direction.x * player->radius * 0.7f,
                            nextPosition.y + direction.y * player->radius * 0.7f};
+    PlayerRecordDrillMaterial(player, world, drillPoint);
     destroyed = WorldDrillCircle(world, (int)floorf(drillPoint.x),
                                  (int)floorf(drillPoint.y),
                                  (int)ceilf(player->radius));

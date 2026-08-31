@@ -11,6 +11,9 @@ typedef struct Player {
     Vector2 impactPosition;
     Vector2 impactNormal;
     Vector2 drillPosition;
+    /* What the drill is biting into, sampled before the cut. Audio pitches the
+       grind by it, so rock does not sound like dirt. */
+    CellMaterial drillMaterial;
     float acceleration;
     float maxSpeed;
     float boostAcceleration;

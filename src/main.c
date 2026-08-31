@@ -438,8 +438,17 @@ int main(int argc, char **argv)
             cameraShake = 4.8f;
             GameAudioPlayExplosion(&audio);
         }
-        GameAudioUpdate(&audio, powers.laserActive, player.drilledCells > 0,
-                        deltaTime);
+        {
+            GameAudioState sounding = {0};
+
+            sounding.laser = powers.laserActive;
+            sounding.drilling = player.drilledCells > 0;
+            sounding.drillMaterial = player.drillMaterial;
+            sounding.force = powers.forceActive;
+            sounding.chill = powers.chillActive;
+            GameAudioUpdate(&audio, sounding, deltaTime);
+        }
+        GameAudioPlayImpact(&audio, player.impactStrength);
         ParticlesUpdate(&particles, &world, deltaTime);
 
         simulationAccumulator += deltaTime;

@@ -230,10 +230,14 @@ over frameworks, generic containers, or unnecessary abstraction.
   switch on material identity there: the first version of `ICE` was solid,
   stopped no beam, and could not be melted, purely because the laser still named
   three materials by hand.
-- Laser, explosion, material-reaction, and drill sounds are synthesized at
-  startup; no external assets are required. Laser and drill are held states
-  driven by `GameAudioUpdate`, not stacked one-shots. Audio failure must remain
-  non-fatal, and no wave memory may be allocated in the frame loop.
+- Laser, explosion, material-reaction, drill, impact, force, and cryo sounds are
+  synthesized at startup; no external assets are required. Laser, drill, force,
+  and cryo are held states driven by `GameAudioUpdate` through a `GameAudioState`
+  struct, not stacked one-shots. The drill pitches by the material it is cutting,
+  sampled before the cut — afterwards the cell is empty and there is nothing left
+  to identify. One-shots that can retrigger every frame, impact and reaction,
+  carry a short cooldown. Audio failure must remain non-fatal, and no wave memory
+  may be allocated in the frame loop.
 
 ## Change discipline
 
