@@ -10,9 +10,14 @@
 
 #define MAX_PARTICLES 1024
 
-/* What a particle does when it meets a solid cell. Effects used to ignore the
-   world entirely and fly through rock, which read as decoration painted over
-   the simulation rather than as part of it. */
+/* What a particle does when it meets a solid cell — and, with it, whether the
+   particle is presentation or gameplay. PASS and BOUNCE are visual: they read
+   terrain through a `const World *` and cannot change it. SETTLE is debris: it
+   comes to rest as a real cell, which makes it part of the simulation, so its
+   randomness is seeded and its behaviour is covered by headless tests.
+
+   Effects used to ignore the world entirely and fly through rock, which read
+   as decoration painted over the simulation rather than as part of it. */
 typedef enum ParticleContact {
     PARTICLE_CONTACT_PASS = 0, /* glow and gases: terrain does not stop them */
     PARTICLE_CONTACT_BOUNCE,   /* sparks and shards ricochet and lose energy */

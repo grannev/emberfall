@@ -18,6 +18,8 @@ API, правила симуляции и порядок проверки изм
   headless-тесты, smoke-test и обязательная проверка изменений.
 - [Как добавить материал](development/adding-a-material.md) — таблица
   материалов, обязательная проверка взаимодействий и sleep-инвариант.
+- [Как добавить способность](development/adding-an-ability.md) — реестр
+  способностей, trigger/cooldown и передача обратной связи через события.
 - [Производительность](performance.md) — benchmark scenarios, workload counters,
   baseline CPU/memory и статус проверенных hypotheses.
 

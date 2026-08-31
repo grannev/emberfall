@@ -26,7 +26,7 @@ void RendererDrawWorldSpace(Renderer *renderer, GameState *game,
                        (Color){74, 103, 127, 255});
     ParticleRendererDraw(&game->particles);
     PlayerRendererDraw(&game->player, aimPosition);
-    AbilityRendererDraw(&game->powers, aimPosition);
+    AbilityRendererDraw(&game->abilities, aimPosition);
 }
 
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer)

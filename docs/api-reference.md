@@ -17,7 +17,7 @@ void GameUnload(GameState *game);
 
 `GameState` — gameplay owner верхнего уровня. `GameUpdate` принимает уже
 преобразованный input, ограничивает frame delta значением 0.05, оркестрирует
-player/powers/particles/fixed world ticks и возвращает transient feedback через
+player/abilities/particles/fixed world ticks и возвращает transient feedback через
 `GameEventBuffer`. Функция не опрашивает input, не рисует и не проигрывает звук.
 
 `GameEventBuffer` имеет fixed capacity 256. `GameEventsPush` сохраняет порядок,
@@ -185,8 +185,6 @@ void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input,
                   bool boostHeld, float deltaTime);
 void PlayerResolveWorldCollision(Player *player, World *world);
-void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
-                                 float radius, float force);
 void PlayerApplyImpulse(Player *player, Vector2 impulse);
 void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 ```
@@ -194,29 +192,44 @@ void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 Рекомендуемый порядок: `PlayerUpdate` до world ticks и
 `PlayerResolveWorldCollision` после них. Последняя принимает изменяемый мир,
 потому что бурящий игрок прорезает материал, в который его затянуло, вместо
-перемещения с потерей скорости. `PlayerApplyExplosionImpulse` добавляет
-velocity с линейным ослаблением к краю shockwave, но не наносит урон.
+перемещения с потерей скорости.
+
+Отдача способностей приходит к игроку через `GameEvent.playerImpulse`: сама
+способность вычисляет толчок, а `game.c` применяет его, не зная, какая
+способность его создала. Прежняя `PlayerApplyExplosionImpulse` удалена именно
+поэтому — `Player` больше не перечисляет существующие powers.
+`PlayerApplyImpulse` просто добавляет velocity и не наносит урон.
 `PlayerRendererDraw` относится к presentation API и объявлен отдельно в
 `player_renderer.h`.
 
-## Powers API
+## Abilities API
 
 ```c
-void PowersInit(PowerSystem *powers, uint64_t seed);
-void PowersUpdate(PowerSystem *powers, World *world,
-                  ParticleSystem *particles, Vector2 origin,
-                  Vector2 aimPosition, float deltaTime,
-                  bool laserHeld, bool explosionPressed,
-                  bool forcePressed, bool chillHeld);
-const char *PowersCurrentName(const PowerSystem *powers);
+const AbilityDefinition *AbilityDefinitionAt(AbilityId id);
+const AbilityState *AbilityStateAt(const AbilitySystem *abilities, AbilityId id);
+const char *AbilitiesCurrentName(const AbilitySystem *abilities);
+bool AbilitiesValidate(void);
+
+void AbilitiesInit(AbilitySystem *abilities, uint64_t seed);
+void AbilitiesUpdate(AbilitySystem *abilities, World *world,
+                     ParticleSystem *particles, GameEventBuffer *events,
+                     Vector2 origin, Vector2 aim, float deltaTime,
+                     const bool *requested);
 ```
 
-Обычный путь вызывает `PowersUpdate` только из `GameUpdate`: там one-frame flags
-превращаются в player impulse/pose и `GameEvents`, после чего presentation
-обрабатывает camera/audio feedback. Параметры Q
-`forceLength`, `forceSpreadCosine`, `forceReach` и `forceRecoil` хранятся в
-`PowerSystem`, чтобы gameplay, рисунок конуса и отдача использовали одну
-конфигурацию. `AbilityRendererDraw` читает этот state только в presentation.
+`requested` — по одному флагу на способность в порядке `AbilityId`. Для
+`HELD`-способностей это состояние кнопки, для `PRESSED` — фронт нажатия;
+`input.c` выбирает нужное по `AbilityDefinition.trigger`, поэтому новая
+способность ведёт себя правильно сразу после привязки.
+
+`AbilitiesUpdate` владеет триггерами, cooldown-ами и таймерами эффекта.
+Функция `apply` конкретной способности заполняет `AbilityState` для renderer и
+публикует `GameEvent` для audio, камеры и отдачи. `AbilitiesValidate`
+вызывается из `GameInit`.
+
+Тюнинг, общий для симуляции и рисования (`ABILITY_FORCE_LENGTH`,
+`ABILITY_FORCE_SPREAD_COSINE`, `ABILITY_EXPLOSION_SHOCK_RADIUS` и т. д.),
+объявлен в `abilities.h` в единственном экземпляре.
 
 ## Particle API
 

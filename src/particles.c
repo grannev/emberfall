@@ -64,6 +64,89 @@ void ParticlesInit(ParticleSystem *system, uint64_t seed)
     RngSeed(&system->rng, seed);
 }
 
+/* Integrates one particle and returns where it wants to be next. Shared by
+   both roles so their motion cannot drift apart. */
+static void ParticleIntegrate(Particle *particle, float deltaTime, float *nextX,
+                              float *nextY)
+{
+    particle->velocity.y += particle->gravity * deltaTime;
+    particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
+    *nextX = particle->position.x + particle->velocity.x * deltaTime;
+    *nextY = particle->position.y + particle->velocity.y * deltaTime;
+}
+
+/* Presentation particles. The `const World *` is the point: a visual effect
+   reads terrain to bounce off it and is structurally unable to change a cell,
+   so decoration can never quietly become gameplay. */
+static void ParticleStepVisual(Particle *particle, const World *world,
+                               float deltaTime)
+{
+    float nextX;
+    float nextY;
+    bool embedded;
+
+    ParticleIntegrate(particle, deltaTime, &nextX, &nextY);
+
+    if (world == NULL || particle->contact == PARTICLE_CONTACT_PASS) {
+        particle->position.x = nextX;
+        particle->position.y = nextY;
+        return;
+    }
+
+    /* A particle spawned inside material must be allowed to escape before
+       terrain can stop it. */
+    embedded = ParticleCellBlocks(world, particle->position.x,
+                                  particle->position.y);
+
+    /* Axis-separated like the player collider, so a shard that meets a wall
+       keeps sliding along it instead of stopping dead. */
+    if (!embedded && ParticleCellBlocks(world, nextX, particle->position.y)) {
+        particle->velocity.x = -particle->velocity.x * particle->restitution;
+    } else {
+        particle->position.x = nextX;
+    }
+
+    if (!embedded && ParticleCellBlocks(world, particle->position.x, nextY)) {
+        particle->velocity.y = -particle->velocity.y * particle->restitution;
+        particle->velocity.x *= 0.72f;
+    } else {
+        particle->position.y = nextY;
+    }
+}
+
+/* Gameplay debris: the one role allowed to write cells, and only by coming to
+   rest in an empty one. */
+static void ParticleStepDebris(Particle *particle, World *world, float deltaTime)
+{
+    float nextX;
+    float nextY;
+    bool embedded;
+
+    ParticleIntegrate(particle, deltaTime, &nextX, &nextY);
+
+    if (world == NULL) {
+        particle->position.x = nextX;
+        particle->position.y = nextY;
+        return;
+    }
+
+    /* Drill debris is born at the cut face, inside material. */
+    embedded = ParticleCellBlocks(world, particle->position.x,
+                                  particle->position.y);
+
+    if (!embedded && ParticleCellBlocks(world, nextX, particle->position.y)) {
+        ParticleSettle(particle, world);
+        return;
+    }
+    particle->position.x = nextX;
+
+    if (!embedded && ParticleCellBlocks(world, particle->position.x, nextY)) {
+        ParticleSettle(particle, world);
+        return;
+    }
+    particle->position.y = nextY;
+}
+
 void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime)
 {
     int i;
@@ -74,9 +157,6 @@ void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime)
 
     for (i = 0; i < MAX_PARTICLES; ++i) {
         Particle *particle = &system->particles[i];
-        bool embedded;
-        float nextX;
-        float nextY;
 
         if (!particle->active) {
             continue;
@@ -88,47 +168,16 @@ void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime)
             continue;
         }
 
-        particle->velocity.y += particle->gravity * deltaTime;
-        particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
-        nextX = particle->position.x + particle->velocity.x * deltaTime;
-        nextY = particle->position.y + particle->velocity.y * deltaTime;
-
-        if (world == NULL || particle->contact == PARTICLE_CONTACT_PASS) {
-            particle->position.x = nextX;
-            particle->position.y = nextY;
-            continue;
-        }
-
-        /* A particle spawned inside material — drill debris is born at the cut
-           face — must be allowed to escape before terrain can stop it. */
-        embedded = ParticleCellBlocks(world, particle->position.x,
-                                      particle->position.y);
-
-        /* Axis-separated like the player collider, so a shard that meets a wall
-           keeps sliding along it instead of stopping dead. */
-        if (!embedded && ParticleCellBlocks(world, nextX, particle->position.y)) {
-            if (particle->contact == PARTICLE_CONTACT_SETTLE) {
-                ParticleSettle(particle, world);
-                continue;
-            }
-            particle->velocity.x = -particle->velocity.x * particle->restitution;
+        /* One pool, two roles. Keeping them in the same fixed-capacity array
+           preserves the property that matters — no allocation, ever — while
+           the split below is what keeps the roles honest. */
+        if (particle->contact == PARTICLE_CONTACT_SETTLE) {
+            ParticleStepDebris(particle, world, deltaTime);
         } else {
-            particle->position.x = nextX;
-        }
-
-        if (!embedded && ParticleCellBlocks(world, particle->position.x, nextY)) {
-            if (particle->contact == PARTICLE_CONTACT_SETTLE) {
-                ParticleSettle(particle, world);
-                continue;
-            }
-            particle->velocity.y = -particle->velocity.y * particle->restitution;
-            particle->velocity.x *= 0.72f;
-        } else {
-            particle->position.y = nextY;
+            ParticleStepVisual(particle, world, deltaTime);
         }
     }
 }
-
 
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position)
 {

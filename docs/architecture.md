@@ -14,7 +14,7 @@ raylib input -> input.c -> GameInput
                               v
                          GameUpdate
                         /    |     \
-                   Player  Powers  World fixed ticks
+                  Player Abilities World fixed ticks
                         \    |     /
                          GameState + GameEvents
                               |
@@ -46,7 +46,7 @@ app/presentation-командой. Gameplay и headless tests не вызыва�
 
 ### `game.c/.h`
 
-`GameState` владеет `World`, `Player`, `PowerSystem`, `ParticleSystem`, fixed-step
+`GameState` владеет `World`, `Player`, `AbilitySystem`, `ParticleSystem`, fixed-step
 accumulator и streaming position. `GameUpdate` задаёт единый gameplay order:
 player, activation, abilities, particles, необходимое число world ticks,
 reaction events и post-simulation collision. `GameConfig` собирает world size,
@@ -113,22 +113,35 @@ cross-module call в самый горячий цикл проекта; benchmar
 - защита от tunneling с помощью substeps;
 - gameplay/animation state, который renderer читает без обратной связи.
 
-### `powers.c/.h`
+### `abilities.c/.h`
 
-Хранит состояние способностей и координирует их эффекты:
+Небольшой реестр способностей: таблица `ABILITIES` описывает то, что одинаково
+у всех (имя, trigger, cooldown, follow-through, поза игрока), а функция `apply`
+— то, что делает конкретная способность с миром. Драйвер `AbilitiesUpdate`
+владеет триггерами, cooldown-ами и таймерами эффекта, поэтому ни одна
+способность их не переписывает.
 
-- трассировка контактного лазера;
-- cooldown взрыва и силового удара;
-- разрушение мира и ударная волна;
-- силовой конус, криолуч и их visual state;
-- события для camera shake, player impulse и audio.
+Способность не рисует себя, не трогает `Player` напрямую и не проигрывает звук.
+Она заполняет `AbilityState` для renderer и публикует `GameEvent` для audio,
+камеры и физической реакции игрока: отдача едет в `GameEvent.playerImpulse`, и
+`game.c` применяет её, не зная, какая способность её создала.
+
+Данными способность сделана только там, где это действительно данные.
+Что power делает с клеточным миром — это код, и он остаётся C-функцией.
+
+Добавление способности — см.
+[development/adding-an-ability.md](development/adding-an-ability.md).
 
 ### `particles.c/.h`
 
-Фиксированный циклический пул из 1024 частиц. Частицы читают мир для контакта
-с рельефом и могут оседать в него настоящими cells. Они не выделяют память во
-время кадра. Разные spawn-функции задают скорость, цвет, lifetime, размер и
-индивидуальную gravity.
+Фиксированный циклический пул из 1024 частиц без allocation во время кадра.
+
+Пул один, но ролей две, и они разделены типом. Visual-частицы
+(`PARTICLE_CONTACT_PASS`, `PARTICLE_CONTACT_BOUNCE`) обновляются функцией,
+которая видит `const World *`: они читают рельеф, чтобы отскакивать от него, и
+структурно не способны изменить клетку. Debris (`PARTICLE_CONTACT_SETTLE`) —
+единственная роль, которой разрешено писать в мир, и только оседая в пустую
+клетку. Поэтому её случайность seeded, а поведение покрыто headless-тестами.
 
 ### `renderer.c/.h` и renderer-модули
 

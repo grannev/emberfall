@@ -3,8 +3,8 @@
 
 #include <raylib.h>
 
-#include "powers.h"
+#include "abilities.h"
 
-void AbilityRendererDraw(const PowerSystem *powers, Vector2 aimPosition);
+void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition);
 
 #endif

@@ -13,7 +13,7 @@
 #include "materials.h"
 #include "particles.h"
 #include "player.h"
-#include "powers.h"
+#include "abilities.h"
 #include "world.h"
 #include "world_render_data.h"
 
@@ -183,7 +183,7 @@ static void test_game_update_publishes_transient_events(void)
 
     input.aimWorld = (Vector2){game.player.position.x + 20.0f,
                                game.player.position.y};
-    input.explosionPressed = true;
+    input.ability[ABILITY_EXPLOSION] = true;
     GameUpdate(&game, &input, config.fixedStep, &events);
     CHECK(HasGameEvent(&events, GAME_EVENT_EXPLOSION),
           "explosion did not publish a game event");
@@ -305,10 +305,10 @@ static void test_a_seeded_session_replays_identically(void)
 
         input.move = (Vector2){1.0f, step % 7 == 0 ? -1.0f : 0.0f};
         input.boostHeld = step > 5;
-        input.laserHeld = step % 5 == 0;
-        input.explosionPressed = step == 12;
-        input.forcePressed = step == 20;
-        input.chillHeld = step % 11 == 0;
+        input.ability[ABILITY_LASER] = step % 5 == 0;
+        input.ability[ABILITY_EXPLOSION] = step == 12;
+        input.ability[ABILITY_FORCE] = step == 20;
+        input.ability[ABILITY_CRYO] = step % 11 == 0;
         input.aimWorld = (Vector2){first.player.position.x + 30.0f,
                                    first.player.position.y + 8.0f};
         GameUpdate(&first, &input, config.fixedStep, &events);
@@ -326,6 +326,152 @@ static void test_a_seeded_session_replays_identically(void)
           "replay diverged: the two worlds no longer match");
     GameUnload(&first);
     GameUnload(&second);
+}
+
+/* The role split is enforced by the type system — visual particles see a
+   `const World *` — but the invariant is worth stating in a test too, because
+   a future spawner could give a visual effect the SETTLE contact mode by
+   mistake and quietly start writing cells. */
+static void test_visual_particles_never_change_the_world(void)
+{
+    World world;
+    ParticleSystem particles;
+    uint64_t before;
+    int step;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    FillRect(&world, 0, 60, 127, 95, MATERIAL_ROCK);
+    ParticlesInit(&particles, 0xE6BEu);
+
+    ParticlesSpawnExplosion(&particles, (Vector2){64.0f, 40.0f});
+    ParticlesSpawnLaserSparks(&particles, (Vector2){64.0f, 58.0f},
+                              (Vector2){0.0f, 1.0f});
+    ParticlesSpawnImpact(&particles, (Vector2){64.0f, 58.0f},
+                         (Vector2){0.0f, -1.0f}, 120.0f);
+    ParticlesSpawnBoostTrail(&particles, (Vector2){64.0f, 30.0f},
+                             (Vector2){200.0f, 0.0f}, 2);
+    ParticlesSpawnBoostBurst(&particles, (Vector2){64.0f, 30.0f},
+                             (Vector2){200.0f, 0.0f}, 2);
+    ParticlesSpawnForceBlast(&particles, (Vector2){64.0f, 40.0f},
+                             (Vector2){0.0f, 1.0f});
+    ParticlesSpawnSteam(&particles, (Vector2){64.0f, 50.0f});
+
+    before = WorldDigest(&world);
+    for (step = 0; step < 120; ++step) {
+        ParticlesUpdate(&particles, &world, 1.0f / 60.0f);
+    }
+    CHECK(WorldDigest(&world) == before,
+          "visual particles changed the world they were only meant to read");
+    WorldUnload(&world);
+}
+
+/* --- abilities ----------------------------------------------------------- */
+
+static void test_ability_table_passes_its_own_validation(void)
+{
+    /* GameInit runs this too. It catches the mistake that matters: a one-shot
+       power with no cooldown, which fires on every frame the button is held
+       and so quietly becomes the held power it was not meant to be. */
+    CHECK(AbilitiesValidate(), "the ability table failed validation");
+}
+
+static void test_a_one_shot_ability_respects_its_cooldown(void)
+{
+    World world;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events = {0};
+    bool requested[ABILITY_COUNT] = {false};
+    float cooldown = AbilityDefinitionAt(ABILITY_FORCE)->cooldown;
+    int fired = 0;
+    int step;
+
+    CHECK(WorldInit(&world, 192, 72), "world allocation failed");
+    AbilitiesInit(&abilities, 0xE6BEu);
+    ParticlesInit(&particles, 0xE6BEu);
+    requested[ABILITY_FORCE] = true;
+
+    /* Half the cooldown's worth of frames, all of them asking to fire. */
+    for (step = 0; step < 30; ++step) {
+        GameEventsClear(&events);
+        AbilitiesUpdate(&abilities, &world, &particles, &events,
+                        (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
+                        cooldown * 0.5f, requested);
+        if (AbilityStateAt(&abilities, ABILITY_FORCE)->triggered) {
+            ++fired;
+        }
+    }
+    CHECK(fired == 15, "force fired %d times in 30 frames of half-cooldown "
+                       "steps instead of 15", fired);
+    WorldUnload(&world);
+}
+
+static void test_a_held_ability_reports_one_start_per_hold(void)
+{
+    World world;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events = {0};
+    bool requested[ABILITY_COUNT] = {false};
+    int starts = 0;
+    int activeFrames = 0;
+    int step;
+
+    CHECK(WorldInit(&world, 192, 72), "world allocation failed");
+    FillRect(&world, 60, 30, 70, 40, MATERIAL_ROCK);
+    AbilitiesInit(&abilities, 0xE6BEu);
+    ParticlesInit(&particles, 0xE6BEu);
+
+    for (step = 0; step < 12; ++step) {
+        /* Held for the first six frames, released, then held again. */
+        requested[ABILITY_LASER] = step < 6 || step >= 9;
+        GameEventsClear(&events);
+        AbilitiesUpdate(&abilities, &world, &particles, &events,
+                        (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
+                        1.0f / 60.0f, requested);
+        if (AbilityStateAt(&abilities, ABILITY_LASER)->triggered) {
+            ++starts;
+        }
+        if (AbilityStateAt(&abilities, ABILITY_LASER)->active) {
+            ++activeFrames;
+        }
+    }
+    CHECK(activeFrames == 9, "a held beam ran on %d/9 requested frames",
+          activeFrames);
+    CHECK(starts == 2, "a beam held twice reported %d starts instead of 2",
+          starts);
+    WorldUnload(&world);
+}
+
+/* Every ability's knockback reaches the player through the event buffer, which
+   is what lets the player module stay ignorant of which powers exist. */
+static void test_ability_knockback_reaches_the_player_through_events(void)
+{
+    GameConfig config = GameDefaultConfig();
+    GameState game;
+    GameEventBuffer events = {0};
+    GameInput input = {0};
+    Vector2 before;
+
+    config.worldWidth = 256;
+    config.worldHeight = 144;
+    config.activeRadiusX = 96.0f;
+    config.activeRadiusY = 72.0f;
+    config.seed = 0xE6BEu;
+    CHECK(GameInit(&game, config), "game allocation failed");
+
+    before = game.player.velocity;
+    input.aimWorld = (Vector2){game.player.position.x + 40.0f,
+                               game.player.position.y};
+    input.ability[ABILITY_FORCE] = true;
+    GameUpdate(&game, &input, config.fixedStep, &events);
+
+    CHECK(HasGameEvent(&events, GAME_EVENT_FORCE),
+          "the force ability published no event");
+    CHECK(game.player.velocity.x < before.x - 50.0f,
+          "force recoil did not push the player back: %.1f -> %.1f",
+          before.x, game.player.velocity.x);
+    GameUnload(&game);
 }
 
 /* --- material table ----------------------------------------------------- */
@@ -1132,11 +1278,16 @@ static void test_one_force_blast_throws_loose_material_far(void)
 static void test_configured_force_power_hits_far_and_hard(void)
 {
     World world;
-    PowerSystem powers;
+    AbilitySystem abilities;
     ParticleSystem particles;
+    GameEventBuffer events = {0};
+    bool requested[ABILITY_COUNT] = {false};
+    const AbilityState *force;
+    const GameEvent *forceEvent = NULL;
     int rightmost = 0;
     int activeParticles = 0;
     int before;
+    uint16_t index;
     int x;
     int y;
     int i;
@@ -1144,12 +1295,14 @@ static void test_configured_force_power_hits_far_and_hard(void)
     CHECK(WorldInit(&world, 192, 72), "world allocation failed");
     FillRect(&world, 30, 30, 40, 40, MATERIAL_SAND);
     before = CountMaterial(&world, MATERIAL_SAND);
-    PowersInit(&powers, 0xE6BEu);
+    AbilitiesInit(&abilities, 0xE6BEu);
     ParticlesInit(&particles, 0xE6BEu);
 
-    PowersUpdate(&powers, &world, &particles, (Vector2){20.0f, 35.0f},
-                 (Vector2){150.0f, 35.0f}, 1.0f / 60.0f, false, false, true,
-                 false);
+    requested[ABILITY_FORCE] = true;
+    AbilitiesUpdate(&abilities, &world, &particles, &events,
+                    (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
+                    1.0f / 60.0f, requested);
+    force = AbilityStateAt(&abilities, ABILITY_FORCE);
 
     for (y = 0; y < world.height; ++y) {
         for (x = 0; x < world.width; ++x) {
@@ -1163,8 +1316,13 @@ static void test_configured_force_power_hits_far_and_hard(void)
             ++activeParticles;
         }
     }
+    for (index = 0u; index < events.count; ++index) {
+        if (events.events[index].type == GAME_EVENT_FORCE) {
+            forceEvent = &events.events[index];
+        }
+    }
 
-    CHECK(powers.forceTriggered, "Q press did not publish a force event");
+    CHECK(force->triggered, "Q press did not fire the force ability");
     CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
           "configured force destroyed loose cells");
     CHECK(rightmost > 76,
@@ -1172,9 +1330,12 @@ static void test_configured_force_power_hits_far_and_hard(void)
           rightmost);
     CHECK(activeParticles >= 48,
           "configured Q spawned only %d burst particles", activeParticles);
-    CHECK(powers.forceRecoil >= 120.0f,
-          "configured recoil is too small for a heavy hit: %.1f",
-          powers.forceRecoil);
+    CHECK(forceEvent != NULL, "the force ability published no game event");
+    /* The recoil now travels as the event's player impulse, so the player
+       module never needs to know the force blast exists. */
+    CHECK(forceEvent->playerImpulse.x <= -120.0f,
+          "configured recoil is too small or points the wrong way: %.1f",
+          forceEvent->playerImpulse.x);
     WorldUnload(&world);
 }
 
@@ -1553,6 +1714,11 @@ int main(void)
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
     RUN(test_a_seeded_session_replays_identically);
+    RUN(test_visual_particles_never_change_the_world);
+    RUN(test_ability_table_passes_its_own_validation);
+    RUN(test_a_one_shot_ability_respects_its_cooldown);
+    RUN(test_a_held_ability_reports_one_start_per_hold);
+    RUN(test_ability_knockback_reaches_the_player_through_events);
     RUN(test_every_material_has_table_data);
     RUN(test_material_table_passes_its_own_validation);
     RUN(test_every_material_carries_its_own_cryo_rate);

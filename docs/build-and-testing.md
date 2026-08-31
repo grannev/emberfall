@@ -105,7 +105,7 @@ make clean
 гоняется без display, аудио и X-сервера.
 
 Набор собирается из `tests/world_tests.c`, файлов модуля мира
-(`$(WORLD_SOURCES)` в Makefile), `src/game.c`, `src/player.c`, `src/powers.c` и
+(`$(WORLD_SOURCES)` в Makefile), `src/game.c`, `src/player.c`, `src/abilities.c` и
 `src/particles.c` и покрывает инварианты, которые иначе держались
 бы только на памяти разработчика:
 

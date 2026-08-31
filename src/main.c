@@ -111,10 +111,11 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
 {
     const World *world = &game->world;
     const Player *player = &game->player;
-    const PowerSystem *powers = &game->powers;
+    const AbilitySystem *abilities = &game->abilities;
+    const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
     const int panelWidth = 380;
     const int panelHeight = 202;
-    float cooldown = powers->explosionCooldown;
+    float cooldown = explosion->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
@@ -131,8 +132,9 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         WorldCountDynamicCells(world),
                         world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
-    DrawText(TextFormat("POWER: %s", PowersCurrentName(powers)), 24, 91, 18,
-             (Color){255, 126, 86, 255});
+    DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
+                        InputAbilityBinding(abilities->lastUsed)),
+             24, 91, 18, (Color){255, 126, 86, 255});
     DrawText(TextFormat("CURSOR: %d, %d  %s  %.0fC", (int)cursorCell.x,
                         (int)cursorCell.y, WorldMaterialName(cursorMaterial),
                         WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
@@ -160,15 +162,26 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     }
 }
 
+/* Composed from the ability table rather than written out, so a new power
+   appears in the hint the moment it is defined and bound. */
 static void DrawControlsHint(void)
 {
-    const char *hint =
-        "WASD fly  |  Shift staged boost/drill  |  LMB laser  |  RMB explosion  |  "
-        "Q force  |  E cryo  |  R regenerate  |  F1 HUD";
+    const char *hint = "WASD fly  |  Shift staged boost/drill";
     int fontSize = 18;
-    int width = MeasureText(hint, fontSize);
-    int x = (GetScreenWidth() - width) / 2;
-    int y = GetScreenHeight() - 34;
+    int id;
+    int width;
+    int x;
+    int y;
+
+    for (id = 0; id < ABILITY_COUNT; ++id) {
+        hint = TextFormat("%s  |  %s %s", hint,
+                          InputAbilityBinding((AbilityId)id),
+                          AbilityDefinitionAt((AbilityId)id)->name);
+    }
+    hint = TextFormat("%s  |  R regenerate  |  F1 HUD", hint);
+    width = MeasureText(hint, fontSize);
+    x = (GetScreenWidth() - width) / 2;
+    y = GetScreenHeight() - 34;
 
     DrawRectangle(x - 10, y - 5, width + 20, fontSize + 10, (Color){3, 6, 12, 190});
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
@@ -456,10 +469,9 @@ int main(int argc, char **argv)
             aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
             cursorCell = smokeAim;
             input.game.aimWorld = aimPosition;
-            input.game.laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
-            input.game.explosionPressed = smokeFrames == 5;
-            input.game.forcePressed = false;
-            input.game.chillHeld = false;
+            memset(input.game.ability, 0, sizeof(input.game.ability));
+            input.game.ability[ABILITY_LASER] = smokeFrames >= 1 && smokeFrames <= 9;
+            input.game.ability[ABILITY_EXPLOSION] = smokeFrames == 5;
             input.game.regeneratePressed = false;
         }
 
@@ -471,10 +483,10 @@ int main(int argc, char **argv)
         {
             GameAudioState sounding = {0};
 
-            sounding.laser = game.powers.laserActive;
+            sounding.laser = AbilityStateAt(&game.abilities, ABILITY_LASER)->active;
             sounding.drilling = game.player.drilledCells > 0;
             sounding.drillMaterial = game.player.drillMaterial;
-            sounding.chill = game.powers.chillActive;
+            sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
             GameAudioUpdate(&audio, sounding, deltaTime);
         }
         PresentGameEvents(&events, &audio, &cameraShake);

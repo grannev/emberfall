@@ -33,6 +33,11 @@ typedef struct GameEvent {
     float radius;
     CellMaterial material;
     int count;
+    /* Velocity this event adds to the player, already resolved by whatever
+       produced it. Abilities publish their own knockback this way, so the
+       player module never has to learn which powers exist and a new one that
+       shoves the player needs no change outside its own file. */
+    Vector2 playerImpulse;
 } GameEvent;
 
 typedef struct GameEventBuffer {

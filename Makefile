@@ -8,13 +8,13 @@ WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
 SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
 	src/renderer.c src/world_renderer.c \
-	src/player.c src/player_renderer.c src/powers.c src/ability_renderer.c \
+	src/player.c src/player_renderer.c src/abilities.c src/ability_renderer.c \
 	src/particles.c src/particle_renderer.c src/audio.c
 # The headless suite links CPU-side gameplay only: no window or GL context.
 TEST_APP := emberfall-tests
 TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c \
 	$(WORLD_SOURCES) \
-	src/player.c src/powers.c src/particles.c
+	src/player.c src/abilities.c src/particles.c
 BENCH_APP := emberfall-bench
 BENCH_SOURCES := bench/benchmark.c $(WORLD_SOURCES) src/player.c
 HEADERS := $(wildcard src/*.h)

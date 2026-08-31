@@ -8,7 +8,7 @@
 #include "game_input.h"
 #include "particles.h"
 #include "player.h"
-#include "powers.h"
+#include "abilities.h"
 #include "world.h"
 
 typedef struct GameConfig {
@@ -26,7 +26,7 @@ typedef struct GameConfig {
 typedef struct GameState {
     World world;
     Player player;
-    PowerSystem powers;
+    AbilitySystem abilities;
     /* Transitional ownership: gameplay debris can mutate World, while visual
        particles will move to presentation in the next phase. */
     ParticleSystem particles;

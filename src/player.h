@@ -79,7 +79,6 @@ void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
                   float deltaTime);
 void PlayerResolveWorldCollision(Player *player, World *world);
-void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force);
 /* Adds velocity directly. Used for recoil, where the direction is known and no
    falloff applies. */
 void PlayerApplyImpulse(Player *player, Vector2 impulse);

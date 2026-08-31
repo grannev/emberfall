@@ -153,7 +153,8 @@ chunks видно в debug HUD.
   представляет; GPU ресурсами мир не владеет
 - `src/player.c` — инерционный полёт, упругий circle-vs-cell collision и
   трёхступенчатый boost-бур со сверхзвуком и impact/animation state
-- `src/powers.c` — лазер, разрушение rock и взрыв с cooldown
+- `src/abilities.c` — реестр способностей: таблица с trigger/cooldown/позой
+  и по одной функции `apply` на способность; отдача и звук уходят через события
 - `src/particles.c` — фиксированный пул частиц без allocation во время кадра
 - `src/renderer.c` и `*_renderer.c` — presentation composition,
   процедурная модель героя, способности/частицы и единственное владение world

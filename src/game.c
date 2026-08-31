@@ -33,6 +33,11 @@ bool GameInit(GameState *game, GameConfig config)
     }
 
     memset(game, 0, sizeof(*game));
+    /* Same reasoning as the material table: a malformed ability table cannot
+       produce a game anyone can play, and failing at init names it. */
+    if (!AbilitiesValidate()) {
+        return false;
+    }
     game->config = config;
     if (!WorldInit(&game->world, config.worldWidth, config.worldHeight)) {
         return false;
@@ -60,7 +65,7 @@ void GameReset(GameState *game, uint64_t seed)
     game->worldSeed = seed;
     WorldGenerate(&game->world, seed);
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
-    PowersInit(&game->powers, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
+    AbilitiesInit(&game->abilities, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
     ParticlesInit(&game->particles, RngStreamSeed(seed, GAME_RNG_STREAM_PARTICLES));
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
@@ -137,52 +142,28 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
     }
 }
 
-static void GameApplyPowerFeedback(GameState *game, GameEventBuffer *events)
+/* Presentation and physics reactions that are the same for every ability: the
+   pose it puts the player in, and any knockback it published. Adding a power
+   does not add a case here. */
+static void GameApplyAbilityFeedback(GameState *game, const GameEventBuffer *events)
 {
-    PowerSystem *powers = &game->powers;
-    Player *player = &game->player;
+    uint16_t index;
+    int id;
 
-    if (powers->laserActive) {
-        PlayerSetPose(player, PLAYER_POSE_LASER, 0.06f);
-        if (powers->laserHit) {
-            (void)GameEventsPush(events, (GameEvent){
-                .type = GAME_EVENT_LASER_HIT,
-                .position = powers->laserEnd,
-                .material = powers->laserHitMaterial,
-            });
-        }
-    } else if (powers->chillActive) {
-        PlayerSetPose(player, PLAYER_POSE_CHILL, 0.06f);
-        if (powers->chillHit) {
-            (void)GameEventsPush(events, (GameEvent){
-                .type = GAME_EVENT_CRYO_HIT,
-                .position = powers->chillEnd,
-            });
+    for (id = 0; id < ABILITY_COUNT; ++id) {
+        const AbilityState *state = &game->abilities.states[id];
+        const AbilityDefinition *definition = AbilityDefinitionAt((AbilityId)id);
+
+        if (state->active && definition->poseHold > 0.0f) {
+            PlayerSetPose(&game->player, definition->pose, definition->poseHold);
         }
     }
+    for (index = 0u; index < events->count; ++index) {
+        const GameEvent *event = &events->events[index];
 
-    if (powers->forceTriggered) {
-        PlayerSetPose(player, PLAYER_POSE_BLAST, 0.28f);
-        PlayerApplyImpulse(player,
-                           (Vector2){-powers->forceDirection.x * powers->forceRecoil,
-                                     -powers->forceDirection.y * powers->forceRecoil});
-        (void)GameEventsPush(events, (GameEvent){
-            .type = GAME_EVENT_FORCE,
-            .position = powers->forceOrigin,
-            .direction = powers->forceDirection,
-            .strength = powers->forceRecoil,
-            .radius = powers->forceLength,
-        });
-    }
-    if (powers->explosionTriggered) {
-        PlayerApplyExplosionImpulse(player, powers->explosionPosition,
-                                    powers->explosionShockRadius, 145.0f);
-        (void)GameEventsPush(events, (GameEvent){
-            .type = GAME_EVENT_EXPLOSION,
-            .position = powers->explosionPosition,
-            .radius = powers->explosionShockRadius,
-            .strength = 145.0f,
-        });
+        if (event->playerImpulse.x != 0.0f || event->playerImpulse.y != 0.0f) {
+            PlayerApplyImpulse(&game->player, event->playerImpulse);
+        }
     }
 }
 
@@ -225,11 +206,10 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     GameActivatePlayerRegion(game);
     GamePublishPlayerFeedback(game, events);
 
-    PowersUpdate(&game->powers, &game->world, &game->particles,
-                 game->player.position, input->aimWorld, deltaTime,
-                 input->laserHeld, input->explosionPressed,
-                 input->forcePressed, input->chillHeld);
-    GameApplyPowerFeedback(game, events);
+    AbilitiesUpdate(&game->abilities, &game->world, &game->particles, events,
+                    game->player.position, input->aimWorld, deltaTime,
+                    input->ability);
+    GameApplyAbilityFeedback(game, events);
 
     ParticlesUpdate(&game->particles, &game->world, deltaTime);
     game->simulationAccumulator += deltaTime;

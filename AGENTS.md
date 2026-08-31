@@ -81,6 +81,14 @@ coherent phase with an explanatory message.
   world state. Player, ability, and particle drawing live in dedicated renderer
   modules; simulation modules must not regain `Draw*` calls. `World` owns CPU
   cells/chunks/lighting only and remains valid in headless tests.
+- Abilities are a registry: `ABILITIES` in `abilities.c` holds what every power
+  shares, one `apply` function holds what a power does, `input.c` owns the key
+  bindings, and feedback leaves through `GameEvent` — knockback included, via
+  `playerImpulse`. An ability never draws, never touches `Player`, and never
+  plays a sound. See `docs/development/adding-an-ability.md`.
+- Particles are one fixed pool with two roles kept apart by the type system:
+  visual particles are stepped against a `const World *` and cannot write cells;
+  only `PARTICLE_CONTACT_SETTLE` debris may, and only into an empty cell.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`,
   `world_lighting.c`, `world_effects.c` and `world_render_data.c`.

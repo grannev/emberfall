@@ -237,3 +237,35 @@ storage.
 `test_a_seeded_session_replays_identically` прогоняет 40 фиксированных кадров с
 лазером, взрывом, силовым ударом и криолучом в двух независимых `GameState` и
 требует побитового совпадения позиции игрока и digest мира.
+
+## После разделения abilities и particles
+
+`PowerSystem` заменён реестром `AbilitySystem`: общая часть (trigger, cooldown,
+follow-through, выбранная способность) принадлежит драйверу, специфика — одной
+функции `apply` на способность. Отдача уходит к игроку через
+`GameEvent.playerImpulse`, поэтому `PlayerApplyExplosionImpulse` удалена, а
+`Player` больше не перечисляет существующие powers. Частицы остались одним
+fixed-capacity пулом, но visual-роль теперь обновляется через `const World *` и
+не может изменить клетку.
+
+Симуляция мира не менялась. Структурные счётчики совпали со всеми десятью
+сценариями предыдущего запуска до единицы:
+
+| Scenario | avg ms | cells/tick | chunks/tick |
+|---|---:|---:|---:|
+| settled world | 0.441 | 0 | 0 |
+| falling sand | 1.484 | 47 627 | 46 |
+| large water | 3.970 | 74 660 | 72 |
+| fire and lava | 2.013 | 40 925 | 39 |
+| large explosion | 1.281 | 32 375 | 31 |
+| mass destruction | 0.718 | 11 042 | 10 |
+| boost drilling | 0.681 | 15 900 | 15 |
+| force ability | 1.664 | 36 369 | 35 |
+| cryo ability | 3.697 | 75 645 | 73 |
+| chaotic mixed | 5.548 | 127 624 | 124 |
+
+Память не изменилась: estimate 221.12 MiB, RSS 220.90 MiB. `AbilitySystem` —
+одна структура на игрока, вне cell storage.
+
+Гипотезы «ability simulation смешана с presentation» и «particles смешивают
+gameplay и visual effects» подтверждены и закрыты.
