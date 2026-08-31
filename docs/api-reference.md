@@ -90,29 +90,34 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer);
+const RendererFrameStats *RendererStats(const Renderer *renderer);
 void RendererUnload(Renderer *renderer);
 ```
 
 `Renderer` владеет presentation lifecycle. Его `WorldRenderer` создаёт и
 освобождает `Texture2D`, принимает CPU staging blocks 32×32 и выполняет
 `UpdateTextureRec`. Persistent full-world `Color` buffer отсутствует.
-`RendererRenderScene` компонует мир, частицы, игрока и способности в собственный
-window-sized `sceneTarget`; отдельный прозрачный `emissiveTarget` подготовлен
-для следующего post-processing этапа. Оба target создаются один раз и
-пересоздаются парой лишь при фактическом resize. `RendererComposite` выводит
-scene в текущий backbuffer, исправляя Y-ориентацию raylib render texture.
-HUD остаётся app-level overlay и рисуется после composite. `WorldRendererStats`
-публикует dirty regions, texture uploads, uploaded bytes и время подготовки
-последнего кадра.
+`RendererRenderScene` компонует резкую scene, затем explicit emissive mask,
+half-resolution downsample и separable horizontal/vertical blur. Scene не
+проходит через blur. `RendererComposite` выводит scene в текущий backbuffer и
+аддитивно накладывает blurred emissive, в каждом случае исправляя Y-ориентацию
+raylib render texture. Ошибка shader/half-resolution target оставляет рабочий
+sharp fallback. HUD рисуется после composite.
+
+`WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
+world pages. `RendererStats` сообщает активен ли bloom, его resolution, число
+offscreen passes/targets и CPU submission time emissive/filter passes. Это не
+GPU timer: на software renderer значение включает стоимость rasterization.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и
 render-texture passes и оставляет HUD вне будущего post-processing.
 
 Внутренний `WorldPrepareVisible` не является gameplay API. Он синхронно
-передаёт renderer-у только видимые dirty chunks; невидимые сохраняют флаг до
-попадания в кадр. Headless test проверяет первый полный build, нулевую работу
-settled кадра и один region после локального изменения.
+передаёт renderer-у scene и emissive staging только для видимых dirty chunks;
+невидимые сохраняют флаг до попадания в кадр. Headless tests проверяют первый
+полный build, нулевую работу settled кадра, локальное изменение и то, что
+lava/fire входят в mask, а bright sand — нет.
 
 ### Cell access
 
@@ -209,8 +214,9 @@ void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 способность его создала. Прежняя `PlayerApplyExplosionImpulse` удалена именно
 поэтому — `Player` больше не перечисляет существующие powers.
 `PlayerApplyImpulse` просто добавляет velocity и не наносит урон.
-`PlayerRendererDraw` относится к presentation API и объявлен отдельно в
-`player_renderer.h`.
+`PlayerRendererDraw` и `PlayerRendererDrawEmissive` относятся к presentation
+API и объявлены отдельно в `player_renderer.h`. Второй entry point рисует
+только boost/drill glow в renderer-owned emissive target.
 
 ## Abilities API
 
@@ -266,7 +272,10 @@ void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 становится плотнее и быстрее, а burst крупнее. `ParticlesInit` полностью очищает
 pool и используется также при полном reset. Все spawn-функции работают только с
 фиксированным массивом.
-`ParticleRendererDraw` объявлен отдельно и не участвует в simulation API.
+`ParticleRendererDraw` и `ParticleRendererDrawEmissive` объявлены отдельно и не
+участвуют в simulation API. Поле `Particle.emission` — presentation hint:
+spawn-функция обязана задать его явно, а reuse слота всегда сбрасывает его в
+ноль, чтобы несветящаяся частица не унаследовала bloom.
 
 ## Audio API
 

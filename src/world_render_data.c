@@ -27,23 +27,51 @@ static unsigned char ChannelWithVariation(unsigned char base, signed char spread
 
 /* Solid cells glow toward ember as they approach their own phase threshold, so
    a laser preheating rock and a freshly drilled tunnel wall are both readable. */
-static Color MaterialHeatTint(Color base, const MaterialInfo *info, float temperature)
+static float MaterialHeatAmount(const MaterialInfo *info, float temperature)
 {
-    float heat;
-
     if (temperature < 60.0f || !info->solid || !info->onHeat.enabled ||
         info->onHeat.threshold <= 60.0f) {
-        return base;
+        return 0.0f;
     }
 
     /* Square root keeps the low end readable: rock melts at 720, so a linear
        ramp would hide every temperature a drill or a short laser burst leaves. */
-    heat = sqrtf(Clamp((temperature - 60.0f) / (info->onHeat.threshold - 60.0f),
+    return sqrtf(Clamp((temperature - 60.0f) /
+                           (info->onHeat.threshold - 60.0f),
                        0.0f, 1.0f));
+}
+
+static Color MaterialHeatTint(Color base, const MaterialInfo *info,
+                              float temperature)
+{
+    float heat = MaterialHeatAmount(info, temperature);
+
     base.r = (unsigned char)((float)base.r + (245.0f - (float)base.r) * heat);
     base.g = (unsigned char)((float)base.g + (96.0f - (float)base.g) * heat * 0.8f);
     base.b = (unsigned char)((float)base.b * (1.0f - heat * 0.75f));
     return base;
+}
+
+/* The mask is explicit material data, not a brightness extraction from the
+   finished scene. Bright sand therefore stays sharp while lava, fire and hot
+   solid faces contribute controlled colour to bloom. */
+static Color MaterialEmissivePixel(const Cell *cell, Color scenePixel)
+{
+    const MaterialInfo *info = MaterialAt(cell->material);
+    float strength = info->emission;
+    float heat = MaterialHeatAmount(info, cell->temperature) * 0.72f;
+
+    if (heat > strength) {
+        strength = heat;
+    }
+    if (strength <= 0.001f) {
+        return BLANK;
+    }
+    scenePixel.r = (unsigned char)((float)scenePixel.r * strength);
+    scenePixel.g = (unsigned char)((float)scenePixel.g * strength);
+    scenePixel.b = (unsigned char)((float)scenePixel.b * strength);
+    scenePixel.a = 255u;
+    return scenePixel;
 }
 
 /* Takes the light level rather than sampling it: this runs for every cell of
@@ -125,6 +153,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                          WorldRenderChunkVisitor visitor, void *context)
 {
     Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
+    Color emissivePixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
     int lastVisibleColumn;
     int firstVisibleRow;
@@ -238,9 +267,14 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     Color pixel = MaterialPixel(world, WorldCellConst(world, x, y),
                                                 x, y, red, green, blue);
 
-                    uploadPixels[(size_t)(y - minimumY) *
-                                     (size_t)(maximumX - minimumX) +
-                                 (size_t)(x - minimumX)] = pixel;
+                    size_t pixelIndex =
+                        (size_t)(y - minimumY) *
+                            (size_t)(maximumX - minimumX) +
+                        (size_t)(x - minimumX);
+
+                    uploadPixels[pixelIndex] = pixel;
+                    emissivePixels[pixelIndex] =
+                        MaterialEmissivePixel(WorldCellConst(world, x, y), pixel);
                 }
             }
             /* At 16384 cells wide, uploading one full-width band for a local
@@ -251,7 +285,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                         (Rectangle){(float)minimumX, (float)minimumY,
                                     (float)(maximumX - minimumX),
                                     (float)(maximumY - minimumY)},
-                        uploadPixels)) {
+                        uploadPixels, emissivePixels)) {
                 world->dirtyChunks[chunkIndex] = 0u;
             }
         }

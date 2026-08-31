@@ -103,13 +103,14 @@ typedef struct RenderProbe {
 } RenderProbe;
 
 static bool CaptureRenderChunk(void *context, Rectangle bounds,
-                               const Color *pixels)
+                               const Color *pixels,
+                               const Color *emissivePixels)
 {
     RenderProbe *probe = context;
 
-    if (pixels == NULL) {
+    if (pixels == NULL || emissivePixels == NULL) {
         ++testsFailed;
-        fprintf(stderr, "FAIL %s: render visitor received no staging pixels\n",
+        fprintf(stderr, "FAIL %s: render visitor received incomplete staging data\n",
                 currentTest);
         return false;
     }
@@ -150,12 +151,105 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
    instead leaves stale pixels on screen until something unrelated happens to
    change that chunk again, which is exactly the kind of bug that only shows up
    on a machine with a smaller page cache than the one it was written on. */
-static bool RefuseRenderChunk(void *context, Rectangle bounds, const Color *pixels)
+static bool RefuseRenderChunk(void *context, Rectangle bounds, const Color *pixels,
+                              const Color *emissivePixels)
 {
     (void)bounds;
     (void)pixels;
+    (void)emissivePixels;
     ++(*(int *)context);
     return false;
+}
+
+typedef struct EmissiveProbe {
+    bool lavaEmits;
+    bool fireEmits;
+    bool sandStaysDark;
+} EmissiveProbe;
+
+static bool CaptureMaterialEmission(void *context, Rectangle bounds,
+                                    const Color *pixels,
+                                    const Color *emissivePixels)
+{
+    EmissiveProbe *probe = context;
+
+    (void)pixels;
+    if (bounds.x <= 4.0f && bounds.y <= 4.0f &&
+        bounds.x + bounds.width > 6.0f && bounds.y + bounds.height > 4.0f) {
+        int width = (int)bounds.width;
+        int row = 4 - (int)bounds.y;
+        int lavaColumn = 4 - (int)bounds.x;
+        int fireColumn = 5 - (int)bounds.x;
+        int sandColumn = 6 - (int)bounds.x;
+        Color lava = emissivePixels[row * width + lavaColumn];
+        Color fire = emissivePixels[row * width + fireColumn];
+        Color sand = emissivePixels[row * width + sandColumn];
+
+        probe->lavaEmits = lava.a == 255u &&
+                           (lava.r != 0u || lava.g != 0u || lava.b != 0u);
+        probe->fireEmits = fire.a == 255u &&
+                           (fire.r != 0u || fire.g != 0u || fire.b != 0u);
+        probe->sandStaysDark = sand.r == 0u && sand.g == 0u &&
+                               sand.b == 0u && sand.a == 0u;
+    }
+    return true;
+}
+
+static void test_emissive_render_data_selects_emitters_not_bright_terrain(void)
+{
+    World world;
+    EmissiveProbe probe = {0};
+    Rectangle wholeWorld = {0.0f, 0.0f, 32.0f, 32.0f};
+
+    CHECK(WorldInit(&world, 32, 32), "world allocation failed");
+    WorldSetCell(&world, 4, 4, MATERIAL_LAVA);
+    WorldSetCell(&world, 5, 4, MATERIAL_FIRE);
+    WorldSetCell(&world, 6, 4, MATERIAL_SAND);
+
+    WorldPrepareVisible(&world, wholeWorld, CaptureMaterialEmission, &probe);
+    CHECK(probe.lavaEmits, "lava produced no emissive render data");
+    CHECK(probe.fireEmits, "fire produced no emissive render data");
+    CHECK(probe.sandStaysDark,
+          "bright sand leaked into the explicit emissive mask");
+    WorldUnload(&world);
+}
+
+static void test_particle_emission_is_explicit_per_effect(void)
+{
+    ParticleSystem particles;
+    int i;
+    bool laserGlows = false;
+    bool boostGlows = false;
+
+    ParticlesInit(&particles, 0xE6BEu);
+    ParticlesSpawnLaserSparks(&particles, (Vector2){10.0f, 10.0f},
+                              (Vector2){1.0f, 0.0f});
+    ParticlesSpawnBoostTrail(&particles, (Vector2){12.0f, 10.0f},
+                             (Vector2){120.0f, 0.0f}, 2);
+    for (i = 0; i < MAX_PARTICLES; ++i) {
+        const Particle *particle = &particles.particles[i];
+
+        if (!particle->active || particle->emission <= 0.0f) {
+            continue;
+        }
+        if (particle->color.r == 255u && particle->color.g == 225u) {
+            laserGlows = true;
+        } else {
+            boostGlows = true;
+        }
+    }
+    CHECK(laserGlows, "laser sparks carry no emissive metadata");
+    CHECK(boostGlows, "boost trail carries no emissive metadata");
+
+    /* Reinitialisation catches stale pool fields; steam must remain a visual
+       particle without accidentally inheriting glow from an overwritten slot. */
+    ParticlesInit(&particles, 0xE6BEu);
+    ParticlesSpawnSteam(&particles, (Vector2){10.0f, 10.0f});
+    for (i = 0; i < MAX_PARTICLES; ++i) {
+        CHECK(!particles.particles[i].active ||
+                  particles.particles[i].emission == 0.0f,
+              "steam particle %d leaked into emissive", i);
+    }
 }
 
 static void test_a_refused_chunk_keeps_its_dirty_flag(void)
@@ -1876,6 +1970,8 @@ int main(void)
 {
     RUN(test_world_render_preparation_is_headless_and_incremental);
     RUN(test_a_refused_chunk_keeps_its_dirty_flag);
+    RUN(test_emissive_render_data_selects_emitters_not_bright_terrain);
+    RUN(test_particle_emission_is_explicit_per_effect);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_the_same_seed_always_generates_the_same_world);

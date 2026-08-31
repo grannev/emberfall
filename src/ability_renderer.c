@@ -110,3 +110,43 @@ void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition)
     DrawLineV((Vector2){aimPosition.x, aimPosition.y - 6.0f},
               (Vector2){aimPosition.x, aimPosition.y + 6.0f}, crosshair);
 }
+
+void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
+{
+    const AbilityState *laser;
+    const AbilityState *cryo;
+    const AbilityState *explosion;
+
+    if (abilities == NULL) {
+        return;
+    }
+    laser = AbilityStateAt(abilities, ABILITY_LASER);
+    cryo = AbilityStateAt(abilities, ABILITY_CRYO);
+    explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
+
+    if (laser->active) {
+        DrawLineEx(laser->origin, laser->endpoint, 1.8f,
+                   (Color){255, 72, 24, 235});
+        DrawLineEx(laser->origin, laser->endpoint, 0.65f,
+                   (Color){255, 238, 166, 255});
+        DrawCircleV(laser->endpoint, laser->hit ? 3.0f : 1.0f,
+                    (Color){255, 126, 34, laser->hit ? 230 : 150});
+    }
+    if (cryo->active) {
+        DrawLineEx(cryo->origin, cryo->endpoint, 1.2f,
+                   (Color){104, 205, 255, 125});
+        DrawCircleV(cryo->endpoint, cryo->hit ? 2.4f : 0.8f,
+                    (Color){167, 232, 255, 130});
+    }
+    if (explosion->effectTime > 0.0f) {
+        float duration = AbilityDefinitionAt(ABILITY_EXPLOSION)->effectTime;
+        float progress = 1.0f - explosion->effectTime / duration;
+        float radius = (float)ABILITY_EXPLOSION_CORE_RADIUS +
+                       (ABILITY_EXPLOSION_SHOCK_RADIUS -
+                        (float)ABILITY_EXPLOSION_CORE_RADIUS) * progress;
+
+        DrawCircleLinesV(explosion->origin, radius,
+                         Fade((Color){255, 156, 54, 255},
+                              (1.0f - progress) * 0.65f));
+    }
+}

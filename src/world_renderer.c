@@ -14,7 +14,6 @@
 
 typedef struct PageUploadContext {
     WorldRenderer *renderer;
-    const World *world;
 } PageUploadContext;
 
 static int PageIndexOfSlot(const WorldRenderer *renderer, int pageX, int pageY)
@@ -33,7 +32,8 @@ static int PageIndexOfSlot(const WorldRenderer *renderer, int pageX, int pageY)
 static bool WorldRendererGrow(WorldRenderer *renderer, int wanted)
 {
     WorldRenderPage *grown;
-    Image blank;
+    Image sceneBlank;
+    Image emissiveBlank;
     int slot;
 
     if (wanted <= renderer->pageCapacity) {
@@ -48,19 +48,37 @@ static bool WorldRendererGrow(WorldRenderer *renderer, int wanted)
     }
     renderer->pages = grown;
 
-    blank = GenImageColor(WORLD_RENDER_PAGE_SIZE, WORLD_RENDER_PAGE_SIZE, BLACK);
+    sceneBlank = GenImageColor(WORLD_RENDER_PAGE_SIZE, WORLD_RENDER_PAGE_SIZE, BLACK);
+    emissiveBlank =
+        GenImageColor(WORLD_RENDER_PAGE_SIZE, WORLD_RENDER_PAGE_SIZE, BLANK);
     for (slot = renderer->pageCapacity; slot < wanted; ++slot) {
-        renderer->pages[slot].texture = LoadTextureFromImage(blank);
+        renderer->pages[slot] = (WorldRenderPage){0};
+        renderer->pages[slot].texture = LoadTextureFromImage(sceneBlank);
+        renderer->pages[slot].emissiveTexture =
+            LoadTextureFromImage(emissiveBlank);
         renderer->pages[slot].pageX = -1;
         renderer->pages[slot].pageY = -1;
         renderer->pages[slot].lastUsedFrame = 0u;
-        if (renderer->pages[slot].texture.id == 0u) {
+        if (renderer->pages[slot].texture.id == 0u ||
+            renderer->pages[slot].emissiveTexture.id == 0u) {
+            if (renderer->pages[slot].texture.id != 0u) {
+                UnloadTexture(renderer->pages[slot].texture);
+            }
+            if (renderer->pages[slot].emissiveTexture.id != 0u) {
+                UnloadTexture(renderer->pages[slot].emissiveTexture);
+            }
+            renderer->pages[slot] = (WorldRenderPage){0};
             break;
         }
         SetTextureFilter(renderer->pages[slot].texture, TEXTURE_FILTER_POINT);
+        SetTextureFilter(renderer->pages[slot].emissiveTexture,
+                         TEXTURE_FILTER_POINT);
         SetTextureWrap(renderer->pages[slot].texture, TEXTURE_WRAP_CLAMP);
+        SetTextureWrap(renderer->pages[slot].emissiveTexture,
+                       TEXTURE_WRAP_CLAMP);
     }
-    UnloadImage(blank);
+    UnloadImage(sceneBlank);
+    UnloadImage(emissiveBlank);
     renderer->pageCapacity = slot;
     return renderer->pageCapacity > 0;
 }
@@ -111,7 +129,8 @@ static int WorldRendererAcquirePage(WorldRenderer *renderer, int pageX, int page
 }
 
 static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
-                                     const Color *pixels)
+                                     const Color *pixels,
+                                     const Color *emissivePixels)
 {
     PageUploadContext *upload = context;
     WorldRenderer *renderer = upload->renderer;
@@ -132,10 +151,59 @@ static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
     pixelCount = (uint64_t)bounds.width * (uint64_t)bounds.height;
 
     UpdateTextureRec(renderer->pages[slot].texture, local, pixels);
+    UpdateTextureRec(renderer->pages[slot].emissiveTexture, local,
+                     emissivePixels);
     ++renderer->lastFrame.dirtyRegions;
-    ++renderer->lastFrame.textureUploads;
-    renderer->lastFrame.uploadedBytes += pixelCount * sizeof(*pixels);
+    renderer->lastFrame.textureUploads += 2u;
+    renderer->lastFrame.uploadedBytes +=
+        pixelCount * (sizeof(*pixels) + sizeof(*emissivePixels));
     return true;
+}
+
+static void WorldRendererDrawLayer(const WorldRenderer *renderer,
+                                   const World *world, Rectangle visible,
+                                   bool emissive)
+{
+    int firstPageX = (int)floorf(visible.x / (float)WORLD_RENDER_PAGE_SIZE);
+    int lastPageX = (int)floorf((visible.x + visible.width) /
+                                (float)WORLD_RENDER_PAGE_SIZE);
+    int firstPageY = (int)floorf(visible.y / (float)WORLD_RENDER_PAGE_SIZE);
+    int lastPageY = (int)floorf((visible.y + visible.height) /
+                                (float)WORLD_RENDER_PAGE_SIZE);
+    int pageY;
+
+    if (firstPageX < 0) firstPageX = 0;
+    if (firstPageY < 0) firstPageY = 0;
+    if (lastPageX > (world->width - 1) / WORLD_RENDER_PAGE_SIZE) {
+        lastPageX = (world->width - 1) / WORLD_RENDER_PAGE_SIZE;
+    }
+    if (lastPageY > (world->height - 1) / WORLD_RENDER_PAGE_SIZE) {
+        lastPageY = (world->height - 1) / WORLD_RENDER_PAGE_SIZE;
+    }
+
+    for (pageY = firstPageY; pageY <= lastPageY; ++pageY) {
+        int pageX;
+
+        for (pageX = firstPageX; pageX <= lastPageX; ++pageX) {
+            int slot = PageIndexOfSlot(renderer, pageX, pageY);
+            int originX = pageX * WORLD_RENDER_PAGE_SIZE;
+            int originY = pageY * WORLD_RENDER_PAGE_SIZE;
+            int width = WORLD_RENDER_PAGE_SIZE;
+            int height = WORLD_RENDER_PAGE_SIZE;
+            Texture2D texture;
+
+            if (slot < 0) {
+                continue;
+            }
+            if (originX + width > world->width) width = world->width - originX;
+            if (originY + height > world->height) height = world->height - originY;
+            texture = emissive ? renderer->pages[slot].emissiveTexture
+                               : renderer->pages[slot].texture;
+            DrawTextureRec(texture,
+                           (Rectangle){0.0f, 0.0f, (float)width, (float)height},
+                           (Vector2){(float)originX, (float)originY}, WHITE);
+        }
+    }
 }
 
 bool WorldRendererInit(WorldRenderer *renderer, const World *world)
@@ -221,33 +289,19 @@ void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
     }
 
     upload.renderer = renderer;
-    upload.world = world;
     WorldPrepareVisible(world, visible, WorldRendererUploadChunk, &upload);
     renderer->lastFrame.preparationMilliseconds = (GetTime() - started) * 1000.0;
-
-    for (pageY = firstPageY; pageY <= lastPageY; ++pageY) {
-        int pageX;
-
-        for (pageX = firstPageX; pageX <= lastPageX; ++pageX) {
-            int slot = PageIndexOfSlot(renderer, pageX, pageY);
-            int originX = pageX * WORLD_RENDER_PAGE_SIZE;
-            int originY = pageY * WORLD_RENDER_PAGE_SIZE;
-            int width = WORLD_RENDER_PAGE_SIZE;
-            int height = WORLD_RENDER_PAGE_SIZE;
-
-            if (slot < 0) {
-                continue;
-            }
-            /* The last page of a row or column hangs over the edge of the
-               world; only the part backed by real cells is drawn. */
-            if (originX + width > world->width) width = world->width - originX;
-            if (originY + height > world->height) height = world->height - originY;
-            DrawTextureRec(renderer->pages[slot].texture,
-                           (Rectangle){0.0f, 0.0f, (float)width, (float)height},
-                           (Vector2){(float)originX, (float)originY}, WHITE);
-        }
-    }
+    WorldRendererDrawLayer(renderer, world, visible, false);
     renderer->lastFrame.residentPages = (uint32_t)renderer->pageCapacity;
+}
+
+void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
+                               Rectangle visible)
+{
+    if (renderer == NULL || world == NULL || renderer->pages == NULL) {
+        return;
+    }
+    WorldRendererDrawLayer(renderer, world, visible, true);
 }
 
 void WorldRendererUnload(WorldRenderer *renderer)
@@ -260,6 +314,9 @@ void WorldRendererUnload(WorldRenderer *renderer)
     for (slot = 0; slot < renderer->pageCapacity; ++slot) {
         if (renderer->pages[slot].texture.id != 0u) {
             UnloadTexture(renderer->pages[slot].texture);
+        }
+        if (renderer->pages[slot].emissiveTexture.id != 0u) {
+            UnloadTexture(renderer->pages[slot].emissiveTexture);
         }
     }
     free(renderer->pages);

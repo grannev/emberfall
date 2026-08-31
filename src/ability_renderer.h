@@ -6,5 +6,6 @@
 #include "abilities.h"
 
 void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition);
+void AbilityRendererDrawEmissive(const AbilitySystem *abilities);
 
 #endif
