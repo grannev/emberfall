@@ -91,6 +91,8 @@ startup выше steady state.
   cells и занимает около 0,47 s.
 - **Подтверждено аудитом:** `world.c` совмещает storage, materials, simulation,
   thermal, generation, effects, lighting и renderer; World владеет GPU state.
+  Обе части закрыты: GPU state перенесён в `WorldRenderer`, а `world.c`
+  разделён на модули по ответственностям.
 - **Подтверждено аудитом:** player, abilities и particles смешивают simulation
   с `Draw*`; gameplay RNG зависит от глобального raylib RNG.
 
@@ -163,3 +165,40 @@ workload снова полностью совпал с baseline. Simulation algo
 Одна texture 16384×864 всё ещё требует примерно 54 MiB VRAM и остаётся hard
 limit текущего renderer. Теперь ограничение локализовано в `WorldRenderer`, так
 что render paging не потребует менять `World` или gameplay modules.
+
+## После декомпозиции world.c
+
+`world.c` (2399 строк) разделён на `materials.c`, `world_storage.c`,
+`world_simulation.c`, `world_thermal.c`, `world_generation.c`,
+`world_lighting.c`, `world_effects.c` и `world_render_data.c` без изменения
+алгоритмов. Гипотеза «`world.c` совмещает слишком много responsibilities»
+подтверждена и закрыта.
+
+Единственный риск разделения — потеря inlining в горячем цикле: `WorldGetCell`,
+`WorldCell`, `WorldInBounds`, `MaterialAt` и `CoordinateHash` вызываются
+несколько раз на клетку за tick и раньше жили в одном translation unit.
+Поэтому они перенесены в `world_internal.h`/`materials.h` как `static inline`,
+а внутренние вызывающие используют `WorldMaterialAt` вместо публичного
+`WorldGetCell`. Значение cryo-скорости переехало из `switch` в колонку
+`chillRate` таблицы материалов; числа не менялись.
+
+| Scenario | до avg ms | после avg ms | cells/tick |
+|---|---:|---:|---:|
+| settled world | 0.533 | 0.398 | 0 |
+| falling sand | 1.734 | 1.727 | 59 630 |
+| large water | 4.294 | 4.131 | 86 664 |
+| fire and lava | 2.214 | 2.159 | 52 929 |
+| large explosion | 1.634 | 1.534 | 44 691 |
+| mass destruction | 0.941 | 0.859 | 23 045 |
+| boost drilling | 1.005 | 0.935 | 27 904 |
+| force ability | 1.974 | 1.872 | 48 372 |
+| cryo ability | 4.218 | 3.813 | 87 648 |
+| chaotic mixed | 5.819 | 5.639 | 139 628 |
+
+Оба замера сделаны в одной сессии на одной машине. Структурные счётчики
+совпали до единицы во всех десяти сценариях: активные/спящие chunks,
+`cells/tick`, `chunks/tick` и `dirty/tick` идентичны, то есть работа не
+изменилась. Wall-clock во всех сценариях не хуже прежнего; регрессии от
+разделения нет. Ускорение не заявляется — разброс этой машины сопоставим с
+разницей, а алгоритмы не менялись. Память не изменилась: estimate 221.12 MiB,
+RSS 220.96 MiB.

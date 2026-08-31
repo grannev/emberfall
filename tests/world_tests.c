@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "game.h"
+#include "materials.h"
 #include "particles.h"
 #include "player.h"
 #include "powers.h"
@@ -217,6 +218,36 @@ static void test_every_material_has_table_data(void)
         CHECK(material == MATERIAL_EMPTY || strcmp(name, "EMPTY") != 0,
               "material %d fell back to the EMPTY entry", material);
     }
+}
+
+static void test_material_table_passes_its_own_validation(void)
+{
+    /* WorldInit runs this too, so a table that fails here fails the whole game
+       loudly rather than producing cells that misbehave in one rare path. */
+    CHECK(MaterialsValidate(), "the material table failed validation");
+}
+
+/* The cryo rate used to be a switch statement that named four materials and
+   gave everything else a default. Moving it into the table is only safe if the
+   numbers that made cryo work are still the numbers the beam reads. */
+static void test_every_material_carries_its_own_cryo_rate(void)
+{
+    int material;
+
+    for (material = 0; material < MATERIAL_COUNT; ++material) {
+        if (material == MATERIAL_EMPTY) {
+            continue;
+        }
+        CHECK(MaterialAt((CellMaterial)material)->chillRate > 0.0f,
+              "material %s cannot be chilled at all",
+              WorldMaterialName((CellMaterial)material));
+    }
+    /* Lava relaxes back toward 900C at 8% of the gap per tick, which is about
+       22 degrees a tick at its freezing point. A beam that does not clearly
+       beat that finds an equilibrium above the threshold and never freezes. */
+    CHECK(MaterialAt(MATERIAL_LAVA)->chillRate >
+              MaterialAt(MATERIAL_WATER)->chillRate * 10.0f,
+          "lava must be chilled far harder than water");
 }
 
 static void test_solidity_matches_what_blocks_the_player(void)
@@ -1394,6 +1425,8 @@ int main(void)
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_every_material_has_table_data);
+    RUN(test_material_table_passes_its_own_validation);
+    RUN(test_every_material_carries_its_own_cryo_rate);
     RUN(test_solidity_matches_what_blocks_the_player);
     RUN(test_sand_falls_to_the_floor_and_is_conserved);
     RUN(test_sand_falls_at_most_one_cell_per_tick);

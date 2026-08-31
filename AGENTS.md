@@ -76,3 +76,11 @@ coherent phase with an explanatory message.
   world state. Player, ability, and particle drawing live in dedicated renderer
   modules; simulation modules must not regain `Draw*` calls. `World` owns CPU
   cells/chunks/lighting only and remains valid in headless tests.
+- The world module is `world.h` plus `materials.c`, `world_storage.c`,
+  `world_simulation.c`, `world_thermal.c`, `world_generation.c`,
+  `world_lighting.c`, `world_effects.c` and `world_render_data.c`.
+  `world_internal.h`, `world_thermal.h` and `world_lighting.h` are private to
+  those files. Hot accessors live in the internal headers as `static inline` on
+  purpose: splitting responsibilities must not put a cross-module call in the
+  per-cell loop. Add material properties as table columns in `materials.c`, not
+  as a switch elsewhere — see `docs/development/adding-a-material.md`.

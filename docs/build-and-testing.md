@@ -104,8 +104,9 @@ make clean
 линкуются в test binary. Это разделение нужно сохранять; из-за него набор
 гоняется без display, аудио и X-сервера.
 
-Набор собирается из `tests/world_tests.c`, `src/world.c`, `src/player.c`,
-`src/powers.c` и `src/particles.c` и покрывает инварианты, которые иначе держались
+Набор собирается из `tests/world_tests.c`, файлов модуля мира
+(`$(WORLD_SOURCES)` в Makefile), `src/game.c`, `src/player.c`, `src/powers.c` и
+`src/particles.c` и покрывает инварианты, которые иначе держались
 бы только на памяти разработчика:
 
 - полнота таблицы `MATERIALS` и согласованность solid-семантики;

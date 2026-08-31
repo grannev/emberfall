@@ -64,17 +64,30 @@ reaction, impact, drill, boost stage, force, explosion и попадания bea
 update. При переполнении новые события отбрасываются и увеличивают `dropped`,
 не повреждая память и порядок уже записанных событий.
 
-### `world.c/.h`
+### Модуль мира: `world.h` + `world_*.c` + `materials.*`
 
-Владеет CPU-состоянием физического мира:
+`world.h` — единственный публичный заголовок мира. За ним стоят несколько
+файлов с раздельными responsibilities; `world_internal.h` и `world_thermal.h`
+внутренние и включаются только другими файлами мира.
 
-- непрерывный массив `Cell`;
-- active-chunk буферы;
-- потоковая активация динамики вокруг игрока через `WorldActivateRegion`;
-- материалы, температура и фазовые переходы;
-- генерация карты;
-- лазерное и криогенное воздействие, разрушение, ударная волна и силовой конус;
-- очередь событий water/lava reaction фиксированного размера.
+| Файл | Ответственность |
+|---|---|
+| `materials.c/.h` | Таблица материалов: цвет, плотность дизеринга, thermal thresholds, фазовые переходы, реакция на лазер и криолуч. `MaterialsValidate` проверяет таблицу на старте. |
+| `world_storage.c` | Владение `Cell`-массивом, chunk-флаги active/dirty/light-dirty, wake-логика, публичные accessors, `WorldActivateRegion`. |
+| `world_simulation.c` | Правила движения за tick и фиксированный traversal: bottom-to-top, чередование горизонтального направления, `updatedTick`. |
+| `world_thermal.c` | Теплопередача, фазовые переходы, возгорание, реакция water/lava. |
+| `world_generation.c` | Генерация карты и `WorldPlayerSpawn`. |
+| `world_lighting.c/.h` | Грубое двухканальное поле света и его solve. |
+| `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
+| `world_render_data.c` | Единственное место, превращающее `Cell` в `Color`; отдаёт renderer готовые прямоугольники пикселей. |
+
+`world_internal.h` держит горячие accessors (`WorldCell`, `WorldMaterialAt`,
+`CoordinateHash`) как `static inline`. Разделение файлов не должно вставлять
+cross-module call в самый горячий цикл проекта; benchmark после разделения
+совпал с baseline во всех десяти сценариях.
+
+Материал добавляется одной записью таблицы — см.
+[development/adding-a-material.md](development/adding-a-material.md).
 
 ### `player.c/.h`
 

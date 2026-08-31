@@ -143,9 +143,11 @@ chunks видно в debug HUD.
   `GameInput` и публикует transient `GameEvents` без allocation
 - `src/input.c` — единственное преобразование raw raylib keyboard/mouse в
   gameplay-oriented input
-- `src/world.c` — непрерывная сетка cells, температура, фазовые переходы,
-  генерация, fixed-step симуляция, бурение и CPU-подготовка dirty chunks; GPU
-  ресурсами мир не владеет
+- `src/world.h` + `src/world_*.c` + `src/materials.c` — модуль мира, разделённый
+  по ответственностям: storage и chunks, правила движения, теплопередача,
+  генерация, свет, эффекты способностей и CPU-подготовка dirty chunks. Таблица
+  материалов — единственный источник правды о том, что материал собой
+  представляет; GPU ресурсами мир не владеет
 - `src/player.c` — инерционный полёт, упругий circle-vs-cell collision и
   трёхступенчатый boost-бур со сверхзвуком и impact/animation state
 - `src/powers.c` — лазер, разрушение rock и взрыв с cooldown

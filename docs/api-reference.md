@@ -29,6 +29,13 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 
 ## World API
 
+`world.h` — единственный публичный заголовок мира. Реализация разделена на
+`materials.c`, `world_storage.c`, `world_simulation.c`, `world_thermal.c`,
+`world_generation.c`, `world_lighting.c`, `world_effects.c` и
+`world_render_data.c`. Заголовки `world_internal.h`, `world_thermal.h` и
+`world_lighting.h` внутренние: их включают только файлы модуля мира.
+`materials.h` описывает таблицу материалов и нужен всем, кто добавляет материал.
+
 ### Lifecycle
 
 ```c

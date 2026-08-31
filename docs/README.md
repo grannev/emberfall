@@ -16,6 +16,8 @@ API, правила симуляции и порядок проверки изм
 - [Справочник API](api-reference.md) — структуры и публичные функции модулей.
 - [Сборка и тестирование](build-and-testing.md) — Makefile, артефакты,
   headless-тесты, smoke-test и обязательная проверка изменений.
+- [Как добавить материал](development/adding-a-material.md) — таблица
+  материалов, обязательная проверка взаимодействий и sleep-инвариант.
 - [Производительность](performance.md) — benchmark scenarios, workload counters,
   baseline CPU/memory и статус проверенных hypotheses.
 
