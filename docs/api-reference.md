@@ -77,7 +77,18 @@ void WorldApplyShockwave(World *world, int centerX, int centerY,
                          int innerRadius, int outerRadius);
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end,
                             float radius, float deltaTime);
+LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end,
+                            float radius, float deltaTime);
+void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
+                         float length, float spreadCosine, int reach);
 ```
+
+`WorldApplyChill` — термическая инверсия лазера: замораживает воду в `ICE` и
+осаждает лаву обратно в rock.
+
+`WorldApplyForceCone` толкает динамические cells вдоль конуса и не разрушает ни
+одной. `spreadCosine` — косинус половинного угла, `reach` — насколько далеко
+отбрасываются ближайшие cells.
 
 `WorldApplyLaser` возвращает:
 
@@ -124,7 +135,8 @@ void PowersInit(PowerSystem *powers);
 void PowersUpdate(PowerSystem *powers, World *world,
                   ParticleSystem *particles, Vector2 origin,
                   Vector2 aimPosition, float deltaTime,
-                  bool laserHeld, bool explosionPressed);
+                  bool laserHeld, bool explosionPressed,
+                  bool forceHeld, bool chillHeld);
 void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);
 ```

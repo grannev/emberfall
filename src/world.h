@@ -24,6 +24,7 @@ typedef enum CellMaterial {
     MATERIAL_SMOKE,
     MATERIAL_FIRE,
     MATERIAL_ASH,
+    MATERIAL_ICE,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -126,9 +127,18 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
+/* Pushes dynamic cells along a cone without destroying them. `spreadCosine` is
+   the cosine of the cone's half angle; `reach` is how far the nearest cells are
+   thrown. */
+void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
+                         float length, float spreadCosine, int reach);
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);
 
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
+                            float deltaTime);
+/* Thermal inverse of the laser: chills everything along the ray, freezing water
+   to ice and settling lava back into rock. */
+LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radius,
                             float deltaTime);
 const char *WorldMaterialName(CellMaterial material);
 

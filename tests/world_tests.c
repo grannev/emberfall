@@ -561,6 +561,133 @@ static int CountActiveParticles(const ParticleSystem *particles)
     return count;
 }
 
+static void test_cryo_freezes_water_into_standing_ice(void)
+{
+    World world;
+    int step;
+    int ice;
+
+    CHECK(WorldInit(&world, 96, 64), "world allocation failed");
+    FillRect(&world, 20, 40, 76, 50, MATERIAL_WATER);
+
+    for (step = 0; step < 60; ++step) {
+        WorldApplyChill(&world, (Vector2){48.0f, 20.0f}, (Vector2){48.0f, 60.0f},
+                        2.6f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+    ice = CountMaterial(&world, MATERIAL_ICE);
+    CHECK(ice > 0, "the cryo beam froze nothing");
+    CHECK(WorldMaterialIsSolid(MATERIAL_ICE), "ice must be solid to build with");
+
+    /* Ice does not drift back on its own, so it is something the player can
+       actually build with. */
+    Tick(&world, 600);
+    CHECK(CountMaterial(&world, MATERIAL_ICE) == ice,
+          "undisturbed ice changed on its own: %d cells became %d", ice,
+          CountMaterial(&world, MATERIAL_ICE));
+    WorldUnload(&world);
+}
+
+static void test_heat_melts_ice_back_into_water(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 96, 64), "world allocation failed");
+    FillRect(&world, 30, 40, 60, 46, MATERIAL_ICE);
+
+    /* Stable is not permanent: anything warm has to undo it, or the player
+       could seal the world shut with something nothing can remove. */
+    for (step = 0; step < 60; ++step) {
+        WorldApplyLaser(&world, (Vector2){45.0f, 20.0f}, (Vector2){45.0f, 60.0f},
+                        2.25f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_WATER) > 0,
+          "the laser never melted any ice");
+    WorldUnload(&world);
+}
+
+static void test_cryo_settles_lava_back_into_rock(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 96, 64), "world allocation failed");
+    FillRect(&world, 30, 40, 66, 50, MATERIAL_LAVA);
+
+    /* Lava relaxes back toward 900C every tick, so this only passes if the beam
+       out-cools that relaxation rather than merely dipping the temperature. */
+    for (step = 0; step < 120; ++step) {
+        WorldApplyChill(&world, (Vector2){48.0f, 20.0f}, (Vector2){48.0f, 60.0f},
+                        2.6f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) > 0,
+          "sustained cryo never turned any lava into rock");
+    WorldUnload(&world);
+}
+
+static void test_force_cone_moves_material_without_destroying_it(void)
+{
+    World world;
+    int before;
+    int step;
+    int rightmost = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 30, 30, 40, 40, MATERIAL_SAND);
+    before = CountMaterial(&world, MATERIAL_SAND);
+
+    for (step = 0; step < 40; ++step) {
+        WorldApplyForceCone(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
+                            52.0f, 0.86f, 4);
+        WorldUpdate(&world);
+    }
+
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_SAND && x > rightmost) {
+                rightmost = x;
+            }
+        }
+    }
+
+    /* Every other power removes cells. This one only moves them, so the count
+       is the invariant that separates it from the rest. */
+    CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
+          "the force cone destroyed material: %d sand cells became %d", before,
+          CountMaterial(&world, MATERIAL_SAND));
+    CHECK(rightmost > 45, "nothing was pushed downwind; rightmost sand at x=%d",
+          rightmost);
+    WorldUnload(&world);
+}
+
+static void test_force_cone_leaves_solid_terrain_alone(void)
+{
+    World world;
+    int before;
+    int step;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 30, 20, 60, 50, MATERIAL_ROCK);
+    before = CountMaterial(&world, MATERIAL_ROCK);
+
+    for (step = 0; step < 40; ++step) {
+        WorldApplyForceCone(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
+                            52.0f, 0.86f, 4);
+        WorldUpdate(&world);
+    }
+
+    /* The cone is a gust, not a bulldozer: static terrain must not shift. */
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == before,
+          "the force cone moved rock: %d cells became %d", before,
+          CountMaterial(&world, MATERIAL_ROCK));
+    WorldUnload(&world);
+}
+
 static void test_bouncing_particles_do_not_pass_through_terrain(void)
 {
     World world;
@@ -752,6 +879,11 @@ int main(void)
     RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
+    RUN(test_cryo_freezes_water_into_standing_ice);
+    RUN(test_heat_melts_ice_back_into_water);
+    RUN(test_cryo_settles_lava_back_into_rock);
+    RUN(test_force_cone_moves_material_without_destroying_it);
+    RUN(test_force_cone_leaves_solid_terrain_alone);
     RUN(test_bouncing_particles_do_not_pass_through_terrain);
     RUN(test_drill_debris_settles_as_ash_without_overwriting_terrain);
     RUN(test_passing_particles_ignore_terrain);

@@ -207,11 +207,29 @@ over frameworks, generic containers, or unnecessary abstraction.
   material must escape it before terrain can stop it. Settling writes only empty
   cells and only a fraction of debris settles, so effects can never overwrite
   terrain, bury the player, or refill a tunnel faster than the drill cuts it.
+- Holding `Q` sweeps a force cone that pushes dynamic cells and destroys none.
+  It is the one power that shapes the world instead of removing from it, so the
+  cell count it touches must be conserved; solids do not move. Apply it on a
+  fixed cadence, never per frame — whole cells move, so a per-frame gust would
+  be stronger at a higher frame rate.
+- Holding `E` fires the cryo beam, the thermal inverse of the laser: water
+  freezes to `ICE`, lava settles back to `ROCK`, fire is snuffed. Its rate on
+  lava must clearly beat lava's own relaxation toward 900C, or the beam finds an
+  equilibrium above the freezing threshold and cools nothing. `ICE` is solid and
+  does not drift back to ambient, which is what makes it the only way the player
+  can add material to the world; any heat still melts it. A slowly drifting
+  material cannot work here at all — a cell changing less than the sleep
+  threshold per tick never wakes its own chunk.
 - Powers have no energy, ammunition, or overheat resource. The laser is always
   available. Explosion keeps only its short input cooldown and physical
   feedback.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
 - The HUD reports FPS, player position, dynamic-cell count, and current power.
+- What the laser does to a material is a rate in the `MATERIALS` table, and the
+  beam stops at anything `WorldMaterialIsSolid` reports. Never reintroduce a
+  switch on material identity there: the first version of `ICE` was solid,
+  stopped no beam, and could not be melted, purely because the laser still named
+  three materials by hand.
 - Laser, explosion, material-reaction, and drill sounds are synthesized at
   startup; no external assets are required. Laser and drill are held states
   driven by `GameAudioUpdate`, not stacked one-shots. Audio failure must remain

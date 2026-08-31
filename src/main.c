@@ -132,7 +132,8 @@ static void DrawDebugHud(const World *world, const Player *player,
 static void DrawControlsHint(void)
 {
     const char *hint =
-        "WASD fly  |  Shift boost/drill  |  LMB laser  |  RMB explosion  |  R regenerate  |  F1 HUD";
+        "WASD fly  |  Shift boost/drill  |  LMB laser  |  RMB explosion  |  "
+        "Q force  |  E cryo  |  R regenerate  |  F1 HUD";
     int fontSize = 18;
     int width = MeasureText(hint, fontSize);
     int x = (GetScreenWidth() - width) / 2;
@@ -339,6 +340,8 @@ int main(int argc, char **argv)
         Vector2 moveInput = {0.0f, 0.0f};
         bool laserHeld;
         bool explosionPressed;
+        bool forceHeld;
+        bool chillHeld;
         bool boostHeld;
         bool materialReaction = false;
 
@@ -413,14 +416,18 @@ int main(int argc, char **argv)
         aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
         laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
         explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+        forceHeld = IsKeyDown(KEY_Q);
+        chillHeld = IsKeyDown(KEY_E);
         if (smokeTest) {
             aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
             cursorCell = smokeAim;
             laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
             explosionPressed = smokeFrames == 5;
+            forceHeld = false;
+            chillHeld = false;
         }
         PowersUpdate(&powers, &world, &particles, player.position, aimPosition, deltaTime,
-                     laserHeld, explosionPressed);
+                     laserHeld, explosionPressed, forceHeld, chillHeld);
         if (smokeTest) {
             smokeLaserHitObserved = smokeLaserHitObserved || powers.laserHit;
             smokeExplosionObserved = smokeExplosionObserved || powers.explosionTriggered;

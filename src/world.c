@@ -183,15 +183,24 @@ typedef struct MaterialInfo {
     float selfHeatTarget;
     float selfHeatRate;
     float linearCoolRate;
-    /* Thermal phase change. phaseOnCooling flips the comparison. */
+    /* Thermal phase changes, one in each direction. A target equal to the
+       material itself means the material does not change that way. Two entries
+       rather than one flag, because water both boils and freezes. */
     CellMaterial phaseTarget;
     float phaseThreshold;
-    bool phaseOnCooling;
+    CellMaterial coolTarget;
+    float coolThreshold;
     bool dynamic;
     bool solid;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
        top of this, so a laser-blasted rock face lights its own crater. */
     float emission;
+    /* Degrees per second the laser pours into this material. Zero means the
+       laser does not work it. Keeping it here rather than in a switch is what
+       makes a new material one table entry: the first version of ice was solid,
+       stopped nothing, and could not be melted, because the laser still asked
+       for three material names by hand. */
+    float laserHeatRate;
 } MaterialInfo;
 
 static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
@@ -208,6 +217,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .phaseTarget = MATERIAL_FIRE, .phaseThreshold = 175.0f,
         .solid = true,
+        .laserHeatRate = 2500.0f,
     },
     [MATERIAL_ROCK] = {
         .name = "ROCK", .color = {72, 77, 86, 255},
@@ -216,6 +226,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .phaseTarget = MATERIAL_LAVA, .phaseThreshold = 720.0f,
         .solid = true,
+        .laserHeatRate = 1080.0f,
     },
     [MATERIAL_SAND] = {
         .name = "SAND", .color = {218, 184, 91, 255},
@@ -224,6 +235,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .phaseTarget = MATERIAL_EMPTY, .phaseThreshold = 280.0f,
         .dynamic = true, .solid = true,
+        .laserHeatRate = 3100.0f,
     },
     [MATERIAL_WATER] = {
         .name = "WATER", .color = {32, 111, 190, 225},
@@ -231,6 +243,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .phaseTarget = MATERIAL_STEAM, .phaseThreshold = 108.0f,
+        .coolTarget = MATERIAL_ICE, .coolThreshold = -4.0f,
         .dynamic = true,
     },
     [MATERIAL_LAVA] = {
@@ -239,6 +252,9 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .initialTemperature = 900.0f,
         .selfHeatTarget = 900.0f, .selfHeatRate = 0.08f,
         .phaseTarget = MATERIAL_LAVA,
+        /* Lava will not cool this far on its own — it relaxes back toward 900 —
+           so this threshold only ever fires under the cryo beam. */
+        .coolTarget = MATERIAL_ROCK, .coolThreshold = 620.0f,
         .dynamic = true,
         .emission = 1.0f,
     },
@@ -247,8 +263,8 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2,
         .initialTemperature = 125.0f,
         .linearCoolRate = 0.42f,
-        .phaseTarget = MATERIAL_WATER, .phaseThreshold = 58.0f,
-        .phaseOnCooling = true,
+        .phaseTarget = MATERIAL_STEAM,
+        .coolTarget = MATERIAL_WATER, .coolThreshold = 58.0f,
         .dynamic = true,
     },
     [MATERIAL_SMOKE] = {
@@ -267,6 +283,23 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .phaseTarget = MATERIAL_FIRE,
         .dynamic = true,
         .emission = 0.92f,
+    },
+    [MATERIAL_ICE] = {
+        .name = "ICE", .color = {152, 203, 231, 245},
+        .variationG = 2, .variationB = 2,
+        .initialTemperature = -14.0f,
+        /* Ice does not drift back to ambient. A slow drift cannot work here: a
+           cell whose temperature moves less than the sleep threshold each tick
+           never wakes its own chunk, so it would simply stop being simulated and
+           the ice would be permanent anyway, only unpredictably so. Making it
+           stable on purpose is honest and gives the player the one thing no
+           other power does — a way to add material to the world. Anything warm
+           still melts it: a laser, a fire, a lava flow. */
+        .selfHeatTarget = -14.0f, .selfHeatRate = 0.0f,
+        .phaseTarget = MATERIAL_WATER, .phaseThreshold = 2.0f,
+        .coolTarget = MATERIAL_ICE,
+        .solid = true,
+        .laserHeatRate = 600.0f,
     },
     [MATERIAL_ASH] = {
         .name = "ASH", .color = {112, 108, 104, 255},
@@ -310,8 +343,7 @@ static Color MaterialHeatTint(Color base, const MaterialInfo *info, float temper
 {
     float heat;
 
-    if (temperature < 60.0f || !info->solid || info->phaseOnCooling ||
-        info->phaseThreshold <= 60.0f) {
+    if (temperature < 60.0f || !info->solid || info->phaseThreshold <= 60.0f) {
         return base;
     }
 
@@ -485,15 +517,16 @@ static bool WorldTryThermalTransition(World *world, int x, int y)
 {
     Cell *cell = WorldCell(world, x, y);
     const MaterialInfo *info = MaterialAt(cell->material);
-    CellMaterial next = info->phaseTarget;
-    bool crossed;
+    CellMaterial next = cell->material;
 
-    if (next == cell->material) {
-        return false;
+    if (info->phaseTarget != cell->material &&
+        cell->temperature >= info->phaseThreshold) {
+        next = info->phaseTarget;
+    } else if (info->coolTarget != cell->material &&
+               cell->temperature <= info->coolThreshold) {
+        next = info->coolTarget;
     }
-    crossed = info->phaseOnCooling ? cell->temperature <= info->phaseThreshold
-                                   : cell->temperature >= info->phaseThreshold;
-    if (!crossed) {
+    if (next == cell->material) {
         return false;
     }
 
@@ -1876,6 +1909,82 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
     return destroyed;
 }
 
+/* Shoves loose material along a cone without destroying any of it. Every other
+   power in the game removes cells; this one only moves them, which is what makes
+   it a tool for shaping the world rather than another way to erase it.
+
+   Cells are visited from the far edge of the cone inwards so a cell pushed
+   outward cannot be picked up again by the same gust, and `effectStamp` makes
+   that guarantee exact. Solids stay put: the cone is a gust, not a bulldozer. */
+void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
+                         float length, float spreadCosine, int reach)
+{
+    uint32_t stamp;
+    int step;
+
+    if (world == NULL || world->cells == NULL || length <= 0.0f || reach <= 0) {
+        return;
+    }
+
+    stamp = ++world->effectSerial;
+    if (stamp == 0u) {
+        stamp = ++world->effectSerial;
+    }
+
+    for (step = (int)length; step >= 1; --step) {
+        int extent = (int)ceilf((float)step * 0.9f) + 1;
+        int offsetY;
+
+        for (offsetY = -extent; offsetY <= extent; ++offsetY) {
+            int offsetX;
+
+            for (offsetX = -extent; offsetX <= extent; ++offsetX) {
+                float dx = (float)offsetX;
+                float dy = (float)offsetY;
+                float distance = sqrtf(dx * dx + dy * dy);
+                int x;
+                int y;
+                float strength;
+                int push;
+                Cell *cell;
+
+                /* One shell of the cone per step, so the ring order above holds. */
+                if (distance < (float)step - 0.5f || distance >= (float)step + 0.5f) {
+                    continue;
+                }
+                if (dx * direction.x + dy * direction.y < distance * spreadCosine) {
+                    continue;
+                }
+
+                x = (int)floorf(origin.x) + offsetX;
+                y = (int)floorf(origin.y) + offsetY;
+                if (!WorldInBounds(world, x, y)) {
+                    continue;
+                }
+                cell = WorldCell(world, x, y);
+                if (!MaterialIsDynamic(cell->material) || cell->effectStamp == stamp) {
+                    continue;
+                }
+                cell->effectStamp = stamp;
+
+                strength = 1.0f - distance / length;
+                push = 1 + (int)(Clamp(strength, 0.0f, 1.0f) * (float)(reach - 1));
+                for (; push >= 1; --push) {
+                    int targetX = (int)roundf((float)x + direction.x * (float)push);
+                    int targetY = (int)roundf((float)y + direction.y * (float)push);
+
+                    if ((targetX != x || targetY != y) &&
+                        WorldInBounds(world, targetX, targetY) &&
+                        WorldGetCell(world, targetX, targetY) == MATERIAL_EMPTY) {
+                        WorldMoveCell(world, x, y, targetX, targetY);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius)
 {
@@ -1959,6 +2068,107 @@ Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D c
     return point;
 }
 
+/* How fast the cryo beam pulls each material down, in degrees per second. Lava
+   needs by far the most: it relaxes back toward 900C at 8% of the gap per tick,
+   so anything gentler is simply undone between frames. */
+static float MaterialChillRate(CellMaterial material)
+{
+    switch (material) {
+    case MATERIAL_LAVA:
+        /* Lava is pulled back toward 900C at 8% of the gap every tick, which at
+           the 620C freezing point is 22 degrees a tick on its own. A beam that
+           does not clearly beat that number does not cool lava at all — it just
+           finds an equilibrium above the threshold and sits there. */
+        return 1900.0f;
+    case MATERIAL_FIRE:
+        return 2200.0f;
+    case MATERIAL_WATER:
+        return 90.0f;
+    case MATERIAL_STEAM:
+        return 320.0f;
+    case MATERIAL_EMPTY:
+        return 0.0f;
+    default:
+        return 260.0f;
+    }
+}
+
+/* The thermal inverse of the laser. Every other power removes matter; this one
+   changes its phase, which is the only way the player can put something into the
+   world instead of taking it out. It passes through what the laser passes
+   through and chills everything on the way, so sweeping a pond freezes its
+   surface and holding it on lava turns a lake back into rock. */
+LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radius,
+                            float deltaTime)
+{
+    Vector2 delta = {end.x - start.x, end.y - start.y};
+    float length = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    int steps = (int)ceilf(length / 0.65f);
+    int step;
+    uint32_t stamp;
+    LaserResult result = {end, MATERIAL_EMPTY, false};
+
+    if (world == NULL || world->cells == NULL || length < 0.001f) {
+        result.position = start;
+        return result;
+    }
+
+    stamp = ++world->effectSerial;
+    if (stamp == 0u) {
+        stamp = ++world->effectSerial;
+    }
+
+    for (step = 0; step <= steps; ++step) {
+        float amount = (float)step / (float)steps;
+        Vector2 point = {start.x + delta.x * amount, start.y + delta.y * amount};
+        int centerX = (int)floorf(point.x);
+        int centerY = (int)floorf(point.y);
+        int brush = (int)ceilf(radius);
+        CellMaterial blocking;
+        int y;
+
+        if (!WorldInBounds(world, centerX, centerY)) {
+            break;
+        }
+
+        for (y = centerY - brush; y <= centerY + brush; ++y) {
+            int x;
+
+            for (x = centerX - brush; x <= centerX + brush; ++x) {
+                int dx = x - centerX;
+                int dy = y - centerY;
+                float rate;
+                Cell *cell;
+
+                if ((float)(dx * dx + dy * dy) > radius * radius ||
+                    !WorldInBounds(world, x, y)) {
+                    continue;
+                }
+                cell = WorldCell(world, x, y);
+                if (cell->effectStamp == stamp || cell->material == MATERIAL_EMPTY) {
+                    continue;
+                }
+                cell->effectStamp = stamp;
+
+                rate = MaterialChillRate(cell->material);
+                cell->temperature -= deltaTime * rate;
+                WorldWakeCellAndNeighbors(world, x, y);
+                (void)WorldTryThermalTransition(world, x, y);
+            }
+        }
+
+        blocking = WorldGetCell(world, centerX, centerY);
+        if (WorldMaterialIsSolid(blocking)) {
+            result.position = point;
+            result.material = blocking;
+            result.hit = true;
+            break;
+        }
+    }
+
+    return result;
+}
+
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
                             float deltaTime)
 {
@@ -1984,8 +2194,7 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
             break;
         }
         material = WorldGetCell(world, centerX, centerY);
-        if (material == MATERIAL_DIRT || material == MATERIAL_SAND ||
-            material == MATERIAL_ROCK) {
+        if (WorldMaterialIsSolid(material)) {
             result.position = (Vector2){start.x + delta.x * amount,
                                         start.y + delta.y * amount};
             result.material = material;
@@ -2015,6 +2224,7 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
             for (x = centerX - brush; x <= centerX + brush; ++x) {
                 int dx = x - centerX;
                 int dy = y - centerY;
+                float rate;
                 Cell *cell;
 
                 if ((float)(dx * dx + dy * dy) > radius * radius ||
@@ -2028,16 +2238,9 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
                 }
                 cell->effectStamp = stamp;
 
-                if (cell->material == MATERIAL_DIRT) {
-                    cell->temperature += deltaTime * 2500.0f;
-                    WorldWakeCellAndNeighbors(world, x, y);
-                    (void)WorldTryThermalTransition(world, x, y);
-                } else if (cell->material == MATERIAL_SAND) {
-                    cell->temperature += deltaTime * 3100.0f;
-                    WorldWakeCellAndNeighbors(world, x, y);
-                    (void)WorldTryThermalTransition(world, x, y);
-                } else if (cell->material == MATERIAL_ROCK) {
-                    cell->temperature += deltaTime * 1080.0f;
+                rate = MaterialAt(cell->material)->laserHeatRate;
+                if (rate > 0.0f) {
+                    cell->temperature += deltaTime * rate;
                     WorldWakeCellAndNeighbors(world, x, y);
                     (void)WorldTryThermalTransition(world, x, y);
                 }
