@@ -1045,7 +1045,7 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
         }
 
         for (streak = 0; streak < streakCount; ++streak) {
-            float back = 8.0f + (float)streak * 4.0f;
+            float streakBack = 8.0f + (float)streak * 4.0f;
             float offset = sinf(player->animationTime * 11.0f + (float)streak) * 3.4f;
             int length = 3 + (int)player->boostStage - streak / 2;
             int cell;
@@ -1054,9 +1054,9 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
 
             for (cell = 0; cell < length; ++cell) {
                 Vector2 point = {
-                    player->position.x - travel.x * (back + (float)cell) +
+                    player->position.x - travel.x * (streakBack + (float)cell) +
                         across.x * offset,
-                    player->position.y - travel.y * (back + (float)cell) +
+                    player->position.y - travel.y * (streakBack + (float)cell) +
                         across.y * offset
                 };
 

@@ -6,29 +6,46 @@ SOURCES := src/main.c src/world.c src/player.c src/powers.c src/particles.c src/
 # The headless suite links CPU-side gameplay only: no window or GL context.
 TEST_APP := emberfall-tests
 TEST_SOURCES := tests/world_tests.c src/world.c src/player.c src/powers.c src/particles.c
+BENCH_APP := emberfall-bench
+BENCH_SOURCES := bench/benchmark.c src/world.c src/player.c
+HEADERS := $(wildcard src/*.h)
 CONFIG ?= release
 RUN_ARGS ?=
+BENCH_ARGS ?=
 BUILD_DIR := build/$(CONFIG)
 OBJECTS := $(SOURCES:src/%.c=$(BUILD_DIR)/%.o)
 TARGET := $(BUILD_DIR)/$(APP)
 TEST_TARGET := $(BUILD_DIR)/$(TEST_APP)
+BENCH_TARGET := $(BUILD_DIR)/$(BENCH_APP)
 
 CPPFLAGS += $(shell $(PKG_CONFIG) --cflags raylib 2>/dev/null)
-CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic
+CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wformat=2
 LDLIBS += $(shell $(PKG_CONFIG) --libs raylib 2>/dev/null) -lm
 
 ifeq ($(CONFIG),debug)
     CFLAGS += $(CFLAGS_COMMON) -g -O0
+else ifeq ($(CONFIG),asan)
+    CFLAGS += $(CFLAGS_COMMON) -g -O1 -fsanitize=address -fno-omit-frame-pointer
+    LDFLAGS += -fsanitize=address
+else ifeq ($(CONFIG),ubsan)
+    CFLAGS += $(CFLAGS_COMMON) -g -O1 -fsanitize=undefined -fno-omit-frame-pointer
+    LDFLAGS += -fsanitize=undefined
+else ifeq ($(CONFIG),profile)
+    CFLAGS += $(CFLAGS_COMMON) -g -O2 -pg
+    LDFLAGS += -pg
 else
     CFLAGS += $(CFLAGS_COMMON) -O2
 endif
 
-.PHONY: all run debug clean check-raylib test
+.PHONY: all run debug clean check-raylib test bench asan ubsan profile
 
 all: check-raylib $(TARGET)
 
 test: check-raylib $(TEST_TARGET)
 	./$(TEST_TARGET)
+
+bench: check-raylib $(BENCH_TARGET)
+	./$(BENCH_TARGET) $(BENCH_ARGS)
 
 check-raylib:
 	@$(PKG_CONFIG) --exists raylib || \
@@ -38,9 +55,13 @@ check-raylib:
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(TEST_TARGET): $(TEST_SOURCES)
+$(TEST_TARGET): $(TEST_SOURCES) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(TEST_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(BENCH_TARGET): $(BENCH_SOURCES) $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(BENCH_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
@@ -51,6 +72,17 @@ run: all
 
 debug:
 	$(MAKE) CONFIG=debug all
+
+asan:
+	$(MAKE) CONFIG=asan all
+	$(MAKE) CONFIG=asan test
+
+ubsan:
+	$(MAKE) CONFIG=ubsan all
+	$(MAKE) CONFIG=ubsan test
+
+profile:
+	$(MAKE) CONFIG=profile all
 
 clean:
 	rm -rf build

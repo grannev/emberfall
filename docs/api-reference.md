@@ -42,7 +42,10 @@ void WorldSetPointLight(World *world, Vector2 position, float radius,
 float WorldLightAt(const World *world, int x, int y);
 ```
 
-- `WorldUpdate` выполняет ровно один fixed tick.
+- `WorldUpdate` выполняет ровно один fixed tick. После вызова
+  `world.lastTickStats` содержит число реально пройденных scheduler-ом chunks и
+  cells. Это структурные performance counters: они предназначены для HUD,
+  benchmark и regression-проверок, но не влияют на gameplay.
 - `WorldDraw` решает свет, пересчитывает Color buffer для грязных chunks внутри
   `visible`, складывает каждый изменённый блок в локальный буфер 32×32 и
   загружает его отдельным `UpdateTextureRec`, после чего рисует texture в world

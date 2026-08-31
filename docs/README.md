@@ -16,6 +16,8 @@ API, правила симуляции и порядок проверки изм
 - [Справочник API](api-reference.md) — структуры и публичные функции модулей.
 - [Сборка и тестирование](build-and-testing.md) — Makefile, артефакты,
   headless-тесты, smoke-test и обязательная проверка изменений.
+- [Производительность](performance.md) — benchmark scenarios, workload counters,
+  baseline CPU/memory и статус проверенных hypotheses.
 
 ## Быстрый старт
 
@@ -42,6 +44,7 @@ make run
 
 ```sh
 make test
+make bench
 make run RUN_ARGS=--smoke-test
 ```
 

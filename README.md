@@ -51,6 +51,20 @@ Headless-набор тестов по ядру симуляции не треб�
 make test
 ```
 
+Воспроизводимый headless benchmark на десяти gameplay-сценариях:
+
+```sh
+make bench
+```
+
+Sanitizer и profiling builds:
+
+```sh
+make asan
+make ubsan
+make profile
+```
+
 Короткий автоматический smoke-test открывает игру на несколько кадров,
 проверяет реакцию water/lava, попадание лазера, взрыв, player collision,
 boost-бурение через rock, локализацию fire и засыпание chunks, затем сохраняет

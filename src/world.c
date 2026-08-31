@@ -1223,6 +1223,7 @@ void WorldUpdate(World *world)
     }
 
     chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
+    world->lastTickStats = (WorldTickStats){0};
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     world->reactionCount = 0;
     ++world->tick;
@@ -1259,6 +1260,12 @@ void WorldUpdate(World *world)
                 minimumX = chunkX * WORLD_CHUNK_SIZE;
                 maximumX = minimumX + WORLD_CHUNK_SIZE;
                 if (maximumX > world->width) maximumX = world->width;
+                if (y == maximumY) {
+                    ++world->lastTickStats.processedChunks;
+                    world->lastTickStats.processedCells +=
+                        (uint64_t)(maximumX - minimumX) *
+                        (uint64_t)(maximumY - minimumY + 1);
+                }
                 start = reverse ? maximumX - 1 : minimumX;
                 end = reverse ? minimumX - 1 : maximumX;
                 step = reverse ? -1 : 1;

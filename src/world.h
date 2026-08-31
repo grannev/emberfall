@@ -54,6 +54,14 @@ typedef struct LaserResult {
     bool hit;
 } LaserResult;
 
+/* Work performed by the most recent fixed simulation tick. These counters are
+   deliberately structural rather than time-based: they stay meaningful across
+   machines and make performance regressions testable without flaky deadlines. */
+typedef struct WorldTickStats {
+    uint64_t processedCells;
+    uint32_t processedChunks;
+} WorldTickStats;
+
 typedef struct World {
     int width;
     int height;
@@ -62,6 +70,7 @@ typedef struct World {
     Texture2D texture;
     uint32_t tick;
     uint32_t effectSerial;
+    WorldTickStats lastTickStats;
     WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
     int reactionCount;
     int chunkColumns;

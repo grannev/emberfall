@@ -474,6 +474,32 @@ static void test_activity_wakes_only_a_local_neighbourhood(void)
     WorldUnload(&world);
 }
 
+static void test_tick_stats_report_structural_work(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 70, 50), "world allocation failed");
+    WorldUpdate(&world);
+    CHECK(world.lastTickStats.processedChunks == 0u,
+          "empty world reported %u processed chunks",
+          world.lastTickStats.processedChunks);
+    CHECK(world.lastTickStats.processedCells == 0u,
+          "empty world reported %llu processed cells",
+          (unsigned long long)world.lastTickStats.processedCells);
+
+    /* This cell is inside one full 32x32 chunk, away from every border. The
+       counter describes cells visited by the scheduler, not cells that moved. */
+    WorldSetCell(&world, 40, 10, MATERIAL_SAND);
+    WorldUpdate(&world);
+    CHECK(world.lastTickStats.processedChunks == 1u,
+          "one local mutation processed %u chunks",
+          world.lastTickStats.processedChunks);
+    CHECK(world.lastTickStats.processedCells == 1024u,
+          "one full chunk reported %llu processed cells",
+          (unsigned long long)world.lastTickStats.processedCells);
+    WorldUnload(&world);
+}
+
 static void test_generation_streams_only_requested_dynamic_regions(void)
 {
     World world;
@@ -1261,6 +1287,7 @@ int main(void)
     RUN(test_drill_heat_cannot_ignite_dirt_or_boil_water);
     RUN(test_a_settled_world_lets_chunks_sleep);
     RUN(test_activity_wakes_only_a_local_neighbourhood);
+    RUN(test_tick_stats_report_structural_work);
     RUN(test_generation_streams_only_requested_dynamic_regions);
     RUN(test_boosting_player_tunnels_through_rock);
     RUN(test_boost_from_rest_bores_into_a_wall);

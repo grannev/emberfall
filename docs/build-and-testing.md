@@ -61,6 +61,31 @@ make run RUN_ARGS=--smoke-test
 make test
 ```
 
+## Benchmark, sanitizers и profiling
+
+Десять воспроизводимых headless-сценариев на production-size world:
+
+```sh
+make bench
+make bench BENCH_ARGS="--ticks 60"
+```
+
+Сценарии, методика и сохранённый baseline описаны в
+[`performance.md`](performance.md). Wall-clock результаты информационные;
+workload counters нужны для переносимых regression-проверок.
+
+Отдельные конфигурации не смешивают instrumented objects с release/debug:
+
+```sh
+make asan
+make ubsan
+make profile
+```
+
+`asan` и `ubsan` собирают приложение и запускают весь headless test suite.
+`profile` создаёт бинарник с `-pg` в `build/profile/emberfall`; после обычного
+запуска его `gmon.out` можно анализировать через `gprof`.
+
 Собирает и запускает `tests/world_tests.c` — headless-набор проверок CPU-side
 gameplay. Результат: `build/release/emberfall-tests`.
 
