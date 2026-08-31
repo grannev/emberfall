@@ -33,12 +33,12 @@ and must not depend on where generation happened to put terrain; drive extra
 coverage from the dedicated probes instead. Use `make run RUN_ARGS=--smoke-test`;
 it still needs a working display (for example Xvfb in headless environments).
 
-`make test` builds and runs `tests/world_tests.c`, a headless suite over the
-simulation core. It never opens a window: `WorldInit` allocates only CPU state
-and `WorldInitRenderer` — the one function needing a GL context — is not called.
-Keep it that way, and add a test whenever a simulation invariant is discovered or
-changed. Run it before handing off; it is far cheaper and broader than the smoke
-test.
+`make test` builds and runs `tests/world_tests.c`, a headless suite over CPU-side
+gameplay (`world`, `player`, `powers`, and `particles`). It never opens a window:
+`WorldInit` allocates only CPU state and `WorldInitRenderer` — the one function
+needing a GL context — is not called. Keep it that way, and add a test whenever a
+simulation or power invariant is discovered or changed. Run it before handing
+off; it is far cheaper and broader than the smoke test.
 
 ## Source layout
 
@@ -47,7 +47,7 @@ test.
   simulation, texture buffer, destruction helpers
 - `src/player.c/.h`: sub-stepped gravity-free flight, boost drilling,
   circle-vs-cell collision, and state-based player rendering
-- `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
+- `src/powers.c/.h`: laser/cryo beams, explosion/force cooldowns, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool drawn as whole cells,
   colliding with terrain and settling into it
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
@@ -187,8 +187,13 @@ over frameworks, generic containers, or unnecessary abstraction.
   rotates from vertical toward the direction of travel as `leanAmount` rises, so
   the same joints hover upright with the knees drawn back and lay out flat with
   the arms forward at speed. Drive that lean from measured speed, not the boost
-  key. "Behind" for the legs comes from `-side` at rest and `-travel` at speed;
-  taking the direction of travel when there is none tucks the feet upward.
+  key, and let ordinary maximum speed reach full lean. Because `up` is
+  hips-to-head, it must converge to **`travel`**, never `-travel`, at full lean;
+  the latter makes the model fly feet-first and lean backwards. Interpolate the
+  angle over its shortest arc, not the two vectors: upright and straight-down
+  vectors cancel halfway and make the model snap. "Behind" for the legs comes
+  from `-side` at rest and `-travel` at speed; taking the direction of travel when
+  there is none tucks the feet upward.
 - The model has **no outline**. A dark rim around every limb flattens it into a
   silhouette — a brick with a cape — and hides the shading that makes it a body.
   Contrast comes from a lit tone toward `up`, a shadow opposite, and distinctly
@@ -229,9 +234,12 @@ over frameworks, generic containers, or unnecessary abstraction.
   terrain, bury the player, or refill a tunnel faster than the drill cuts it.
 - `Q` delivers one heavy force blast, not a held stream: a sustained gust reads
   as weak whatever its numbers, because nothing in it is a moment of impact.
-  Dynamic cells are thrown a long way on a linear falloff — squaring it leaves
-  everything past the first few cells barely moving. Solids do not move, but the
-  exposed face the blow lands on is scoured to ash, so the hit leaves a mark;
+  Its gameplay tuning lives in `PowerSystem`: length 84, spread cosine 0.78,
+  dynamic-cell reach 54, and player recoil 132. The cone visual reads the same
+  length and angle instead of duplicating them. Dynamic cells are thrown a long
+  way on a linear falloff — squaring it leaves everything past the first few
+  cells barely moving. Solids do not move, but the exposed face the blow lands on
+  is scoured to ash with up to a 16% central chance, so the hit leaves a mark;
   only cells actually exposed along the blast axis are marked, or the inside of a
   hill hollows out. The blast is occluded by terrain: without that it shoves
   material on the far side of a wall and scours the wall's back face. The player

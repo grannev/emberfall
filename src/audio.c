@@ -156,7 +156,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->reaction)) SetSoundVolume(audio->reaction, 0.28f);
     if (IsSoundValid(audio->drill)) SetSoundVolume(audio->drill, 0.3f);
     if (IsSoundValid(audio->impact)) SetSoundVolume(audio->impact, 0.5f);
-    if (IsSoundValid(audio->force)) SetSoundVolume(audio->force, 0.62f);
+    if (IsSoundValid(audio->force)) SetSoundVolume(audio->force, 0.74f);
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
     return true;
 }

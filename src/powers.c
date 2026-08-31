@@ -48,6 +48,10 @@ void PowersInit(PowerSystem *powers)
     powers->forceCooldownMax = 0.42f;
     powers->forceTime = 0.0f;
     powers->forceDuration = 0.26f;
+    powers->forceLength = 84.0f;
+    powers->forceSpreadCosine = 0.78f;
+    powers->forceReach = 54;
+    powers->forceRecoil = 132.0f;
     powers->chillActive = false;
     powers->chillHit = false;
     powers->chillEnd = (Vector2){0.0f, 0.0f};
@@ -122,7 +126,8 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
     if (forcePressed) {
         powers->current = POWER_FORCE;
         if (powers->forceCooldown <= 0.0f) {
-            WorldApplyForceBlast(world, origin, direction, 62.0f, 0.82f, 34);
+            WorldApplyForceBlast(world, origin, direction, powers->forceLength,
+                                 powers->forceSpreadCosine, powers->forceReach);
             ParticlesSpawnForceBlast(particles, origin, direction);
             powers->forceTriggered = true;
             powers->forceDirection = direction;
@@ -186,10 +191,13 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
         float progress = 1.0f - powers->forceTime / powers->forceDuration;
         float angle = atan2f(powers->forceDirection.y, powers->forceDirection.x) *
                       RAD2DEG;
+        float halfAngle = acosf(Clamp(powers->forceSpreadCosine, -1.0f, 1.0f)) *
+                          RAD2DEG;
         int ring;
 
-        for (ring = 0; ring < 3; ++ring) {
-            float radius = 10.0f + 52.0f * progress - (float)ring * 5.0f;
+        for (ring = 0; ring < 4; ++ring) {
+            float radius = 10.0f + (powers->forceLength - 10.0f) * progress -
+                           (float)ring * 6.0f;
             unsigned char alpha;
 
             if (radius <= 0.0f) {
@@ -198,8 +206,8 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
             alpha = (unsigned char)Clamp((1.0f - progress) * 210.0f -
                                              (float)ring * 40.0f,
                                          0.0f, 255.0f);
-            DrawCircleSectorLines(powers->forceOrigin, radius, angle - 34.0f,
-                                  angle + 34.0f, 16,
+            DrawCircleSectorLines(powers->forceOrigin, radius, angle - halfAngle,
+                                  angle + halfAngle, 20,
                                   (Color){182, 216, 255, alpha});
         }
     }

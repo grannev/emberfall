@@ -139,14 +139,16 @@ void PowersUpdate(PowerSystem *powers, World *world,
                   ParticleSystem *particles, Vector2 origin,
                   Vector2 aimPosition, float deltaTime,
                   bool laserHeld, bool explosionPressed,
-                  bool forceHeld, bool chillHeld);
+                  bool forcePressed, bool chillHeld);
 void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);
 ```
 
 После `PowersUpdate` вызывающий код должен проверить `explosionTriggered` и
-применить player/camera/audio feedback. `PowersDrawWorld` вызывается внутри
-world-space camera mode.
+`forceTriggered`, затем применить player/camera/audio feedback. Параметры Q
+`forceLength`, `forceSpreadCosine`, `forceReach` и `forceRecoil` хранятся в
+`PowerSystem`, чтобы gameplay, рисунок конуса и отдача использовали одну
+конфигурацию. `PowersDrawWorld` вызывается внутри world-space camera mode.
 
 ## Particle API
 

@@ -446,9 +446,9 @@ int main(int argc, char **argv)
                world but not the person delivering it reads as a button, not as
                force. */
             PlayerApplyImpulse(&player,
-                               (Vector2){-powers.forceDirection.x * 96.0f,
-                                         -powers.forceDirection.y * 96.0f});
-            cameraShake = fmaxf(cameraShake, 3.4f);
+                               (Vector2){-powers.forceDirection.x * powers.forceRecoil,
+                                         -powers.forceDirection.y * powers.forceRecoil});
+            cameraShake = fmaxf(cameraShake, 4.2f);
             GameAudioPlayForce(&audio);
         }
         if (powers.explosionTriggered) {

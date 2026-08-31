@@ -1922,8 +1922,9 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
  * outward cannot be picked up again by the same blow, and `effectStamp` makes
  * that guarantee exact.
  */
-/* Angular resolution of the occlusion pre-pass. At the cone's far edge the arc
-   is about eighty cells across, so this is finer than one ray per cell there. */
+/* Angular resolution of the occlusion pre-pass. At the configured cone's far
+   edge the arc is about one hundred cells across, so this is still finer than
+   one ray per cell there. */
 #define FORCE_BLAST_RAYS 160
 
 void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
@@ -2048,7 +2049,11 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                          WorldMaterialIsSolid(WorldGetCell(world, behindX, behindY)))) {
                         continue;
                     }
-                    if ((float)GetRandomValue(0, 999) < strength * 70.0f) {
+                    /* A central hit now has enough bite to leave a visible dent
+                       in one or two presses. The exposure check above still
+                       limits this to the face, so more power cannot hollow the
+                       hill out behind its surface. */
+                    if ((float)GetRandomValue(0, 999) < strength * 160.0f) {
                         WorldSetCellRaw(world, x, y, MATERIAL_ASH);
                     }
                     continue;

@@ -37,6 +37,13 @@ typedef struct PowerSystem {
     float forceCooldownMax;
     float forceTime;
     float forceDuration;
+    /* Gameplay tuning is state, not duplicated literals: PowersUpdate uses the
+       cone values, PowersDrawWorld reads the same geometry, and main consumes
+       the recoil when forceTriggered is published. */
+    float forceLength;
+    float forceSpreadCosine;
+    int forceReach;
+    float forceRecoil;
     /* Cryo beam: the thermal inverse of the laser. */
     bool chillActive;
     bool chillHit;

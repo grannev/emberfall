@@ -11,6 +11,7 @@
 
 #include "particles.h"
 #include "player.h"
+#include "powers.h"
 #include "world.h"
 
 static int testsRun = 0;
@@ -766,6 +767,55 @@ static void test_one_force_blast_throws_loose_material_far(void)
     WorldUnload(&world);
 }
 
+static void test_configured_force_power_hits_far_and_hard(void)
+{
+    World world;
+    PowerSystem powers;
+    ParticleSystem particles;
+    int rightmost = 0;
+    int activeParticles = 0;
+    int before;
+    int x;
+    int y;
+    int i;
+
+    CHECK(WorldInit(&world, 192, 72), "world allocation failed");
+    FillRect(&world, 30, 30, 40, 40, MATERIAL_SAND);
+    before = CountMaterial(&world, MATERIAL_SAND);
+    PowersInit(&powers);
+    ParticlesInit(&particles);
+
+    PowersUpdate(&powers, &world, &particles, (Vector2){20.0f, 35.0f},
+                 (Vector2){150.0f, 35.0f}, 1.0f / 60.0f, false, false, true,
+                 false);
+
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_SAND && x > rightmost) {
+                rightmost = x;
+            }
+        }
+    }
+    for (i = 0; i < MAX_PARTICLES; ++i) {
+        if (particles.particles[i].active) {
+            ++activeParticles;
+        }
+    }
+
+    CHECK(powers.forceTriggered, "Q press did not publish a force event");
+    CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
+          "configured force destroyed loose cells");
+    CHECK(rightmost > 76,
+          "configured Q still reads as a weak shove; rightmost sand at x=%d",
+          rightmost);
+    CHECK(activeParticles >= 48,
+          "configured Q spawned only %d burst particles", activeParticles);
+    CHECK(powers.forceRecoil >= 120.0f,
+          "configured recoil is too small for a heavy hit: %.1f",
+          powers.forceRecoil);
+    WorldUnload(&world);
+}
+
 static void test_force_blast_marks_solid_terrain_without_boring_through_it(void)
 {
     World world;
@@ -958,6 +1008,29 @@ static void test_drill_resistance_never_stalls_the_boost(void)
     WorldUnload(&world);
 }
 
+static void test_normal_flight_reaches_a_head_first_pose(void)
+{
+    World world;
+    Player player;
+    int frame;
+
+    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){48.0f, 64.0f});
+
+    for (frame = 0; frame < 180; ++frame) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, false,
+                     1.0f / 120.0f);
+    }
+
+    CHECK(!player.boosting, "normal-flight test unexpectedly enabled boost");
+    CHECK(player.velocity.x > player.maxSpeed * 0.95f,
+          "normal flight never reached cruise speed: %.1f", player.velocity.x);
+    CHECK(player.leanAmount > 0.9f,
+          "normal flight stayed too upright to lead with the head: %.3f",
+          player.leanAmount);
+    WorldUnload(&world);
+}
+
 static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 {
     World world;
@@ -1028,6 +1101,7 @@ int main(void)
     RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
+    RUN(test_normal_flight_reaches_a_head_first_pose);
     RUN(test_cryo_does_not_destroy_solid_terrain);
     RUN(test_no_material_evaporates_when_merely_cooled);
     RUN(test_cryo_snuffs_fire_into_smoke);
@@ -1035,6 +1109,7 @@ int main(void)
     RUN(test_heat_melts_ice_back_into_water);
     RUN(test_cryo_settles_lava_back_into_rock);
     RUN(test_one_force_blast_throws_loose_material_far);
+    RUN(test_configured_force_power_hits_far_and_hard);
     RUN(test_force_blast_marks_solid_terrain_without_boring_through_it);
     RUN(test_force_blast_does_not_reach_behind_a_wall);
     RUN(test_bouncing_particles_do_not_pass_through_terrain);

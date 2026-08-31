@@ -264,8 +264,8 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
        power does. Smoothed, because snapping between upright and flat is the
        difference between a person shifting their weight and a sprite swap. */
     {
-        float threshold = player->maxSpeed * 0.5f;
-        float span = player->boostMaxSpeed - threshold;
+        float threshold = player->maxSpeed * 0.2f;
+        float span = player->maxSpeed - threshold;
         float target = span > 0.001f
                            ? Clamp((velocityLength - threshold) / span, 0.0f, 1.0f)
                            : 0.0f;
@@ -524,47 +524,51 @@ static void DrawLimb(Vector2 from, Vector2 to, int thickness, Color color)
     }
 }
 
-/* Where the hands reach, in the body frame. Blended between the resting pose and
-   whatever the character is doing with them, so a power reads as a movement of
-   the arms rather than as an effect drawn over a static figure. */
+#define SHOULDER_UP 3.2f
+
+/* Where the hands reach, in body-frame coordinates: x across the shoulders, y
+   from the hips toward the head. Absolute rather than relative to some offset,
+   because a hand placed by an unexplained constant is a hand nobody can move
+   with confidence later. */
 static void PlayerHandTargets(const Player *player, Vector2 aimLocal, float lean,
                               float wave, Vector2 *lead, Vector2 *trail)
 {
-    /* Resting: arms down and a little out, the way someone hangs while hovering.
-       At speed they swing forward past the head. */
-    Vector2 restLead = {-3.4f + 6.8f * lean, 3.6f - 2.2f * lean};
-    Vector2 restTrail = {-3.8f + 5.4f * lean, -3.2f + 1.6f * lean};
+    /* Hanging at rest — the hands sit below the shoulders — and thrown out past
+       the head at speed, along the body axis, which at full lean is the
+       direction of travel. */
+    Vector2 restLead = {2.2f - 1.2f * lean, 0.4f + 8.2f * lean};
+    Vector2 restTrail = {-2.2f + 1.2f * lean, 0.0f + 7.2f * lean};
     float reach;
 
-    restLead.x += wave * 0.5f;
-    restTrail.x += wave * 0.4f;
+    restLead.y += wave * 0.35f;
+    restTrail.y += wave * 0.3f;
 
     switch (player->pose) {
     case PLAYER_POSE_LASER:
         /* One arm snaps straight at the cursor; the other stays braced. */
         reach = 5.4f;
         lead->x = aimLocal.x * reach;
-        lead->y = aimLocal.y * reach;
-        *trail = (Vector2){restTrail.x * 0.6f - 1.0f, restTrail.y * 0.7f};
+        lead->y = SHOULDER_UP + aimLocal.y * reach;
+        *trail = (Vector2){-1.6f, SHOULDER_UP - 2.2f};
         return;
     case PLAYER_POSE_CHILL:
         /* Both palms out: a wide, two-handed gesture, so the cryo beam does not
            look like the laser with a different colour. */
         reach = 4.6f;
         lead->x = aimLocal.x * reach + 1.1f;
-        lead->y = aimLocal.y * reach + 1.4f;
-        trail->x = aimLocal.x * (reach - 0.8f) - 0.6f;
-        trail->y = aimLocal.y * (reach - 0.8f) - 1.8f;
+        lead->y = SHOULDER_UP + aimLocal.y * reach - 0.6f;
+        trail->x = aimLocal.x * (reach - 0.8f) - 0.8f;
+        trail->y = SHOULDER_UP + aimLocal.y * (reach - 0.8f) - 2.2f;
         return;
     case PLAYER_POSE_BLAST: {
         /* A punch: both arms drive out along the aim and recover. */
         float punch = Clamp(player->poseTimer / 0.28f, 0.0f, 1.0f);
-        float thrust = 3.0f + 4.4f * sinf(punch * PI);
+        float thrust = 3.2f + 5.2f * sinf(punch * PI);
 
-        lead->x = aimLocal.x * thrust + 1.4f;
-        lead->y = aimLocal.y * thrust + 1.6f;
+        lead->x = aimLocal.x * thrust + 1.0f;
+        lead->y = SHOULDER_UP + aimLocal.y * thrust - 0.4f;
         trail->x = aimLocal.x * thrust - 1.0f;
-        trail->y = aimLocal.y * thrust - 1.8f;
+        trail->y = SHOULDER_UP + aimLocal.y * thrust - 1.8f;
         return;
     }
     default:
@@ -574,8 +578,8 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal, float lean
     /* Free flight: the leading arm still tracks the cursor, so aim stays
        readable, but only part of the way — the whole arm swinging to the cursor
        while hovering looks like pointing, not like flying. */
-    lead->x = restLead.x + aimLocal.x * 2.2f * (1.0f - lean * 0.5f);
-    lead->y = restLead.y + aimLocal.y * 2.2f * (1.0f - lean * 0.5f);
+    lead->x = restLead.x + aimLocal.x * 2.0f * (1.0f - lean);
+    lead->y = restLead.y + aimLocal.y * 2.0f * (1.0f - lean);
     *trail = restTrail;
 }
 
@@ -639,20 +643,26 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
         travel = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
     }
 
-    /* The body axis turns from straight up toward the direction of travel. At
-       full lean the head leads and the feet trail, which is the whole difference
-       between hovering and flying. */
-    frame.up.x = -travel.x * lean;
-    frame.up.y = -1.0f * (1.0f - lean) + -travel.y * lean;
+    /* The body axis turns from straight up toward the direction of travel. `up`
+       runs from the hips to the head, so at full lean it *is* the direction of
+       travel: the head leads and the feet trail. Pointing it away from travel
+       instead flies the character feet first and tips them backwards out of
+       every turn. */
     {
-        float length = sqrtf(frame.up.x * frame.up.x + frame.up.y * frame.up.y);
+        float uprightAngle = -PI * 0.5f;
+        float travelAngle = atan2f(travel.y, travel.x);
+        float turn = travelAngle - uprightAngle;
 
-        if (length < 0.001f) {
-            frame.up = (Vector2){0.0f, -1.0f};
-        } else {
-            frame.up.x /= length;
-            frame.up.y /= length;
+        while (turn > PI) turn -= 2.0f * PI;
+        while (turn < -PI) turn += 2.0f * PI;
+        /* Straight down has two equally short rotations. Keep the side chosen
+           by the last horizontal motion instead of allowing tiny float noise to
+           flip the body between left and right. */
+        if (fabsf(fabsf(turn) - PI) < 0.0001f) {
+            turn = player->facingRight ? PI : -PI;
         }
+        frame.up = (Vector2){cosf(uprightAngle + turn * lean),
+                             sinf(uprightAngle + turn * lean)};
     }
     frame.side = (Vector2){-frame.up.y, frame.up.x};
 
@@ -799,12 +809,12 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
     }
 
     /* ---- arms ---- */
-    shoulderLead = BodyPoint(&frame, 3.2f, 1.2f);
-    shoulderTrail = BodyPoint(&frame, 3.2f, -1.2f);
+    shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.2f);
+    shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.2f);
     PlayerHandTargets(player, aimLocal, lean, wave, &leadHand, &trailHand);
     {
-        Vector2 leadPoint = BodyPoint(&frame, leadHand.y + 2.0f, leadHand.x);
-        Vector2 trailPoint = BodyPoint(&frame, trailHand.y + 2.0f, trailHand.x);
+        Vector2 leadPoint = BodyPoint(&frame, leadHand.y, leadHand.x);
+        Vector2 trailPoint = BodyPoint(&frame, trailHand.y, trailHand.x);
         Vector2 leadElbow = {(shoulderLead.x + leadPoint.x) * 0.5f +
                                  frame.side.x * 0.6f,
                              (shoulderLead.y + leadPoint.y) * 0.5f +

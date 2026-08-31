@@ -329,10 +329,10 @@ void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
     /* A pale wedge of air thrown down the cone. It passes through terrain: this
        is the shape of the blow, not debris, and stopping it at the first wall
        would hide the very impact it is announcing. */
-    for (i = 0; i < 34; ++i) {
-        float forward = 42.0f + RandomUnit() * 190.0f;
-        float sideways = (RandomUnit() - 0.5f) * 96.0f;
-        float spawn = RandomUnit() * 6.0f;
+    for (i = 0; i < 52; ++i) {
+        float forward = 62.0f + RandomUnit() * 250.0f;
+        float sideways = (RandomUnit() - 0.5f) * 132.0f;
+        float spawn = RandomUnit() * 8.0f;
         Color color = i % 3 == 0 ? (Color){226, 240, 255, 220}
                                  : (Color){158, 196, 236, 190};
 
@@ -341,8 +341,8 @@ void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
                                     origin.y + direction.y * spawn},
                           (Vector2){direction.x * forward + tangent.x * sideways,
                                     direction.y * forward + tangent.y * sideways},
-                          color, 0.16f + RandomUnit() * 0.26f,
-                          0.6f + RandomUnit() * 1.6f, 6.0f);
+                          color, 0.18f + RandomUnit() * 0.3f,
+                          0.7f + RandomUnit() * 1.8f, 6.0f);
     }
 }
 
