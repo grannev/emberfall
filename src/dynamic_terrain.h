@@ -23,6 +23,7 @@
  * World and cannot modify one.
  */
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -108,9 +109,12 @@ typedef struct TerrainBody {
     bool active;
     uint16_t generation;
     /* A settled body still exists and still collides, but costs nothing to
-       integrate. Nothing sleeps a body yet; the flag is here so that the task
-       which adds motion has somewhere to put the decision. */
+       integrate: DynamicTerrainUpdate skips it entirely. */
     bool awake;
+    /* Seconds this body has been below both sleep thresholds. Reset the moment
+       it moves again, so a body only sleeps after a continuous quiet spell
+       rather than after one lucky tick. */
+    float sleepTimer;
 
     /* Local raster. Cells are addressed row-major as ly * width + lx, in the
        body's own frame, and `width * height` never exceeds
@@ -130,10 +134,13 @@ typedef struct TerrainBody {
 
     /* Placement. `position` is the world position of the centre of mass, which
        is what a rigid body rotates about; `centerOfMass` says where that point
-       sits in the local raster, so a cell can be placed without ambiguity:
+       sits in the local raster. The two together define the one transform every
+       other system must agree on — see TerrainBodyLocalToWorld below, which is
+       that definition in executable form:
 
            world = position + rotate(local + (0.5, 0.5) - centerOfMass, angle)
-    */
+
+       `angle` is in radians and is kept in (-PI, PI]. */
     Vector2 position;
     float angle;
     Vector2 velocity;
@@ -152,6 +159,35 @@ typedef struct TerrainBody {
     int sourceY;
 } TerrainBody;
 
+/* Tuning for how bodies move. Gathered in one struct rather than scattered
+   across the integrator so a change is a change to one value, and so tests can
+   ask for a world without gravity without pretending. */
+typedef struct DynamicTerrainConfig {
+    /* Cells per second squared, positive downward because world Y grows
+       downward. Applied as an acceleration, so it is independent of mass, as
+       gravity is. */
+    float gravity;
+    /* Fraction of speed shed per second, applied as exp(-damping * dt) so the
+       result depends on elapsed time and not on how many times update was
+       called. */
+    float linearDamping;
+    float angularDamping;
+    /* Ceilings, not tuning: they stop one bad impulse turning into a body that
+       crosses the map in a tick, which is also what will keep collision from
+       having to solve tunnelling later. */
+    float maximumSpeed;
+    float maximumAngularSpeed;
+    /* A body sleeps once it has stayed below both of these for `sleepDelay`
+       seconds. `linearSleepSpeed` must stay below `gravity * dt` or a body in
+       free fall would doze off in mid-air; the default pair satisfies that at
+       the 60 Hz fixed step, and a test holds it. */
+    float linearSleepSpeed;
+    float angularSleepSpeed;
+    float sleepDelay;
+} DynamicTerrainConfig;
+
+DynamicTerrainConfig DynamicTerrainDefaultConfig(void);
+
 typedef struct DynamicTerrainStats {
     int activeBodies;
     /* Raster slots reserved by live bodies, not occupied cells: this is the
@@ -163,6 +199,9 @@ typedef struct DynamicTerrainStats {
        than timed, so they mean the same thing on every machine. */
     int extractionsSucceeded;
     int extractionsFailed;
+    /* Refreshed by every DynamicTerrainUpdate. */
+    int awakeBodies;
+    int sleepingBodies;
 } DynamicTerrainStats;
 
 typedef struct DynamicTerrainSystem {
@@ -179,6 +218,7 @@ typedef struct DynamicTerrainSystem {
        sitting a fraction below a phase threshold to cross it purely by being
        torn off and put back. At this scale that trade is not worth making. */
     float *temperature;
+    DynamicTerrainConfig config;
     DynamicTerrainStats stats;
 } DynamicTerrainSystem;
 
@@ -222,6 +262,64 @@ float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
 void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
                                 TerrainBodyHandle handle);
 
+/* Advances every awake body by one fixed step. Takes no World: bodies do not
+   collide with anything yet, and keeping the dependency out until EF-DYN-006
+   needs it is what stops the two systems growing into each other early.
+
+   `deltaTime` is the simulation's fixed step. A non-finite, non-positive or
+   absurdly large value is refused rather than integrated, because a bad step is
+   a caller bug and silently scaling it would hide one. */
+void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime);
+
+/* Puts a body back into integration and restarts its quiet spell. Safe on a
+   dead handle. */
+void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+/* Sets both velocities and wakes the body. Non-finite values are refused. */
+void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,
+                               TerrainBodyHandle handle, Vector2 velocity,
+                               float angularVelocity);
+/* Applies an impulse at a world point: linear velocity changes by J/m, angular
+   velocity by (r x J)/I where r runs from the centre of mass to the point. One
+   function rather than separate linear and angular ones because that is the
+   whole of the rigid-body rule — an impulse through the centre of mass turns
+   nothing, and the cross product says so without a special case. Wakes the
+   body. A body with no mass or no inertia cannot be pushed. */
+void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system,
+                                TerrainBodyHandle handle, Vector2 impulse,
+                                Vector2 worldPoint);
+
 const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *system);
+
+/* The transform, in executable form. Every other system — renderer, collision,
+   fracture — must go through these two rather than re-derive the convention,
+   because a second derivation is a second chance to get it wrong.
+
+   `localX`/`localY` are raster coordinates; add 0.5 to address a cell's centre
+   rather than its corner. */
+static inline Vector2 TerrainBodyLocalToWorld(const TerrainBody *body,
+                                              float localX, float localY)
+{
+    float offsetX = localX - body->centerOfMass.x;
+    float offsetY = localY - body->centerOfMass.y;
+    float cosine = cosf(body->angle);
+    float sine = sinf(body->angle);
+
+    return (Vector2){body->position.x + offsetX * cosine - offsetY * sine,
+                     body->position.y + offsetX * sine + offsetY * cosine};
+}
+
+/* The exact inverse. Collision will need it to ask which of a body's cells a
+   world point falls in. */
+static inline Vector2 TerrainBodyWorldToLocal(const TerrainBody *body,
+                                              float worldX, float worldY)
+{
+    float offsetX = worldX - body->position.x;
+    float offsetY = worldY - body->position.y;
+    float cosine = cosf(body->angle);
+    float sine = sinf(body->angle);
+
+    return (Vector2){body->centerOfMass.x + offsetX * cosine + offsetY * sine,
+                     body->centerOfMass.y - offsetX * sine + offsetY * cosine};
+}
 
 #endif
