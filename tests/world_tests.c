@@ -572,6 +572,32 @@ static void test_a_fresh_manager_holds_no_bodies(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* `TerrainBodyHandle handle = {0};` is what callers write without thinking.
+   It must not name body zero: generation zero is reserved as never-live
+   precisely so that the lazy initialiser fails instead of silently working
+   until the first slot is reused. */
+static void test_a_zero_initialised_handle_names_nothing(void)
+{
+    TerrainBodyHandle zeroed = {0};
+    TerrainBodyHandle real;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    real = DynamicTerrainAllocBody(&terrain, 4, 4);
+
+    CHECK(real.index == 0u, "the test needs the first allocation to take slot 0");
+    CHECK(real.generation != 0u, "a live handle carries generation zero");
+    CHECK(DynamicTerrainGet(&terrain, zeroed) == NULL,
+          "a zero-initialised handle resolved to body zero");
+
+    DynamicTerrainSetCell(&terrain, zeroed, 1, 1, MATERIAL_ROCK, 20.0f);
+    CHECK(DynamicTerrainGetConst(&terrain, real)->cellCount == 0,
+          "a zero-initialised handle wrote into body zero");
+    DynamicTerrainFreeBody(&terrain, zeroed);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 1,
+          "a zero-initialised handle freed body zero");
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_allocation_returns_a_usable_body(void)
 {
     TerrainBodyHandle handle;
@@ -2728,6 +2754,7 @@ int main(void)
     RUN(test_the_schedule_never_lists_a_chunk_twice);
     RUN(test_visual_particles_never_change_the_world);
     RUN(test_a_fresh_manager_holds_no_bodies);
+    RUN(test_a_zero_initialised_handle_names_nothing);
     RUN(test_allocation_returns_a_usable_body);
     RUN(test_the_manager_refuses_work_past_its_budgets);
     RUN(test_a_freed_slot_is_reused);

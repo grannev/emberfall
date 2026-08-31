@@ -28,10 +28,15 @@
    therefore infinite angular acceleration the moment anything touches it. */
 #define TERRAIN_CELL_SELF_INERTIA (1.0f / 6.0f)
 
+/* Generation zero is reserved as "never live" so that a zero-initialised
+   handle cannot name body zero by accident. */
+#define TERRAIN_BODY_FIRST_GENERATION 1u
+
 static bool TerrainSlotIsLive(const DynamicTerrainSystem *system,
                               TerrainBodyHandle handle)
 {
-    if (system == NULL || handle.index >= MAX_TERRAIN_BODIES) {
+    if (system == NULL || handle.index >= MAX_TERRAIN_BODIES ||
+        handle.generation == 0u) {
         return false;
     }
     return system->bodies[handle.index].active &&
@@ -45,10 +50,15 @@ static size_t TerrainRasterBase(uint16_t index)
 
 bool DynamicTerrainInit(DynamicTerrainSystem *system)
 {
+    int index;
+
     if (system == NULL) {
         return false;
     }
     memset(system, 0, sizeof(*system));
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        system->bodies[index].generation = TERRAIN_BODY_FIRST_GENERATION;
+    }
     system->material = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
                               sizeof(*system->material));
     system->temperature = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
@@ -167,8 +177,12 @@ void DynamicTerrainFreeBody(DynamicTerrainSystem *system, TerrainBodyHandle hand
     --system->stats.activeBodies;
     body->active = false;
     /* Bumping on free is what makes every outstanding handle to this body stale
-       from this moment, including the one that did the freeing. */
+       from this moment, including the one that did the freeing. Zero is
+       skipped: it is the value a zero-initialised handle carries. */
     ++body->generation;
+    if (body->generation == 0u) {
+        body->generation = TERRAIN_BODY_FIRST_GENERATION;
+    }
 }
 
 TerrainBody *DynamicTerrainGet(DynamicTerrainSystem *system,
