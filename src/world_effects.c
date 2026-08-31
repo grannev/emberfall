@@ -118,7 +118,7 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
     float blocked[FORCE_BLAST_RAYS];
     float centreAngle;
     float halfSpread;
-    uint32_t stamp;
+    uint16_t stamp;
     int ray;
     int step;
 
@@ -152,10 +152,7 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
         }
     }
 
-    stamp = ++world->effectSerial;
-    if (stamp == 0u) {
-        stamp = ++world->effectSerial;
-    }
+    stamp = WorldNextEffectStamp(world);
 
     for (step = (int)length; step >= 1; --step) {
         int extent = step + 1;
@@ -267,7 +264,7 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius)
 {
-    uint32_t stamp;
+    uint16_t stamp;
     int band;
 
     if (world == NULL || world->cells == NULL || innerRadius < 0 ||
@@ -275,10 +272,7 @@ void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius
         return;
     }
 
-    stamp = ++world->effectSerial;
-    if (stamp == 0u) {
-        stamp = ++world->effectSerial;
-    }
+    stamp = WorldNextEffectStamp(world);
 
     /* Outer bands move first, so displaced cells cannot be pushed twice. */
     for (band = outerRadius; band > innerRadius; --band) {
@@ -346,7 +340,7 @@ LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radi
     float length = sqrtf(delta.x * delta.x + delta.y * delta.y);
     int steps = (int)ceilf(length / 0.65f);
     int step;
-    uint32_t stamp;
+    uint16_t stamp;
     LaserResult result = {end, MATERIAL_EMPTY, false};
 
     if (world == NULL || world->cells == NULL || length < 0.001f) {
@@ -354,10 +348,7 @@ LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radi
         return result;
     }
 
-    stamp = ++world->effectSerial;
-    if (stamp == 0u) {
-        stamp = ++world->effectSerial;
-    }
+    stamp = WorldNextEffectStamp(world);
 
     for (step = 0; step <= steps; ++step) {
         float amount = (float)step / (float)steps;
@@ -417,7 +408,7 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
     float length = sqrtf(delta.x * delta.x + delta.y * delta.y);
     int steps = (int)ceilf(length / 0.65f);
     int step;
-    uint32_t stamp;
+    uint16_t stamp;
     LaserResult result = {end, MATERIAL_EMPTY, false};
 
     if (world == NULL || world->cells == NULL || length < 0.001f) {
@@ -448,10 +439,7 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
         return result;
     }
 
-    stamp = ++world->effectSerial;
-    if (stamp == 0u) {
-        stamp = ++world->effectSerial;
-    }
+    stamp = WorldNextEffectStamp(world);
 
     {
         int centerX = (int)floorf(result.position.x);

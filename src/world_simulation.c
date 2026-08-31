@@ -21,8 +21,8 @@ void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
 
     *from = *to;
     *to = moving;
-    to->updatedTick = world->tick;
-    from->updatedTick = world->tick;
+    to->updatedTick = WorldTickStamp(world);
+    from->updatedTick = WorldTickStamp(world);
     WorldWakeCellAndNeighbors(world, fromX, fromY);
     WorldWakeCellAndNeighbors(world, toX, toY);
 }
@@ -110,7 +110,7 @@ static void WorldUpdateGas(World *world, int x, int y, int direction, bool smoke
     }
     if (cell->lifetime >= maximumLife) {
         WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
-        WorldCell(world, x, y)->updatedTick = world->tick;
+        WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
         return;
     }
 
@@ -130,7 +130,7 @@ static void WorldUpdateFire(World *world, int x, int y, int direction)
 
     if (cell->lifetime % 12u == 0u && WorldMaterialAt(world, x, y - 1) == MATERIAL_EMPTY) {
         WorldSetCellRaw(world, x, y - 1, MATERIAL_SMOKE);
-        WorldCell(world, x, y - 1)->updatedTick = world->tick;
+        WorldCell(world, x, y - 1)->updatedTick = WorldTickStamp(world);
     }
 
     if (cell->lifetime >= maximumLife) {
@@ -138,7 +138,7 @@ static void WorldUpdateFire(World *world, int x, int y, int direction)
                                    ? MATERIAL_ASH
                                    : MATERIAL_SMOKE;
         WorldSetCellRaw(world, x, y, residue);
-        WorldCell(world, x, y)->updatedTick = world->tick;
+        WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
         return;
     }
 
@@ -153,7 +153,7 @@ static void WorldUpdateCellAt(World *world, int x, int y)
     int direction = ((CoordinateHash(x, y) + world->tick) & 1u) != 0u ? 1 : -1;
     float temperatureBefore;
 
-    if (cell->updatedTick == world->tick) {
+    if (cell->updatedTick == WorldTickStamp(world)) {
         return;
     }
 
@@ -240,8 +240,12 @@ void WorldUpdate(World *world)
     world->lastTickStats = (WorldTickStats){0};
     world->reactionCount = 0;
     ++world->tick;
-    if (world->tick == 0u) {
-        world->tick = 1u;
+    /* Cells hold the low sixteen bits of this counter, and an unwritten cell
+       holds zero, so the truncated value must never be zero — otherwise every
+       never-updated cell in an awake chunk would read as already handled and
+       skip a tick together, once every 65 536 ticks. */
+    if (WorldTickStamp(world) == 0u) {
+        ++world->tick;
     }
     /* From here to the swap, `activeChunks` is the frozen schedule and every
        wake lands in `nextActiveChunks` instead. */

@@ -201,6 +201,51 @@ static void test_game_update_publishes_transient_events(void)
     GameUnload(&game);
 }
 
+/* Cells hold the low sixteen bits of the tick counter. The saving is 54 MiB,
+   and the price is that the counter wraps; this checks that the wrap costs
+   nothing anyone can see, and in particular that the truncated value never
+   becomes zero, which is what would make every never-written cell in an awake
+   chunk skip the same tick together. */
+static void test_the_tick_counter_survives_wrapping_its_cell_stamp(void)
+{
+    World world;
+    int before;
+    int step;
+    int lowest = 0;
+
+    CHECK(WorldInit(&world, 64, 96), "world allocation failed");
+    FillRect(&world, 20, 10, 40, 20, MATERIAL_SAND);
+    before = CountMaterial(&world, MATERIAL_SAND);
+
+    /* Jump to just before the wrap rather than ticking there: the behaviour
+       under test is the arithmetic, not sixty-five thousand ticks of sand. */
+    world.tick = 0xFFFAu;
+    for (step = 0; step < 40; ++step) {
+        WorldUpdate(&world);
+        CHECK((uint16_t)world.tick != 0u,
+              "the tick stamp reached zero, which unwritten cells already hold");
+    }
+
+    CHECK(world.tick > 0x10000u, "the test never reached the wrap: tick=%u",
+          world.tick);
+    CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
+          "sand was lost across the tick stamp wrap: %d of %d left",
+          CountMaterial(&world, MATERIAL_SAND), before);
+
+    for (step = 0; step < world.height; ++step) {
+        int x;
+
+        for (x = 0; x < world.width; ++x) {
+            if (WorldGetCell(&world, x, step) == MATERIAL_SAND && step > lowest) {
+                lowest = step;
+            }
+        }
+    }
+    CHECK(lowest > 20, "sand stopped falling across the wrap; lowest row %d",
+          lowest);
+    WorldUnload(&world);
+}
+
 /* --- active chunk scheduler --------------------------------------------- */
 
 /* The schedule exists in two representations — a flag per chunk and a compact
@@ -1793,6 +1838,7 @@ int main(void)
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
     RUN(test_a_seeded_session_replays_identically);
+    RUN(test_the_tick_counter_survives_wrapping_its_cell_stamp);
     RUN(test_the_schedule_never_lists_a_chunk_twice);
     RUN(test_visual_particles_never_change_the_world);
     RUN(test_ability_table_passes_its_own_validation);

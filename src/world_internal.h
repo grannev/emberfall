@@ -67,6 +67,25 @@ static inline CellMaterial WorldMaterialAt(const World *world, int x, int y)
     return (CellMaterial)WorldCellConst(world, x, y)->material;
 }
 
+/* The tick and effect counters as a cell stores them. Both skip zero so that
+   never-written cells, whose stamps are zero, can never be mistaken for
+   already-handled ones. See the Cell comment in world.h. */
+static inline uint16_t WorldTickStamp(const World *world)
+{
+    return (uint16_t)world->tick;
+}
+
+/* Starts a new effect and returns the stamp its cells should carry. */
+static inline uint16_t WorldNextEffectStamp(World *world)
+{
+    uint16_t stamp = (uint16_t)++world->effectSerial;
+
+    if (stamp == 0u) {
+        stamp = (uint16_t)++world->effectSerial;
+    }
+    return stamp;
+}
+
 static inline uint32_t CoordinateHash(int x, int y)
 {
     uint32_t value = (uint32_t)x * 0x45d9f3bu;

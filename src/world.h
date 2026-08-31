@@ -30,10 +30,26 @@ typedef enum CellMaterial {
     MATERIAL_COUNT
 } CellMaterial;
 
+/* Fourteen million of these exist, so every byte here is 13.5 MiB on the
+   production map and the layout is a memory decision before it is anything
+   else. Fields are ordered widest first so the struct packs to 12 bytes with a
+   single byte of tail padding. */
 typedef struct Cell {
-    uint32_t updatedTick;
-    uint32_t effectStamp;
     float temperature;
+    /* Both stamps are compared for equality against a world counter and are
+       therefore only meaningful modulo their own width. Sixteen bits cost 8 MiB
+       less than thirty-two and the failure they admit is bounded and tiny: a
+       cell whose stamp happens to equal the truncated counter is skipped by
+       exactly one tick, or missed by exactly one effect, and behaves normally
+       again immediately afterwards. For `updatedTick` that requires a cell to
+       have sat awake and untouched for exactly a multiple of 65 536 ticks —
+       eighteen minutes — and costs it one frame of falling. The counters skip
+       the value zero precisely so that never-written cells, which are the one
+       population large enough for this to be visible, can never collide. */
+    uint16_t updatedTick;
+    uint16_t effectStamp;
+    /* Age of the temporary materials: fire, smoke and steam. The longest life
+       any of them has is 420 ticks. */
     uint16_t lifetime;
     /* MATERIAL_COUNT is deliberately kept below 256. Storing the enum as an
        int wasted four bytes in every cell; on the 16384-wide world that was
@@ -42,7 +58,7 @@ typedef struct Cell {
 } Cell;
 
 _Static_assert(MATERIAL_COUNT <= UINT8_MAX, "Cell.material no longer fits in uint8_t");
-_Static_assert(sizeof(Cell) == 16, "Cell layout grew; recheck large-world memory");
+_Static_assert(sizeof(Cell) == 12, "Cell layout grew; recheck large-world memory");
 
 #define MAX_WORLD_REACTIONS 64
 

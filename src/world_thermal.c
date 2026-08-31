@@ -56,7 +56,7 @@ bool WorldTryThermalTransition(World *world, int x, int y)
     }
 
     WorldSetCellRaw(world, x, y, next);
-    WorldCell(world, x, y)->updatedTick = world->tick;
+    WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
     return true;
 }
 
@@ -92,7 +92,7 @@ void WorldBurnDirt(World *world, int x, int y)
         if (WorldInBounds(world, targetX, targetY) &&
             WorldMaterialAt(world, targetX, targetY) == MATERIAL_DIRT) {
             WorldSetCellRaw(world, targetX, targetY, MATERIAL_FIRE);
-            WorldCell(world, targetX, targetY)->updatedTick = world->tick;
+            WorldCell(world, targetX, targetY)->updatedTick = WorldTickStamp(world);
             break;
         }
     }
@@ -158,8 +158,8 @@ bool WorldTryMaterialReaction(World *world, int x, int y)
         WorldSetCellRaw(world, waterX, waterY, MATERIAL_STEAM);
         WorldCell(world, lavaX, lavaY)->temperature = 185.0f;
         WorldCell(world, waterX, waterY)->temperature = 125.0f;
-        WorldCell(world, lavaX, lavaY)->updatedTick = world->tick;
-        WorldCell(world, waterX, waterY)->updatedTick = world->tick;
+        WorldCell(world, lavaX, lavaY)->updatedTick = WorldTickStamp(world);
+        WorldCell(world, waterX, waterY)->updatedTick = WorldTickStamp(world);
         WorldRecordReaction(world, waterX, waterY, lavaX, lavaY);
         return true;
     }

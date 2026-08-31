@@ -352,7 +352,11 @@ static void PrintMemory(const World *world)
     size_t chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     size_t lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
     size_t cells = cellCount * sizeof(*world->cells);
-    size_t chunkMetadata = chunkCount * 4u * sizeof(uint8_t);
+    /* Four byte-flag arrays (active, next-active, dirty, light-dirty) plus the
+       two schedule column arrays and their two per-row counters. */
+    size_t chunkMetadata = chunkCount * 4u * sizeof(uint8_t) +
+                           chunkCount * 2u * sizeof(int32_t) +
+                           (size_t)world->chunkRows * 2u * sizeof(int32_t);
     size_t lighting = lightCount * 6u * sizeof(float);
     size_t renderStaging =
         WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * sizeof(Color);
