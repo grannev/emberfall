@@ -7,23 +7,13 @@
 #include <raymath.h>
 
 #include "audio.h"
-#include "particles.h"
-#include "player.h"
-#include "powers.h"
-#include "world.h"
+#include "game.h"
+#include "input.h"
 
-#define WORLD_WIDTH 16384
-#define WORLD_HEIGHT 864
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
 #define VIEW_WIDTH 320.0f
 #define VIEW_HEIGHT 180.0f
-#define SIMULATION_STEP (1.0f / 60.0f)
-/* Generated physics streams in ahead of the camera instead of making every
-   distant water pocket and sand bank consume CPU from startup. The final view
-   is at most 640x360, so this leaves a generous pre-simulation margin. */
-#define WORLD_ACTIVE_RADIUS_X 480.0f
-#define WORLD_ACTIVE_RADIUS_Y 288.0f
 
 /* How far the camera leads the player, as a fraction of the view in each
    direction, and over how many seconds of travel that lead is measured. The
@@ -115,10 +105,11 @@ static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 }
 
 static void DrawDebugHud(const World *world, const Player *player,
-                         const PowerSystem *powers, Vector2 cursorCell)
+                         const PowerSystem *powers,
+                         const GameEventBuffer *events, Vector2 cursorCell)
 {
     const int panelWidth = 380;
-    const int panelHeight = 140;
+    const int panelHeight = 164;
     float cooldown = powers->explosionCooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
@@ -141,10 +132,17 @@ static void DrawDebugHud(const World *world, const Player *player,
                         (int)cursorCell.y, WorldMaterialName(cursorMaterial),
                         WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
              24, 113, 18, (Color){186, 194, 205, 255});
+    DrawText(TextFormat("TICK: %llu CELLS / %u CHUNKS | EVENTS: %u +%u",
+                        (unsigned long long)world->lastTickStats.processedCells,
+                        world->lastTickStats.processedChunks,
+                        (unsigned int)events->count,
+                        (unsigned int)events->dropped),
+             24, 135, 14, (Color){150, 205, 178, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 133, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 153, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 133, 14, LIGHTGRAY);
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 153, 14,
+                 LIGHTGRAY);
     }
 }
 
@@ -284,20 +282,75 @@ static bool RunSmokeFireContainmentProbe(void)
     return remainingDirt >= minimumRemainingDirt;
 }
 
+static bool EventsContain(const GameEventBuffer *events, GameEventType type)
+{
+    uint16_t index;
+
+    for (index = 0u; index < events->count; ++index) {
+        if (events->events[index].type == type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Presentation consumes transient gameplay facts after GameUpdate. Gameplay
+   neither plays sounds nor shakes a Camera2D, and adding another consumer does
+   not require another one-frame flag on Player or PowerSystem. */
+static void PresentGameEvents(const GameEventBuffer *events, GameAudio *audio,
+                              float *cameraShake)
+{
+    uint16_t index;
+
+    for (index = 0u; index < events->count; ++index) {
+        const GameEvent *event = &events->events[index];
+
+        switch (event->type) {
+        case GAME_EVENT_BOOST_STAGE: {
+            int stage = event->count;
+            float shake = stage == 1 ? 0.8f : (stage == 2 ? 1.8f : 4.0f);
+
+            *cameraShake = fmaxf(*cameraShake, shake);
+            GameAudioPlayBoost(audio, stage);
+            break;
+        }
+        case GAME_EVENT_PLAYER_IMPACT:
+            *cameraShake = fmaxf(
+                *cameraShake,
+                Clamp((event->strength - 10.0f) * 0.025f, 0.0f, 2.6f));
+            GameAudioPlayImpact(audio, event->strength);
+            break;
+        case GAME_EVENT_PLAYER_DRILL:
+            *cameraShake = fmaxf(
+                *cameraShake,
+                Clamp(0.25f + (float)event->count * 0.025f, 0.0f, 1.4f));
+            break;
+        case GAME_EVENT_FORCE:
+            *cameraShake = fmaxf(*cameraShake, 4.2f);
+            GameAudioPlayForce(audio);
+            break;
+        case GAME_EVENT_EXPLOSION:
+            *cameraShake = fmaxf(*cameraShake, 4.8f);
+            GameAudioPlayExplosion(audio);
+            break;
+        case GAME_EVENT_MATERIAL_REACTION:
+            GameAudioPlayReaction(audio);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    World world;
-    Player player;
-    PowerSystem powers;
-    ParticleSystem particles;
-    GameAudio audio;
+    GameState game = {0};
+    GameEventBuffer events = {0};
+    GameAudio audio = {0};
     Camera2D camera = {0};
-    float simulationAccumulator = 0.0f;
     bool debugHud = true;
     bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
     int smokeFrames = 0;
-    int activatedPlayerChunkX = -1;
-    int activatedPlayerChunkY = -1;
     Vector2 cameraFocus;
     Vector2 smokeAim = {0.0f, 0.0f};
     float cameraShake = 0.0f;
@@ -322,32 +375,30 @@ int main(int argc, char **argv)
     SetExitKey(KEY_ESCAPE);
     (void)GameAudioInit(&audio);
 
-    if (!WorldInit(&world, WORLD_WIDTH, WORLD_HEIGHT) || !WorldInitRenderer(&world)) {
+    if (!GameInit(&game, GameDefaultConfig()) ||
+        !WorldInitRenderer(&game.world)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
-        WorldUnload(&world);
+        GameUnload(&game);
         GameAudioUnload(&audio);
         CloseWindow();
         return 1;
     }
 
-    WorldGenerate(&world);
-    PlayerInit(&player, WorldPlayerSpawn(&world));
-    PowersInit(&powers);
-    ParticlesInit(&particles);
     if (smokeTest) {
         smokeFireContained = RunSmokeFireContainmentProbe();
-        RunSmokePlayerProbe(&world, &particles, &smokeCollisionObserved,
+        RunSmokePlayerProbe(&game.world, &game.particles, &smokeCollisionObserved,
                             &smokeDrillObserved);
         /* The probe has exercised the spawn paths; drop what it emitted so the
            reference screenshot starts from a clean frame. */
-        ParticlesInit(&particles);
+        ParticlesInit(&game.particles);
         /* Build the laser/explosion target relative to the spawn instead of at
            fixed coordinates: generation is randomised, so a hardcoded point is
            not guaranteed to contain terrain. */
-        smokeAim = (Vector2){player.position.x + 14.0f, player.position.y + 40.0f};
-        SetupSmokeTarget(&world, smokeAim);
+        smokeAim = (Vector2){game.player.position.x + 14.0f,
+                             game.player.position.y + 40.0f};
+        SetupSmokeTarget(&game.world, smokeAim);
     }
-    cameraFocus = player.position;
+    cameraFocus = game.player.position;
     camera.target = cameraFocus;
     camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                               (float)GetScreenHeight() * 0.5f};
@@ -356,82 +407,50 @@ int main(int argc, char **argv)
 
     while (!WindowShouldClose()) {
         float deltaTime = fminf(GetFrameTime(), 0.05f);
+        AppInput input = InputPoll(&game.world, camera);
         Vector2 desiredCamera;
-        Vector2 cursorCell;
-        Vector2 aimPosition;
-        Vector2 moveInput = {0.0f, 0.0f};
-        bool laserHeld;
-        bool explosionPressed;
-        bool forcePressed;
-        bool chillHeld;
-        bool boostHeld;
-        bool materialReaction = false;
+        Vector2 cursorCell = input.cursorCell;
+        Vector2 aimPosition = input.game.aimWorld;
 
-        if (IsKeyPressed(KEY_F1)) {
+        if (input.toggleDebugPressed) {
             debugHud = !debugHud;
         }
-        if (IsKeyPressed(KEY_R)) {
-            WorldGenerate(&world);
-            PlayerInit(&player, WorldPlayerSpawn(&world));
-            PowersInit(&powers);
-            ParticlesInit(&particles);
-            simulationAccumulator = 0.0f;
-            cameraFocus = player.position;
+
+        if (smokeTest) {
+            aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
+            cursorCell = smokeAim;
+            input.game.aimWorld = aimPosition;
+            input.game.laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
+            input.game.explosionPressed = smokeFrames == 5;
+            input.game.forcePressed = false;
+            input.game.chillHeld = false;
+            input.game.regeneratePressed = false;
+        }
+
+        GameUpdate(&game, &input.game, deltaTime, &events);
+        if (input.game.regeneratePressed) {
+            cameraFocus = game.player.position;
             cameraShake = 0.0f;
-            activatedPlayerChunkX = -1;
-            activatedPlayerChunkY = -1;
         }
-
-        if (IsKeyDown(KEY_A)) moveInput.x -= 1.0f;
-        if (IsKeyDown(KEY_D)) moveInput.x += 1.0f;
-        if (IsKeyDown(KEY_W)) moveInput.y -= 1.0f;
-        if (IsKeyDown(KEY_S)) moveInput.y += 1.0f;
-        boostHeld = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-        PlayerUpdate(&player, &world, moveInput, boostHeld, deltaTime);
         {
-            int playerChunkX = (int)player.position.x / WORLD_CHUNK_SIZE;
-            int playerChunkY = (int)player.position.y / WORLD_CHUNK_SIZE;
+            GameAudioState sounding = {0};
 
-            if (playerChunkX != activatedPlayerChunkX ||
-                playerChunkY != activatedPlayerChunkY) {
-                WorldActivateRegion(
-                    &world,
-                    (Rectangle){player.position.x - WORLD_ACTIVE_RADIUS_X,
-                                player.position.y - WORLD_ACTIVE_RADIUS_Y,
-                                WORLD_ACTIVE_RADIUS_X * 2.0f,
-                                WORLD_ACTIVE_RADIUS_Y * 2.0f});
-                activatedPlayerChunkX = playerChunkX;
-                activatedPlayerChunkY = playerChunkY;
-            }
+            sounding.laser = game.powers.laserActive;
+            sounding.drilling = game.player.drilledCells > 0;
+            sounding.drillMaterial = game.player.drillMaterial;
+            sounding.chill = game.powers.chillActive;
+            GameAudioUpdate(&audio, sounding, deltaTime);
         }
-        if (player.boostStageChanged != PLAYER_BOOST_NONE) {
-            int stage = (int)player.boostStageChanged;
-            float stageShake = stage == 1 ? 0.8f : (stage == 2 ? 1.8f : 4.0f);
-
-            ParticlesSpawnBoostBurst(&particles, player.position, player.velocity,
-                                     stage);
-            cameraShake = fmaxf(cameraShake, stageShake);
-            GameAudioPlayBoost(&audio, stage);
-        }
-        if (player.impactStrength >= 14.0f) {
-            float impactShake = Clamp((player.impactStrength - 10.0f) * 0.025f,
-                                      0.0f, 2.6f);
-
-            cameraShake = fmaxf(cameraShake, impactShake);
-            ParticlesSpawnImpact(&particles, player.impactPosition,
-                                 player.impactNormal, player.impactStrength);
-        }
-        if (player.boostTrailEmitted) {
-            ParticlesSpawnBoostTrail(&particles, player.position, player.velocity,
-                                     (int)player.boostStage);
-        }
-        if (player.drilledCells > 0) {
-            float drillShake = Clamp(0.25f + (float)player.drilledCells * 0.025f,
-                                     0.0f, 1.4f);
-
-            cameraShake = fmaxf(cameraShake, drillShake);
-            ParticlesSpawnDrillDebris(&particles, player.drillPosition,
-                                      player.velocity, player.drilledCells);
+        PresentGameEvents(&events, &audio, &cameraShake);
+        if (smokeTest) {
+            smokeReactionObserved = smokeReactionObserved ||
+                                    EventsContain(&events,
+                                                  GAME_EVENT_MATERIAL_REACTION);
+            smokeLaserHitObserved = smokeLaserHitObserved ||
+                                    EventsContain(&events, GAME_EVENT_LASER_HIT);
+            smokeExplosionObserved = smokeExplosionObserved ||
+                                     EventsContain(&events,
+                                                   GAME_EVENT_EXPLOSION);
         }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
@@ -439,15 +458,16 @@ int main(int argc, char **argv)
         /* Smooth the view scale rather than the zoom so the rate does not depend
            on window size, and keep it slower than the focus so the frame breathes
            instead of snapping. */
-        cameraViewScale += (CameraViewScaleForSpeed(&player) - cameraViewScale) *
+        cameraViewScale +=
+            (CameraViewScaleForSpeed(&game.player) - cameraViewScale) *
                            (1.0f - expf(-4.5f * deltaTime));
         camera.zoom = CameraZoomForWindow(cameraViewScale);
         {
-            Vector2 lookahead = CameraLookahead(player.velocity);
-            Vector2 lead = {player.position.x + lookahead.x,
-                            player.position.y + lookahead.y};
+            Vector2 lookahead = CameraLookahead(game.player.velocity);
+            Vector2 lead = {game.player.position.x + lookahead.x,
+                            game.player.position.y + lookahead.y};
 
-            desiredCamera = ClampCameraTarget(lead, camera.zoom, &world);
+            desiredCamera = ClampCameraTarget(lead, camera.zoom, &game.world);
         }
         cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
                          (1.0f - expf(-8.0f * deltaTime));
@@ -462,102 +482,28 @@ int main(int argc, char **argv)
             cameraFocus.y + ((float)GetRandomValue(-1000, 1000) / 1000.0f) * cameraShake
         };
 
-        cursorCell = WorldScreenToCell(&world, GetMousePosition(), camera);
-        aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
-        laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-        explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
-        forcePressed = IsKeyPressed(KEY_Q);
-        chillHeld = IsKeyDown(KEY_E);
-        if (smokeTest) {
-            aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
-            cursorCell = smokeAim;
-            laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
-            explosionPressed = smokeFrames == 5;
-            forcePressed = false;
-            chillHeld = false;
-        }
-        PowersUpdate(&powers, &world, &particles, player.position, aimPosition, deltaTime,
-                     laserHeld, explosionPressed, forcePressed, chillHeld);
-        if (smokeTest) {
-            smokeLaserHitObserved = smokeLaserHitObserved || powers.laserHit;
-            smokeExplosionObserved = smokeExplosionObserved || powers.explosionTriggered;
-        }
-        /* The character's hands follow whatever power is firing. Held powers
-           refresh a short pose every frame; the blast asks for the length of its
-           own punch so releasing the key does not cut it short. */
-        if (powers.laserActive) {
-            PlayerSetPose(&player, PLAYER_POSE_LASER, 0.06f);
-        } else if (powers.chillActive) {
-            PlayerSetPose(&player, PLAYER_POSE_CHILL, 0.06f);
-        }
-        if (powers.forceTriggered) {
-            PlayerSetPose(&player, PLAYER_POSE_BLAST, 0.28f);
-            /* The blow shoves the player the other way. A blast that moves the
-               world but not the person delivering it reads as a button, not as
-               force. */
-            PlayerApplyImpulse(&player,
-                               (Vector2){-powers.forceDirection.x * powers.forceRecoil,
-                                         -powers.forceDirection.y * powers.forceRecoil});
-            cameraShake = fmaxf(cameraShake, 4.2f);
-            GameAudioPlayForce(&audio);
-        }
-        if (powers.explosionTriggered) {
-            PlayerApplyExplosionImpulse(&player, powers.explosionPosition,
-                                        powers.explosionShockRadius, 145.0f);
-            cameraShake = 4.8f;
-            GameAudioPlayExplosion(&audio);
-        }
-        {
-            GameAudioState sounding = {0};
-
-            sounding.laser = powers.laserActive;
-            sounding.drilling = player.drilledCells > 0;
-            sounding.drillMaterial = player.drillMaterial;
-
-            sounding.chill = powers.chillActive;
-            GameAudioUpdate(&audio, sounding, deltaTime);
-        }
-        GameAudioPlayImpact(&audio, player.impactStrength);
-        ParticlesUpdate(&particles, &world, deltaTime);
-
-        simulationAccumulator += deltaTime;
-        while (simulationAccumulator >= SIMULATION_STEP) {
-            int reaction;
-
-            WorldUpdate(&world);
-            materialReaction = materialReaction || world.reactionCount > 0;
-            smokeReactionObserved = smokeReactionObserved ||
-                                    (smokeTest && world.reactionCount > 0);
-            for (reaction = 0; reaction < world.reactionCount; ++reaction) {
-                ParticlesSpawnSteam(&particles, world.reactions[reaction].position);
-            }
-            simulationAccumulator -= SIMULATION_STEP;
-        }
-        if (materialReaction) {
-            GameAudioPlayReaction(&audio);
-        }
-        PlayerResolveWorldCollision(&player, &world);
-
         /* The player carries their own light. Without it a bored tunnel would
            be unplayably dark the moment it leaves the reach of daylight, and
            the drill would be a way to blind yourself. It brightens with the
            boost, so the fastest flight also lights the furthest. */
-        WorldSetPointLight(&world, player.position,
-                           52.0f + (float)player.boostStage * 22.0f,
-                           0.72f + (float)player.boostStage * 0.09f);
+        WorldSetPointLight(&game.world, game.player.position,
+                           52.0f + (float)game.player.boostStage * 22.0f,
+                           0.72f + (float)game.player.boostStage * 0.09f);
 
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
         BeginMode2D(camera);
-            WorldDraw(&world, VisibleWorldRectangle(camera));
-            DrawRectangleLines(0, 0, world.width, world.height, (Color){74, 103, 127, 255});
-            ParticlesDraw(&particles);
-            PlayerDraw(&player, aimPosition);
-            PowersDrawWorld(&powers, aimPosition);
+            WorldDraw(&game.world, VisibleWorldRectangle(camera));
+            DrawRectangleLines(0, 0, game.world.width, game.world.height,
+                               (Color){74, 103, 127, 255});
+            ParticlesDraw(&game.particles);
+            PlayerDraw(&game.player, aimPosition);
+            PowersDrawWorld(&game.powers, aimPosition);
         EndMode2D();
 
         if (debugHud) {
-            DrawDebugHud(&world, &player, &powers, cursorCell);
+            DrawDebugHud(&game.world, &game.player, &game.powers, &events,
+                         cursorCell);
         }
         DrawControlsHint();
         EndDrawing();
@@ -575,17 +521,19 @@ int main(int argc, char **argv)
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
-                      world.activeChunkCount <= 0 ||
-                      world.activeChunkCount >= world.chunkColumns * world.chunkRows)) {
+                      game.world.activeChunkCount <= 0 ||
+                      game.world.activeChunkCount >=
+                          game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
                 "drill=%d fire_contained=%d chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
-                world.activeChunkCount, world.chunkColumns * world.chunkRows);
+                game.world.activeChunkCount,
+                game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;
     }
-    WorldUnload(&world);
+    GameUnload(&game);
     GameAudioUnload(&audio);
     CloseWindow();
     return exitCode;

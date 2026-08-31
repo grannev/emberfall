@@ -139,6 +139,10 @@ chunks видно в debug HUD.
 
 ## Архитектура
 
+- `src/game.c` — владелец gameplay state и единый update order; принимает
+  `GameInput` и публикует transient `GameEvents` без allocation
+- `src/input.c` — единственное преобразование raw raylib keyboard/mouse в
+  gameplay-oriented input
 - `src/world.c` — непрерывная сетка cells, температура, фазовые переходы,
   генерация, fixed-step симуляция, бурение и локальные обновления dirty chunks
   одной `Texture2D`
@@ -149,7 +153,7 @@ chunks видно в debug HUD.
 - `src/particles.c` — фиксированный пул частиц без allocation во время кадра
 - `src/audio.c` — процедурно синтезированные звуки лазера, взрыва, реакций,
   бура и переходов между ступенями без внешних audio-ассетов
-- `src/main.c` — игровой цикл, камера, ввод и HUD
+- `src/main.c` — composition root, окно, camera/HUD, renderer/audio consumers
 
 Взрыв публикует короткоживущее событие для camera shake и отбрасывания игрока.
 Его внешнее кольцо обрабатывает динамические cells от края к центру, поэтому

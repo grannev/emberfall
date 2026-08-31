@@ -2238,19 +2238,6 @@ void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius
     }
 }
 
-Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera)
-{
-    Vector2 point = GetScreenToWorld2D(screenPosition, camera);
-
-    if (world == NULL) {
-        return (Vector2){0.0f, 0.0f};
-    }
-
-    point.x = Clamp(floorf(point.x), 0.0f, (float)(world->width - 1));
-    point.y = Clamp(floorf(point.y), 0.0f, (float)(world->height - 1));
-    return point;
-}
-
 /* How fast the cryo beam pulls each material down, in degrees per second. Lava
    needs by far the most: it relaxes back toward 900C at 8% of the gap per tick,
    so anything gentler is simply undone between frames. */

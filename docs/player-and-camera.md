@@ -116,7 +116,8 @@ Collider игрока — окружность. `PlayerCollidesAt` переби�
 Удары медленнее 14 world units/s гасятся, чтобы у стены не возникало дрожания.
 
 Самый сильный контакт текущего frame записывает `impactPosition`, `impactNormal`
-и `impactStrength`. `main.c` превращает событие в короткий camera shake и
+и `impactStrength`. `GameUpdate` публикует `GAME_EVENT_PLAYER_IMPACT`, а
+presentation consumer превращает его в короткий camera shake и
 фиксированный набор impact particles. Smoke-test требует отрицательную velocity
 после удара о правую rock-стену, поэтому простое возвращение к остановке больше
 не пройдёт проверку.
@@ -284,6 +285,8 @@ Collider не повторяет контур рук, ног и плаща. Он
 - FPS;
 - позицию, модуль velocity и состояние `HOVER`, `BOOST I/II/III` или `MACH`;
 - количество активно симулируемых динамических cells и active chunks;
+- количество обработанных cells/chunks за последний fixed tick;
+- количество опубликованных и отброшенных `GameEvent` за кадр;
 - текущую способность;
 - материал и температуру под курсором;
 - готовность или cooldown взрыва.

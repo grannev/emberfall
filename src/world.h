@@ -150,8 +150,6 @@ void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius
    the cone's half angle; `reach` is how far the nearest cells are thrown. */
 void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                           float length, float spreadCosine, int reach);
-Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);
-
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
                             float deltaTime);
 /* Thermal inverse of the laser: chills everything along the ray, freezing water

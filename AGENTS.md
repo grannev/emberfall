@@ -66,3 +66,7 @@ coherent phase with an explanatory message.
 - Refactoring is deliberately phased. Do not combine game/input/events, world
   decomposition, Cell layout, active scheduling, and render paging into one
   rewrite. Keep every intermediate commit playable and measured.
+- `GameState` now owns gameplay state and fixed-step orchestration. Gameplay
+  receives `GameInput`; only `input.c` polls raylib controls. Transient feedback
+  crosses the boundary through the fixed-capacity `GameEventBuffer`; add event
+  types there instead of another one-frame presentation flag in `main.c`.

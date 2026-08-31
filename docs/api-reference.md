@@ -3,6 +3,30 @@
 Заголовки в `src/` являются источником истины. Этот документ объясняет
 назначение публичных функций и правила их вызова.
 
+## Game API
+
+```c
+GameConfig GameDefaultConfig(void);
+bool GameInit(GameState *game, GameConfig config);
+void GameReset(GameState *game);
+void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
+                GameEventBuffer *events);
+void GameUnload(GameState *game);
+```
+
+`GameState` — gameplay owner верхнего уровня. `GameUpdate` принимает уже
+преобразованный input, ограничивает frame delta значением 0.05, оркестрирует
+player/powers/particles/fixed world ticks и возвращает transient feedback через
+`GameEventBuffer`. Функция не опрашивает input, не рисует и не проигрывает звук.
+
+`GameEventBuffer` имеет fixed capacity 256. `GameEventsPush` сохраняет порядок,
+при переполнении увеличивает `dropped`; `GameEventsClear` начинает новый frame.
+События не живут дольше одного вызова `GameUpdate`, поэтому consumer должен
+прочитать их до следующего update.
+
+`InputPoll` относится к app/platform boundary: он единственный преобразует
+raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
+
 ## World API
 
 ### Lifecycle
@@ -27,7 +51,7 @@ void WorldActivateRegion(World *world, Rectangle region);
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
   чтобы вызывающий код не знал о форме рельефа.
 - `WorldActivateRegion` сканирует только запрошенные chunks и будит находящиеся
-  там динамические или нагретые cells. `main.c` вызывает её при переходе игрока
+  там динамические или нагретые cells. `GameUpdate` вызывает её при переходе игрока
   в новый chunk для окна 960×576. Обычные изменения мира всё равно используют
   собственный wake-up и не зависят от streaming.
 - `WorldUnload` выгружает texture и освобождает все world allocations.
@@ -112,11 +136,9 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
 тоннеля получают остаточный нагрев. Внешняя граница мира игнорируется и остаётся
 неразрушимой.
 
-### Coordinates и labels
+### Labels
 
 ```c
-Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition,
-                          Camera2D camera);
 const char *WorldMaterialName(CellMaterial material);
 ```
 
@@ -131,8 +153,9 @@ typedef enum PlayerBoostStage {
 } PlayerBoostStage;
 ```
 
-`boostStageChanged` живёт один frame и предназначен для camera/audio/particle
-feedback; `boostBurstStage` сохраняется до окончания визуального кольца.
+`boostStageChanged` живёт один frame; `GameUpdate` преобразует его в
+`GAME_EVENT_BOOST_STAGE`. `boostBurstStage` сохраняется до окончания визуального
+кольца.
 
 ```c
 void PlayerInit(Player *player, Vector2 position);
@@ -165,8 +188,9 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);
 ```
 
-После `PowersUpdate` вызывающий код должен проверить `explosionTriggered` и
-`forceTriggered`, затем применить player/camera/audio feedback. Параметры Q
+Обычный путь вызывает `PowersUpdate` только из `GameUpdate`: там one-frame flags
+превращаются в player impulse/pose и `GameEvents`, после чего presentation
+обрабатывает camera/audio feedback. Параметры Q
 `forceLength`, `forceSpreadCosine`, `forceReach` и `forceRecoil` хранятся в
 `PowerSystem`, чтобы gameplay, рисунок конуса и отдача использовали одну
 конфигурацию. `PowersDrawWorld` вызывается внутри world-space camera mode.

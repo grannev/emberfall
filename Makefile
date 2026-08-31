@@ -2,10 +2,12 @@ CC = gcc
 PKG_CONFIG ?= pkg-config
 
 APP := emberfall
-SOURCES := src/main.c src/world.c src/player.c src/powers.c src/particles.c src/audio.c
+SOURCES := src/main.c src/game.c src/game_events.c src/input.c src/world.c \
+	src/player.c src/powers.c src/particles.c src/audio.c
 # The headless suite links CPU-side gameplay only: no window or GL context.
 TEST_APP := emberfall-tests
-TEST_SOURCES := tests/world_tests.c src/world.c src/player.c src/powers.c src/particles.c
+TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c src/world.c \
+	src/player.c src/powers.c src/particles.c
 BENCH_APP := emberfall-bench
 BENCH_SOURCES := bench/benchmark.c src/world.c src/player.c
 HEADERS := $(wildcard src/*.h)

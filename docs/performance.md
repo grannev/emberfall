@@ -94,3 +94,26 @@ startup выше steady state.
 
 Результаты следующих крупных phases добавляются ниже, а baseline не
 перезаписывается.
+
+## После Game/Input/Events boundary
+
+Gameplay orchestration перенесена из `main.c` в `GameUpdate`, raw input — в
+`input.c`, transient flags собраны в fixed-capacity `GameEventBuffer`. World hot
+loops и layout не менялись. Повторный `make bench` дал:
+
+| Scenario | avg ms | p50 | p95 | p99 | cells/tick | chunks/tick |
+|---|---:|---:|---:|---:|---:|---:|
+| settled world | 0.565 | 0.498 | 0.854 | 0.945 | 0 | 0 |
+| falling sand | 1.874 | 1.608 | 2.899 | 3.540 | 59 630 | 58 |
+| large water | 4.129 | 3.705 | 5.849 | 7.002 | 86 664 | 84 |
+| fire and lava | 2.267 | 2.042 | 3.493 | 4.062 | 52 929 | 51 |
+| large explosion | 1.668 | 1.667 | 2.911 | 6.635 | 44 691 | 43 |
+| mass destruction | 0.999 | 0.843 | 1.537 | 2.143 | 23 045 | 22 |
+| boost drilling | 1.029 | 0.908 | 1.587 | 1.902 | 27 904 | 27 |
+| force ability | 2.132 | 1.815 | 3.419 | 4.099 | 48 372 | 47 |
+| cryo ability | 3.933 | 3.508 | 5.630 | 6.602 | 87 648 | 85 |
+| chaotic mixed | 5.999 | 5.311 | 9.232 | 14.392 | 139 628 | 136 |
+
+Structural workload совпал с baseline во всех сценариях. Разброс wall-clock
+остался обычным для этой машины; ускорение не заявляется. Memory layout и
+estimate не изменились.

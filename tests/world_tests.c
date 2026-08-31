@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "game.h"
 #include "particles.h"
 #include "player.h"
 #include "powers.h"
@@ -78,6 +79,81 @@ static void Tick(World *world, int count)
     for (i = 0; i < count; ++i) {
         WorldUpdate(world);
     }
+}
+
+static bool HasGameEvent(const GameEventBuffer *events, GameEventType type)
+{
+    uint16_t index;
+
+    for (index = 0u; index < events->count; ++index) {
+        if (events->events[index].type == type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* --- game boundary ----------------------------------------------------- */
+
+static void test_game_event_buffer_is_fixed_and_ordered(void)
+{
+    GameEventBuffer events = {0};
+    int index;
+
+    for (index = 0; index < MAX_GAME_EVENTS; ++index) {
+        CHECK(GameEventsPush(&events, (GameEvent){
+                  .type = GAME_EVENT_PLAYER_DRILL,
+                  .count = index,
+              }),
+              "event %d was rejected before capacity", index);
+    }
+    CHECK(events.count == MAX_GAME_EVENTS, "buffer stored %u/%d events",
+          events.count, MAX_GAME_EVENTS);
+    CHECK(events.events[17].count == 17, "event order changed at index 17");
+    CHECK(!GameEventsPush(&events, (GameEvent){.type = GAME_EVENT_EXPLOSION}),
+          "event buffer grew past fixed capacity");
+    CHECK(events.dropped == 1u, "overflow reported %u dropped events",
+          events.dropped);
+
+    GameEventsClear(&events);
+    CHECK(events.count == 0u && events.dropped == 0u,
+          "clear left count=%u dropped=%u", events.count, events.dropped);
+}
+
+static void test_game_update_publishes_transient_events(void)
+{
+    GameConfig config = GameDefaultConfig();
+    GameState game;
+    GameEventBuffer events = {0};
+    GameInput input = {0};
+    int cellX;
+    int cellY;
+
+    config.worldWidth = 256;
+    config.worldHeight = 144;
+    config.activeRadiusX = 96.0f;
+    config.activeRadiusY = 72.0f;
+    SetRandomSeed(0xE6BEu);
+    CHECK(GameInit(&game, config), "game allocation failed");
+
+    input.aimWorld = (Vector2){game.player.position.x + 20.0f,
+                               game.player.position.y};
+    input.explosionPressed = true;
+    GameUpdate(&game, &input, config.fixedStep, &events);
+    CHECK(HasGameEvent(&events, GAME_EVENT_EXPLOSION),
+          "explosion did not publish a game event");
+
+    cellX = (int)game.player.position.x + 40;
+    cellY = (int)game.player.position.y + 20;
+    WorldSetCell(&game.world, cellX, cellY, MATERIAL_WATER);
+    WorldSetCell(&game.world, cellX + 1, cellY, MATERIAL_LAVA);
+    input = (GameInput){.aimWorld = game.player.position};
+    GameUpdate(&game, &input, config.fixedStep, &events);
+    CHECK(HasGameEvent(&events, GAME_EVENT_MATERIAL_REACTION),
+          "water/lava reaction did not cross the GameEvents boundary");
+    CHECK(!HasGameEvent(&events, GAME_EVENT_EXPLOSION),
+          "one-frame explosion event leaked into the next update");
+    GameUnload(&game);
 }
 
 /* --- material table ----------------------------------------------------- */
@@ -1269,6 +1345,8 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 
 int main(void)
 {
+    RUN(test_game_event_buffer_is_fixed_and_ordered);
+    RUN(test_game_update_publishes_transient_events);
     RUN(test_every_material_has_table_data);
     RUN(test_solidity_matches_what_blocks_the_player);
     RUN(test_sand_falls_to_the_floor_and_is_conserved);

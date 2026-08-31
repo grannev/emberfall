@@ -3,25 +3,24 @@
 ## Общий подход
 
 Emberfall — однопоточное приложение на C11 и raylib. Архитектура разделена на
-небольшие data-oriented модули. Главный цикл владеет состоянием верхнего уровня
-и явно передаёт его подсистемам. Скрытого глобального игрового состояния нет;
-глобальными остаются только внутреннее состояние raylib и его input API.
+небольшие data-oriented модули. `main.c` композитит platform/presentation, а
+`GameState` владеет gameplay state и явно передаёт его подсистемам. Скрытого
+глобального игрового состояния нет; глобальным остаётся внутреннее состояние
+raylib.
 
 ```text
-raylib input
-     |
-     v
- main.c -------------------------> Camera2D + HUD
-   |                                  |
-   +--> player.c <---- world.c -------+
-   |        |            |
-   |        |            +--> Texture2D / Color buffer
-   |        |
-   +--> powers.c ---------+--> particles.c
-   |        |
-   |        +-----------------> world destruction / heat / shockwave
-   |
-   +--> audio.c <--------------- power and reaction events
+raylib input -> input.c -> GameInput
+                              |
+                              v
+                         GameUpdate
+                        /    |     \
+                   Player  Powers  World fixed ticks
+                        \    |     /
+                         GameState + GameEvents
+                              |
+                 +------------+-------------+
+                 v            v             v
+              renderer      audio       camera/HUD
 ```
 
 ## Модули
@@ -30,15 +29,40 @@ raylib input
 
 Точка композиции приложения. Отвечает за:
 
-- создание окна и audio device;
-- владение `World`, `Player`, `PowerSystem`, `ParticleSystem`, `GameAudio` и
-  `Camera2D`;
-- чтение ввода;
-- fixed-step симуляцию мира;
-- преобразование координат мыши;
+- создание окна и `GameState`/renderer/audio lifecycle;
+- владение `GameAudio`, `Camera2D` и presentation state;
 - camera follow и camera shake;
-- порядок обновления и отрисовки;
-- HUD, reset и smoke-test.
+- потребление `GameEvents` звуком и камерой;
+- порядок platform update и отрисовки;
+- HUD и smoke-test integration.
+
+### `input.c/.h` и `game_input.h`
+
+`InputPoll` — единственное место, которое опрашивает gameplay keys/mouse. Оно
+переводит raw raylib input и screen-space mouse в `GameInput`: move, aimWorld,
+boost и команды способностей/reset. Отдельный `toggleDebugPressed` остаётся
+app/presentation-командой. Gameplay и headless tests не вызывают `IsKey*` или
+`GetMousePosition`.
+
+### `game.c/.h`
+
+`GameState` владеет `World`, `Player`, `PowerSystem`, `ParticleSystem`, fixed-step
+accumulator и streaming position. `GameUpdate` задаёт единый gameplay order:
+player, activation, abilities, particles, необходимое число world ticks,
+reaction events и post-simulation collision. `GameConfig` собирает world size,
+fixed step и размеры active region в одном месте.
+
+Particle ownership пока переходное: debris действительно меняет World, но в
+том же pool остаются чисто визуальные частицы. Разделение выполняется в
+presentation phase, не маскируется в текущей схеме.
+
+### `game_events.c/.h`
+
+Один буфер на render frame хранит до 256 transient events без allocation:
+reaction, impact, drill, boost stage, force, explosion и попадания beams.
+`GameUpdate` очищает и заполняет буфер; audio/camera/smoke-test читают его после
+update. При переполнении новые события отбрасываются и увеличивают `dropped`,
+не повреждая память и порядок уже записанных событий.
 
 ### `world.c/.h`
 
@@ -92,24 +116,19 @@ device не является фатальной.
 
 ## Порядок одного render frame
 
-Текущий порядок в `main.c` важен:
+Текущий порядок между `main.c` и `GameUpdate` важен:
 
 1. Ограничить `deltaTime` значением 0.05 секунды.
-2. Обработать `F1` и `R`.
-3. Обновить игрока и collision относительно текущего мира; при переходе игрока
-   в новый chunk активировать сгенерированную физику в окне 960×576; событие
-   новой boost-ступени превратить в импульс камеры, звук и burst частиц.
-4. Обновить camera follow и затухание shake.
-5. Преобразовать позицию мыши из screen space в world/cell space.
-6. Обновить способности и применить мгновенные эффекты к миру.
-7. Применить explosion impulse, camera shake и звук.
-8. Обновить частицы.
-9. Выполнить необходимое число fixed ticks мира по 1/60 секунды.
-10. Обработать reaction events: частицы пара и звук.
-11. Повторно разрешить collision игрока — динамический sand мог войти в его
-    область во время simulation tick.
-12. Обновить texture мира и отрисовать world-space объекты.
-13. Отрисовать debug HUD.
+2. `InputPoll` создать `GameInput`; F1 переключить на app-уровне.
+3. `GameUpdate` при необходимости выполнить reset, обновить player и streaming.
+4. Обновить abilities, gameplay/visual particle pool и накопить transient
+   `GameEvents`.
+5. Выполнить необходимое число fixed ticks мира по 1/60 секунды; преобразовать
+   world reactions в `GameEvents` и повторно разрешить player collision.
+6. Обновить held audio state и передать events audio/camera consumers.
+7. Обновить camera follow, затухание shake и player point light.
+8. Обновить texture мира и отрисовать world-space объекты.
+9. Отрисовать debug HUD.
 
 ## Владение памятью
 
@@ -125,6 +144,11 @@ device не является фатальной.
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
+`GameState` агрегирует CPU gameplay ownership; `GameInit`/`GameUnload` являются
+верхней lifecycle-парой. GPU texture ещё принадлежит `World` и поэтому пока
+освобождается внутри `GameUnload -> WorldUnload`; renderer phase перенесёт этот
+ресурс в отдельного владельца.
+
 Heap allocation в frame loop запрещён. Размеры world buffers и particle pool не
 меняются во время игры. В стандартном мире 14 155 776 cells; `Cell` уплотнена до
 16 bytes (`material` — `uint8_t`), поэтому основной cell buffer занимает около
@@ -137,5 +161,5 @@ Heap allocation в frame loop запрещён. Размеры world buffers и 
   около 8192 cells влево и вправо от центрального spawn.
 - Камера показывает логическую область 320×180 и масштабирует её к окну.
 - `TEXTURE_FILTER_POINT` сохраняет nearest-neighbor вид.
-- `WorldScreenToCell` применяет `GetScreenToWorld2D`, округляет вниз и ограничивает
+- `InputPoll` применяет `GetScreenToWorld2D`, округляет вниз и ограничивает
   результат границами мира.
