@@ -109,6 +109,12 @@ coherent phase with an explanatory message.
 - Particles are one fixed pool with two roles kept apart by the type system:
   visual particles are stepped against a `const World *` and cannot write cells;
   only `PARTICLE_CONTACT_SETTLE` debris may, and only into an empty cell.
+- `DynamicTerrainSystem` stores terrain that has been torn off the world as
+  whole bodies, never as one entity per cell, under compile-time budgets that
+  are enforced by refusing work rather than growing. It never receives a
+  `World`. Bodies are addressed by generation handles, so a reference held
+  across a free resolves to NULL instead of to whatever took the slot. See
+  `docs/dynamic-terrain.md`.
 - Connected-component queries (`world_components.h`) are bounded by a
   caller-supplied region and a caller-owned workspace, and must stay that way:
   the production world's terrain is one connected mass of fourteen million

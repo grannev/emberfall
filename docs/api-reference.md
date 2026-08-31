@@ -219,6 +219,46 @@ void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 API и объявлены отдельно в `player_renderer.h`. Второй entry point рисует
 только boost/drill glow в renderer-owned emissive target.
 
+## Dynamic terrain API
+
+```c
+bool DynamicTerrainInit(DynamicTerrainSystem *system);
+void DynamicTerrainUnload(DynamicTerrainSystem *system);
+void DynamicTerrainReset(DynamicTerrainSystem *system);
+
+TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
+                                          int width, int height);
+void DynamicTerrainFreeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+TerrainBody *DynamicTerrainGet(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+const TerrainBody *DynamicTerrainGetConst(const DynamicTerrainSystem *system,
+                                          TerrainBodyHandle handle);
+
+void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                           int localX, int localY, CellMaterial material,
+                           float temperature);
+CellMaterial DynamicTerrainCellAt(const DynamicTerrainSystem *system,
+                                  TerrainBodyHandle handle, int localX, int localY);
+float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
+                                  TerrainBodyHandle handle, int localX, int localY);
+void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
+                                TerrainBodyHandle handle);
+const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *system);
+```
+
+Объявлено в `dynamic_terrain.h`; владеет подсистемой `GameState`. Ни одна
+функция не принимает `World` — изменить мир подсистема не может по сигнатуре.
+Зависимостей от GPU-типов нет.
+
+- Все лимиты compile-time и обеспечиваются отказом: `AllocBody` возвращает
+  невалидный handle, когда слотов нет или форма не помещается.
+- Handle с поколением: обращение к освобождённому телу даёт `NULL`, запись
+  через устаревший handle — no-op.
+- `SetCell` поддерживает `cellCount`; `FinalizeBody` пересчитывает bounds,
+  массу, центр масс и момент инерции.
+- Единицы массы относительные (плотность материала × площадь клетки).
+
+Модель, лимиты и бюджет памяти — [dynamic-terrain.md](dynamic-terrain.md).
+
 ## World components API
 
 ```c

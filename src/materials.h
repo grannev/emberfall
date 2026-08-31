@@ -56,6 +56,13 @@ typedef struct MaterialInfo {
        material names by hand. */
     float laserHeatRate;
     float chillRate;
+    /* Mass of one cell of this material, relative to water at 1.0. Real
+       densities rounded to two figures, which is enough: nothing weighs a cell
+       in kilograms, and every consumer only needs the ratios between materials
+       to be believable — a slab of rock must fall harder and spin slower than
+       the same slab of ice. Zero means the material has no mass, which is
+       correct for empty space and for gases nothing can pick up. */
+    float density;
 } MaterialInfo;
 
 extern const MaterialInfo MATERIALS[MATERIAL_COUNT];
