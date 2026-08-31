@@ -55,7 +55,9 @@
 #define TERRAIN_BODY_MAX_SPAN 128
 
 /* Occupied cells in one body, inherited from WORLD_COMPONENT_MAX_CELLS: a body
-   can only ever be built from a component the detector proved free. */
+   can only ever be built from a component the detector proved free. It is also
+   the cap on a body's surface list, because a filigree body can have every one
+   of its cells on the surface. */
 #define MAX_TERRAIN_BODY_CELLS 4096
 
 /* Total raster storage, and therefore the whole subsystem's memory:
@@ -151,6 +153,15 @@ typedef struct TerrainBody {
     /* Moment of inertia about the centre of mass. */
     float inertia;
     Vector2 centerOfMass;
+    /* Distance from the centre of mass to the farthest occupied cell corner.
+       Collision uses it to bound how far rotation can carry the body's edge in
+       one step, which is what stops a spinning body tunnelling. */
+    float boundingRadius;
+    /* Occupied cells with at least one empty four-neighbour in the raster —
+       everything that can actually touch the world. An interior cell is walled
+       in by its own body and can never make first contact, so testing it would
+       be pure cost: a solid 64x64 block has 4096 cells and 252 of them here. */
+    int surfaceCount;
 
     /* World cell that local (0, 0) came from. Extraction records it so a body
        can be put back where it belongs, and so a failed extraction knows
@@ -184,6 +195,10 @@ typedef struct DynamicTerrainConfig {
     float linearSleepSpeed;
     float angularSleepSpeed;
     float sleepDelay;
+    /* Collision response. Rock is not rubber: the default bounce is small
+       enough that a slab lands and stays landed. */
+    float restitution;
+    float friction;
 } DynamicTerrainConfig;
 
 DynamicTerrainConfig DynamicTerrainDefaultConfig(void);
@@ -199,9 +214,15 @@ typedef struct DynamicTerrainStats {
        than timed, so they mean the same thing on every machine. */
     int extractionsSucceeded;
     int extractionsFailed;
-    /* Refreshed by every DynamicTerrainUpdate. */
+    /* Refreshed by every TerrainPhysicsUpdate. */
     int awakeBodies;
     int sleepingBodies;
+    int collisionBodies;
+    int collisionContacts;
+    int collisionSubsteps;
+    /* Highest contact count any one body has produced, so the cap can be
+       judged against what actually happens rather than guessed at. */
+    int maxContactsObserved;
 } DynamicTerrainStats;
 
 typedef struct DynamicTerrainSystem {
@@ -218,6 +239,11 @@ typedef struct DynamicTerrainSystem {
        sitting a fraction below a phase threshold to cross it purely by being
        torn off and put back. At this scale that trade is not worth making. */
     float *temperature;
+    /* Surface cells, in local raster coordinates, laid out per body slot the
+       same way the raster is: slot i owns [i * MAX_TERRAIN_BODY_CELLS, ...).
+       int16_t is ample — a local coordinate never exceeds TERRAIN_BODY_MAX_SPAN. */
+    int16_t *surfaceX;
+    int16_t *surfaceY;
     DynamicTerrainConfig config;
     DynamicTerrainStats stats;
 } DynamicTerrainSystem;
@@ -262,14 +288,28 @@ float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
 void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
                                 TerrainBodyHandle handle);
 
-/* Advances every awake body by one fixed step. Takes no World: bodies do not
-   collide with anything yet, and keeping the dependency out until EF-DYN-006
-   needs it is what stops the two systems growing into each other early.
+/* The pieces of a step, exposed so terrain_physics.c can interleave them with
+   collision. They act on one body and do no bookkeeping of their own; callers
+   outside that module want TerrainPhysicsUpdate instead. */
+void DynamicTerrainIntegrateBody(DynamicTerrainSystem *system, TerrainBody *body,
+                                 float deltaTime);
+void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
+                              float deltaTime);
 
-   `deltaTime` is the simulation's fixed step. A non-finite, non-positive or
-   absurdly large value is refused rather than integrated, because a bad step is
-   a caller bug and silently scaling it would hide one. */
-void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime);
+/* A step this module will act on. Non-finite, non-positive or absurdly large
+   values are refused rather than integrated, because a bad step is a caller bug
+   and silently scaling it would hide one. */
+static inline bool TerrainStepIsUsable(float deltaTime)
+{
+    return deltaTime == deltaTime && deltaTime > 0.0f && deltaTime <= 0.25f;
+}
+
+static inline bool TerrainFiniteSample(Vector2 value)
+{
+    return value.x == value.x && value.y == value.y &&
+           value.x > -1.0e9f && value.x < 1.0e9f &&
+           value.y > -1.0e9f && value.y < 1.0e9f;
+}
 
 /* Puts a body back into integration and restarts its quiet spell. Safe on a
    dead handle. */

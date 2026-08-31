@@ -13,6 +13,7 @@
 
 #include "player.h"
 #include "world.h"
+#include "terrain_physics.h"
 #include "world_lighting.h"
 
 #define BENCH_WORLD_WIDTH 16384
@@ -414,6 +415,68 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
            world->lightColumns * world->lightRows);
 }
 
+/* Dynamic terrain has its own cost curve — bodies, not cells — so it is
+   measured on its own rather than folded into a cellular scenario. Bodies are
+   dropped onto the generated surface so they collide against real terrain
+   rather than a flat test floor. */
+static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
+                                       int bodyCount)
+{
+    DynamicTerrainSystem terrain;
+    World *world = context->world;
+    double total = 0.0;
+    int index;
+    int frame;
+
+    if (!DynamicTerrainInit(&terrain)) {
+        printf("dynamic terrain      allocation failed\n");
+        return;
+    }
+    PrepareScenario(context);
+
+    for (index = 0; index < bodyCount; ++index) {
+        TerrainBodyHandle handle = DynamicTerrainAllocBody(&terrain, 16, 12);
+        TerrainBody *body;
+        int y;
+
+        for (y = 0; y < 12; ++y) {
+            int x;
+
+            for (x = 0; x < 16; ++x) {
+                DynamicTerrainSetCell(&terrain, handle, x, y, MATERIAL_ROCK, 20.0f);
+            }
+        }
+        DynamicTerrainFinalizeBody(&terrain, handle);
+        body = DynamicTerrainGet(&terrain, handle);
+        if (body == NULL) {
+            break;
+        }
+        body->position = (Vector2){(float)(context->centerX - 200 + index * 26),
+                                   120.0f};
+        body->velocity = (Vector2){12.0f, 0.0f};
+        body->angularVelocity = 0.6f;
+    }
+
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start = NowSeconds();
+
+        TerrainPhysicsUpdate(&terrain, world, 1.0f / 60.0f);
+        samples[frame] = (NowSeconds() - start) * 1000.0;
+        total += samples[frame];
+    }
+
+    printf("dynamic terrain %2d   avg=%7.3f ms  p50=%7.3f  p95=%7.3f  "
+           "awake=%3d sleeping=%3d  contacts/tick=%5d substeps/tick=%4d "
+           "max_contacts=%3d\n",
+           bodyCount, total / (double)context->ticks,
+           Percentile(samples, context->ticks, 0.50),
+           Percentile(samples, context->ticks, 0.95),
+           terrain.stats.awakeBodies, terrain.stats.sleepingBodies,
+           terrain.stats.collisionContacts, terrain.stats.collisionSubsteps,
+           terrain.stats.maxContactsObserved);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void PrintMemory(const World *world)
 {
     size_t cellCount = (size_t)world->width * (size_t)world->height;
@@ -504,6 +567,10 @@ int main(int argc, char **argv)
         RunScenario(&context, &scenarios[scenarioIndex], samples);
     }
     RunLightingBenchmark(&context, samples);
+    RunDynamicTerrainBenchmark(&context, samples, 1);
+    RunDynamicTerrainBenchmark(&context, samples, 8);
+    RunDynamicTerrainBenchmark(&context, samples, 16);
+    RunDynamicTerrainBenchmark(&context, samples, MAX_TERRAIN_BODIES);
 
     printf("final_peak_rss=%.2f MiB\n", (double)PeakRssBytes() / 1048576.0);
     WorldUnload(&world);

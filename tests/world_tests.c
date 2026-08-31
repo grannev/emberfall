@@ -17,6 +17,7 @@
 #include "world.h"
 #include "dynamic_terrain.h"
 #include "terrain_extraction.h"
+#include "terrain_physics.h"
 #include "world_components.h"
 #include "world_render_data.h"
 
@@ -2010,7 +2011,7 @@ static void TickBodies(DynamicTerrainSystem *system, int count)
     int step;
 
     for (step = 0; step < count; ++step) {
-        DynamicTerrainUpdate(system, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(system, NULL, KINEMATIC_STEP);
     }
 }
 
@@ -2092,7 +2093,7 @@ static void test_damping_depends_on_time_and_not_on_step_count(void)
         TerrainBody *asleep = DynamicTerrainGet(&terrain, fine);
 
         asleep->awake = false;
-        DynamicTerrainUpdate(&terrain, 0.1f);
+        TerrainPhysicsUpdate(&terrain, NULL, 0.1f);
         asleep->awake = true;
     }
     {
@@ -2100,7 +2101,7 @@ static void test_damping_depends_on_time_and_not_on_step_count(void)
 
         other->awake = false;
         for (step = 0; step < 100; ++step) {
-            DynamicTerrainUpdate(&terrain, 0.01f);
+            TerrainPhysicsUpdate(&terrain, NULL, 0.01f);
         }
         other->awake = true;
     }
@@ -2145,15 +2146,19 @@ static void test_angular_damping_slows_a_spin(void)
     config.angularDamping = 2.0f;
     terrain.config = config;
     handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
-    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 4.0f);
+    /* Below maximumAngularSpeed, so the ceiling does not quietly change what
+       this test is measuring. */
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 2.0f);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->angularVelocity == 2.0f,
+          "the fixture spin was clamped before the test began");
 
     TickBodies(&terrain, 60);
     /* exp(-2) of the original, give or take the step. */
     CHECK(fabsf(DynamicTerrainGetConst(&terrain, handle)->angularVelocity -
-                4.0f * expf(-2.0f)) < 0.05f,
+                2.0f * expf(-2.0f)) < 0.05f,
           "a second of damping left %.4f rad/s instead of %.4f",
           (double)DynamicTerrainGetConst(&terrain, handle)->angularVelocity,
-          (double)(4.0f * expf(-2.0f)));
+          (double)(2.0f * expf(-2.0f)));
     DynamicTerrainUnload(&terrain);
 }
 
@@ -2213,8 +2218,8 @@ static void test_kinematics_are_deterministic(void)
     DynamicTerrainSetVelocity(&second, b, (Vector2){33.0f, -17.0f}, 2.5f);
 
     for (step = 0; step < 240; ++step) {
-        DynamicTerrainUpdate(&first, KINEMATIC_STEP);
-        DynamicTerrainUpdate(&second, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&first, NULL, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&second, NULL, KINEMATIC_STEP);
         if (step == 90) {
             DynamicTerrainApplyImpulse(&first, a, (Vector2){400.0f, -200.0f},
                                        (Vector2){12.0f, 30.0f});
@@ -2482,10 +2487,10 @@ static void test_the_integrator_refuses_impossible_input(void)
     before = body->position;
 
     /* An impossible step is a caller bug, and integrating it would hide one. */
-    DynamicTerrainUpdate(&terrain, 0.0f);
-    DynamicTerrainUpdate(&terrain, -1.0f);
-    DynamicTerrainUpdate(&terrain, 100.0f);
-    DynamicTerrainUpdate(&terrain, NAN);
+    TerrainPhysicsUpdate(&terrain, NULL, 0.0f);
+    TerrainPhysicsUpdate(&terrain, NULL, -1.0f);
+    TerrainPhysicsUpdate(&terrain, NULL, 100.0f);
+    TerrainPhysicsUpdate(&terrain, NULL, NAN);
     CHECK(body->position.x == before.x && body->position.y == before.y,
           "an impossible time step moved the body to %.3f,%.3f",
           (double)body->position.x, (double)body->position.y);
@@ -2519,7 +2524,7 @@ static void test_the_integrator_refuses_impossible_input(void)
                               (Vector2){5.0f, 5.0f}, 5.0f);
     DynamicTerrainApplyImpulse(&terrain, TerrainBodyInvalidHandle(),
                                (Vector2){5.0f, 5.0f}, (Vector2){0.0f, 0.0f});
-    DynamicTerrainUpdate(NULL, KINEMATIC_STEP);
+    TerrainPhysicsUpdate(NULL, NULL, KINEMATIC_STEP);
     CHECK(body->velocity.x == 10.0f, "an invalid handle reached a real body");
     DynamicTerrainUnload(&terrain);
 }
@@ -2571,6 +2576,495 @@ static void test_integration_never_touches_the_world(void)
           "integrating a body changed the world it came from");
     CHECK(DynamicTerrainGetConst(&terrain, extracted.body)->position.y > 96.0f,
           "the body was meant to leave the world for this test");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- terrain body vs static world --------------------------------------- */
+
+/* Collision reads the world and never writes it; that is a `const World *` in
+   the signature rather than a promise. These tests hold the behaviour that the
+   type cannot: that a body lands, stops, settles and stays out of the rock. */
+
+static void PhysicsTick(DynamicTerrainSystem *system, const World *world, int count)
+{
+    int step;
+
+    for (step = 0; step < count; ++step) {
+        TerrainPhysicsUpdate(system, world, KINEMATIC_STEP);
+    }
+}
+
+/* A world that is empty above a flat rock floor. */
+static bool BuildFloorWorld(World *world, int floorY)
+{
+    if (!WorldInit(world, 128, 96)) {
+        return false;
+    }
+    FillRect(world, 0, floorY, world->width - 1, world->height - 1, MATERIAL_ROCK);
+    return true;
+}
+
+/* Lowest world row any of the body's cells reaches. */
+static float BodyLowestPoint(const TerrainBody *body)
+{
+    float lowest = body->position.y;
+    int corner;
+
+    for (corner = 0; corner < 4; ++corner) {
+        Vector2 point = TerrainBodyLocalToWorld(
+            body, corner & 1 ? (float)body->maximumX + 1.0f : (float)body->minimumX,
+            (corner >> 1) & 1 ? (float)body->maximumY + 1.0f : (float)body->minimumY);
+
+        if (point.y > lowest) {
+            lowest = point.y;
+        }
+    }
+    return lowest;
+}
+
+static void test_a_body_lands_on_the_floor_and_stays_out_of_it(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){60.0f, 20.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    PhysicsTick(&terrain, &world, 240);
+
+    /* Resting overlap is at most half a cell, because a body cell is sampled at
+       its centre; see the note in terrain_physics.c. */
+    CHECK(BodyLowestPoint(body) < 71.0f,
+          "the body sank into the floor: its lowest point is %.3f, the floor "
+          "starts at 70", (double)BodyLowestPoint(body));
+    CHECK(BodyLowestPoint(body) > 68.0f,
+          "the body stopped short of the floor at %.3f",
+          (double)BodyLowestPoint(body));
+    CHECK(body->position.y < 80.0f, "the body fell through to %.3f",
+          (double)body->position.y);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_landed_body_settles_and_sleeps(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){60.0f, 40.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    /* Long enough to fall, land, stop bouncing and run out the quiet time. */
+    PhysicsTick(&terrain, &world, 600);
+    CHECK(!body->awake,
+          "a body resting on the floor never slept; it is at %.3f moving %.3f",
+          (double)body->position.y, (double)body->velocity.y);
+    CHECK(DynamicTerrainStatistics(&terrain)->sleepingBodies == 1,
+          "the sleeping body was not counted");
+
+    /* And it stays where it settled. */
+    {
+        Vector2 resting = body->position;
+
+        PhysicsTick(&terrain, &world, 120);
+        CHECK(body->position.x == resting.x && body->position.y == resting.y,
+              "a sleeping body drifted to %.3f,%.3f", (double)body->position.x,
+              (double)body->position.y);
+    }
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_stops_against_a_wall(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    DynamicTerrainConfig config;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    config = QuietConfig();
+    config.restitution = terrain.config.restitution;
+    config.friction = terrain.config.friction;
+    config.maximumSpeed = terrain.config.maximumSpeed;
+    config.maximumAngularSpeed = terrain.config.maximumAngularSpeed;
+    terrain.config = config;
+    FillRect(&world, 80, 0, 84, 95, MATERIAL_ROCK);
+
+    handle = MakeKinematicBody(&terrain, 6, 6, (Vector2){40.0f, 50.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){200.0f, 0.0f}, 0.0f);
+    PhysicsTick(&terrain, &world, 120);
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    CHECK(body->position.x < 80.0f,
+          "the body passed into or through the wall: x = %.3f",
+          (double)body->position.x);
+    CHECK(body->position.x > 60.0f, "the body never reached the wall: x = %.3f",
+          (double)body->position.x);
+    CHECK(body->velocity.x < 30.0f,
+          "the wall did not stop the body: it is still moving at %.3f",
+          (double)body->velocity.x);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A body dropped so that only one corner lands on a ledge must turn: an
+   off-centre contact that produced no spin would be an AABB pretending to be a
+   physical body. */
+static void test_an_off_centre_landing_turns_the_body(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A narrow pillar under one end of a wide slab. */
+    FillRect(&world, 40, 60, 43, 95, MATERIAL_ROCK);
+    handle = MakeKinematicBody(&terrain, 24, 3, (Vector2){52.0f, 40.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(body->angularVelocity == 0.0f, "the fixture starts spinning");
+
+    PhysicsTick(&terrain, &world, 90);
+    CHECK(fabsf(body->angle) > 0.02f,
+          "a slab landing on one corner did not tip: angle %.5f",
+          (double)body->angle);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_friction_slows_a_body_sliding_along_the_floor(void)
+{
+    World world;
+    TerrainBodyHandle slippery;
+    TerrainBodyHandle grippy;
+    float slipperySpeed;
+    float grippySpeed;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config.friction = 0.0f;
+    slippery = MakeKinematicBody(&terrain, 8, 4, (Vector2){30.0f, 66.0f});
+    DynamicTerrainSetVelocity(&terrain, slippery, (Vector2){80.0f, 0.0f}, 0.0f);
+    /* Short enough that the body is still on open floor: running it into the
+       far border would stop both cases for a reason that is not friction. */
+    PhysicsTick(&terrain, &world, 40);
+    slipperySpeed = DynamicTerrainGetConst(&terrain, slippery)->velocity.x;
+    DynamicTerrainUnload(&terrain);
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config.friction = 0.9f;
+    grippy = MakeKinematicBody(&terrain, 8, 4, (Vector2){30.0f, 66.0f});
+    DynamicTerrainSetVelocity(&terrain, grippy, (Vector2){80.0f, 0.0f}, 0.0f);
+    PhysicsTick(&terrain, &world, 40);
+    grippySpeed = DynamicTerrainGetConst(&terrain, grippy)->velocity.x;
+
+    CHECK(grippySpeed < slipperySpeed - 5.0f,
+          "friction did not slow the slide: %.3f with friction against %.3f "
+          "without", (double)grippySpeed, (double)slipperySpeed);
+    CHECK(grippySpeed >= -1.0f, "friction reversed the slide to %.3f",
+          (double)grippySpeed);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The fastest the body is ever seen travelling upward. Sampling one fixed tick
+   would miss the rebound entirely for a body that has already settled. */
+static float PeakRebound(DynamicTerrainSystem *system, const World *world,
+                         TerrainBodyHandle handle, int ticks)
+{
+    float peak = 0.0f;
+    int step;
+
+    for (step = 0; step < ticks; ++step) {
+        float rising;
+
+        TerrainPhysicsUpdate(system, world, KINEMATIC_STEP);
+        rising = -DynamicTerrainGetConst(system, handle)->velocity.y;
+        if (rising > peak) {
+            peak = rising;
+        }
+    }
+    return peak;
+}
+
+static void test_restitution_controls_the_bounce(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    float defaultRise;
+    float bouncyRise;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 6, 4, (Vector2){60.0f, 40.0f});
+    defaultRise = PeakRebound(&terrain, &world, handle, 120);
+    DynamicTerrainUnload(&terrain);
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config.restitution = 0.8f;
+    handle = MakeKinematicBody(&terrain, 6, 4, (Vector2){60.0f, 40.0f});
+    bouncyRise = PeakRebound(&terrain, &world, handle, 120);
+
+    CHECK(bouncyRise > defaultRise + 5.0f,
+          "restitution changed nothing: %.3f upward by default against %.3f at "
+          "0.8", (double)defaultRise, (double)bouncyRise);
+    /* Rock is not rubber. */
+    CHECK(defaultRise < 20.0f,
+          "the default body bounced off the floor at %.3f cells per second",
+          (double)defaultRise);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The substep budget exists to make tunnelling impossible rather than
+   unlikely, and the shipped speed ceilings are chosen against it. */
+static void test_the_shipped_config_cannot_tunnel(void)
+{
+    DynamicTerrainConfig config = DynamicTerrainDefaultConfig();
+
+    CHECK(TerrainPhysicsConfigIsSafe(&config, TERRAIN_BODY_MAX_BOUNDING_RADIUS,
+                                     KINEMATIC_STEP),
+          "the default speed ceilings (%.1f linear, %.1f angular) let the "
+          "largest possible body outrun %d substeps of %.2f cells",
+          (double)config.maximumSpeed, (double)config.maximumAngularSpeed,
+          TERRAIN_MAX_SUBSTEPS, (double)TERRAIN_COLLISION_SUBSTEP_DISTANCE);
+    /* And the check is not vacuous. */
+    config.maximumSpeed = 100000.0f;
+    CHECK(!TerrainPhysicsConfigIsSafe(&config, TERRAIN_BODY_MAX_BOUNDING_RADIUS,
+                                      KINEMATIC_STEP),
+          "the safety check accepts any speed at all");
+}
+
+static void test_a_fast_body_cannot_cross_a_thin_wall(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config.gravity = 0.0f;
+    /* One cell thick: the thinnest thing a body can be asked not to cross. */
+    FillRect(&world, 90, 0, 90, 95, MATERIAL_ROCK);
+
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){20.0f, 50.0f});
+    DynamicTerrainSetVelocity(&terrain, handle,
+                              (Vector2){terrain.config.maximumSpeed, 0.0f}, 0.0f);
+    PhysicsTick(&terrain, &world, 60);
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(body->position.x < 91.0f,
+          "a body at the speed ceiling crossed a one-cell wall: x = %.3f",
+          (double)body->position.x);
+    DynamicTerrainUnload(&terrain);
+
+    /* Downward, through a one-cell floor, which is the case gravity makes
+       common. */
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){40.0f, 10.0f});
+    DynamicTerrainSetVelocity(&terrain, handle,
+                              (Vector2){0.0f, terrain.config.maximumSpeed}, 0.0f);
+    FillRect(&world, 0, 60, 127, 60, MATERIAL_ROCK);
+    PhysicsTick(&terrain, &world, 60);
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(body->position.y < 61.0f,
+          "a body at the speed ceiling fell through a one-cell floor: y = %.3f",
+          (double)body->position.y);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Transformed coordinates can land anywhere, including far outside the map.
+   Every world read has to survive that, which is what the sanitizers are here
+   to confirm. */
+static void test_a_body_outside_the_world_is_safe(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+
+    CHECK(WorldInit(&world, 64, 48), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 0, 40, 63, 47, MATERIAL_ROCK);
+
+    /* Straddling the left edge: half its samples have negative coordinates. */
+    handle = MakeKinematicBody(&terrain, 8, 8, (Vector2){0.0f, 20.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){-30.0f, 0.0f}, 1.0f);
+    PhysicsTick(&terrain, &world, 120);
+
+    /* A body cannot fly out of the map on its own — the border reads as rock,
+       exactly as it does for the player — so one is placed outside by hand.
+       That is what makes every sample's coordinates negative and large, which
+       is the case the bounds checks exist for. */
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){-500.0f, -400.0f};
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){-120.0f, 60.0f}, 2.0f);
+    PhysicsTick(&terrain, &world, 200);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->position.x ==
+              DynamicTerrainGetConst(&terrain, handle)->position.x &&
+          DynamicTerrainGetConst(&terrain, handle)->position.y ==
+              DynamicTerrainGetConst(&terrain, handle)->position.y,
+          "a body outside the world acquired a NaN position");
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->position.x < -400.0f,
+          "the body was meant to stay outside the world: x = %.3f",
+          (double)DynamicTerrainGetConst(&terrain, handle)->position.x);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_collision_never_changes_the_world(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    uint64_t before;
+    int activeBefore;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    Tick(&world, 3);
+    before = WorldDigest(&world);
+    activeBefore = world.activeChunkCount;
+
+    handle = MakeKinematicBody(&terrain, 10, 8, (Vector2){60.0f, 20.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){40.0f, 200.0f}, 2.0f);
+    PhysicsTick(&terrain, &world, 400);
+
+    CHECK(WorldDigest(&world) == before,
+          "collision changed the terrain it was only meant to read");
+    CHECK(world.activeChunkCount == activeBefore,
+          "collision woke chunks: %d active, expected %d", world.activeChunkCount,
+          activeBefore);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_only_live_bodies_collide(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 lastSeen;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 6, 6, (Vector2){60.0f, 20.0f});
+    PhysicsTick(&terrain, &world, 10);
+    body = DynamicTerrainGet(&terrain, handle);
+    lastSeen = body->position;
+
+    DynamicTerrainFreeBody(&terrain, handle);
+    PhysicsTick(&terrain, &world, 120);
+    CHECK(body->position.x == lastSeen.x && body->position.y == lastSeen.y,
+          "a freed body kept colliding and moved to %.3f,%.3f",
+          (double)body->position.x, (double)body->position.y);
+    CHECK(DynamicTerrainStatistics(&terrain)->collisionBodies == 0,
+          "a freed body was counted as colliding");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_collision_is_deterministic(void)
+{
+    World first;
+    World second;
+    DynamicTerrainSystem systemA;
+    DynamicTerrainSystem systemB;
+    TerrainBodyHandle a;
+    TerrainBodyHandle b;
+    int step;
+
+    CHECK(BuildFloorWorld(&first, 70), "world allocation failed");
+    CHECK(BuildFloorWorld(&second, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&systemA), "dynamic terrain allocation failed");
+    CHECK(DynamicTerrainInit(&systemB), "dynamic terrain allocation failed");
+
+    a = MakeKinematicBody(&systemA, 9, 5, (Vector2){50.0f, 15.0f});
+    b = MakeKinematicBody(&systemB, 9, 5, (Vector2){50.0f, 15.0f});
+    DynamicTerrainSetVelocity(&systemA, a, (Vector2){70.0f, 30.0f}, 1.3f);
+    DynamicTerrainSetVelocity(&systemB, b, (Vector2){70.0f, 30.0f}, 1.3f);
+
+    for (step = 0; step < 300; ++step) {
+        TerrainPhysicsUpdate(&systemA, &first, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&systemB, &second, KINEMATIC_STEP);
+    }
+
+    CHECK(DynamicTerrainGetConst(&systemA, a)->position.x ==
+                  DynamicTerrainGetConst(&systemB, b)->position.x &&
+              DynamicTerrainGetConst(&systemA, a)->position.y ==
+                  DynamicTerrainGetConst(&systemB, b)->position.y &&
+              DynamicTerrainGetConst(&systemA, a)->angle ==
+                  DynamicTerrainGetConst(&systemB, b)->angle,
+          "two identical collision runs diverged: %.6f,%.6f @ %.6f vs "
+          "%.6f,%.6f @ %.6f",
+          (double)DynamicTerrainGetConst(&systemA, a)->position.x,
+          (double)DynamicTerrainGetConst(&systemA, a)->position.y,
+          (double)DynamicTerrainGetConst(&systemA, a)->angle,
+          (double)DynamicTerrainGetConst(&systemB, b)->position.x,
+          (double)DynamicTerrainGetConst(&systemB, b)->position.y,
+          (double)DynamicTerrainGetConst(&systemB, b)->angle);
+    WorldUnload(&first);
+    WorldUnload(&second);
+    DynamicTerrainUnload(&systemA);
+    DynamicTerrainUnload(&systemB);
+}
+
+/* Contacts are capped, and the cap has to be a quality decision rather than a
+   safety one: a body lying along a long floor produces far more overlaps than
+   the set can hold. */
+static void test_the_contact_cap_is_never_exceeded(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* Wide enough that its underside alone touches sixty cells. */
+    handle = MakeKinematicBody(&terrain, 60, 4, (Vector2){60.0f, 40.0f});
+    PhysicsTick(&terrain, &world, 300);
+
+    CHECK(DynamicTerrainStatistics(&terrain)->maxContactsObserved > 0,
+          "the wide slab never touched the floor");
+    CHECK(DynamicTerrainStatistics(&terrain)->maxContactsObserved <=
+              MAX_TERRAIN_CONTACTS_PER_BODY,
+          "a body produced %d contacts, past the cap of %d",
+          DynamicTerrainStatistics(&terrain)->maxContactsObserved,
+          MAX_TERRAIN_CONTACTS_PER_BODY);
+    CHECK(BodyLowestPoint(DynamicTerrainGetConst(&terrain, handle)) < 71.0f,
+          "the capped contact set let a wide slab sink to %.3f",
+          (double)BodyLowestPoint(DynamicTerrainGetConst(&terrain, handle)));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Substeps are bounded, which is what makes the cost of a tick knowable. */
+static void test_substeps_stay_inside_their_budget(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 8, 8, (Vector2){60.0f, 20.0f});
+    DynamicTerrainSetVelocity(&terrain, handle,
+                              (Vector2){terrain.config.maximumSpeed, 0.0f},
+                              terrain.config.maximumAngularSpeed);
+    TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+
+    CHECK(DynamicTerrainStatistics(&terrain)->collisionSubsteps >= 1,
+          "no substeps were counted");
+    CHECK(DynamicTerrainStatistics(&terrain)->collisionSubsteps <=
+              TERRAIN_MAX_SUBSTEPS,
+          "one body used %d substeps, past the cap of %d",
+          DynamicTerrainStatistics(&terrain)->collisionSubsteps,
+          TERRAIN_MAX_SUBSTEPS);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -3989,6 +4483,20 @@ int main(void)
     RUN(test_the_integrator_refuses_impossible_input);
     RUN(test_speeds_are_capped);
     RUN(test_integration_never_touches_the_world);
+    RUN(test_a_body_lands_on_the_floor_and_stays_out_of_it);
+    RUN(test_a_landed_body_settles_and_sleeps);
+    RUN(test_a_body_stops_against_a_wall);
+    RUN(test_an_off_centre_landing_turns_the_body);
+    RUN(test_friction_slows_a_body_sliding_along_the_floor);
+    RUN(test_restitution_controls_the_bounce);
+    RUN(test_the_shipped_config_cannot_tunnel);
+    RUN(test_a_fast_body_cannot_cross_a_thin_wall);
+    RUN(test_a_body_outside_the_world_is_safe);
+    RUN(test_collision_never_changes_the_world);
+    RUN(test_only_live_bodies_collide);
+    RUN(test_collision_is_deterministic);
+    RUN(test_the_contact_cap_is_never_exceeded);
+    RUN(test_substeps_stay_inside_their_budget);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);
