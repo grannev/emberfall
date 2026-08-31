@@ -42,6 +42,10 @@ bool GameInit(GameState *game, GameConfig config)
     if (!WorldInit(&game->world, config.worldWidth, config.worldHeight)) {
         return false;
     }
+    if (!DynamicTerrainInit(&game->dynamicTerrain)) {
+        WorldUnload(&game->world);
+        return false;
+    }
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -67,6 +71,8 @@ void GameReset(GameState *game, uint64_t seed)
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
     AbilitiesInit(&game->abilities, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
     ParticlesInit(&game->particles, RngStreamSeed(seed, GAME_RNG_STREAM_PARTICLES));
+    /* A new world cannot keep pieces cut from the old one. */
+    DynamicTerrainReset(&game->dynamicTerrain);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -222,6 +228,7 @@ void GameUnload(GameState *game)
     if (game == NULL) {
         return;
     }
+    DynamicTerrainUnload(&game->dynamicTerrain);
     WorldUnload(&game->world);
     memset(game, 0, sizeof(*game));
 }

@@ -15,6 +15,7 @@
 #include "player.h"
 #include "abilities.h"
 #include "world.h"
+#include "dynamic_terrain.h"
 #include "world_components.h"
 #include "world_render_data.h"
 
@@ -625,6 +626,480 @@ static void test_visual_particles_never_change_the_world(void)
     CHECK(WorldDigest(&world) == before,
           "visual particles changed the world they were only meant to read");
     WorldUnload(&world);
+}
+
+/* --- dynamic terrain bodies --------------------------------------------- */
+
+/* One system for the whole section, initialised per test. It owns a 1.25 MiB
+   raster arena, which belongs on the heap rather than on a test's stack — the
+   same reason GameState holds it rather than passing it around. */
+static DynamicTerrainSystem terrain;
+
+/* Fills a solid rectangle of one material inside a body's raster. */
+static void FillBody(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                     int x0, int y0, int x1, int y1, CellMaterial material,
+                     float temperature)
+{
+    int y;
+
+    for (y = y0; y <= y1; ++y) {
+        int x;
+
+        for (x = x0; x <= x1; ++x) {
+            DynamicTerrainSetCell(system, handle, x, y, material, temperature);
+        }
+    }
+}
+
+static void test_a_fresh_manager_holds_no_bodies(void)
+{
+    const DynamicTerrainStats *stats;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    stats = DynamicTerrainStatistics(&terrain);
+    CHECK(stats->activeBodies == 0, "a fresh manager reports %d bodies",
+          stats->activeBodies);
+    CHECK(stats->allocatedDynamicCells == 0,
+          "a fresh manager reserves %d cells", stats->allocatedDynamicCells);
+    CHECK(DynamicTerrainGet(&terrain, TerrainBodyInvalidHandle()) == NULL,
+          "the invalid handle resolved to a body");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* `TerrainBodyHandle handle = {0};` is what callers write without thinking.
+   It must not name body zero: generation zero is reserved as never-live
+   precisely so that the lazy initialiser fails instead of silently working
+   until the first slot is reused. */
+static void test_a_zero_initialised_handle_names_nothing(void)
+{
+    TerrainBodyHandle zeroed = {0};
+    TerrainBodyHandle real;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    real = DynamicTerrainAllocBody(&terrain, 4, 4);
+
+    CHECK(real.index == 0u, "the test needs the first allocation to take slot 0");
+    CHECK(real.generation != 0u, "a live handle carries generation zero");
+    CHECK(DynamicTerrainGet(&terrain, zeroed) == NULL,
+          "a zero-initialised handle resolved to body zero");
+
+    DynamicTerrainSetCell(&terrain, zeroed, 1, 1, MATERIAL_ROCK, 20.0f);
+    CHECK(DynamicTerrainGetConst(&terrain, real)->cellCount == 0,
+          "a zero-initialised handle wrote into body zero");
+    DynamicTerrainFreeBody(&terrain, zeroed);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 1,
+          "a zero-initialised handle freed body zero");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_allocation_returns_a_usable_body(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 8, 4);
+    body = DynamicTerrainGet(&terrain, handle);
+
+    CHECK(body != NULL, "allocation returned an unusable handle");
+    CHECK(body->active && body->awake, "a new body is not active and awake");
+    CHECK(body->width == 8 && body->height == 4, "body raster is %dx%d",
+          body->width, body->height);
+    CHECK(body->cellCount == 0, "a new body already holds %d cells",
+          body->cellCount);
+    CHECK(DynamicTerrainStatistics(&terrain)->allocatedDynamicCells == 32,
+          "reserving an 8x4 raster reported %d cells",
+          DynamicTerrainStatistics(&terrain)->allocatedDynamicCells);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Every budget is enforced by refusing work, never by growing. */
+static void test_the_manager_refuses_work_past_its_budgets(void)
+{
+    TerrainBodyHandle handles[MAX_TERRAIN_BODIES];
+    TerrainBodyHandle overflow;
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    /* A shape that does not fit a slot is refused before any slot is used. */
+    CHECK(DynamicTerrainGet(&terrain,
+                            DynamicTerrainAllocBody(&terrain,
+                                                    TERRAIN_BODY_MAX_SPAN + 1, 1)) == NULL,
+          "a body wider than the span limit was accepted");
+    CHECK(DynamicTerrainGet(&terrain,
+                            DynamicTerrainAllocBody(&terrain, 128, 128)) == NULL,
+          "a raster larger than the per-body capacity was accepted");
+    CHECK(DynamicTerrainGet(&terrain,
+                            DynamicTerrainAllocBody(&terrain, 0, 4)) == NULL,
+          "a zero-width body was accepted");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "a refused allocation still consumed a slot");
+
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        handles[index] = DynamicTerrainAllocBody(&terrain, 4, 4);
+        CHECK(DynamicTerrainGet(&terrain, handles[index]) != NULL,
+              "slot %d of %d could not be allocated", index,
+              MAX_TERRAIN_BODIES);
+    }
+    overflow = DynamicTerrainAllocBody(&terrain, 4, 4);
+    CHECK(DynamicTerrainGet(&terrain, overflow) == NULL,
+          "the manager allocated past MAX_TERRAIN_BODIES");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == MAX_TERRAIN_BODIES,
+          "a refused allocation changed the active count");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_freed_slot_is_reused(void)
+{
+    TerrainBodyHandle first;
+    TerrainBodyHandle second;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    first = DynamicTerrainAllocBody(&terrain, 6, 6);
+    CHECK(DynamicTerrainGet(&terrain, first) != NULL, "allocation failed");
+
+    DynamicTerrainFreeBody(&terrain, first);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "freeing a body left it counted");
+    CHECK(DynamicTerrainStatistics(&terrain)->allocatedDynamicCells == 0,
+          "freeing a body left its raster reserved");
+
+    second = DynamicTerrainAllocBody(&terrain, 6, 6);
+    CHECK(DynamicTerrainGet(&terrain, second) != NULL,
+          "the freed slot could not be reused");
+    CHECK(second.index == first.index, "reuse picked slot %u instead of %u",
+          second.index, first.index);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The reason handles carry a generation at all: a reference held across a free
+   must not silently address whatever body lands in the slot next. */
+static void test_a_stale_handle_never_resolves_to_the_new_body(void)
+{
+    TerrainBodyHandle stale;
+    TerrainBodyHandle fresh;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    stale = DynamicTerrainAllocBody(&terrain, 4, 4);
+    DynamicTerrainSetCell(&terrain, stale, 0, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFreeBody(&terrain, stale);
+
+    CHECK(DynamicTerrainGet(&terrain, stale) == NULL,
+          "a handle to a freed body still resolves");
+
+    fresh = DynamicTerrainAllocBody(&terrain, 4, 4);
+    CHECK(fresh.index == stale.index, "the test needs the slot to be reused");
+    CHECK(fresh.generation != stale.generation,
+          "the reused slot kept generation %u", fresh.generation);
+    CHECK(DynamicTerrainGet(&terrain, stale) == NULL,
+          "the stale handle resolved to the body that replaced it");
+
+    /* Writing through a stale handle must be a no-op, not a write into the
+       new body's raster. */
+    DynamicTerrainSetCell(&terrain, stale, 1, 1, MATERIAL_SAND, 20.0f);
+    CHECK(DynamicTerrainCellAt(&terrain, fresh, 1, 1) == MATERIAL_EMPTY,
+          "a stale handle wrote into the body that replaced it");
+    CHECK(DynamicTerrainGet(&terrain, fresh)->cellCount == 0,
+          "a stale write changed the new body's cell count");
+
+    /* Double free is safe and does not disturb the live body. */
+    DynamicTerrainFreeBody(&terrain, stale);
+    CHECK(DynamicTerrainGet(&terrain, fresh) != NULL,
+          "freeing a stale handle killed the live body");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 1,
+          "freeing a stale handle changed the active count");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_reset_releases_every_body(void)
+{
+    TerrainBodyHandle handles[4];
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    for (index = 0; index < 4; ++index) {
+        handles[index] = DynamicTerrainAllocBody(&terrain, 8, 8);
+        CHECK(DynamicTerrainGet(&terrain, handles[index]) != NULL,
+              "allocation %d failed", index);
+    }
+
+    DynamicTerrainReset(&terrain);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "reset left %d bodies alive",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    CHECK(DynamicTerrainStatistics(&terrain)->allocatedDynamicCells == 0,
+          "reset left %d cells reserved",
+          DynamicTerrainStatistics(&terrain)->allocatedDynamicCells);
+    for (index = 0; index < 4; ++index) {
+        CHECK(DynamicTerrainGet(&terrain, handles[index]) == NULL,
+              "handle %d survived the reset", index);
+    }
+    /* Peaks are session figures and deliberately outlive a reset. */
+    CHECK(DynamicTerrainStatistics(&terrain)->peakBodies == 4,
+          "reset erased the peak body count");
+    CHECK(DynamicTerrainStatistics(&terrain)->peakDynamicCells == 256,
+          "reset erased the peak cell count");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A body must preserve enough of each cell to be drawn, collided with and put
+   back: which material it is, and how hot it was. */
+static void test_a_body_preserves_the_material_and_heat_it_was_given(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 5, 3);
+    DynamicTerrainSetCell(&terrain, handle, 0, 0, MATERIAL_ROCK, 715.5f);
+    DynamicTerrainSetCell(&terrain, handle, 4, 2, MATERIAL_ICE, -14.0f);
+    DynamicTerrainSetCell(&terrain, handle, 2, 1, MATERIAL_DIRT, 20.0f);
+
+    CHECK(DynamicTerrainCellAt(&terrain, handle, 0, 0) == MATERIAL_ROCK &&
+              DynamicTerrainCellAt(&terrain, handle, 4, 2) == MATERIAL_ICE &&
+              DynamicTerrainCellAt(&terrain, handle, 2, 1) == MATERIAL_DIRT,
+          "the raster did not keep the materials it was given");
+    CHECK(DynamicTerrainCellAt(&terrain, handle, 1, 1) == MATERIAL_EMPTY,
+          "an untouched slot is not empty");
+    /* Exact, not approximately: temperature is stored as the float World holds,
+       so a cell sitting just under a phase threshold cannot cross it merely by
+       being torn off and put back. */
+    CHECK(DynamicTerrainTemperatureAt(&terrain, handle, 0, 0) == 715.5f,
+          "rock came back at %.3f degrees instead of 715.5",
+          (double)DynamicTerrainTemperatureAt(&terrain, handle, 0, 0));
+    CHECK(DynamicTerrainTemperatureAt(&terrain, handle, 4, 2) == -14.0f,
+          "ice came back at %.3f degrees instead of -14",
+          (double)DynamicTerrainTemperatureAt(&terrain, handle, 4, 2));
+
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(body->cellCount == 3, "three writes produced %d cells",
+          body->cellCount);
+
+    /* Clearing a cell gives the slot back. */
+    DynamicTerrainSetCell(&terrain, handle, 2, 1, MATERIAL_EMPTY, 0.0f);
+    CHECK(body->cellCount == 2, "clearing a cell left %d cells",
+          body->cellCount);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Reads and writes outside the raster must be refused rather than reaching a
+   neighbouring body: bodies share one arena. */
+static void test_out_of_range_cell_access_is_safe(void)
+{
+    TerrainBodyHandle first;
+    TerrainBodyHandle second;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    first = DynamicTerrainAllocBody(&terrain, 4, 4);
+    second = DynamicTerrainAllocBody(&terrain, 4, 4);
+    FillBody(&terrain, second, 0, 0, 3, 3, MATERIAL_SAND, 20.0f);
+
+    DynamicTerrainSetCell(&terrain, first, 4, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainSetCell(&terrain, first, 0, 4, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainSetCell(&terrain, first, -1, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainSetCell(&terrain, first, 999, 999, MATERIAL_ROCK, 20.0f);
+
+    CHECK(DynamicTerrainGetConst(&terrain, first)->cellCount == 0,
+          "an out-of-range write was counted");
+    CHECK(DynamicTerrainGetConst(&terrain, second)->cellCount == 16,
+          "an out-of-range write reached the next body");
+    CHECK(DynamicTerrainCellAt(&terrain, first, 4, 0) == MATERIAL_EMPTY &&
+              DynamicTerrainCellAt(&terrain, first, -1, -1) == MATERIAL_EMPTY,
+          "an out-of-range read returned material");
+    CHECK(DynamicTerrainTemperatureAt(&terrain, first, 99, 99) == 0.0f,
+          "an out-of-range temperature read returned heat");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_finalize_reports_the_occupied_bounds(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A raster with deliberate slack around its contents. */
+    handle = DynamicTerrainAllocBody(&terrain, 16, 12);
+    FillBody(&terrain, handle, 3, 2, 9, 7, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(body->minimumX == 3 && body->maximumX == 9 && body->minimumY == 2 &&
+              body->maximumY == 7,
+          "bounds are %d..%d, %d..%d instead of 3..9, 2..7", body->minimumX,
+          body->maximumX, body->minimumY, body->maximumY);
+    CHECK(body->cellCount == 7 * 6, "finalize counted %d cells instead of 42",
+          body->cellCount);
+
+    /* An empty body reports an inverted range rather than a false extent. */
+    FillBody(&terrain, handle, 3, 2, 9, 7, MATERIAL_EMPTY, 0.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    CHECK(body->cellCount == 0 && body->maximumX < body->minimumX,
+          "an emptied body still claims an extent");
+    CHECK(body->mass == 0.0f && body->inertia == 0.0f,
+          "an emptied body kept mass %.3f and inertia %.3f", (double)body->mass,
+          (double)body->inertia);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_mass_follows_material_density(void)
+{
+    TerrainBodyHandle rock;
+    TerrainBodyHandle ice;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    rock = DynamicTerrainAllocBody(&terrain, 4, 4);
+    ice = DynamicTerrainAllocBody(&terrain, 4, 4);
+    FillBody(&terrain, rock, 0, 0, 3, 3, MATERIAL_ROCK, 20.0f);
+    FillBody(&terrain, ice, 0, 0, 3, 3, MATERIAL_ICE, -14.0f);
+    DynamicTerrainFinalizeBody(&terrain, rock);
+    DynamicTerrainFinalizeBody(&terrain, ice);
+
+    CHECK(fabsf(DynamicTerrainGetConst(&terrain, rock)->mass -
+                16.0f * MaterialAt(MATERIAL_ROCK)->density) < 0.001f,
+          "sixteen rock cells weigh %.3f",
+          (double)DynamicTerrainGetConst(&terrain, rock)->mass);
+    /* The property that actually matters downstream: the same slab of ice must
+       be lighter than the same slab of rock. */
+    CHECK(DynamicTerrainGetConst(&terrain, ice)->mass <
+              DynamicTerrainGetConst(&terrain, rock)->mass,
+          "a slab of ice is not lighter than the same slab of rock");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_centre_of_mass_lands_where_the_shape_says(void)
+{
+    TerrainBodyHandle even;
+    TerrainBodyHandle lopsided;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    /* A uniform 4x4 block centred on its own middle: cell centres run from 0.5
+       to 3.5, so the mean is 2.0. */
+    even = DynamicTerrainAllocBody(&terrain, 4, 4);
+    FillBody(&terrain, even, 0, 0, 3, 3, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, even);
+    body = DynamicTerrainGetConst(&terrain, even);
+    CHECK(fabsf(body->centerOfMass.x - 2.0f) < 0.001f &&
+              fabsf(body->centerOfMass.y - 2.0f) < 0.001f,
+          "a uniform block centres at %.3f,%.3f instead of 2,2",
+          (double)body->centerOfMass.x, (double)body->centerOfMass.y);
+
+    /* Half rock, half ice: the centre must sit toward the heavier half. */
+    lopsided = DynamicTerrainAllocBody(&terrain, 4, 4);
+    FillBody(&terrain, lopsided, 0, 0, 1, 3, MATERIAL_ROCK, 20.0f);
+    FillBody(&terrain, lopsided, 2, 0, 3, 3, MATERIAL_ICE, -14.0f);
+    DynamicTerrainFinalizeBody(&terrain, lopsided);
+    body = DynamicTerrainGetConst(&terrain, lopsided);
+    CHECK(body->centerOfMass.x < 2.0f,
+          "the centre of mass ignored density: x = %.3f",
+          (double)body->centerOfMass.x);
+    CHECK(fabsf(body->centerOfMass.y - 2.0f) < 0.001f,
+          "a vertically uniform body centres at y = %.3f instead of 2",
+          (double)body->centerOfMass.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_inertia_grows_with_how_spread_out_a_body_is(void)
+{
+    TerrainBodyHandle single;
+    TerrainBodyHandle compact;
+    TerrainBodyHandle spread;
+    float compactInertia;
+    float spreadInertia;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    /* A one-cell body must still resist rotation. Zero inertia would give it
+       infinite angular acceleration the moment anything touched it, which is
+       why each cell contributes its own moment as well as its distance. */
+    single = DynamicTerrainAllocBody(&terrain, 1, 1);
+    DynamicTerrainSetCell(&terrain, single, 0, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, single);
+    CHECK(DynamicTerrainGetConst(&terrain, single)->inertia > 0.0f,
+          "a single-cell body has zero moment of inertia");
+
+    /* Same mass, different spread: sixteen cells packed 4x4 against sixteen
+       cells strung out 16x1. */
+    compact = DynamicTerrainAllocBody(&terrain, 4, 4);
+    FillBody(&terrain, compact, 0, 0, 3, 3, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, compact);
+    spread = DynamicTerrainAllocBody(&terrain, 16, 1);
+    FillBody(&terrain, spread, 0, 0, 15, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, spread);
+
+    compactInertia = DynamicTerrainGetConst(&terrain, compact)->inertia;
+    spreadInertia = DynamicTerrainGetConst(&terrain, spread)->inertia;
+    CHECK(fabsf(DynamicTerrainGetConst(&terrain, compact)->mass -
+                DynamicTerrainGetConst(&terrain, spread)->mass) < 0.001f,
+          "the two shapes were meant to weigh the same");
+    CHECK(spreadInertia > compactInertia * 2.0f,
+          "a long bar (%.2f) does not resist rotation far more than a compact "
+          "block of the same mass (%.2f)", (double)spreadInertia,
+          (double)compactInertia);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The subsystem never receives a World, which is the strongest form of this
+   guarantee; the test states the intention so a future signature change that
+   hands it one has to argue with something. */
+static void test_the_body_manager_leaves_the_world_alone(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    uint64_t before;
+    int activeBefore;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    WorldGenerate(&world, 0xB0D1E5u);
+    Tick(&world, 4);
+    before = WorldDigest(&world);
+    activeBefore = world.activeChunkCount;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 12, 12);
+    FillBody(&terrain, handle, 0, 0, 11, 11, MATERIAL_ROCK, 400.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainFreeBody(&terrain, handle);
+    DynamicTerrainReset(&terrain);
+    DynamicTerrainUnload(&terrain);
+
+    CHECK(WorldDigest(&world) == before,
+          "the body manager changed the world it never received");
+    CHECK(world.activeChunkCount == activeBefore,
+          "the body manager woke chunks");
+    WorldUnload(&world);
+}
+
+/* GameState owns the subsystem, so its lifecycle has to survive a regeneration
+   without leaking bodies from the world that no longer exists. */
+static void test_regenerating_the_world_drops_its_detached_pieces(void)
+{
+    GameConfig config = GameDefaultConfig();
+    GameState game;
+    TerrainBodyHandle handle;
+
+    config.worldWidth = 256;
+    config.worldHeight = 144;
+    config.activeRadiusX = 96.0f;
+    config.activeRadiusY = 72.0f;
+    config.seed = 0xB0D1E5u;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    CHECK(DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies == 0,
+          "a new game already has detached terrain");
+
+    handle = DynamicTerrainAllocBody(&game.dynamicTerrain, 8, 8);
+    CHECK(DynamicTerrainGet(&game.dynamicTerrain, handle) != NULL,
+          "allocation through GameState failed");
+
+    GameRegenerate(&game);
+    CHECK(DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies == 0,
+          "regenerating the world kept %d bodies cut from the old one",
+          DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies);
+    CHECK(DynamicTerrainGet(&game.dynamicTerrain, handle) == NULL,
+          "a handle survived the world it was cut from");
+    GameUnload(&game);
 }
 
 /* --- connected solid components ----------------------------------------- */
@@ -2374,6 +2849,21 @@ int main(void)
     RUN(test_the_tick_counter_survives_wrapping_its_cell_stamp);
     RUN(test_the_schedule_never_lists_a_chunk_twice);
     RUN(test_visual_particles_never_change_the_world);
+    RUN(test_a_fresh_manager_holds_no_bodies);
+    RUN(test_a_zero_initialised_handle_names_nothing);
+    RUN(test_allocation_returns_a_usable_body);
+    RUN(test_the_manager_refuses_work_past_its_budgets);
+    RUN(test_a_freed_slot_is_reused);
+    RUN(test_a_stale_handle_never_resolves_to_the_new_body);
+    RUN(test_reset_releases_every_body);
+    RUN(test_a_body_preserves_the_material_and_heat_it_was_given);
+    RUN(test_out_of_range_cell_access_is_safe);
+    RUN(test_finalize_reports_the_occupied_bounds);
+    RUN(test_mass_follows_material_density);
+    RUN(test_centre_of_mass_lands_where_the_shape_says);
+    RUN(test_inertia_grows_with_how_spread_out_a_body_is);
+    RUN(test_the_body_manager_leaves_the_world_alone);
+    RUN(test_regenerating_the_world_drops_its_detached_pieces);
     RUN(test_a_lone_island_is_reported_detached);
     RUN(test_two_islands_are_separate_components);
     RUN(test_a_liquid_gap_does_not_join_two_components);

@@ -9,6 +9,7 @@
 #include "particles.h"
 #include "player.h"
 #include "abilities.h"
+#include "dynamic_terrain.h"
 #include "world.h"
 
 typedef struct GameConfig {
@@ -30,6 +31,11 @@ typedef struct GameState {
     /* Transitional ownership: gameplay debris can mutate World, while visual
        particles will move to presentation in the next phase. */
     ParticleSystem particles;
+    /* Pieces of terrain that have stopped being part of the cellular world.
+       Owned here because it is gameplay state with the same lifetime as the
+       world it was cut from. Nothing fills it yet: extraction arrives with
+       EF-DYN-003, and until then this is an empty, behaviour-neutral store. */
+    DynamicTerrainSystem dynamicTerrain;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session
