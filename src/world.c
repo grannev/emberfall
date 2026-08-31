@@ -26,6 +26,28 @@
    steam point (108) and far below the dirt ignition point (175). */
 #define DRILL_WALL_TEMPERATURE 96.0f
 
+/* Ambient floor: even sealed rock stays legible, and a light of zero would make
+   an unlit tunnel unplayable rather than atmospheric. Lighting must read as
+   atmosphere, not as an unlit image; sealed ground is meant to be dim and
+   obviously solid, never a black hole in the picture. */
+#define WORLD_MINIMUM_LIGHT 0.40f
+/* Transmission per light cell, i.e. per WORLD_LIGHT_SCALE world cells. Open air
+   carries light across a large cavern; solid material swallows it over a few
+   dozen cells, which is what makes a deep bore go dark while a shallow one still
+   sees daylight. */
+#define WORLD_LIGHT_OPEN_TRANSMISSION 0.97f
+#define WORLD_LIGHT_SOLID_TRANSMISSION 0.74f
+/* The solved light is quantised to this many steps. A pixel channel is one byte,
+   so a finer change cannot alter the image; quantising lets the renderer compare
+   light exactly instead of against a tolerance. A tolerance drifts: a sample
+   that moves less than it each frame is never rebuilt, and the texture wanders
+   arbitrarily far from the light it should be showing. */
+#define WORLD_LIGHT_STEPS 512.0f
+/* Temperature at which material starts to glow on its own, and the span over
+   which that glow reaches full strength. */
+#define WORLD_LIGHT_HEAT_FLOOR 180.0f
+#define WORLD_LIGHT_HEAT_SPAN 520.0f
+
 static void WorldCountActiveState(World *world);
 
 static bool WorldInBounds(const World *world, int x, int y)
@@ -90,6 +112,7 @@ static void WorldWakeCellAndNeighbors(World *world, int x, int y)
             world->nextActiveChunks[index] = 1u;
             if (world->dirtyChunks != NULL) {
                 world->dirtyChunks[index] = 1u;
+                world->lightDirtyChunks[index] = 1u;
             }
         }
     }
@@ -166,6 +189,9 @@ typedef struct MaterialInfo {
     bool phaseOnCooling;
     bool dynamic;
     bool solid;
+    /* How much light the material gives off by itself, 0..1. Heat adds more on
+       top of this, so a laser-blasted rock face lights its own crater. */
+    float emission;
 } MaterialInfo;
 
 static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
@@ -214,6 +240,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = 900.0f, .selfHeatRate = 0.08f,
         .phaseTarget = MATERIAL_LAVA,
         .dynamic = true,
+        .emission = 1.0f,
     },
     [MATERIAL_STEAM] = {
         .name = "STEAM", .color = {204, 222, 229, 178},
@@ -239,6 +266,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = 650.0f, .selfHeatRate = 0.12f,
         .phaseTarget = MATERIAL_FIRE,
         .dynamic = true,
+        .emission = 0.92f,
     },
     [MATERIAL_ASH] = {
         .name = "ASH", .color = {112, 108, 104, 255},
@@ -297,7 +325,12 @@ static Color MaterialHeatTint(Color base, const MaterialInfo *info, float temper
     return base;
 }
 
-static Color MaterialPixel(const World *world, const Cell *cell, int x, int y)
+/* Takes the light level rather than sampling it: this runs for every cell of
+   every dirty chunk, and doing the bilinear lookup here — with its floor and its
+   clamps — cost more than the rest of drawing put together. The caller walks a
+   chunk in order and can hoist all of that out of the loop. */
+static Color MaterialPixel(const World *world, const Cell *cell, int x, int y,
+                           float red, float green, float blue)
 {
     const MaterialInfo *info = MaterialAt(cell->material);
     Color color = info->color;
@@ -307,14 +340,31 @@ static Color MaterialPixel(const World *world, const Cell *cell, int x, int y)
         /* Empty space is a depth gradient rather than a flat colour. */
         unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
 
-        return (Color){5, glow, (unsigned char)(18 + glow), 255};
+        color = (Color){5, glow, (unsigned char)(18 + glow), 255};
+    } else {
+        variation = (int)(CoordinateHash(x, y) % 13u) - 6;
+        color.r = ChannelWithVariation(color.r, info->variationR, variation);
+        color.g = ChannelWithVariation(color.g, info->variationG, variation);
+        color.b = ChannelWithVariation(color.b, info->variationB, variation);
+        color = MaterialHeatTint(color, info, cell->temperature);
+
+        /* An emitter lights itself; dimming lava by its own falloff would make
+           the middle of a lake darker than its shore. */
+        if (info->emission >= 0.999f) {
+            return color;
+        }
     }
 
-    variation = (int)(CoordinateHash(x, y) % 13u) - 6;
-    color.r = ChannelWithVariation(color.r, info->variationR, variation);
-    color.g = ChannelWithVariation(color.g, info->variationG, variation);
-    color.b = ChannelWithVariation(color.b, info->variationB, variation);
-    return MaterialHeatTint(color, info, cell->temperature);
+    /* Alpha carries material translucency and has nothing to do with light.
+       Only the warm channel can exceed the original value, so a single ceiling
+       test per channel is enough and no libm clamp is needed. */
+    red *= (float)color.r;
+    green *= (float)color.g;
+    blue *= (float)color.b;
+    color.r = (unsigned char)(red > 255.0f ? 255.0f : red);
+    color.g = (unsigned char)(green > 255.0f ? 255.0f : green);
+    color.b = (unsigned char)(blue > 255.0f ? 255.0f : blue);
+    return color;
 }
 
 static void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
@@ -612,6 +662,7 @@ bool WorldInit(World *world, int width, int height)
 {
     size_t cellCount;
     size_t chunkCount;
+    size_t lightCount;
 
     if (world == NULL || width <= 0 || height <= 0) {
         return false;
@@ -628,11 +679,25 @@ bool WorldInit(World *world, int width, int height)
     world->pixels = malloc(cellCount * sizeof(*world->pixels));
     world->activeChunks = calloc(chunkCount, sizeof(*world->activeChunks));
     world->nextActiveChunks = calloc(chunkCount, sizeof(*world->nextActiveChunks));
+    world->lightColumns = (width + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
+    world->lightRows = (height + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
+    lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
+    world->lightSky = calloc(lightCount, sizeof(*world->lightSky));
+    world->lightEmber = calloc(lightCount, sizeof(*world->lightEmber));
+    world->lightShownSky = calloc(lightCount, sizeof(*world->lightShownSky));
+    world->lightShownEmber = calloc(lightCount, sizeof(*world->lightShownEmber));
+    world->lightEmission = calloc(lightCount, sizeof(*world->lightEmission));
+    world->lightOpacity = calloc(lightCount, sizeof(*world->lightOpacity));
     world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
+    world->lightDirtyChunks = malloc(chunkCount * sizeof(*world->lightDirtyChunks));
     if (world->dirtyChunks != NULL) {
         /* Nothing has been uploaded yet, so every chunk owes the texture a
            first full write. */
         memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
+    }
+    if (world->lightDirtyChunks != NULL) {
+        memset(world->lightDirtyChunks, 1,
+               chunkCount * sizeof(*world->lightDirtyChunks));
     }
     if (world->cells != NULL) {
         size_t cellIndex;
@@ -643,14 +708,24 @@ bool WorldInit(World *world, int width, int height)
     }
 
     if (world->cells == NULL || world->pixels == NULL || world->activeChunks == NULL ||
-        world->nextActiveChunks == NULL || world->dirtyChunks == NULL) {
-        free(world->cells);
-        free(world->pixels);
-        free(world->activeChunks);
-        free(world->nextActiveChunks);
-        free(world->dirtyChunks);
-        memset(world, 0, sizeof(*world));
+        world->nextActiveChunks == NULL || world->dirtyChunks == NULL ||
+        world->lightDirtyChunks == NULL ||
+        world->lightSky == NULL || world->lightEmber == NULL ||
+        world->lightShownSky == NULL || world->lightShownEmber == NULL ||
+        world->lightEmission == NULL || world->lightOpacity == NULL) {
+        WorldUnload(world);
         return false;
+    }
+
+    /* The shown copies start impossible so the first draw re-lights every
+       chunk. */
+    {
+        size_t lightIndex;
+
+        for (lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+            world->lightShownSky[lightIndex] = -1.0f;
+            world->lightShownEmber[lightIndex] = -1.0f;
+        }
     }
 
     return true;
@@ -693,6 +768,13 @@ void WorldUnload(World *world)
     free(world->activeChunks);
     free(world->nextActiveChunks);
     free(world->dirtyChunks);
+    free(world->lightDirtyChunks);
+    free(world->lightSky);
+    free(world->lightEmber);
+    free(world->lightShownSky);
+    free(world->lightShownEmber);
+    free(world->lightEmission);
+    free(world->lightOpacity);
     memset(world, 0, sizeof(*world));
 }
 
@@ -760,6 +842,8 @@ void WorldGenerate(World *world)
     memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
+    memset(world->lightDirtyChunks, 1,
+           chunkCount * sizeof(*world->lightDirtyChunks));
     for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
         world->cells[cellIndex].temperature = AMBIENT_TEMPERATURE;
     }
@@ -1062,6 +1146,7 @@ void WorldUpdate(World *world)
            texture its final frame. */
         for (chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex) {
             world->dirtyChunks[chunkIndex] |= world->activeChunks[chunkIndex];
+            world->lightDirtyChunks[chunkIndex] |= world->activeChunks[chunkIndex];
         }
         world->activeChunks = world->nextActiveChunks;
         world->nextActiveChunks = previousChunks;
@@ -1069,11 +1154,376 @@ void WorldUpdate(World *world)
     WorldCountActiveState(world);
 }
 
-void WorldDraw(World *world)
+
+/* ---- Lighting ------------------------------------------------------------
+ *
+ * Light is solved on a grid WORLD_LIGHT_SCALE times coarser than the cells.
+ * Two derived fields feed it: `lightEmission`, how much a block of cells gives
+ * off, and `lightOpacity`, how much of it is solid. Both are refreshed only for
+ * dirty chunks, because terrain only changes where the simulation is awake.
+ *
+ * The solve itself is a seed followed by two raster sweeps. Sky light is filled
+ * per column from the top and needs no iteration, which is what keeps the open
+ * surface uniformly bright no matter how tall the world is; the sweeps then
+ * carry that light, plus every emitter, sideways and into overhangs, attenuated
+ * by whatever it passes through. Two sweeps are not an exact flood fill around
+ * a hairpin corridor, but they are stable, allocation-free, and close enough
+ * that the error is invisible at four cells per sample.
+ */
+
+static int WorldLightIndex(const World *world, int lightX, int lightY)
 {
-    size_t chunkCount;
+    return lightY * world->lightColumns + lightX;
+}
+
+/* Rebuilds emission and opacity for one chunk's worth of light cells. */
+static void WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
+{
+    int firstLightX = chunkX * WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+    int firstLightY = chunkY * WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+    int lastLightX = firstLightX + WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+    int lastLightY = firstLightY + WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+    int lightX;
+    int lightY;
+
+    if (lastLightX > world->lightColumns) lastLightX = world->lightColumns;
+    if (lastLightY > world->lightRows) lastLightY = world->lightRows;
+
+    for (lightY = firstLightY; lightY < lastLightY; ++lightY) {
+        for (lightX = firstLightX; lightX < lastLightX; ++lightX) {
+            int firstX = lightX * WORLD_LIGHT_SCALE;
+            int firstY = lightY * WORLD_LIGHT_SCALE;
+            int lastX = firstX + WORLD_LIGHT_SCALE;
+            int lastY = firstY + WORLD_LIGHT_SCALE;
+            float emission = 0.0f;
+            int solid = 0;
+            int samples = 0;
+            int x;
+            int y;
+
+            if (lastX > world->width) lastX = world->width;
+            if (lastY > world->height) lastY = world->height;
+
+            for (y = firstY; y < lastY; ++y) {
+                for (x = firstX; x < lastX; ++x) {
+                    const Cell *cell = WorldCellConst(world, x, y);
+                    const MaterialInfo *info = MaterialAt(cell->material);
+                    float heatGlow = (cell->temperature - WORLD_LIGHT_HEAT_FLOOR) /
+                                     WORLD_LIGHT_HEAT_SPAN;
+
+                    ++samples;
+                    if (info->solid) {
+                        ++solid;
+                    }
+                    /* The brightest cell in the block wins rather than the mean:
+                       a single lava cell in a wall is a light source, and
+                       averaging would dim it into nothing. */
+                    if (info->emission > emission) {
+                        emission = info->emission;
+                    }
+                    if (cell->material != MATERIAL_EMPTY && heatGlow > emission) {
+                        emission = Clamp(heatGlow, 0.0f, 1.0f);
+                    }
+                }
+            }
+
+            world->lightEmission[WorldLightIndex(world, lightX, lightY)] = emission;
+            world->lightOpacity[WorldLightIndex(world, lightX, lightY)] =
+                samples > 0 ? (float)solid / (float)samples : 0.0f;
+        }
+    }
+}
+
+static void WorldSeedLight(World *world)
+{
+    int lightX;
+    int lightY;
+    size_t lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
+    size_t index;
+
+    for (index = 0; index < lightCount; ++index) {
+        world->lightSky[index] = 0.0f;
+        world->lightEmber[index] = world->lightEmission[index];
+    }
+
+    /* Sky light: fill each column from the top while it stays open. Doing this
+       as a column walk rather than as propagation is what lets open air stay at
+       full brightness however deep the world is. */
+    for (lightX = 0; lightX < world->lightColumns; ++lightX) {
+        for (lightY = 0; lightY < world->lightRows; ++lightY) {
+            int index2 = WorldLightIndex(world, lightX, lightY);
+
+            if (world->lightOpacity[index2] > 0.35f) {
+                break;
+            }
+            world->lightSky[index2] = 1.0f;
+        }
+    }
+
+    /* The player's own lamp is ember rather than sky: it should warm a tunnel
+       the way a flare does, not read as a hole cut through to daylight. */
+    if (world->pointLightStrength > 0.0f && world->pointLightRadius > 0.0f) {
+        float radius = world->pointLightRadius / (float)WORLD_LIGHT_SCALE;
+        int centerX = (int)(world->pointLight.x / (float)WORLD_LIGHT_SCALE);
+        int centerY = (int)(world->pointLight.y / (float)WORLD_LIGHT_SCALE);
+        int span = (int)ceilf(radius);
+
+        for (lightY = centerY - span; lightY <= centerY + span; ++lightY) {
+            for (lightX = centerX - span; lightX <= centerX + span; ++lightX) {
+                float dx = (float)(lightX - centerX);
+                float dy = (float)(lightY - centerY);
+                float distance = sqrtf(dx * dx + dy * dy);
+                float value;
+                int index2;
+
+                if (lightX < 0 || lightY < 0 || lightX >= world->lightColumns ||
+                    lightY >= world->lightRows || distance > radius) {
+                    continue;
+                }
+                value = world->pointLightStrength * (1.0f - distance / radius);
+                index2 = WorldLightIndex(world, lightX, lightY);
+                if (value > world->lightEmber[index2]) {
+                    world->lightEmber[index2] = value;
+                }
+            }
+        }
+    }
+}
+
+static float WorldLightTransmission(const World *world, int index)
+{
+    float opacity = world->lightOpacity[index];
+
+    return WORLD_LIGHT_OPEN_TRANSMISSION +
+           (WORLD_LIGHT_SOLID_TRANSMISSION - WORLD_LIGHT_OPEN_TRANSMISSION) * opacity;
+}
+
+/* Carries both channels across one edge. They share the geometry, so solving
+   them together costs far less than two separate sweeps. */
+static void WorldSpreadLight(World *world, int sourceIndex, float transmission,
+                             float *bestSky, float *bestEmber)
+{
+    float sky = world->lightSky[sourceIndex] * transmission;
+    float ember = world->lightEmber[sourceIndex] * transmission;
+
+    if (sky > *bestSky) {
+        *bestSky = sky;
+    }
+    if (ember > *bestEmber) {
+        *bestEmber = ember;
+    }
+}
+
+static float WorldQuantiseLight(float value)
+{
+    return floorf(Clamp(value, 0.0f, 1.0f) * WORLD_LIGHT_STEPS) / WORLD_LIGHT_STEPS;
+}
+
+static void WorldSolveLight(World *world)
+{
+    int lightX;
+    int lightY;
+    /* Diagonal neighbours are one and a half cells away, near enough; the exact
+       root of two costs a call and changes nothing visible. */
+    const float diagonal = 0.87f;
+
+    WorldSeedLight(world);
+
+    for (lightY = 0; lightY < world->lightRows; ++lightY) {
+        for (lightX = 0; lightX < world->lightColumns; ++lightX) {
+            int index = WorldLightIndex(world, lightX, lightY);
+            float transmission = WorldLightTransmission(world, index);
+            float sky = world->lightSky[index];
+            float ember = world->lightEmber[index];
+
+            if (lightX > 0) {
+                WorldSpreadLight(world, index - 1, transmission, &sky, &ember);
+            }
+            if (lightY > 0) {
+                WorldSpreadLight(world, index - world->lightColumns, transmission,
+                                 &sky, &ember);
+                if (lightX > 0) {
+                    WorldSpreadLight(world, index - world->lightColumns - 1,
+                                     transmission * diagonal, &sky, &ember);
+                }
+                if (lightX + 1 < world->lightColumns) {
+                    WorldSpreadLight(world, index - world->lightColumns + 1,
+                                     transmission * diagonal, &sky, &ember);
+                }
+            }
+            world->lightSky[index] = sky;
+            world->lightEmber[index] = ember;
+        }
+    }
+
+    for (lightY = world->lightRows - 1; lightY >= 0; --lightY) {
+        for (lightX = world->lightColumns - 1; lightX >= 0; --lightX) {
+            int index = WorldLightIndex(world, lightX, lightY);
+            float transmission = WorldLightTransmission(world, index);
+            float sky = world->lightSky[index];
+            float ember = world->lightEmber[index];
+
+            if (lightX + 1 < world->lightColumns) {
+                WorldSpreadLight(world, index + 1, transmission, &sky, &ember);
+            }
+            if (lightY + 1 < world->lightRows) {
+                WorldSpreadLight(world, index + world->lightColumns, transmission,
+                                 &sky, &ember);
+                if (lightX > 0) {
+                    WorldSpreadLight(world, index + world->lightColumns - 1,
+                                     transmission * diagonal, &sky, &ember);
+                }
+                if (lightX + 1 < world->lightColumns) {
+                    WorldSpreadLight(world, index + world->lightColumns + 1,
+                                     transmission * diagonal, &sky, &ember);
+                }
+            }
+            world->lightSky[index] = WorldQuantiseLight(sky);
+            world->lightEmber[index] = WorldQuantiseLight(ember);
+        }
+    }
+}
+
+/* A chunk whose light moved owes the texture a rebuild even though none of its
+   cells changed. Without this the incremental renderer would show stale
+   lighting: carving a shaft would brighten nothing until something moved. */
+static void WorldMarkRelitChunks(World *world)
+{
+    int lightX;
+    int lightY;
+    int perChunk = WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+
+    for (lightY = 0; lightY < world->lightRows; ++lightY) {
+        for (lightX = 0; lightX < world->lightColumns; ++lightX) {
+            int index = WorldLightIndex(world, lightX, lightY);
+            int chunkX;
+            int chunkY;
+
+            if (world->lightSky[index] == world->lightShownSky[index] &&
+                world->lightEmber[index] == world->lightShownEmber[index]) {
+                continue;
+            }
+            world->lightShownSky[index] = world->lightSky[index];
+            world->lightShownEmber[index] = world->lightEmber[index];
+
+            /* Cells sample the light field bilinearly, so a changed sample
+               reaches one light cell in every direction and can therefore fall
+               into a neighbouring chunk. */
+            for (chunkY = (lightY - 1) / perChunk; chunkY <= (lightY + 1) / perChunk;
+                 ++chunkY) {
+                for (chunkX = (lightX - 1) / perChunk;
+                     chunkX <= (lightX + 1) / perChunk; ++chunkX) {
+                    if (chunkX >= 0 && chunkY >= 0 && chunkX < world->chunkColumns &&
+                        chunkY < world->chunkRows) {
+                        world->dirtyChunks[(size_t)chunkY *
+                                               (size_t)world->chunkColumns +
+                                           (size_t)chunkX] = 1u;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Resolves one axis of the bilinear sample: the two light rows or columns a cell
+   falls between, and how far it sits between them. */
+static void WorldLightAxis(int samples, int coordinate, int *low, int *high,
+                           float *blend)
+{
+    float position = ((float)coordinate + 0.5f) / (float)WORLD_LIGHT_SCALE - 0.5f;
+    int floored = (int)floorf(position);
+
+    *blend = position - (float)floored;
+    *low = floored < 0 ? 0 : (floored > samples - 1 ? samples - 1 : floored);
+    *high = floored + 1 < 0 ? 0
+                            : (floored + 1 > samples - 1 ? samples - 1 : floored + 1);
+}
+
+static float WorldSampleLightField(const float *field, int columns, int lowX,
+                                   int highX, float blendX, int lowY, int highY,
+                                   float blendY)
+{
+    const float *low = field + (size_t)lowY * (size_t)columns;
+    const float *high = field + (size_t)highY * (size_t)columns;
+    float top = low[lowX] + (low[highX] - low[lowX]) * blendX;
+    float bottom = high[lowX] + (high[highX] - high[lowX]) * blendX;
+
+    return top + (bottom - top) * blendY;
+}
+
+/* Turns the two light channels into a multiplier per colour channel. Light that
+   is mostly ember rather than sky is warmed, so a lava cavern glows orange
+   instead of merely being less dark. */
+static void WorldLightTint(float sky, float ember, float *red, float *green,
+                           float *blue)
+{
+    float brightest = ember > sky ? ember : sky;
+    float level = WORLD_MINIMUM_LIGHT + (1.0f - WORLD_MINIMUM_LIGHT) * brightest;
+    float warmth = ember > sky ? ember - sky : 0.0f;
+
+    /* Plain comparisons rather than fmaxf: this runs for every cell of every
+       dirty chunk, and a libm call per pixel is not free at that rate. */
+    *red = level * (1.0f + 0.42f * warmth);
+    *green = level * (1.0f - 0.06f * warmth);
+    *blue = level * (1.0f - 0.44f * warmth);
+}
+
+/* Bilinear sample of the coarse field at a cell. Nearest sampling would show the
+   light grid as visible blocks. */
+float WorldLightAt(const World *world, int x, int y)
+{
+    int lowX;
+    int highX;
+    int lowY;
+    int highY;
+    float blendX;
+    float blendY;
+    float sky;
+    float ember;
+
+    if (world == NULL || world->lightSky == NULL) {
+        return 1.0f;
+    }
+
+    WorldLightAxis(world->lightColumns, x, &lowX, &highX, &blendX);
+    WorldLightAxis(world->lightRows, y, &lowY, &highY, &blendY);
+    sky = WorldSampleLightField(world->lightSky, world->lightColumns, lowX, highX,
+                                blendX, lowY, highY, blendY);
+    ember = WorldSampleLightField(world->lightEmber, world->lightColumns, lowX,
+                                  highX, blendX, lowY, highY, blendY);
+    return WORLD_MINIMUM_LIGHT + (1.0f - WORLD_MINIMUM_LIGHT) * fmaxf(sky, ember);
+}
+
+/* The light only has to be re-solved when its source has actually moved far
+   enough to change a sample; a light drifting inside one light cell changes
+   nothing the field can represent. */
+static bool WorldPointLightMoved(const World *world)
+{
+    return fabsf(world->pointLight.x - world->solvedPointLight.x) >=
+               (float)WORLD_LIGHT_SCALE * 0.5f ||
+           fabsf(world->pointLight.y - world->solvedPointLight.y) >=
+               (float)WORLD_LIGHT_SCALE * 0.5f ||
+           world->pointLightStrength != world->solvedPointLightStrength;
+}
+
+void WorldSetPointLight(World *world, Vector2 position, float radius, float strength)
+{
+    if (world == NULL) {
+        return;
+    }
+    world->pointLight = position;
+    world->pointLightRadius = radius;
+    world->pointLightStrength = strength;
+}
+
+void WorldDraw(World *world, Rectangle visible)
+{
     int minimumRow;
     int maximumRow;
+    int firstVisibleColumn;
+    int lastVisibleColumn;
+    int firstVisibleRow;
+    int lastVisibleRow;
     int chunkY;
 
     if (world == NULL || world->pixels == NULL || world->dirtyChunks == NULL ||
@@ -1081,28 +1531,96 @@ void WorldDraw(World *world)
         return;
     }
 
-    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     minimumRow = world->chunkRows;
     maximumRow = -1;
 
+    /* Rebuilding costs what the player can see, not what the world is doing.
+       Activity is spread over the whole map — a lava lake, a distant fire, a
+       collapsing sand bank — while the camera shows a small window of it, and
+       rebuilding a chunk nobody is looking at buys nothing. A skipped chunk
+       keeps its dirty flag and is rebuilt on the frame it scrolls into view. */
+    firstVisibleColumn = (int)floorf(visible.x / (float)WORLD_CHUNK_SIZE) - 1;
+    lastVisibleColumn =
+        (int)floorf((visible.x + visible.width) / (float)WORLD_CHUNK_SIZE) + 1;
+    firstVisibleRow = (int)floorf(visible.y / (float)WORLD_CHUNK_SIZE) - 1;
+    lastVisibleRow =
+        (int)floorf((visible.y + visible.height) / (float)WORLD_CHUNK_SIZE) + 1;
+    if (firstVisibleColumn < 0) firstVisibleColumn = 0;
+    if (firstVisibleRow < 0) firstVisibleRow = 0;
+    if (lastVisibleColumn > world->chunkColumns - 1) {
+        lastVisibleColumn = world->chunkColumns - 1;
+    }
+    if (lastVisibleRow > world->chunkRows - 1) {
+        lastVisibleRow = world->chunkRows - 1;
+    }
+
+    /* Light first: emission and opacity follow the terrain, so they only need
+       refreshing where chunks are already dirty, but the solve is global and can
+       dirty further chunks that were merely re-lit. Both must finish before any
+       pixel is built.
+
+       The solve is the one part of drawing that is not proportional to what
+       changed, so it must not run on a world where nothing did. A renderer whose
+       whole design is to sleep with the simulation cannot afford a few
+       milliseconds of unconditional work every frame. */
+    {
+        bool sourceMoved = WorldPointLightMoved(world);
+        bool terrainChanged = false;
+
+        for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+            int chunkX;
+
+            for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+                size_t index = (size_t)chunkY * (size_t)world->chunkColumns +
+                               (size_t)chunkX;
+
+                if (world->lightDirtyChunks[index] != 0u) {
+                    WorldRefreshLightBlock(world, chunkX, chunkY);
+                    world->lightDirtyChunks[index] = 0u;
+                    terrainChanged = true;
+                }
+            }
+        }
+
+        /* Terrain only changes on a fixed tick, so re-solving more often than
+           the world ticks is pure waste at high frame rates. An effect that
+           writes cells between ticks — a laser, a settling particle — waits at
+           most one tick to be lit, which is below the threshold of notice. A
+           moving light is the exception: it has to track the player smoothly. */
+        if (sourceMoved || (terrainChanged && world->tick != world->solvedTick) ||
+            !world->lightSolved) {
+            WorldSolveLight(world);
+            WorldMarkRelitChunks(world);
+            world->solvedPointLight = world->pointLight;
+            world->solvedPointLightStrength = world->pointLightStrength;
+            world->solvedTick = world->tick;
+            world->lightSolved = true;
+        }
+    }
+
     /* Rebuild only the chunks that changed. The simulation sleeps on a settled
        world, and so must the renderer. */
-    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+    for (chunkY = firstVisibleRow; chunkY <= lastVisibleRow; ++chunkY) {
         bool rowDirty = false;
         int chunkX;
 
-        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+        for (chunkX = firstVisibleColumn; chunkX <= lastVisibleColumn; ++chunkX) {
             size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
                                 (size_t)chunkX;
             int minimumX;
             int maximumX;
             int minimumY;
             int maximumY;
+            int columnLow[WORLD_CHUNK_SIZE];
+            int columnHigh[WORLD_CHUNK_SIZE];
+            float columnBlend[WORLD_CHUNK_SIZE];
+            int x;
             int y;
 
             if (world->dirtyChunks[chunkIndex] == 0u) {
                 continue;
             }
+            world->dirtyChunks[chunkIndex] = 0u;
             rowDirty = true;
             minimumX = chunkX * WORLD_CHUNK_SIZE;
             maximumX = minimumX + WORLD_CHUNK_SIZE;
@@ -1111,12 +1629,56 @@ void WorldDraw(World *world)
             if (maximumX > world->width) maximumX = world->width;
             if (maximumY > world->height) maximumY = world->height;
 
+            /* Bilinear light weights are the same for every row of the chunk,
+               so they are resolved once here instead of per pixel. */
+            for (x = minimumX; x < maximumX; ++x) {
+                WorldLightAxis(world->lightColumns, x, &columnLow[x - minimumX],
+                               &columnHigh[x - minimumX],
+                               &columnBlend[x - minimumX]);
+            }
+
             for (y = minimumY; y < maximumY; ++y) {
-                int x;
+                int rowLow;
+                int rowHigh;
+                float rowBlend;
+                const float *skyLow;
+                const float *skyHigh;
+                const float *emberLow;
+                const float *emberHigh;
+
+                WorldLightAxis(world->lightRows, y, &rowLow, &rowHigh, &rowBlend);
+                skyLow = world->lightSky +
+                         (size_t)rowLow * (size_t)world->lightColumns;
+                skyHigh = world->lightSky +
+                          (size_t)rowHigh * (size_t)world->lightColumns;
+                emberLow = world->lightEmber +
+                           (size_t)rowLow * (size_t)world->lightColumns;
+                emberHigh = world->lightEmber +
+                            (size_t)rowHigh * (size_t)world->lightColumns;
 
                 for (x = minimumX; x < maximumX; ++x) {
+                    int slot = x - minimumX;
+                    int lowX = columnLow[slot];
+                    int highX = columnHigh[slot];
+                    float blend = columnBlend[slot];
+                    float topSky = skyLow[lowX] +
+                                   (skyLow[highX] - skyLow[lowX]) * blend;
+                    float bottomSky = skyHigh[lowX] +
+                                      (skyHigh[highX] - skyHigh[lowX]) * blend;
+                    float topEmber = emberLow[lowX] +
+                                     (emberLow[highX] - emberLow[lowX]) * blend;
+                    float bottomEmber = emberHigh[lowX] +
+                                        (emberHigh[highX] - emberHigh[lowX]) * blend;
+                    float red;
+                    float green;
+                    float blue;
+
+                    WorldLightTint(topSky + (bottomSky - topSky) * rowBlend,
+                                   topEmber + (bottomEmber - topEmber) * rowBlend,
+                                   &red, &green, &blue);
                     world->pixels[WorldIndex(world, x, y)] =
-                        MaterialPixel(world, WorldCellConst(world, x, y), x, y);
+                        MaterialPixel(world, WorldCellConst(world, x, y), x, y,
+                                      red, green, blue);
                 }
             }
         }
@@ -1141,7 +1703,6 @@ void WorldDraw(World *world)
                            (float)(bandEnd - bandStart)};
         UpdateTextureRec(world->texture, band,
                          &world->pixels[WorldIndex(world, 0, bandStart)]);
-        memset(world->dirtyChunks, 0, chunkCount * sizeof(*world->dirtyChunks));
     }
 
     DrawTexture(world->texture, 0, 0, WHITE);

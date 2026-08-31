@@ -64,6 +64,19 @@ static float CameraViewScaleForSpeed(const Player *player)
     return 1.0f + (CAMERA_FAST_VIEW_SCALE - 1.0f) * excess;
 }
 
+/* The part of the world the camera can see, in cells. WorldDraw rebuilds only
+   what falls inside it, so drawing costs what is on screen rather than what the
+   whole simulation happens to be doing. */
+static Rectangle VisibleWorldRectangle(Camera2D camera)
+{
+    Vector2 topLeft = GetScreenToWorld2D((Vector2){0.0f, 0.0f}, camera);
+    Vector2 bottomRight = GetScreenToWorld2D(
+        (Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, camera);
+
+    return (Rectangle){topLeft.x, topLeft.y, bottomRight.x - topLeft.x,
+                       bottomRight.y - topLeft.y};
+}
+
 static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 {
     float halfWidth = (float)GetScreenWidth() / (2.0f * zoom);
@@ -440,10 +453,18 @@ int main(int argc, char **argv)
         }
         PlayerResolveWorldCollision(&player, &world);
 
+        /* The player carries their own light. Without it a bored tunnel would
+           be unplayably dark the moment it leaves the reach of daylight, and
+           the drill would be a way to blind yourself. It brightens with the
+           boost, so the fastest flight also lights the furthest. */
+        WorldSetPointLight(&world, player.position,
+                           player.boosting ? 74.0f : 52.0f,
+                           player.boosting ? 0.95f : 0.72f);
+
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
         BeginMode2D(camera);
-            WorldDraw(&world);
+            WorldDraw(&world, VisibleWorldRectangle(camera));
             DrawRectangleLines(0, 0, world.width, world.height, (Color){74, 103, 127, 255});
             ParticlesDraw(&particles);
             PlayerDraw(&player, aimPosition);

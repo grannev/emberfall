@@ -497,6 +497,33 @@ static void test_boosting_player_tunnels_through_rock(void)
     WorldUnload(&world);
 }
 
+static void test_boost_from_rest_bores_into_a_wall(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 128, 200), "world allocation failed");
+    /* The player starts resting on solid ground, the way a spawn does, and
+       boosts straight down into it. */
+    FillRect(&world, 0, 40, 127, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){64.0f, 32.0f});
+
+    for (step = 0; step < 240; ++step) {
+        PlayerUpdate(&player, &world, (Vector2){0.0f, 1.0f}, true, 1.0f / 60.0f);
+        WorldUpdate(&world);
+        PlayerResolveWorldCollision(&player, &world);
+    }
+
+    /* Below the drill threshold the collision zeroes the blocked velocity every
+       frame, so without a contact drill the speed can never climb to the
+       threshold and the boost stalls on the surface forever. */
+    CHECK(player.position.y > 120.0f,
+          "the player never broke the surface, stopping at y=%.1f",
+          player.position.y);
+    WorldUnload(&world);
+}
+
 static void test_boosting_player_tunnels_through_sand(void)
 {
     World world;
@@ -722,6 +749,7 @@ int main(void)
     RUN(test_a_settled_world_lets_chunks_sleep);
     RUN(test_activity_wakes_only_a_local_neighbourhood);
     RUN(test_boosting_player_tunnels_through_rock);
+    RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
     RUN(test_bouncing_particles_do_not_pass_through_terrain);

@@ -89,6 +89,27 @@ static void PlayerRecordImpact(Player *player, Vector2 normal, float strength)
     }
 }
 
+/* Clears whatever blocks the collider at `at`, widening until it is actually
+   free. One pass is not enough on its own: WorldDrillCircle measures an integer
+   radius from a floored centre, while the collider is a float circle measured to
+   the nearest edge of a cell box, so the collider can touch cells a single cut
+   of the same nominal radius leaves standing. Returns the cells removed. */
+static int PlayerCutFree(Player *player, World *world, Vector2 at)
+{
+    int base = (int)ceilf(player->radius);
+    int removed = 0;
+    int attempt;
+
+    for (attempt = 0; attempt < 3; ++attempt) {
+        removed += WorldDrillCircle(world, (int)floorf(at.x), (int)floorf(at.y),
+                                    base + attempt);
+        if (!PlayerCollidesAt(player, world, at)) {
+            break;
+        }
+    }
+    return removed;
+}
+
 static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
 {
     float speed = sqrtf(player->velocity.x * player->velocity.x +
@@ -97,7 +118,27 @@ static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
     Vector2 drillPoint;
     int destroyed;
 
-    if (!player->boosting || speed < player->drillSpeed) {
+    if (!player->boosting || speed < 1.0f) {
+        return;
+    }
+
+    /* Above the drill threshold a boost cuts continuously ahead of itself. Below
+       it the drill still bites, but only where the player is actually pressed
+       into material, and it cuts around the collider rather than ahead of it.
+       Without this a boost begun from rest against a wall could never start: the
+       collision zeroes the blocked component every frame, so the speed can never
+       climb to the threshold that would have cut the wall away, and a cut placed
+       ahead of the collider lands inside the hole it already made while the rim
+       that is actually blocking survives. */
+    if (speed < player->drillSpeed) {
+        if (!PlayerCollidesAt(player, world, nextPosition)) {
+            return;
+        }
+        destroyed = PlayerCutFree(player, world, nextPosition);
+        if (destroyed > 0) {
+            player->drilledCells += destroyed;
+            player->drillPosition = nextPosition;
+        }
         return;
     }
 
@@ -280,9 +321,7 @@ void PlayerResolveWorldCollision(Player *player, World *world)
        because sand refills the tunnel every tick that happens on every frame —
        a boost could never cross a sand body at all. */
     if (player->boosting) {
-        int destroyed = WorldDrillCircle(world, (int)floorf(player->position.x),
-                                         (int)floorf(player->position.y),
-                                         (int)ceilf(player->radius));
+        int destroyed = PlayerCutFree(player, world, player->position);
 
         if (destroyed > 0) {
             player->drilledCells += destroyed;

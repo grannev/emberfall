@@ -31,14 +31,23 @@ Vector2 WorldPlayerSpawn(const World *world);
 
 ```c
 void WorldUpdate(World *world);
-void WorldDraw(World *world);
+void WorldDraw(World *world, Rectangle visible);
+void WorldSetPointLight(World *world, Vector2 position, float radius,
+                        float strength);
+float WorldLightAt(const World *world, int x, int y);
 ```
 
 - `WorldUpdate` выполняет ровно один fixed tick.
-- `WorldDraw` пересчитывает Color buffer только для грязных chunks, загружает
-  одним `UpdateTextureRec` полосу строк во всю ширину и рисует texture в world
-  origin. Вызывать внутри `BeginMode2D`. Результат обязан быть попиксельно
-  идентичен полному перестроению.
+- `WorldDraw` решает свет, пересчитывает Color buffer для грязных chunks внутри
+  `visible`, загружает одним `UpdateTextureRec` полосу строк во всю ширину и
+  рисует texture в world origin. Вызывать внутри `BeginMode2D`. `visible`
+  задаётся в cells; грязный chunk вне его сохраняет флаг и перестраивается,
+  когда попадёт в кадр. Результат обязан быть попиксельно идентичен полному
+  перестроению того же региона.
+- `WorldSetPointLight` задаёт единственный перемещаемый источник света, которым
+  владеет вызывающий код; strength 0 выключает его. Применяется на следующем
+  `WorldDraw`.
+- `WorldLightAt` возвращает суммарную освещённость клетки, 0..1.
 
 ### Cell access
 

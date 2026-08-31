@@ -66,8 +66,33 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Store all cells in one contiguous allocation using `y * width + x` indexing.
 - Keep one persistent `Color` buffer and render the world with one Texture2D;
   never render cells with per-cell DrawRectangle calls. `WorldDraw` rebuilds only
-  dirty chunks and uploads one full-width row band through `UpdateTextureRec`.
-  Incremental drawing must stay pixel-identical to a full rebuild.
+  dirty chunks that fall inside the visible rectangle it is given, and uploads
+  one full-width row band through `UpdateTextureRec`. Drawing must cost what the
+  player can see, not what the world is doing: activity is spread over the whole
+  map while the camera shows a small window of it. A chunk skipped for being off
+  screen keeps its dirty flag and is rebuilt on the frame it scrolls into view.
+  Incremental drawing must stay pixel-identical to a full rebuild of the same
+  region.
+- Pixel-dirty and light-dirty chunks are separate sets. A pixel rebuild may wait
+  many frames for the chunk to come on screen; light must be refreshed once,
+  everywhere it changed, because the solve is global. Sharing one flag makes the
+  light refresh re-scan every off-screen chunk every frame.
+- Light is solved on a grid `WORLD_LIGHT_SCALE` coarser than the cells, in two
+  channels: sky reaching down from the surface, and ember from anything that
+  burns. One intensity can darken but cannot colour, and a lava lake lighting its
+  own cavern in grey is not lighting. Emission takes the maximum over a block,
+  never the mean: one lava cell in a wall is a source. Keep the ambient floor
+  high enough that sealed ground reads as dim solid material rather than a black
+  hole, and give the player a light of their own — a bored tunnel with no source
+  must stay playable.
+- The solved light is quantised, and re-lit chunks are found by comparing it
+  exactly. A tolerance drifts: a sample that moves less than it every frame is
+  never rebuilt, and the texture wanders arbitrarily far from the light it should
+  be showing. Verify with a harness that compares incremental drawing against a
+  full rebuild of the same world.
+- The light solve is the one part of drawing not proportional to what changed, so
+  it must not run when its inputs did not change, nor more than once per
+  simulation tick. A moving light source is the exception.
 - Use nearest-neighbor texture filtering.
 - Do not allocate heap memory in the frame loop.
 - Update falling materials from bottom to top.
@@ -123,7 +148,15 @@ over frameworks, generic containers, or unnecessary abstraction.
   releasing WASD inside a tunnel does not drop the drill into a wall. Above the
   drill threshold, every movement substep clears a circle ahead of the collider
   through `WorldDrillCircle`; the out-of-bounds world boundary remains
-  indestructible. Each cut cell costs speed, but the resistance is floored just
+  indestructible. Below that threshold the drill still bites where the player is
+  pressed into material, cutting around the collider instead of ahead of it:
+  otherwise a boost begun from rest against a wall can never start, because the
+  collision zeroes the blocked velocity before it can reach the threshold, and a
+  cut placed ahead lands inside the hole already made while the rim that blocks
+  survives. Freeing the collider must widen until it actually succeeds — the
+  drill measures an integer radius from a floored centre while the collider is a
+  float circle measured to the nearest cell edge, so one cut of the same nominal
+  radius can leave a blocking cell standing. Each cut cell costs speed, but the resistance is floored just
   above the drill threshold so a boost can never stall inside solid terrain.
   Boost has no energy resource or cooldown.
 - Movement is split into steps no longer than 0.5 world cells to prevent

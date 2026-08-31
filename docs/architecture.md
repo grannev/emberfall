@@ -113,6 +113,8 @@ raylib input
 | `World.pixels` | `WorldInit` | `WorldUnload` |
 | chunk buffers | `WorldInit` | `WorldUnload` |
 | буфер грязных chunks | `WorldInit` | `WorldUnload` |
+| буфер грязных световых chunks | `WorldInit` | `WorldUnload` |
+| поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
 | world `Texture2D` | `WorldInitRenderer` | `WorldUnload` |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |

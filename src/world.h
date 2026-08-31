@@ -7,6 +7,11 @@
 #include <raylib.h>
 
 #define WORLD_CHUNK_SIZE 32
+/* Light is solved on a coarser grid than the cells. Eight divides the chunk
+   size, so every light cell belongs to exactly one chunk and the dirty-chunk
+   bookkeeping stays exact. The field is smooth and sampled bilinearly, so a
+   finer grid buys no visible detail and costs four times the solve. */
+#define WORLD_LIGHT_SCALE 8
 
 typedef enum CellMaterial {
     MATERIAL_EMPTY = 0,
@@ -61,6 +66,39 @@ typedef struct World {
        tracks where work happens; the renderer reuses that instead of rebuilding
        the whole texture every frame. */
     uint8_t *dirtyChunks;
+    /* Chunks whose light inputs are stale. Separate from `dirtyChunks` because
+       the two are consumed at different times: light must be refreshed once,
+       wherever the terrain changed, while a pixel rebuild waits until the chunk
+       is on screen and so may stay pending for many frames. Sharing one flag
+       makes the light refresh re-scan every off-screen chunk every frame. */
+    uint8_t *lightDirtyChunks;
+    /* Coarse light field. `emission` and `opacity` are derived from the cells and
+       refreshed only where chunks are dirty; `light` is solved from them every
+       draw; `lightShown` is the copy the current texture was built from, so a
+       chunk can be re-lit without anything in it having changed. */
+    int lightColumns;
+    int lightRows;
+    /* Two channels, not one. A single intensity can darken but cannot colour,
+       so a lava lake lit its own cavern in grey. `lightSky` is daylight reaching
+       down from the surface, `lightEmber` is everything that burns, and the
+       difference between them is what warms the light near a fire. */
+    float *lightSky;
+    float *lightEmber;
+    float *lightShownSky;
+    float *lightShownEmber;
+    float *lightEmission;
+    float *lightOpacity;
+    /* One movable light the caller owns, so the player can carry their own glow
+       into a tunnel that has no other source. */
+    Vector2 pointLight;
+    float pointLightRadius;
+    float pointLightStrength;
+    /* State of the light the last solve was run for, so a still scene can skip
+       the solve entirely. */
+    Vector2 solvedPointLight;
+    float solvedPointLightStrength;
+    uint32_t solvedTick;
+    bool lightSolved;
 } World;
 
 bool WorldInit(World *world, int width, int height);
@@ -71,7 +109,11 @@ void WorldUnload(World *world);
 void WorldGenerate(World *world);
 Vector2 WorldPlayerSpawn(const World *world);
 void WorldUpdate(World *world);
-void WorldDraw(World *world);
+void WorldDraw(World *world, Rectangle visible);
+/* Position of the caller-owned light, applied on the next draw. A strength of
+   zero disables it. */
+void WorldSetPointLight(World *world, Vector2 position, float radius, float strength);
+float WorldLightAt(const World *world, int x, int y);
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);
