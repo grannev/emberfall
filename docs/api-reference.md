@@ -259,6 +259,29 @@ const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *
 
 Модель, лимиты и бюджет памяти — [dynamic-terrain.md](dynamic-terrain.md).
 
+## Terrain extraction API
+
+```c
+TerrainExtractResult TerrainExtractComponent(World *world,
+                                             DynamicTerrainSystem *terrain,
+                                             const WorldComponentWorkspace *workspace,
+                                             WorldComponentResult component);
+const char *TerrainExtractStatusName(TerrainExtractStatus status);
+```
+
+Объявлено в `terrain_extraction.h`. Переносит доказанно отделённую component из
+мира в новое тело.
+
+- Извлекается **только** `WORLD_COMPONENT_DETACHED`; всё остальное —
+  `TERRAIN_EXTRACT_NOT_DETACHED`.
+- `component` и `workspace` обязаны быть из одного вызова `WorldFindComponent`.
+- При любом отказе мир не изменён, а тело не остаётся выделенным.
+- Стоимость O(клеток component), аллокаций нет.
+- Очистка идёт через `WorldSetCell`, поэтому wake/dirty/light-invalidation
+  получаются обычным путём записи мира.
+
+Контракт целиком — [dynamic-terrain.md](dynamic-terrain.md).
+
 ## World components API
 
 ```c
