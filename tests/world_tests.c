@@ -780,6 +780,12 @@ static void test_a_component_continuing_past_the_region_is_unknown(void)
     CHECK(found.status == WORLD_COMPONENT_UNKNOWN,
           "a bar running out of the region reported %s",
           ComponentStatusName(found.status));
+    /* A failed search reports nothing rather than however much it explored: a
+       partial component is not a smaller component, and handing one back
+       invites a caller to act on it. */
+    CHECK(found.cellCount == 0 && found.minimumX == 0 && found.maximumX == 0,
+          "an unknown result carried %d cells and bounds %d..%d",
+          found.cellCount, found.minimumX, found.maximumX);
     WorldUnload(&world);
 }
 
@@ -854,6 +860,22 @@ static void test_an_oversized_or_malformed_query_is_refused(void)
     CHECK(found.status == WORLD_COMPONENT_INVALID,
           "a %d-wide region reported %s instead of being refused",
           WORLD_COMPONENT_MAX_SPAN + 1, ComponentStatusName(found.status));
+
+    /* The span is judged on what the caller asked for, before the world clips
+       it. Otherwise the same oversized region would be refused in open ground
+       and accepted at the border, purely because the map trimmed it. */
+    found = FindComponent(&world, (Rectangle){-160.0f, 0.0f, 200.0f, 100.0f},
+                          42, 42);
+    CHECK(found.status == WORLD_COMPONENT_INVALID,
+          "an oversized region was accepted at the map border, reporting %s",
+          ComponentStatusName(found.status));
+
+    /* A legal region that merely hangs over the edge is still fine. */
+    FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
+    found = FindComponent(&world, (Rectangle){-40.0f, 20.0f, 100.0f, 60.0f}, 2, 42);
+    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
+          "a legal region overhanging the border reported %s",
+          ComponentStatusName(found.status));
 
     found = FindComponent(&world, (Rectangle){20.0f, 20.0f, 64.0f, 64.0f}, 10, 10);
     CHECK(found.status == WORLD_COMPONENT_INVALID,

@@ -376,8 +376,9 @@ component ≤ `maximumCells` (≤ 4096). Худший случай — `4 × max
 когда за регионом стоит настоящая solid-клетка.
 
 **Conservative semantics.** Действовать разрешено только на `DETACHED`.
-`ANCHORED`, `UNKNOWN`, `TOO_LARGE` и `INVALID` означают «не трогать»;
-`cellCount` и bounds полны только при `DETACHED`.
+`ANCHORED`, `UNKNOWN`, `TOO_LARGE` и `INVALID` означают «не трогать», и
+`cellCount` с bounds возвращаются при них обнулёнными: частичная component —
+это не component поменьше.
 
 **Workspace.** `WorldComponentWorkspace` (34 KiB) принадлежит вызывающему: ни
 `malloc`, ни глобального состояния, поэтому запрос безопасен из simulation

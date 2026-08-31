@@ -84,10 +84,11 @@ typedef struct WorldComponentWorkspace {
 
 typedef struct WorldComponentResult {
     WorldComponentStatus status;
-    /* Cells found, and their inclusive bounds in world coordinates. Complete
-       only when `status` is WORLD_COMPONENT_DETACHED: every other status stops
-       the search early, so what these describe is the part explored before the
-       detector gave up. Bounds are meaningless when `cellCount` is zero. */
+    /* Cells found, and their inclusive bounds in world coordinates. Meaningful
+       only when `status` is WORLD_COMPONENT_DETACHED. Every other status
+       returns them zeroed rather than describing however much was explored
+       before the search gave up: a partial component is not a smaller
+       component, and handing one back invites a caller to act on it. */
     int cellCount;
     int minimumX;
     int minimumY;

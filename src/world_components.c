@@ -78,12 +78,24 @@ WorldComponentResult WorldFindComponent(const World *world,
         return ComponentFailure(WORLD_COMPONENT_INVALID);
     }
 
-    /* The region is given in cells, like WorldActivateRegion, and clipped to
-       the world before anything else looks at it. */
+    /* The region is given in cells, like WorldActivateRegion. */
     firstX = (int)floorf(region.x);
     firstY = (int)floorf(region.y);
     lastX = (int)ceilf(region.x + region.width) - 1;
     lastY = (int)ceilf(region.y + region.height) - 1;
+
+    /* Judged on what the caller asked for, before any clipping. Rejecting
+       rather than shrinking is the promise this function makes, and testing
+       after the clip would quietly break it near the map border: the same
+       oversized region would be refused in open ground and accepted at the
+       edge, purely because the world happened to trim it. */
+    if (lastX - firstX + 1 > WORLD_COMPONENT_MAX_SPAN ||
+        lastY - firstY + 1 > WORLD_COMPONENT_MAX_SPAN) {
+        return ComponentFailure(WORLD_COMPONENT_INVALID);
+    }
+
+    /* Clipping to the world costs no meaning: everything past the edge reads
+       as rock, so a search that reached it would stop with ANCHORED anyway. */
     if (firstX < 0) firstX = 0;
     if (firstY < 0) firstY = 0;
     if (lastX > world->width - 1) lastX = world->width - 1;
@@ -94,12 +106,6 @@ WorldComponentResult WorldFindComponent(const World *world,
 
     regionWidth = lastX - firstX + 1;
     regionHeight = lastY - firstY + 1;
-    /* Rejected rather than clipped: quietly shrinking the caller's region is
-       how a "detached" answer stops meaning what the caller believed it did. */
-    if (regionWidth > WORLD_COMPONENT_MAX_SPAN ||
-        regionHeight > WORLD_COMPONENT_MAX_SPAN) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
-    }
 
     if (seedX < firstX || seedX > lastX || seedY < firstY || seedY > lastY) {
         return ComponentFailure(WORLD_COMPONENT_INVALID);
