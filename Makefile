@@ -4,7 +4,7 @@ PKG_CONFIG ?= pkg-config
 APP := emberfall
 WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
 	src/world_thermal.c src/world_generation.c src/world_lighting.c \
-	src/world_effects.c src/world_render_data.c
+	src/world_effects.c src/world_render_data.c src/world_components.c
 SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
 	src/renderer.c src/world_renderer.c \

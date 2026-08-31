@@ -202,6 +202,32 @@ void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 `PlayerRendererDraw` относится к presentation API и объявлен отдельно в
 `player_renderer.h`.
 
+## World components API
+
+```c
+WorldComponentResult WorldFindComponent(const World *world,
+                                        WorldComponentWorkspace *workspace,
+                                        Rectangle region, int seedX, int seedY,
+                                        int maximumCells);
+```
+
+Объявлен в `world_components.h`. Обходит связную solid component из seed-клетки
+**строго внутри** `region` (в cells, та же конвенция, что у
+`WorldActivateRegion`) и возвращает `WORLD_COMPONENT_DETACHED`, `ANCHORED`,
+`UNKNOWN`, `TOO_LARGE` или `INVALID`.
+
+- `const World *` — мир только читается; детектор не будит chunks и не меняет
+  ни материалов, ни температур.
+- `workspace` принадлежит вызывающему (34 KiB). Аллокаций в запросе нет.
+- Действовать разрешено только на `DETACHED`; `cellCount` и bounds полны только
+  для него. При успехе клетки лежат в
+  `workspace->cellX/cellY[0 .. result.cellCount)` в мировых координатах.
+- Худший случай: `4 × maximumCells` чтений клеток плюс обнуление
+  visited-битмапы размером с площадь региона. От размера мира не зависит.
+
+Правила connectivity, anchoring и bounded search — в
+[ADR 0008](adr/0008-detached-component-detection.md).
+
 ## Abilities API
 
 ```c

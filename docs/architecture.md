@@ -93,6 +93,7 @@ update. При переполнении новые события отбрасы
 | `world_lighting.c/.h` | Грубое двухканальное поле света и его solve. |
 | `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
 | `world_render_data.c` | Единственное место, превращающее `Cell` в `Color`; отдаёт renderer готовые прямоугольники пикселей. |
+| `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает, никем пока не вызывается. |
 
 `world_internal.h` держит горячие accessors (`WorldCell`, `WorldMaterialAt`,
 `CoordinateHash`) как `static inline`. Разделение файлов не должно вставлять
