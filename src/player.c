@@ -259,19 +259,27 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
                                                : 1.0f + fminf(velocityLength / 90.0f,
                                                               0.8f));
 
-    /* Posture follows speed, not the boost key: being thrown fast by an
-       explosion lays the character out just as travelling fast under their own
-       power does. Smoothed, because snapping between upright and flat is the
-       difference between a person shifting their weight and a sprite swap. */
+    /* Normal flight is a hover, not a slow version of the boost pose. Speed only
+       adds a small forward weight shift until boost is actually engaged; boost
+       then opens the rest of the range toward a horizontal superhero pose.
+       Smoothed, because snapping between the two reads as a sprite swap. */
     {
-        float threshold = player->maxSpeed * 0.2f;
-        float span = player->maxSpeed - threshold;
-        float target = span > 0.001f
-                           ? Clamp((velocityLength - threshold) / span, 0.0f, 1.0f)
+        const float maximumHoverLean = 0.12f;
+        float cruise = player->maxSpeed > 0.001f
+                           ? Clamp(velocityLength / player->maxSpeed, 0.0f, 1.0f)
                            : 0.0f;
+        float target = cruise * maximumHoverLean;
 
         if (player->boosting && velocityLength > player->drillSpeed * 0.5f) {
-            target = fmaxf(target, 0.82f);
+            float boostSpan = player->boostMaxSpeed - player->drillSpeed * 0.5f;
+            float boostProgress = boostSpan > 0.001f
+                                      ? Clamp((velocityLength -
+                                               player->drillSpeed * 0.5f) /
+                                                  boostSpan,
+                                              0.0f, 1.0f)
+                                      : 1.0f;
+
+            target = 0.82f + 0.18f * boostProgress;
         }
         player->leanAmount += (target - player->leanAmount) *
                               (1.0f - expf(-9.0f * deltaTime));

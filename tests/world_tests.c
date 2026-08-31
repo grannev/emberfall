@@ -1008,7 +1008,7 @@ static void test_drill_resistance_never_stalls_the_boost(void)
     WorldUnload(&world);
 }
 
-static void test_normal_flight_reaches_a_head_first_pose(void)
+static void test_normal_flight_keeps_a_hover_pose(void)
 {
     World world;
     Player player;
@@ -1025,9 +1025,29 @@ static void test_normal_flight_reaches_a_head_first_pose(void)
     CHECK(!player.boosting, "normal-flight test unexpectedly enabled boost");
     CHECK(player.velocity.x > player.maxSpeed * 0.95f,
           "normal flight never reached cruise speed: %.1f", player.velocity.x);
-    CHECK(player.leanAmount > 0.9f,
-          "normal flight stayed too upright to lead with the head: %.3f",
+    CHECK(fabsf(player.leanAmount - 0.12f) < 0.02f,
+          "normal flight stopped reading as a slight hover lean: %.3f",
           player.leanAmount);
+    WorldUnload(&world);
+}
+
+static void test_boost_flight_reaches_a_head_first_pose(void)
+{
+    World world;
+    Player player;
+    int frame;
+
+    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){48.0f, 64.0f});
+
+    for (frame = 0; frame < 180; ++frame) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     1.0f / 120.0f);
+    }
+
+    CHECK(player.boosting, "boost-pose test never enabled boost");
+    CHECK(player.leanAmount > 0.9f,
+          "boost never reached its head-first pose: %.3f", player.leanAmount);
     WorldUnload(&world);
 }
 
@@ -1101,7 +1121,8 @@ int main(void)
     RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
-    RUN(test_normal_flight_reaches_a_head_first_pose);
+    RUN(test_normal_flight_keeps_a_hover_pose);
+    RUN(test_boost_flight_reaches_a_head_first_pose);
     RUN(test_cryo_does_not_destroy_solid_terrain);
     RUN(test_no_material_evaporates_when_merely_cooled);
     RUN(test_cryo_snuffs_fire_into_smoke);

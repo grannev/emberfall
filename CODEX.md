@@ -186,14 +186,15 @@ over frameworks, generic containers, or unnecessary abstraction.
   a sprite: `up` runs hips-to-head, `side` across the shoulders, and the frame
   rotates from vertical toward the direction of travel as `leanAmount` rises, so
   the same joints hover upright with the knees drawn back and lay out flat with
-  the arms forward at speed. Drive that lean from measured speed, not the boost
-  key, and let ordinary maximum speed reach full lean. Because `up` is
-  hips-to-head, it must converge to **`travel`**, never `-travel`, at full lean;
-  the latter makes the model fly feet-first and lean backwards. Interpolate the
-  angle over its shortest arc, not the two vectors: upright and straight-down
-  vectors cancel halfway and make the model snap. "Behind" for the legs comes
-  from `-side` at rest and `-travel` at speed; taking the direction of travel when
-  there is none tucks the feet upward.
+  the arms forward at boost speed. Normal flight is hovering and caps its target
+  lean at 0.12 even at maxSpeed; only an active boost opens the 0.82–1.0 range.
+  Smooth the transition between those targets. Because `up` is hips-to-head, it
+  must converge to **`travel`**, never `-travel`, at full lean; the latter makes
+  the model fly feet-first and lean backwards. Interpolate the angle over its
+  shortest arc, not the two vectors: upright and straight-down vectors cancel
+  halfway and make the model snap. "Behind" for the legs comes from `-side` at
+  rest and `-travel` at speed; taking the direction of travel when there is none
+  tucks the feet upward.
 - The model has **no outline**. A dark rim around every limb flattens it into a
   silhouette — a brick with a cape — and hides the shading that makes it a body.
   Contrast comes from a lit tone toward `up`, a shadow opposite, and distinctly
