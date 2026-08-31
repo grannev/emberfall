@@ -33,6 +33,9 @@ typedef struct Particle {
     float size;
     float gravity;
     float restitution;
+    /* Presentation-only bloom contribution, 0..1. Simulation never branches
+       on it; explicit metadata keeps pale dust and steam out of emissive. */
+    float emission;
     ParticleContact contact;
     CellMaterial settleMaterial;
     bool active;

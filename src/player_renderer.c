@@ -535,3 +535,51 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         }
     }
 }
+
+void PlayerRendererDrawEmissive(const Player *player)
+{
+    float speed;
+    Vector2 direction;
+
+    if (player == NULL) {
+        return;
+    }
+    speed = sqrtf(player->velocity.x * player->velocity.x +
+                  player->velocity.y * player->velocity.y);
+    if (speed < 0.001f) {
+        direction = (Vector2){player->facingRight ? 1.0f : -1.0f, 0.0f};
+    } else {
+        direction = (Vector2){player->velocity.x / speed,
+                              player->velocity.y / speed};
+    }
+
+    if (player->boosting || player->boostStage != PLAYER_BOOST_NONE) {
+        float stage = (float)player->boostStage;
+        Vector2 trail = {player->position.x - direction.x * (6.0f + stage * 3.0f),
+                         player->position.y - direction.y * (6.0f + stage * 3.0f)};
+        Color color = player->boostStage == PLAYER_BOOST_STAGE_THREE
+                          ? (Color){255, 233, 178, 220}
+                          : (Color){93, 216, 255, 185};
+
+        DrawLineEx(player->position, trail, 1.2f + stage * 0.45f, color);
+        DrawCircleV(player->position, 1.2f + stage * 0.5f, color);
+    }
+    if (player->boostBurstTimer > 0.0f &&
+        player->boostBurstStage != PLAYER_BOOST_NONE) {
+        float duration = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
+                             ? 0.52f
+                             : 0.30f;
+        float progress = 1.0f - player->boostBurstTimer / duration;
+        float radius = 3.0f + progress *
+                                  (8.0f +
+                                   (float)player->boostBurstStage * 5.0f);
+
+        DrawCircleLinesV(player->position, radius,
+                         Fade((Color){150, 224, 255, 255},
+                              (1.0f - progress) * 0.75f));
+    }
+    if (player->drilledCells > 0) {
+        DrawCircleV(player->drillPosition, 2.4f,
+                    (Color){255, 151, 42, 215});
+    }
+}

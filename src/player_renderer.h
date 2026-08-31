@@ -6,5 +6,6 @@
 #include "player.h"
 
 void PlayerRendererDraw(const Player *player, Vector2 aimPosition);
+void PlayerRendererDrawEmissive(const Player *player);
 
 #endif

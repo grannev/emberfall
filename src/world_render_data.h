@@ -15,7 +15,8 @@
    the frame that page arrives, instead of being silently dropped and leaving
    stale pixels on screen until something else happens to change it. */
 typedef bool (*WorldRenderChunkVisitor)(void *context, Rectangle bounds,
-                                        const Color *pixels);
+                                        const Color *pixels,
+                                        const Color *emissivePixels);
 
 void WorldPrepareVisible(World *world, Rectangle visible,
                          WorldRenderChunkVisitor visitor, void *context);

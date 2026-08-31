@@ -23,10 +23,11 @@
 
 #include "world.h"
 
-/* Cells per page, and therefore 256 KiB of RGBA8 per resident page. Small
-   enough that panning uploads little, large enough that a full view is a
-   couple of dozen draw calls rather than a couple of thousand. A multiple of
-   WORLD_CHUNK_SIZE, so a dirty chunk always lies inside exactly one page. */
+/* Cells per page: 256 KiB per RGBA8 layer, 512 KiB for the resident scene and
+   emissive pair. Small enough that panning uploads little, large enough that a
+   full view is a couple of dozen draw calls rather than a couple of thousand.
+   A multiple of WORLD_CHUNK_SIZE, so a dirty chunk always lies inside exactly
+   one page. */
 #define WORLD_RENDER_PAGE_SIZE 256
 
 _Static_assert(WORLD_RENDER_PAGE_SIZE % WORLD_CHUNK_SIZE == 0,
@@ -44,6 +45,7 @@ typedef struct WorldRendererStats {
 
 typedef struct WorldRenderPage {
     Texture2D texture;
+    Texture2D emissiveTexture;
     /* Which page of the world this texture currently holds, or -1 when the
        slot has never been bound. */
     int pageX;
@@ -60,6 +62,8 @@ typedef struct WorldRenderer {
 
 bool WorldRendererInit(WorldRenderer *renderer, const World *world);
 void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible);
+void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
+                               Rectangle visible);
 void WorldRendererUnload(WorldRenderer *renderer);
 
 #endif

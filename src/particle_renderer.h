@@ -4,5 +4,6 @@
 #include "particles.h"
 
 void ParticleRendererDraw(const ParticleSystem *system);
+void ParticleRendererDrawEmissive(const ParticleSystem *system);
 
 #endif

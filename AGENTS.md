@@ -90,6 +90,17 @@ coherent phase with an explanatory message.
   world state. Player, ability, and particle drawing live in dedicated renderer
   modules; simulation modules must not regain `Draw*` calls. `World` owns CPU
   cells/chunks/lighting only and remains valid in headless tests.
+- `Renderer` owns full-resolution scene/emissive targets, two half-resolution
+  bloom targets and the downsample/blur shaders. Five offscreen passes preserve
+  the sharp scene and blur only explicit emission; missing shaders or bloom
+  targets fall back to the sharp scene. Resources are reused in steady state
+  and recreated only on resize. HUD remains a backbuffer overlay; gameplay must
+  not gain render-target or shader dependencies.
+- Each resident world page has scene and emissive textures. One 8 KiB stack
+  staging pair builds both from a dirty chunk; `MaterialInfo.emission` and hot
+  solids enter bloom, ordinary bright terrain does not. Particle emission is
+  explicit presentation metadata and must be reset whenever a pool slot is
+  reused.
 - Abilities are a registry: `ABILITIES` in `abilities.c` holds what every power
   shares, one `apply` function holds what a power does, `input.c` owns the key
   bindings, and feedback leaves through `GameEvent` — knockback included, via
