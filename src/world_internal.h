@@ -97,11 +97,12 @@ static inline uint32_t CoordinateHash(int x, int y)
     return value;
 }
 
-/* world_storage.c */
-/* Adds one chunk to whichever schedule is currently being filled. Idempotent:
-   a chunk already in that schedule is not added twice, which is what keeps the
-   compact lists free of duplicates. */
-void WorldScheduleChunk(World *world, int chunkX, int chunkY);
+/* world_storage.c
+ *
+ * Every wake goes through WorldWakeCellAndNeighbors, which is the only caller
+ * of the internal scheduler: the flag array and the compact per-row lists must
+ * agree, and one entry point is what guarantees they do. A module that needs to
+ * schedule work should wake a cell, not reach for the schedule. */
 void WorldWakeCellAndNeighbors(World *world, int x, int y);
 void WorldSetCellRaw(World *world, int x, int y, CellMaterial material);
 void WorldSetGeneratedCell(World *world, int x, int y, CellMaterial material);

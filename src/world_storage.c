@@ -11,7 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-void WorldScheduleChunk(World *world, int chunkX, int chunkY)
+/* Adds one chunk to whichever schedule is currently being filled. Idempotent:
+   a chunk already in that schedule is not added twice, which is what keeps the
+   compact lists free of duplicates. Static on purpose — see world_internal.h. */
+static void WorldScheduleChunk(World *world, int chunkX, int chunkY)
 {
     uint8_t *flags;
     int32_t *counts;

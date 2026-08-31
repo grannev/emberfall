@@ -36,9 +36,10 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 - Cell mutations wake only the affected chunk and crossed borders; generated
   distant dynamics remain asleep until streamed into play.
 - The simulation schedule is a flag array plus a compact per-row list of active
-  chunk columns, and every wake path must keep the two consistent — go through
-  `WorldScheduleChunk`. The set simulated by a tick is frozen at its start, so
-  a wake raised during a tick schedules the next one.
+  chunk columns, and the two must always agree; the single scheduler is private
+  to `world_storage.c`, so wake a cell rather than reaching for the schedule.
+  The set simulated by a tick is frozen at its start, so a wake raised during a
+  tick schedules the next one.
 - Fire and lava heating stay local. Passive lava cannot melt its rock lining.
 - Player collision uses substeps and must not tunnel; boost drilling must not
   leave the collider embedded.
