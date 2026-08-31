@@ -15,6 +15,7 @@
 #include "player.h"
 #include "abilities.h"
 #include "world.h"
+#include "world_components.h"
 #include "world_render_data.h"
 
 static int testsRun = 0;
@@ -529,6 +530,398 @@ static void test_visual_particles_never_change_the_world(void)
     }
     CHECK(WorldDigest(&world) == before,
           "visual particles changed the world they were only meant to read");
+    WorldUnload(&world);
+}
+
+/* --- connected solid components ----------------------------------------- */
+
+/* One workspace for the whole section. It is about 34 KiB, which belongs in a
+   long-lived owner rather than on the stack of every test — and that is exactly
+   how the future dynamic terrain system will hold it. */
+static WorldComponentWorkspace componentWorkspace;
+
+static const char *ComponentStatusName(WorldComponentStatus status)
+{
+    switch (status) {
+    case WORLD_COMPONENT_DETACHED: return "DETACHED";
+    case WORLD_COMPONENT_ANCHORED: return "ANCHORED";
+    case WORLD_COMPONENT_UNKNOWN: return "UNKNOWN";
+    case WORLD_COMPONENT_TOO_LARGE: return "TOO_LARGE";
+    default: return "INVALID";
+    }
+}
+
+static WorldComponentResult FindComponent(const World *world, Rectangle region,
+                                          int seedX, int seedY)
+{
+    return WorldFindComponent(world, &componentWorkspace, region, seedX, seedY,
+                              WORLD_COMPONENT_MAX_CELLS);
+}
+
+/* Every fixture below uses a world large enough to hold three chunks in each
+   direction, so a component can be placed across a chunk border on purpose. */
+static Rectangle WholeWorld(const World *world)
+{
+    return (Rectangle){0.0f, 0.0f, (float)world->width, (float)world->height};
+}
+
+static void test_a_lone_island_is_reported_detached(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 40, 40, 44, 44, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 42, 42);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "a lone island reported %s", ComponentStatusName(found.status));
+    CHECK(found.cellCount == 25, "island has %d cells, expected 25",
+          found.cellCount);
+    CHECK(found.minimumX == 40 && found.maximumX == 44 &&
+              found.minimumY == 40 && found.maximumY == 44,
+          "island bounds are %d..%d, %d..%d", found.minimumX, found.maximumX,
+          found.minimumY, found.maximumY);
+    WorldUnload(&world);
+}
+
+static void test_two_islands_are_separate_components(void)
+{
+    World world;
+    WorldComponentResult first;
+    WorldComponentResult second;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 10, 10, 14, 14, MATERIAL_ROCK);
+    FillRect(&world, 60, 60, 64, 64, MATERIAL_ROCK);
+
+    first = FindComponent(&world, WholeWorld(&world), 12, 12);
+    second = FindComponent(&world, WholeWorld(&world), 62, 62);
+
+    CHECK(first.status == WORLD_COMPONENT_DETACHED &&
+              second.status == WORLD_COMPONENT_DETACHED,
+          "islands reported %s and %s", ComponentStatusName(first.status),
+          ComponentStatusName(second.status));
+    CHECK(first.cellCount == 25 && second.cellCount == 25,
+          "islands have %d and %d cells, expected 25 each", first.cellCount,
+          second.cellCount);
+    /* The point of the test: neither search wandered into the other island. */
+    CHECK(first.maximumX == 14 && second.minimumX == 60,
+          "the two islands were merged into one component");
+    WorldUnload(&world);
+}
+
+/* Water is not solid, so it cannot hold two blocks of rock together. This pins
+   the membership rule down: a component is made of solid cells, not of
+   non-empty ones. */
+static void test_a_liquid_gap_does_not_join_two_components(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 20, 40, 24, 44, MATERIAL_ROCK);
+    FillRect(&world, 25, 40, 29, 44, MATERIAL_WATER);
+    FillRect(&world, 30, 40, 34, 44, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 22, 42);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "the left block reported %s", ComponentStatusName(found.status));
+    CHECK(found.cellCount == 25,
+          "water joined the two blocks: %d cells instead of 25",
+          found.cellCount);
+    WorldUnload(&world);
+}
+
+/* The floor of these fixtures spans the whole world, so it touches the map
+   border — which the simulation already treats as immovable rock. */
+static void BuildIslandOnABridge(World *world)
+{
+    FillRect(world, 0, 80, world->width - 1, world->height - 1, MATERIAL_ROCK);
+    FillRect(world, 30, 20, 40, 30, MATERIAL_ROCK);
+    FillRect(world, 35, 31, 35, 79, MATERIAL_ROCK);
+}
+
+static void test_an_intact_bridge_to_the_ground_prevents_detachment(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    BuildIslandOnABridge(&world);
+
+    found = FindComponent(&world, WholeWorld(&world), 35, 25);
+    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
+          "an island still bridged to the ground reported %s",
+          ComponentStatusName(found.status));
+    WorldUnload(&world);
+}
+
+static void test_cutting_the_bridge_detaches_the_island(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    BuildIslandOnABridge(&world);
+    FillRect(&world, 35, 50, 35, 52, MATERIAL_EMPTY);
+
+    found = FindComponent(&world, WholeWorld(&world), 35, 25);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "an island cut free reported %s", ComponentStatusName(found.status));
+    /* 11x11 island plus the nineteen cells of bridge still hanging from it. */
+    CHECK(found.cellCount == 121 + 19, "the freed piece has %d cells, expected 140",
+          found.cellCount);
+    CHECK(found.minimumY == 20 && found.maximumY == 49,
+          "the freed piece spans rows %d..%d, expected 20..49", found.minimumY,
+          found.maximumY);
+
+    /* The stump below the cut is still part of the ground. */
+    found = FindComponent(&world, WholeWorld(&world), 35, 60);
+    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
+          "the stump left standing on the floor reported %s",
+          ComponentStatusName(found.status));
+    WorldUnload(&world);
+}
+
+/* Connectivity is four-neighbour, and that is a decision rather than an
+   accident, so it is pinned here in both directions. Two blocks meeting at a
+   corner are two components... */
+static void test_a_corner_contact_does_not_join_two_components(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 40, 40, 44, 44, MATERIAL_ROCK);
+    FillRect(&world, 45, 45, 49, 49, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 42, 42);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "the upper block reported %s", ComponentStatusName(found.status));
+    CHECK(found.cellCount == 25,
+          "a corner contact merged two blocks: %d cells instead of 25",
+          found.cellCount);
+    WorldUnload(&world);
+}
+
+/* ...and the price of that, stated openly: a piece joined to the ground by a
+   single diagonal staircase reads as free. Such a join is one cell thick and
+   would not hold anything up, but a caller that wants a minimum thickness
+   before tearing terrain off has to impose it itself. Changing connectivity
+   later should mean deliberately editing this test, not discovering it. */
+static void test_a_diagonal_only_join_to_the_ground_reads_as_detached(void)
+{
+    World world;
+    WorldComponentResult found;
+    int step;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 0, 80, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    FillRect(&world, 30, 20, 40, 30, MATERIAL_ROCK);
+    /* A staircase from the island's bottom-right corner down to the floor.
+       Every cell touches the next only at a corner, the first touches the
+       island only at a corner, and the hole punched under the last one leaves
+       it touching the floor only at a corner too. */
+    for (step = 0; step < 49; ++step) {
+        WorldSetCell(&world, 41 + step, 31 + step, MATERIAL_ROCK);
+    }
+    WorldSetCell(&world, 89, 80, MATERIAL_EMPTY);
+
+    found = FindComponent(&world, WholeWorld(&world), 35, 25);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "a diagonally joined island reported %s",
+          ComponentStatusName(found.status));
+    CHECK(found.cellCount == 121,
+          "the staircase was counted as part of the island: %d cells",
+          found.cellCount);
+    WorldUnload(&world);
+}
+
+/* Nothing in the detector is chunk-aware, and this test exists to keep it that
+   way: a future chunk-local optimisation must not quietly cut components at a
+   chunk border. */
+static void test_a_component_crossing_a_chunk_boundary_stays_whole(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    CHECK(28 / WORLD_CHUNK_SIZE != 36 / WORLD_CHUNK_SIZE,
+          "the fixture no longer straddles a chunk border");
+    FillRect(&world, 28, 28, 36, 36, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 28, 28);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "a component across a chunk border reported %s",
+          ComponentStatusName(found.status));
+    CHECK(found.cellCount == 81,
+          "a component across a chunk border has %d cells, expected 81",
+          found.cellCount);
+    CHECK(found.minimumX == 28 && found.maximumX == 36 &&
+              found.minimumY == 28 && found.maximumY == 36,
+          "bounds %d..%d, %d..%d were cut at a chunk border", found.minimumX,
+          found.maximumX, found.minimumY, found.maximumY);
+    WorldUnload(&world);
+}
+
+/* Reaching the edge of the query region is not by itself a reason to give up:
+   the detector peeks one cell past it to learn whether the component actually
+   continues. It gives up only when something solid is really there. */
+static void test_a_component_continuing_past_the_region_is_unknown(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 10, 40, 60, 40, MATERIAL_ROCK);
+
+    found = FindComponent(&world, (Rectangle){20.0f, 30.0f, 21.0f, 21.0f}, 30, 40);
+    CHECK(found.status == WORLD_COMPONENT_UNKNOWN,
+          "a bar running out of the region reported %s",
+          ComponentStatusName(found.status));
+    /* A failed search reports nothing rather than however much it explored: a
+       partial component is not a smaller component, and handing one back
+       invites a caller to act on it. */
+    CHECK(found.cellCount == 0 && found.minimumX == 0 && found.maximumX == 0,
+          "an unknown result carried %d cells and bounds %d..%d",
+          found.cellCount, found.minimumX, found.maximumX);
+    WorldUnload(&world);
+}
+
+static void test_a_component_that_only_touches_the_region_edge_is_detached(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 22, 60, 26, 64, MATERIAL_ROCK);
+
+    /* A region exactly the size of the island: every cell of it sits on the
+       region edge, and every neighbour outside is empty. */
+    found = FindComponent(&world, (Rectangle){22.0f, 60.0f, 5.0f, 5.0f}, 24, 62);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "an island filling its region reported %s",
+          ComponentStatusName(found.status));
+    CHECK(found.cellCount == 25, "island has %d cells, expected 25",
+          found.cellCount);
+    WorldUnload(&world);
+}
+
+static void test_a_component_touching_the_world_edge_is_anchored(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 2, 42);
+    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
+          "a component against the map border reported %s",
+          ComponentStatusName(found.status));
+    WorldUnload(&world);
+}
+
+static void test_a_component_larger_than_the_budget_is_too_large(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 10, 10, 29, 29, MATERIAL_ROCK);
+
+    found = WorldFindComponent(&world, &componentWorkspace, WholeWorld(&world),
+                               20, 20, 50);
+    CHECK(found.status == WORLD_COMPONENT_TOO_LARGE,
+          "a 400-cell block under a 50-cell budget reported %s",
+          ComponentStatusName(found.status));
+
+    /* The same block fits comfortably in the full workspace. */
+    found = FindComponent(&world, WholeWorld(&world), 20, 20);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED && found.cellCount == 400,
+          "the same block reported %s with %d cells",
+          ComponentStatusName(found.status), found.cellCount);
+    WorldUnload(&world);
+}
+
+/* A region wider than the visited bitmap can index is refused outright.
+   Clipping it instead would silently answer a question the caller did not
+   ask. */
+static void test_an_oversized_or_malformed_query_is_refused(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    FillRect(&world, 40, 40, 44, 44, MATERIAL_ROCK);
+
+    found = FindComponent(&world, (Rectangle){0.0f, 0.0f, 200.0f, 100.0f}, 42, 42);
+    CHECK(found.status == WORLD_COMPONENT_INVALID,
+          "a %d-wide region reported %s instead of being refused",
+          WORLD_COMPONENT_MAX_SPAN + 1, ComponentStatusName(found.status));
+
+    /* The span is judged on what the caller asked for, before the world clips
+       it. Otherwise the same oversized region would be refused in open ground
+       and accepted at the border, purely because the map trimmed it. */
+    found = FindComponent(&world, (Rectangle){-160.0f, 0.0f, 200.0f, 100.0f},
+                          42, 42);
+    CHECK(found.status == WORLD_COMPONENT_INVALID,
+          "an oversized region was accepted at the map border, reporting %s",
+          ComponentStatusName(found.status));
+
+    /* A legal region that merely hangs over the edge is still fine. */
+    FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
+    found = FindComponent(&world, (Rectangle){-40.0f, 20.0f, 100.0f, 60.0f}, 2, 42);
+    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
+          "a legal region overhanging the border reported %s",
+          ComponentStatusName(found.status));
+
+    found = FindComponent(&world, (Rectangle){20.0f, 20.0f, 64.0f, 64.0f}, 10, 10);
+    CHECK(found.status == WORLD_COMPONENT_INVALID,
+          "a seed outside the region reported %s",
+          ComponentStatusName(found.status));
+
+    found = FindComponent(&world, (Rectangle){20.0f, 20.0f, 64.0f, 64.0f}, 60, 60);
+    CHECK(found.status == WORLD_COMPONENT_INVALID,
+          "a seed on an empty cell reported %s",
+          ComponentStatusName(found.status));
+    WorldUnload(&world);
+}
+
+/* The detector is a query, not a step of the simulation. It must leave no trace
+   at all — not a material, not a temperature, and not a woken chunk. */
+static void test_the_detector_never_changes_the_world(void)
+{
+    World world;
+    uint64_t before;
+    int activeBefore;
+    uint32_t tickBefore;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    WorldGenerate(&world, 0xC0FFEEu);
+    FillRect(&world, 60, 40, 70, 50, MATERIAL_ROCK);
+    FillRect(&world, 100, 40, 160, 40, MATERIAL_ROCK);
+    Tick(&world, 4);
+
+    before = WorldDigest(&world);
+    activeBefore = world.activeChunkCount;
+    tickBefore = world.tick;
+
+    /* One query of each outcome the detector can produce. */
+    (void)FindComponent(&world, (Rectangle){40.0f, 20.0f, 64.0f, 64.0f}, 65, 45);
+    (void)FindComponent(&world, (Rectangle){100.0f, 20.0f, 32.0f, 64.0f}, 110, 40);
+    (void)FindComponent(&world, (Rectangle){0.0f, 100.0f, 100.0f, 44.0f}, 10, 130);
+    (void)WorldFindComponent(&world, &componentWorkspace,
+                             (Rectangle){40.0f, 20.0f, 64.0f, 64.0f}, 65, 45, 4);
+    (void)FindComponent(&world, (Rectangle){0.0f, 0.0f, 200.0f, 100.0f}, 65, 45);
+
+    CHECK(WorldDigest(&world) == before,
+          "the detector changed materials or temperatures");
+    CHECK(world.activeChunkCount == activeBefore,
+          "the detector woke chunks: %d active, expected %d",
+          world.activeChunkCount, activeBefore);
+    CHECK(world.tick == tickBefore, "the detector advanced the tick counter");
     WorldUnload(&world);
 }
 
@@ -1885,6 +2278,20 @@ int main(void)
     RUN(test_the_tick_counter_survives_wrapping_its_cell_stamp);
     RUN(test_the_schedule_never_lists_a_chunk_twice);
     RUN(test_visual_particles_never_change_the_world);
+    RUN(test_a_lone_island_is_reported_detached);
+    RUN(test_two_islands_are_separate_components);
+    RUN(test_a_liquid_gap_does_not_join_two_components);
+    RUN(test_an_intact_bridge_to_the_ground_prevents_detachment);
+    RUN(test_cutting_the_bridge_detaches_the_island);
+    RUN(test_a_corner_contact_does_not_join_two_components);
+    RUN(test_a_diagonal_only_join_to_the_ground_reads_as_detached);
+    RUN(test_a_component_crossing_a_chunk_boundary_stays_whole);
+    RUN(test_a_component_continuing_past_the_region_is_unknown);
+    RUN(test_a_component_that_only_touches_the_region_edge_is_detached);
+    RUN(test_a_component_touching_the_world_edge_is_anchored);
+    RUN(test_a_component_larger_than_the_budget_is_too_large);
+    RUN(test_an_oversized_or_malformed_query_is_refused);
+    RUN(test_the_detector_never_changes_the_world);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

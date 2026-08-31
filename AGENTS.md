@@ -98,9 +98,16 @@ coherent phase with an explanatory message.
 - Particles are one fixed pool with two roles kept apart by the type system:
   visual particles are stepped against a `const World *` and cannot write cells;
   only `PARTICLE_CONTACT_SETTLE` debris may, and only into an empty cell.
+- Connected-component queries (`world_components.h`) are bounded by a
+  caller-supplied region and a caller-owned workspace, and must stay that way:
+  the production world's terrain is one connected mass of fourteen million
+  cells, so an unbounded fill is never acceptable. Only
+  `WORLD_COMPONENT_DETACHED` may be acted on; every other status means leave it
+  alone.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`,
-  `world_lighting.c`, `world_effects.c` and `world_render_data.c`.
+  `world_lighting.c`, `world_effects.c`, `world_render_data.c` and
+  `world_components.c`.
   `world_internal.h`, `world_thermal.h` and `world_lighting.h` are private to
   those files. Hot accessors live in the internal headers as `static inline` on
   purpose: splitting responsibilities must not put a cross-module call in the
