@@ -11,6 +11,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+void WorldScheduleChunk(World *world, int chunkX, int chunkY)
+{
+    uint8_t *flags;
+    int32_t *counts;
+    int32_t *columns;
+    size_t index;
+
+    if (chunkX < 0 || chunkX >= world->chunkColumns || chunkY < 0 ||
+        chunkY >= world->chunkRows) {
+        return;
+    }
+    /* A wake raised while a tick is running belongs to the next tick. The set
+       being simulated is frozen at the start of WorldUpdate, so the iteration
+       order stays fixed and a chunk cannot appear halfway through its own row.
+       The cost is at most one tick of latency before a newly disturbed chunk
+       runs, which no invariant depends on: `updatedTick` already guarantees one
+       move per cell per tick, and the wake itself guarantees the chunk runs. */
+    flags = world->simulating ? world->nextActiveChunks : world->activeChunks;
+    counts = world->simulating ? world->nextRowCount : world->activeRowCount;
+    columns = world->simulating ? world->nextRowColumns : world->activeRowColumns;
+
+    index = WorldChunkIndex(world, chunkX, chunkY);
+    if (flags[index] != 0u) {
+        return;
+    }
+    flags[index] = 1u;
+    columns[(size_t)chunkY * (size_t)world->chunkColumns +
+            (size_t)counts[chunkY]] = (int32_t)chunkX;
+    ++counts[chunkY];
+    /* Keep the reported figure exact even between ticks. It used to be
+       recomputed only by WorldUpdate, so a laser fired between two ticks left
+       the HUD and any caller reading a stale count. */
+    if (!world->simulating) {
+        ++world->activeChunkCount;
+    }
+}
+
 void WorldWakeCellAndNeighbors(World *world, int x, int y)
 {
     int centerChunkX;
@@ -49,8 +86,7 @@ void WorldWakeCellAndNeighbors(World *world, int x, int y)
                 continue;
             }
             index = (size_t)chunkY * (size_t)world->chunkColumns + (size_t)chunkX;
-            world->activeChunks[index] = 1u;
-            world->nextActiveChunks[index] = 1u;
+            WorldScheduleChunk(world, chunkX, chunkY);
             if (world->dirtyChunks != NULL) {
                 world->dirtyChunks[index] = 1u;
                 world->lightDirtyChunks[index] = 1u;
@@ -121,6 +157,12 @@ bool WorldInit(World *world, int width, int height)
     world->cells = calloc(cellCount, sizeof(*world->cells));
     world->activeChunks = calloc(chunkCount, sizeof(*world->activeChunks));
     world->nextActiveChunks = calloc(chunkCount, sizeof(*world->nextActiveChunks));
+    world->activeRowColumns = calloc(chunkCount, sizeof(*world->activeRowColumns));
+    world->nextRowColumns = calloc(chunkCount, sizeof(*world->nextRowColumns));
+    world->activeRowCount = calloc((size_t)world->chunkRows,
+                                   sizeof(*world->activeRowCount));
+    world->nextRowCount = calloc((size_t)world->chunkRows,
+                                 sizeof(*world->nextRowCount));
     world->lightColumns = (width + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
     world->lightRows = (height + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
     lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
@@ -150,7 +192,9 @@ bool WorldInit(World *world, int width, int height)
     }
 
     if (world->cells == NULL || world->activeChunks == NULL ||
-        world->nextActiveChunks == NULL || world->dirtyChunks == NULL ||
+        world->nextActiveChunks == NULL || world->activeRowColumns == NULL ||
+        world->nextRowColumns == NULL || world->activeRowCount == NULL ||
+        world->nextRowCount == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
         world->lightShownSky == NULL || world->lightShownEmber == NULL ||
@@ -182,6 +226,10 @@ void WorldUnload(World *world)
     free(world->cells);
     free(world->activeChunks);
     free(world->nextActiveChunks);
+    free(world->activeRowColumns);
+    free(world->nextRowColumns);
+    free(world->activeRowCount);
+    free(world->nextRowCount);
     free(world->dirtyChunks);
     free(world->lightDirtyChunks);
     free(world->lightSky);
@@ -199,16 +247,7 @@ void WorldCountActiveState(World *world)
 
     world->activeChunkCount = 0;
     for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
-        int chunkX;
-
-        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
-            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
-                                (size_t)chunkX;
-
-            if (world->activeChunks[chunkIndex] != 0u) {
-                ++world->activeChunkCount;
-            }
-        }
+        world->activeChunkCount += (int)world->activeRowCount[chunkY];
     }
 }
 
@@ -253,8 +292,7 @@ void WorldActivateRegion(World *world, Rectangle region)
             int y;
             bool needsSimulation = false;
 
-            if (world->activeChunks[chunkIndex] != 0u ||
-                world->nextActiveChunks[chunkIndex] != 0u) {
+            if (world->activeChunks[chunkIndex] != 0u) {
                 continue;
             }
             minimumX = chunkX * WORLD_CHUNK_SIZE;
@@ -280,8 +318,7 @@ void WorldActivateRegion(World *world, Rectangle region)
                 }
             }
             if (needsSimulation) {
-                world->activeChunks[chunkIndex] = 1u;
-                world->nextActiveChunks[chunkIndex] = 1u;
+                WorldScheduleChunk(world, chunkX, chunkY);
             }
         }
     }
@@ -300,24 +337,18 @@ int WorldCountDynamicCells(const World *world)
     }
 
     for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
-        int chunkX;
+        int slot;
 
-        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
-            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
-                                (size_t)chunkX;
-            int minimumX;
-            int maximumX;
-            int minimumY;
-            int maximumY;
+        for (slot = 0; slot < (int)world->activeRowCount[chunkY]; ++slot) {
+            int chunkX = (int)world->activeRowColumns[(size_t)chunkY *
+                                                          (size_t)world->chunkColumns +
+                                                      (size_t)slot];
+            int minimumX = chunkX * WORLD_CHUNK_SIZE;
+            int maximumX = minimumX + WORLD_CHUNK_SIZE;
+            int minimumY = chunkY * WORLD_CHUNK_SIZE;
+            int maximumY = minimumY + WORLD_CHUNK_SIZE;
             int y;
 
-            if (world->activeChunks[chunkIndex] == 0u) {
-                continue;
-            }
-            minimumX = chunkX * WORLD_CHUNK_SIZE;
-            maximumX = minimumX + WORLD_CHUNK_SIZE;
-            minimumY = chunkY * WORLD_CHUNK_SIZE;
-            maximumY = minimumY + WORLD_CHUNK_SIZE;
             if (maximumX > world->width) maximumX = world->width;
             if (maximumY > world->height) maximumY = world->height;
 

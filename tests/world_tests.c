@@ -201,6 +201,85 @@ static void test_game_update_publishes_transient_events(void)
     GameUnload(&game);
 }
 
+/* --- active chunk scheduler --------------------------------------------- */
+
+/* The schedule exists in two representations — a flag per chunk and a compact
+   per-row list — and every wake path has to keep them agreeing. A duplicate in
+   a list would simulate a chunk twice in one tick; a flag with no list entry
+   would drop it silently. */
+static void CheckScheduleIsConsistent(const World *world, const char *when)
+{
+    int listed = 0;
+    int flagged = 0;
+    int chunkY;
+    int chunkX;
+
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int slot;
+        int previous = -1;
+
+        listed += (int)world->activeRowCount[chunkY];
+        for (slot = 0; slot < (int)world->activeRowCount[chunkY]; ++slot) {
+            int column = (int)world->activeRowColumns[(size_t)chunkY *
+                                                          (size_t)world->chunkColumns +
+                                                      (size_t)slot];
+
+            CHECK(column >= 0 && column < world->chunkColumns,
+                  "%s: scheduled column %d is out of range", when, column);
+            CHECK(world->activeChunks[(size_t)chunkY * (size_t)world->chunkColumns +
+                                      (size_t)column] != 0u,
+                  "%s: chunk %d,%d is listed but not flagged", when, column, chunkY);
+            /* WorldUpdate sorts each row before walking it, so after a tick a
+               repeat would show up as a non-increasing pair. */
+            CHECK(column != previous,
+                  "%s: chunk %d,%d appears twice in the schedule", when, column,
+                  chunkY);
+            previous = column;
+        }
+    }
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            if (world->activeChunks[(size_t)chunkY * (size_t)world->chunkColumns +
+                                    (size_t)chunkX] != 0u) {
+                ++flagged;
+            }
+        }
+    }
+    CHECK(listed == flagged, "%s: %d chunks listed but %d flagged", when, listed,
+          flagged);
+    CHECK(world->activeChunkCount == flagged,
+          "%s: reported %d active chunks but %d are flagged", when,
+          world->activeChunkCount, flagged);
+}
+
+static void test_the_schedule_never_lists_a_chunk_twice(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 160), "world allocation failed");
+    /* Sand pouring across a chunk boundary and lava beside water: both wake
+       neighbours constantly, from inside a tick and from outside one. */
+    FillRect(&world, 20, 10, 44, 30, MATERIAL_SAND);
+    FillRect(&world, 60, 100, 90, 110, MATERIAL_WATER);
+    FillRect(&world, 91, 100, 120, 110, MATERIAL_LAVA);
+    CheckScheduleIsConsistent(&world, "after seeding");
+
+    for (step = 0; step < 60; ++step) {
+        WorldUpdate(&world);
+        CheckScheduleIsConsistent(&world, "during simulation");
+        if (step == 30) {
+            /* A mutation from outside a tick has to schedule the tick that is
+               about to run, not the one that just finished. */
+            WorldDrillCircle(&world, 200, 80, 5);
+            CheckScheduleIsConsistent(&world, "after an out-of-tick mutation");
+            CHECK(world.activeChunkCount > 0,
+                  "drilling between ticks scheduled nothing");
+        }
+    }
+    WorldUnload(&world);
+}
+
 /* --- determinism --------------------------------------------------------- */
 
 /* A cheap order-sensitive digest of everything the simulation owns. Comparing
@@ -1714,6 +1793,7 @@ int main(void)
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
     RUN(test_a_seeded_session_replays_identically);
+    RUN(test_the_schedule_never_lists_a_chunk_twice);
     RUN(test_visual_particles_never_change_the_world);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);

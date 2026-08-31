@@ -99,6 +99,11 @@ void WorldGenerate(World *world, uint64_t seed)
     memset(world->cells, 0, cellCount * sizeof(*world->cells));
     memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
+    memset(world->activeRowCount, 0,
+           (size_t)world->chunkRows * sizeof(*world->activeRowCount));
+    memset(world->nextRowCount, 0,
+           (size_t)world->chunkRows * sizeof(*world->nextRowCount));
+    world->simulating = false;
     memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
     memset(world->lightDirtyChunks, 1,
            chunkCount * sizeof(*world->lightDirtyChunks));

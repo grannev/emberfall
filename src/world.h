@@ -83,8 +83,25 @@ typedef struct World {
     int chunkColumns;
     int chunkRows;
     int activeChunkCount;
+    /* The simulation schedule, kept in two representations because both are
+       needed: a flag per chunk for O(1) membership, and a compact per-chunk-row
+       list of active columns for iteration. Without the lists a settled world
+       still walked every chunk slot of every row — 442 000 of them per tick on
+       the production map — to discover it had nothing to do.
+
+       `activeChunks` is the set being simulated and is frozen for the duration
+       of a tick; `nextActiveChunks` accumulates what the tick woke. They swap
+       at the end of WorldUpdate. */
     uint8_t *activeChunks;
     uint8_t *nextActiveChunks;
+    int32_t *activeRowColumns;
+    int32_t *activeRowCount;
+    int32_t *nextRowColumns;
+    int32_t *nextRowCount;
+    /* True only inside WorldUpdate. A wake during a tick schedules the next
+       one; a wake between ticks — a laser, a settling particle, a drilled
+       tunnel — schedules the tick about to run. */
+    bool simulating;
     /* Chunks whose pixels changed since the last upload. The simulation already
        tracks where work happens; the renderer reuses that instead of rebuilding
        the whole texture every frame. */

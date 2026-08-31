@@ -206,9 +206,30 @@ static void WorldUpdateCellAt(World *world, int x, int y)
     }
 }
 
+/* Insertion sort of one chunk row's active columns. Wakes append in whatever
+   order they happened, but the traversal order is part of the simulation's
+   contract — a row is walked left to right or right to left, never in the order
+   the wakes arrived — so the row is put back in ascending order first. The
+   arrays are tens of entries long even in the busiest scenes, which is exactly
+   where insertion sort is the right choice. */
+static void WorldSortRow(int32_t *columns, int count)
+{
+    int i;
+
+    for (i = 1; i < count; ++i) {
+        int32_t value = columns[i];
+        int j = i - 1;
+
+        while (j >= 0 && columns[j] > value) {
+            columns[j + 1] = columns[j];
+            --j;
+        }
+        columns[j + 1] = value;
+    }
+}
+
 void WorldUpdate(World *world)
 {
-    size_t chunkCount;
     int chunkY;
 
     if (world == NULL || world->cells == NULL || world->activeChunks == NULL ||
@@ -216,43 +237,45 @@ void WorldUpdate(World *world)
         return;
     }
 
-    chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     world->lastTickStats = (WorldTickStats){0};
-    memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     world->reactionCount = 0;
     ++world->tick;
     if (world->tick == 0u) {
         world->tick = 1u;
     }
+    /* From here to the swap, `activeChunks` is the frozen schedule and every
+       wake lands in `nextActiveChunks` instead. */
+    world->simulating = true;
 
     for (chunkY = world->chunkRows - 1; chunkY >= 0; --chunkY) {
         int minimumY = chunkY * WORLD_CHUNK_SIZE;
         int maximumY = minimumY + WORLD_CHUNK_SIZE - 1;
+        int activeInRow = (int)world->activeRowCount[chunkY];
+        int32_t *rowColumns = world->activeRowColumns +
+                              (size_t)chunkY * (size_t)world->chunkColumns;
         int y;
 
+        if (activeInRow == 0) {
+            continue;
+        }
+        WorldSortRow(rowColumns, activeInRow);
         if (maximumY >= world->height) maximumY = world->height - 1;
         for (y = maximumY; y >= minimumY; --y) {
             bool reverse = ((world->tick + (uint32_t)y) & 1u) != 0u;
-            int chunkStart = reverse ? world->chunkColumns - 1 : 0;
-            int chunkEnd = reverse ? -1 : world->chunkColumns;
-            int chunkStep = reverse ? -1 : 1;
-            int chunkX;
+            int slotStart = reverse ? activeInRow - 1 : 0;
+            int slotEnd = reverse ? -1 : activeInRow;
+            int slotStep = reverse ? -1 : 1;
+            int slot;
 
-            for (chunkX = chunkStart; chunkX != chunkEnd; chunkX += chunkStep) {
-                size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
-                                    (size_t)chunkX;
-                int minimumX;
-                int maximumX;
+            for (slot = slotStart; slot != slotEnd; slot += slotStep) {
+                int chunkX = (int)rowColumns[slot];
+                int minimumX = chunkX * WORLD_CHUNK_SIZE;
+                int maximumX = minimumX + WORLD_CHUNK_SIZE;
                 int start;
                 int end;
                 int step;
                 int x;
 
-                if (world->activeChunks[chunkIndex] == 0u) {
-                    continue;
-                }
-                minimumX = chunkX * WORLD_CHUNK_SIZE;
-                maximumX = minimumX + WORLD_CHUNK_SIZE;
                 if (maximumX > world->width) maximumX = world->width;
                 if (y == maximumY) {
                     ++world->lastTickStats.processedChunks;
@@ -270,20 +293,44 @@ void WorldUpdate(World *world)
             }
         }
     }
+    world->simulating = false;
 
     {
         uint8_t *previousChunks = world->activeChunks;
-        size_t chunkIndex;
+        int32_t *previousColumns = world->activeRowColumns;
+        int32_t *previousCount = world->activeRowCount;
 
         /* Mark the set that was actually simulated, not the one that will run
            next tick: a chunk that settles and goes to sleep still owes the
-           texture its final frame. */
-        for (chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex) {
-            world->dirtyChunks[chunkIndex] |= world->activeChunks[chunkIndex];
-            world->lightDirtyChunks[chunkIndex] |= world->activeChunks[chunkIndex];
+           texture its final frame. Walking the schedule rather than the whole
+           chunk grid is the point of the lists — a settled world touches
+           nothing here at all. */
+        for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+            int slot;
+
+            for (slot = 0; slot < (int)previousCount[chunkY]; ++slot) {
+                size_t chunkIndex =
+                    WorldChunkIndex(world,
+                                    (int)previousColumns[(size_t)chunkY *
+                                                             (size_t)world->chunkColumns +
+                                                         (size_t)slot],
+                                    chunkY);
+
+                world->dirtyChunks[chunkIndex] = 1u;
+                world->lightDirtyChunks[chunkIndex] = 1u;
+                /* Clearing as we go leaves the retired buffer empty and ready
+                   to be filled by the next tick, with no full-array memset. */
+                previousChunks[chunkIndex] = 0u;
+            }
+            previousCount[chunkY] = 0;
         }
+
         world->activeChunks = world->nextActiveChunks;
+        world->activeRowColumns = world->nextRowColumns;
+        world->activeRowCount = world->nextRowCount;
         world->nextActiveChunks = previousChunks;
+        world->nextRowColumns = previousColumns;
+        world->nextRowCount = previousCount;
     }
     WorldCountActiveState(world);
 }
