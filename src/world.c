@@ -169,6 +169,12 @@ static uint32_t CoordinateHash(int x, int y)
 /* Everything a material *is* lives in this one table; only what a material
    *does* per tick stays as code. Adding a material used to mean finding seven
    separate switch statements, and a forgotten case failed silently. */
+typedef struct MaterialPhase {
+    bool enabled;
+    CellMaterial target;
+    float threshold;
+} MaterialPhase;
+
 typedef struct MaterialInfo {
     const char *name;
     Color color;
@@ -183,13 +189,14 @@ typedef struct MaterialInfo {
     float selfHeatTarget;
     float selfHeatRate;
     float linearCoolRate;
-    /* Thermal phase changes, one in each direction. A target equal to the
-       material itself means the material does not change that way. Two entries
-       rather than one flag, because water both boils and freezes. */
-    CellMaterial phaseTarget;
-    float phaseThreshold;
-    CellMaterial coolTarget;
-    float coolThreshold;
+    /* Thermal phase changes, one in each direction, because water both boils
+       and freezes. `enabled` exists so that the zero value of a forgotten field
+       is inert: encoding "no transition" as a target equal to the material
+       itself looks tidy but means an unwritten field reads back as "become
+       MATERIAL_EMPTY at 0C", and the cryo beam duly deleted every rock, dirt
+       and sand cell it touched. */
+    MaterialPhase onHeat;
+    MaterialPhase onCool;
     bool dynamic;
     bool solid;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
@@ -208,14 +215,13 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .name = "EMPTY", .color = {5, 10, 18, 255},
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_EMPTY,
-    },
+            },
     [MATERIAL_DIRT] = {
         .name = "DIRT", .color = {111, 73, 43, 255},
         .variationR = 2, .variationG = 1,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_FIRE, .phaseThreshold = 175.0f,
+        .onHeat = {true, MATERIAL_FIRE, 175.0f},
         .solid = true,
         .laserHeatRate = 2500.0f,
     },
@@ -224,7 +230,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_LAVA, .phaseThreshold = 720.0f,
+        .onHeat = {true, MATERIAL_LAVA, 720.0f},
         .solid = true,
         .laserHeatRate = 1080.0f,
     },
@@ -233,7 +239,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_EMPTY, .phaseThreshold = 280.0f,
+        .onHeat = {true, MATERIAL_EMPTY, 280.0f},
         .dynamic = true, .solid = true,
         .laserHeatRate = 3100.0f,
     },
@@ -242,8 +248,8 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_STEAM, .phaseThreshold = 108.0f,
-        .coolTarget = MATERIAL_ICE, .coolThreshold = -4.0f,
+        .onHeat = {true, MATERIAL_STEAM, 108.0f},
+        .onCool = {true, MATERIAL_ICE, -4.0f},
         .dynamic = true,
     },
     [MATERIAL_LAVA] = {
@@ -251,10 +257,9 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationG = 4,
         .initialTemperature = 900.0f,
         .selfHeatTarget = 900.0f, .selfHeatRate = 0.08f,
-        .phaseTarget = MATERIAL_LAVA,
-        /* Lava will not cool this far on its own — it relaxes back toward 900 —
+                /* Lava will not cool this far on its own — it relaxes back toward 900 —
            so this threshold only ever fires under the cryo beam. */
-        .coolTarget = MATERIAL_ROCK, .coolThreshold = 620.0f,
+        .onCool = {true, MATERIAL_ROCK, 620.0f},
         .dynamic = true,
         .emission = 1.0f,
     },
@@ -263,8 +268,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2,
         .initialTemperature = 125.0f,
         .linearCoolRate = 0.42f,
-        .phaseTarget = MATERIAL_STEAM,
-        .coolTarget = MATERIAL_WATER, .coolThreshold = 58.0f,
+        .onCool = {true, MATERIAL_WATER, 58.0f},
         .dynamic = true,
     },
     [MATERIAL_SMOKE] = {
@@ -272,7 +276,6 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = 75.0f,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_SMOKE,
         .dynamic = true,
     },
     [MATERIAL_FIRE] = {
@@ -280,7 +283,10 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationG = 6,
         .initialTemperature = 650.0f,
         .selfHeatTarget = 650.0f, .selfHeatRate = 0.12f,
-        .phaseTarget = MATERIAL_FIRE,
+        /* Chilled fire is put out and leaves smoke, the same residue it leaves
+           when it burns out on its own. Fire relaxes back toward 650C, so
+           nothing but the cryo beam ever reaches this. */
+        .onCool = {true, MATERIAL_SMOKE, 120.0f},
         .dynamic = true,
         .emission = 0.92f,
     },
@@ -296,8 +302,7 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
            other power does — a way to add material to the world. Anything warm
            still melts it: a laser, a fire, a lava flow. */
         .selfHeatTarget = -14.0f, .selfHeatRate = 0.0f,
-        .phaseTarget = MATERIAL_WATER, .phaseThreshold = 2.0f,
-        .coolTarget = MATERIAL_ICE,
+        .onHeat = {true, MATERIAL_WATER, 2.0f},
         .solid = true,
         .laserHeatRate = 600.0f,
     },
@@ -306,7 +311,6 @@ static const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
-        .phaseTarget = MATERIAL_ASH,
         .dynamic = true,
     },
 };
@@ -343,13 +347,14 @@ static Color MaterialHeatTint(Color base, const MaterialInfo *info, float temper
 {
     float heat;
 
-    if (temperature < 60.0f || !info->solid || info->phaseThreshold <= 60.0f) {
+    if (temperature < 60.0f || !info->solid || !info->onHeat.enabled ||
+        info->onHeat.threshold <= 60.0f) {
         return base;
     }
 
     /* Square root keeps the low end readable: rock melts at 720, so a linear
        ramp would hide every temperature a drill or a short laser burst leaves. */
-    heat = sqrtf(Clamp((temperature - 60.0f) / (info->phaseThreshold - 60.0f),
+    heat = sqrtf(Clamp((temperature - 60.0f) / (info->onHeat.threshold - 60.0f),
                        0.0f, 1.0f));
     base.r = (unsigned char)((float)base.r + (245.0f - (float)base.r) * heat);
     base.g = (unsigned char)((float)base.g + (96.0f - (float)base.g) * heat * 0.8f);
@@ -519,12 +524,11 @@ static bool WorldTryThermalTransition(World *world, int x, int y)
     const MaterialInfo *info = MaterialAt(cell->material);
     CellMaterial next = cell->material;
 
-    if (info->phaseTarget != cell->material &&
-        cell->temperature >= info->phaseThreshold) {
-        next = info->phaseTarget;
-    } else if (info->coolTarget != cell->material &&
-               cell->temperature <= info->coolThreshold) {
-        next = info->coolTarget;
+    if (info->onHeat.enabled && cell->temperature >= info->onHeat.threshold) {
+        next = info->onHeat.target;
+    } else if (info->onCool.enabled &&
+               cell->temperature <= info->onCool.threshold) {
+        next = info->onCool.target;
     }
     if (next == cell->material) {
         return false;
@@ -1909,21 +1913,57 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
     return destroyed;
 }
 
-/* Shoves loose material along a cone without destroying any of it. Every other
-   power in the game removes cells; this one only moves them, which is what makes
-   it a tool for shaping the world rather than another way to erase it.
+/* One heavy blow along a cone. Loose material is thrown a long way; solid
+   material is not moved but is scoured, a thin layer of its exposed face turning
+   to ash, so the blast leaves a visible mark where it landed and then blows the
+   dust it just made downwind.
+ *
+ * Cells are visited from the far edge of the cone inwards so a cell thrown
+ * outward cannot be picked up again by the same blow, and `effectStamp` makes
+ * that guarantee exact.
+ */
+/* Angular resolution of the occlusion pre-pass. At the cone's far edge the arc
+   is about eighty cells across, so this is finer than one ray per cell there. */
+#define FORCE_BLAST_RAYS 160
 
-   Cells are visited from the far edge of the cone inwards so a cell pushed
-   outward cannot be picked up again by the same gust, and `effectStamp` makes
-   that guarantee exact. Solids stay put: the cone is a gust, not a bulldozer. */
-void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
-                         float length, float spreadCosine, int reach)
+void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
+                          float length, float spreadCosine, int reach)
 {
+    float blocked[FORCE_BLAST_RAYS];
+    float centreAngle;
+    float halfSpread;
     uint32_t stamp;
+    int ray;
     int step;
 
     if (world == NULL || world->cells == NULL || length <= 0.0f || reach <= 0) {
         return;
+    }
+
+    /* A blow does not reach round a corner. Without this the cone shoves sand
+       on the far side of a rock wall and scours the wall's back face, which
+       reads as the blast passing straight through the world. One cheap ray per
+       angular slice records where the cone first meets something solid; the cell
+       pass then refuses to touch anything further along that slice. */
+    centreAngle = atan2f(direction.y, direction.x);
+    halfSpread = acosf(Clamp(spreadCosine, -1.0f, 1.0f));
+    for (ray = 0; ray < FORCE_BLAST_RAYS; ++ray) {
+        float angle = centreAngle - halfSpread +
+                      2.0f * halfSpread * ((float)ray / (float)(FORCE_BLAST_RAYS - 1));
+        float rayX = cosf(angle);
+        float rayY = sinf(angle);
+        float travelled;
+
+        blocked[ray] = length;
+        for (travelled = 1.0f; travelled <= length; travelled += 0.5f) {
+            int sampleX = (int)floorf(origin.x + rayX * travelled);
+            int sampleY = (int)floorf(origin.y + rayY * travelled);
+
+            if (WorldMaterialIsSolid(WorldGetCell(world, sampleX, sampleY))) {
+                blocked[ray] = travelled;
+                break;
+            }
+        }
     }
 
     stamp = ++world->effectSerial;
@@ -1932,7 +1972,7 @@ void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
     }
 
     for (step = (int)length; step >= 1; --step) {
-        int extent = (int)ceilf((float)step * 0.9f) + 1;
+        int extent = step + 1;
         int offsetY;
 
         for (offsetY = -extent; offsetY <= extent; ++offsetY) {
@@ -1956,19 +1996,68 @@ void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
                     continue;
                 }
 
+                {
+                    /* Which angular slice this cell sits in, and whether the
+                       blast still reaches that far along it. The face that
+                       blocked the ray is itself included, so the wall the blow
+                       lands on is marked. */
+                    float offset = atan2f(dy, dx) - centreAngle;
+                    int slice;
+
+                    while (offset > PI) offset -= 2.0f * PI;
+                    while (offset < -PI) offset += 2.0f * PI;
+                    slice = (int)roundf((offset + halfSpread) /
+                                        (2.0f * halfSpread) *
+                                        (float)(FORCE_BLAST_RAYS - 1));
+                    slice = slice < 0 ? 0
+                                      : (slice >= FORCE_BLAST_RAYS
+                                             ? FORCE_BLAST_RAYS - 1
+                                             : slice);
+                    if (distance > blocked[slice] + 1.5f) {
+                        continue;
+                    }
+                }
+
                 x = (int)floorf(origin.x) + offsetX;
                 y = (int)floorf(origin.y) + offsetY;
                 if (!WorldInBounds(world, x, y)) {
                     continue;
                 }
                 cell = WorldCell(world, x, y);
-                if (!MaterialIsDynamic(cell->material) || cell->effectStamp == stamp) {
+                if (cell->material == MATERIAL_EMPTY || cell->effectStamp == stamp) {
+                    continue;
+                }
+                strength = 1.0f - distance / length;
+                if (strength <= 0.0f) {
                     continue;
                 }
                 cell->effectStamp = stamp;
 
-                strength = 1.0f - distance / length;
-                push = 1 + (int)(Clamp(strength, 0.0f, 1.0f) * (float)(reach - 1));
+                if (!MaterialIsDynamic(cell->material)) {
+                    /* Static terrain holds, but the face that took the blow is
+                       scoured to dust. Only cells that are actually exposed are
+                       marked, so the dent follows the shape of the surface
+                       instead of hollowing out the inside of a hill. */
+                    int aheadX = x + (int)roundf(direction.x);
+                    int aheadY = y + (int)roundf(direction.y);
+                    int behindX = x - (int)roundf(direction.x);
+                    int behindY = y - (int)roundf(direction.y);
+
+                    if (!WorldMaterialIsSolid(cell->material) ||
+                        (WorldMaterialIsSolid(WorldGetCell(world, aheadX, aheadY)) &&
+                         WorldMaterialIsSolid(WorldGetCell(world, behindX, behindY)))) {
+                        continue;
+                    }
+                    if ((float)GetRandomValue(0, 999) < strength * 70.0f) {
+                        WorldSetCellRaw(world, x, y, MATERIAL_ASH);
+                    }
+                    continue;
+                }
+
+                /* Linear rather than squared falloff: squaring leaves anything
+                   past the first few cells barely moving, which reads as a weak
+                   blow however large the numbers are. */
+                push = 2 + (int)(strength * (float)reach);
                 for (; push >= 1; --push) {
                     int targetX = (int)roundf((float)x + direction.x * (float)push);
                     int targetY = (int)roundf((float)y + direction.y * (float)push);

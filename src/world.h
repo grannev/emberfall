@@ -127,11 +127,11 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
-/* Pushes dynamic cells along a cone without destroying them. `spreadCosine` is
-   the cosine of the cone's half angle; `reach` is how far the nearest cells are
-   thrown. */
-void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
-                         float length, float spreadCosine, int reach);
+/* One heavy blow along a cone: throws dynamic cells a long way and scours a thin
+   layer off the exposed face of anything solid. `spreadCosine` is the cosine of
+   the cone's half angle; `reach` is how far the nearest cells are thrown. */
+void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
+                          float length, float spreadCosine, int reach);
 Vector2 WorldScreenToCell(const World *world, Vector2 screenPosition, Camera2D camera);
 
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,

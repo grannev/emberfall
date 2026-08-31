@@ -79,16 +79,17 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end,
                             float radius, float deltaTime);
 LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end,
                             float radius, float deltaTime);
-void WorldApplyForceCone(World *world, Vector2 origin, Vector2 direction,
-                         float length, float spreadCosine, int reach);
+void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
+                          float length, float spreadCosine, int reach);
 ```
 
 `WorldApplyChill` — термическая инверсия лазера: замораживает воду в `ICE` и
 осаждает лаву обратно в rock.
 
-`WorldApplyForceCone` толкает динамические cells вдоль конуса и не разрушает ни
-одной. `spreadCosine` — косинус половинного угла, `reach` — насколько далеко
-отбрасываются ближайшие cells.
+`WorldApplyForceBlast` — один удар: отбрасывает динамические cells вдоль конуса и
+скалывает тонкий слой с открытой грани твёрдых. `spreadCosine` — косинус
+половинного угла, `reach` — насколько далеко отбрасываются ближайшие cells. Удар
+загорожен рельефом и не достаёт из-за препятствия.
 
 `WorldApplyLaser` возвращает:
 
@@ -119,6 +120,8 @@ void PlayerUpdate(Player *player, World *world, Vector2 input,
 void PlayerResolveWorldCollision(Player *player, World *world);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
                                  float radius, float force);
+void PlayerApplyImpulse(Player *player, Vector2 impulse);
+void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
 ```
 

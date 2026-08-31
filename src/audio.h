@@ -28,7 +28,6 @@ typedef struct GameAudioState {
     bool drilling;
     /* What the drill is currently chewing, so rock does not sound like dirt. */
     CellMaterial drillMaterial;
-    bool force;
     bool chill;
 } GameAudioState;
 
@@ -37,6 +36,7 @@ void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime);
 void GameAudioPlayExplosion(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioPlayImpact(GameAudio *audio, float strength);
+void GameAudioPlayForce(GameAudio *audio);
 void GameAudioUnload(GameAudio *audio);
 
 #endif

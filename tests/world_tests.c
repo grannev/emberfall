@@ -561,6 +561,111 @@ static int CountActiveParticles(const ParticleSystem *particles)
     return count;
 }
 
+static void test_cryo_does_not_destroy_solid_terrain(void)
+{
+    World world;
+    int step;
+    int solidBefore;
+
+    CHECK(WorldInit(&world, 96, 64), "world allocation failed");
+    FillRect(&world, 0, 30, 95, 40, MATERIAL_ROCK);
+    FillRect(&world, 0, 41, 95, 48, MATERIAL_DIRT);
+    FillRect(&world, 0, 49, 95, 56, MATERIAL_SAND);
+    solidBefore = CountMaterial(&world, MATERIAL_ROCK) +
+                  CountMaterial(&world, MATERIAL_DIRT) +
+                  CountMaterial(&world, MATERIAL_SAND);
+
+    /* Cold is not a solvent. Rock, dirt and sand have no cooling transition, so
+       chilling them far below ambient must do nothing but make them cold.
+       Encoding "no transition" as a zero-filled field once made every one of
+       them evaporate at 0C, and the cryo beam bored through the map. */
+    for (step = 0; step < 240; ++step) {
+        WorldApplyChill(&world, (Vector2){48.0f, 5.0f}, (Vector2){48.0f, 60.0f},
+                        2.6f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) +
+                  CountMaterial(&world, MATERIAL_DIRT) +
+                  CountMaterial(&world, MATERIAL_SAND) ==
+              solidBefore,
+          "the cryo beam destroyed terrain: %d solid cells became %d", solidBefore,
+          CountMaterial(&world, MATERIAL_ROCK) + CountMaterial(&world, MATERIAL_DIRT) +
+              CountMaterial(&world, MATERIAL_SAND));
+    CHECK(WorldGetTemperature(&world, 48, 31) < 0.0f,
+          "the beam did not even chill the rock face it stopped against (%.1f C)",
+          WorldGetTemperature(&world, 48, 31));
+    WorldUnload(&world);
+}
+
+static int CountFilled(const World *world)
+{
+    int x;
+    int y;
+    int filled = 0;
+
+    for (y = 0; y < world->height; ++y) {
+        for (x = 0; x < world->width; ++x) {
+            if (WorldGetCell(world, x, y) != MATERIAL_EMPTY) {
+                ++filled;
+            }
+        }
+    }
+    return filled;
+}
+
+static void test_no_material_evaporates_when_merely_cooled(void)
+{
+    CellMaterial material;
+
+    /* The whole-table version of the test above, and the one that catches the
+       next material added without a deliberate cooling entry. Chilling may turn
+       a material into a different one — water into ice, lava into rock, fire
+       into smoke — but it must never make matter disappear. A few ticks only,
+       so the lifetimes of fire, smoke and steam cannot confuse the count. */
+    for (material = 0; material < MATERIAL_COUNT; ++material) {
+        World world;
+        int x;
+        int y;
+        int before;
+
+        if (material == MATERIAL_EMPTY) {
+            continue;
+        }
+        CHECK(WorldInit(&world, 32, 40), "world allocation failed");
+        for (y = 10; y < 20; ++y) {
+            for (x = 10; x < 20; ++x) {
+                WorldSetCell(&world, x, y, material);
+                WorldSetTemperature(&world, x, y, -260.0f);
+            }
+        }
+        before = CountFilled(&world);
+        Tick(&world, 4);
+        CHECK(CountFilled(&world) == before,
+              "%s lost cells when chilled: %d filled became %d",
+              WorldMaterialName(material), before, CountFilled(&world));
+        WorldUnload(&world);
+    }
+}
+
+static void test_cryo_snuffs_fire_into_smoke(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 64, 48), "world allocation failed");
+    FillRect(&world, 24, 24, 40, 30, MATERIAL_FIRE);
+
+    for (step = 0; step < 60; ++step) {
+        WorldApplyChill(&world, (Vector2){32.0f, 5.0f}, (Vector2){32.0f, 44.0f},
+                        2.6f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_SMOKE) > 0,
+          "chilled fire left no smoke behind");
+    WorldUnload(&world);
+}
+
 static void test_cryo_freezes_water_into_standing_ice(void)
 {
     World world;
@@ -628,24 +733,22 @@ static void test_cryo_settles_lava_back_into_rock(void)
     WorldUnload(&world);
 }
 
-static void test_force_cone_moves_material_without_destroying_it(void)
+static void test_one_force_blast_throws_loose_material_far(void)
 {
     World world;
     int before;
-    int step;
     int rightmost = 0;
     int x;
     int y;
 
-    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    CHECK(WorldInit(&world, 160, 64), "world allocation failed");
     FillRect(&world, 30, 30, 40, 40, MATERIAL_SAND);
     before = CountMaterial(&world, MATERIAL_SAND);
 
-    for (step = 0; step < 40; ++step) {
-        WorldApplyForceCone(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
-                            52.0f, 0.86f, 4);
-        WorldUpdate(&world);
-    }
+    /* A single blow, not a stream: the whole point is that one press moves the
+       world a long way. */
+    WorldApplyForceBlast(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
+                         62.0f, 0.82f, 34);
 
     for (y = 0; y < world.height; ++y) {
         for (x = 0; x < world.width; ++x) {
@@ -655,36 +758,82 @@ static void test_force_cone_moves_material_without_destroying_it(void)
         }
     }
 
-    /* Every other power removes cells. This one only moves them, so the count
-       is the invariant that separates it from the rest. */
     CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
-          "the force cone destroyed material: %d sand cells became %d", before,
+          "the blast destroyed loose material: %d sand cells became %d", before,
           CountMaterial(&world, MATERIAL_SAND));
-    CHECK(rightmost > 45, "nothing was pushed downwind; rightmost sand at x=%d",
+    CHECK(rightmost > 55, "one blast barely moved anything; rightmost sand at x=%d",
           rightmost);
     WorldUnload(&world);
 }
 
-static void test_force_cone_leaves_solid_terrain_alone(void)
+static void test_force_blast_marks_solid_terrain_without_boring_through_it(void)
 {
     World world;
     int before;
     int step;
+    int remaining;
+    int interior = 0;
+    int x;
+    int y;
 
     CHECK(WorldInit(&world, 128, 64), "world allocation failed");
     FillRect(&world, 30, 20, 60, 50, MATERIAL_ROCK);
     before = CountMaterial(&world, MATERIAL_ROCK);
 
-    for (step = 0; step < 40; ++step) {
-        WorldApplyForceCone(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
-                            52.0f, 0.86f, 4);
+    for (step = 0; step < 20; ++step) {
+        WorldApplyForceBlast(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
+                             62.0f, 0.82f, 34);
         WorldUpdate(&world);
     }
 
-    /* The cone is a gust, not a bulldozer: static terrain must not shift. */
-    CHECK(CountMaterial(&world, MATERIAL_ROCK) == before,
-          "the force cone moved rock: %d cells became %d", before,
-          CountMaterial(&world, MATERIAL_ROCK));
+    remaining = CountMaterial(&world, MATERIAL_ROCK);
+    CHECK(remaining < before, "the blast left no mark on the rock face at all");
+    /* A dent, not a tunnel: the wall must still be a wall after twenty blows. */
+    CHECK(remaining > before * 4 / 5,
+          "the blast bored through solid terrain: %d rock cells became %d", before,
+          remaining);
+
+    /* Only the exposed face is scoured; the inside of the block is untouched. */
+    for (y = 25; y <= 45; ++y) {
+        for (x = 40; x <= 58; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_ROCK) {
+                ++interior;
+            }
+        }
+    }
+    CHECK(interior == 21 * 19, "the blast hollowed out rock behind the surface");
+    WorldUnload(&world);
+}
+
+static void test_force_blast_does_not_reach_behind_a_wall(void)
+{
+    World world;
+    int step;
+    int x;
+    int y;
+    int moved = 0;
+
+    CHECK(WorldInit(&world, 160, 64), "world allocation failed");
+    /* A wall across the cone, with loose sand sheltering behind it. */
+    FillRect(&world, 50, 0, 54, 63, MATERIAL_ROCK);
+    FillRect(&world, 70, 30, 80, 40, MATERIAL_SAND);
+
+    for (step = 0; step < 10; ++step) {
+        WorldApplyForceBlast(&world, (Vector2){20.0f, 35.0f}, (Vector2){1.0f, 0.0f},
+                             62.0f, 0.82f, 34);
+    }
+
+    /* No settling ticks: any sand outside its original block can only have been
+       thrown, and the wall should have absorbed the whole blow. */
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_SAND &&
+                (x < 70 || x > 80 || y < 30 || y > 40)) {
+                ++moved;
+            }
+        }
+    }
+    CHECK(moved == 0, "%d sheltered cells were thrown through solid rock", moved);
     WorldUnload(&world);
 }
 
@@ -879,11 +1028,15 @@ int main(void)
     RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
+    RUN(test_cryo_does_not_destroy_solid_terrain);
+    RUN(test_no_material_evaporates_when_merely_cooled);
+    RUN(test_cryo_snuffs_fire_into_smoke);
     RUN(test_cryo_freezes_water_into_standing_ice);
     RUN(test_heat_melts_ice_back_into_water);
     RUN(test_cryo_settles_lava_back_into_rock);
-    RUN(test_force_cone_moves_material_without_destroying_it);
-    RUN(test_force_cone_leaves_solid_terrain_alone);
+    RUN(test_one_force_blast_throws_loose_material_far);
+    RUN(test_force_blast_marks_solid_terrain_without_boring_through_it);
+    RUN(test_force_blast_does_not_reach_behind_a_wall);
     RUN(test_bouncing_particles_do_not_pass_through_terrain);
     RUN(test_drill_debris_settles_as_ash_without_overwriting_terrain);
     RUN(test_passing_particles_ignore_terrain);

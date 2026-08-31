@@ -340,7 +340,7 @@ int main(int argc, char **argv)
         Vector2 moveInput = {0.0f, 0.0f};
         bool laserHeld;
         bool explosionPressed;
-        bool forceHeld;
+        bool forcePressed;
         bool chillHeld;
         bool boostHeld;
         bool materialReaction = false;
@@ -416,21 +416,40 @@ int main(int argc, char **argv)
         aimPosition = (Vector2){cursorCell.x + 0.5f, cursorCell.y + 0.5f};
         laserHeld = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
         explosionPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
-        forceHeld = IsKeyDown(KEY_Q);
+        forcePressed = IsKeyPressed(KEY_Q);
         chillHeld = IsKeyDown(KEY_E);
         if (smokeTest) {
             aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
             cursorCell = smokeAim;
             laserHeld = smokeFrames >= 1 && smokeFrames <= 9;
             explosionPressed = smokeFrames == 5;
-            forceHeld = false;
+            forcePressed = false;
             chillHeld = false;
         }
         PowersUpdate(&powers, &world, &particles, player.position, aimPosition, deltaTime,
-                     laserHeld, explosionPressed, forceHeld, chillHeld);
+                     laserHeld, explosionPressed, forcePressed, chillHeld);
         if (smokeTest) {
             smokeLaserHitObserved = smokeLaserHitObserved || powers.laserHit;
             smokeExplosionObserved = smokeExplosionObserved || powers.explosionTriggered;
+        }
+        /* The character's hands follow whatever power is firing. Held powers
+           refresh a short pose every frame; the blast asks for the length of its
+           own punch so releasing the key does not cut it short. */
+        if (powers.laserActive) {
+            PlayerSetPose(&player, PLAYER_POSE_LASER, 0.06f);
+        } else if (powers.chillActive) {
+            PlayerSetPose(&player, PLAYER_POSE_CHILL, 0.06f);
+        }
+        if (powers.forceTriggered) {
+            PlayerSetPose(&player, PLAYER_POSE_BLAST, 0.28f);
+            /* The blow shoves the player the other way. A blast that moves the
+               world but not the person delivering it reads as a button, not as
+               force. */
+            PlayerApplyImpulse(&player,
+                               (Vector2){-powers.forceDirection.x * 96.0f,
+                                         -powers.forceDirection.y * 96.0f});
+            cameraShake = fmaxf(cameraShake, 3.4f);
+            GameAudioPlayForce(&audio);
         }
         if (powers.explosionTriggered) {
             PlayerApplyExplosionImpulse(&player, powers.explosionPosition,
@@ -444,7 +463,7 @@ int main(int argc, char **argv)
             sounding.laser = powers.laserActive;
             sounding.drilling = player.drilledCells > 0;
             sounding.drillMaterial = player.drillMaterial;
-            sounding.force = powers.forceActive;
+
             sounding.chill = powers.chillActive;
             GameAudioUpdate(&audio, sounding, deltaTime);
         }

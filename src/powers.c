@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stddef.h>
 
+#include <raymath.h>
+
 static Vector2 LaserEndAtWorldEdge(const World *world, Vector2 origin, Vector2 direction,
                                    float maxLength)
 {
@@ -39,10 +41,13 @@ void PowersInit(PowerSystem *powers)
     powers->laserStart = (Vector2){0.0f, 0.0f};
     powers->laserEnd = (Vector2){0.0f, 0.0f};
     powers->laserHitMaterial = MATERIAL_EMPTY;
-    powers->forceActive = false;
+    powers->forceTriggered = false;
     powers->forceDirection = (Vector2){1.0f, 0.0f};
-    powers->forceCadence = 0.05f;
-    powers->forcePulse = 0.0f;
+    powers->forceOrigin = (Vector2){0.0f, 0.0f};
+    powers->forceCooldown = 0.0f;
+    powers->forceCooldownMax = 0.42f;
+    powers->forceTime = 0.0f;
+    powers->forceDuration = 0.26f;
     powers->chillActive = false;
     powers->chillHit = false;
     powers->chillEnd = (Vector2){0.0f, 0.0f};
@@ -55,7 +60,7 @@ void PowersInit(PowerSystem *powers)
 
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
                   Vector2 origin, Vector2 aimPosition, float deltaTime,
-                  bool laserHeld, bool explosionPressed, bool forceHeld,
+                  bool laserHeld, bool explosionPressed, bool forcePressed,
                   bool chillHeld)
 {
     Vector2 direction = {aimPosition.x - origin.x, aimPosition.y - origin.y};
@@ -70,7 +75,9 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
     powers->shockwaveTime = fmaxf(0.0f, powers->shockwaveTime - deltaTime);
     powers->laserActive = false;
     powers->laserHit = false;
-    powers->forceActive = false;
+    powers->forceTriggered = false;
+    powers->forceCooldown = fmaxf(0.0f, powers->forceCooldown - deltaTime);
+    powers->forceTime = fmaxf(0.0f, powers->forceTime - deltaTime);
     powers->chillActive = false;
     powers->chillHit = false;
     powers->explosionTriggered = false;
@@ -112,20 +119,17 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
         powers->chillHit = result.hit;
     }
 
-    if (forceHeld) {
+    if (forcePressed) {
         powers->current = POWER_FORCE;
-        powers->forceActive = true;
-        powers->forceDirection = direction;
-        /* Whole cells move, so applying the gust every frame would make its
-           strength a function of the frame rate. A fixed cadence keeps a sweep
-           at 60 and at 240 FPS identical. */
-        powers->forcePulse -= deltaTime;
-        if (powers->forcePulse <= 0.0f) {
-            powers->forcePulse = powers->forceCadence;
-            WorldApplyForceCone(world, origin, direction, 52.0f, 0.86f, 4);
+        if (powers->forceCooldown <= 0.0f) {
+            WorldApplyForceBlast(world, origin, direction, 62.0f, 0.82f, 34);
+            ParticlesSpawnForceBlast(particles, origin, direction);
+            powers->forceTriggered = true;
+            powers->forceDirection = direction;
+            powers->forceOrigin = origin;
+            powers->forceCooldown = powers->forceCooldownMax;
+            powers->forceTime = powers->forceDuration;
         }
-    } else {
-        powers->forcePulse = 0.0f;
     }
 
     if (explosionPressed) {
@@ -176,19 +180,27 @@ void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition)
                     (Color){206, 244, 255, 190});
     }
 
-    if (powers->forceActive) {
-        /* Two arcs sketch the cone the gust covers, so the player can see its
-           reach without any world cell being drawn individually. */
-        float angle = atan2f(powers->forceDirection.y, powers->forceDirection.x);
+    if (powers->forceTime > 0.0f) {
+        /* An arc racing outward along the cone, so the blow reads as a single
+           moment of impact travelling away from the player. */
+        float progress = 1.0f - powers->forceTime / powers->forceDuration;
+        float angle = atan2f(powers->forceDirection.y, powers->forceDirection.x) *
+                      RAD2DEG;
         int ring;
 
-        for (ring = 1; ring <= 2; ++ring) {
-            float radius = 22.0f * (float)ring;
+        for (ring = 0; ring < 3; ++ring) {
+            float radius = 10.0f + 52.0f * progress - (float)ring * 5.0f;
+            unsigned char alpha;
 
-            DrawCircleSectorLines(powers->origin, radius,
-                                  (angle - 0.53f) * RAD2DEG,
-                                  (angle + 0.53f) * RAD2DEG, 12,
-                                  (Color){168, 208, 255, (unsigned char)(120 / ring)});
+            if (radius <= 0.0f) {
+                continue;
+            }
+            alpha = (unsigned char)Clamp((1.0f - progress) * 210.0f -
+                                             (float)ring * 40.0f,
+                                         0.0f, 255.0f);
+            DrawCircleSectorLines(powers->forceOrigin, radius, angle - 34.0f,
+                                  angle + 34.0f, 16,
+                                  (Color){182, 216, 255, alpha});
         }
     }
 

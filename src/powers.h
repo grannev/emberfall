@@ -28,13 +28,15 @@ typedef struct PowerSystem {
     Vector2 laserStart;
     Vector2 laserEnd;
     CellMaterial laserHitMaterial;
-    /* Force cone: shoves loose material without destroying it. Applied on a
-       fixed cadence rather than every frame, so its strength does not depend on
-       the frame rate. */
-    bool forceActive;
+    /* Force blast: one heavy blow, not a stream. A held gust reads as weak
+       however strong it is, because nothing about it has a moment of impact. */
+    bool forceTriggered;
     Vector2 forceDirection;
-    float forceCadence;
-    float forcePulse;
+    Vector2 forceOrigin;
+    float forceCooldown;
+    float forceCooldownMax;
+    float forceTime;
+    float forceDuration;
     /* Cryo beam: the thermal inverse of the laser. */
     bool chillActive;
     bool chillHit;
@@ -49,7 +51,7 @@ typedef struct PowerSystem {
 void PowersInit(PowerSystem *powers);
 void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
                   Vector2 origin, Vector2 aimPosition, float deltaTime,
-                  bool laserHeld, bool explosionPressed, bool forceHeld,
+                  bool laserHeld, bool explosionPressed, bool forcePressed,
                   bool chillHeld);
 void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);

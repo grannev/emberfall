@@ -48,6 +48,8 @@ void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
                               Vector2 velocity);
 void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
                                Vector2 velocity, int destroyedCells);
+void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
+                              Vector2 direction);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 
 #endif

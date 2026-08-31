@@ -73,10 +73,13 @@ static float SynthSample(SynthKind kind, float time, float duration,
     }
 
     if (kind == SYNTH_FORCE) {
-        float breath = SynthLowPass(SynthNoise(noiseState), filterState, 0.22f);
-        float sweep = sinf(time * 2.0f * PI * (58.0f + 26.0f * sinf(time * 9.0f)));
+        /* One blow, not a stream: a hard front edge and a fast decay, so the
+           sound has the moment of impact the old held gust never had. */
+        float decay = expf(-9.0f * time);
+        float breath = SynthLowPass(SynthNoise(noiseState), filterState, 0.3f);
+        float thump = sinf(time * 2.0f * PI * (72.0f - 34.0f * (time / duration)));
 
-        return (breath * 2.4f + sweep * 0.22f) * envelope * 0.5f;
+        return (breath * 2.6f + thump * 0.75f) * decay * release * 0.72f;
     }
 
     if (kind == SYNTH_CHILL) {
@@ -144,7 +147,7 @@ bool GameAudioInit(GameAudio *audio)
     audio->reaction = SynthCreateSound(SYNTH_REACTION, 0.34f);
     audio->drill = SynthCreateSound(SYNTH_DRILL, 0.18f);
     audio->impact = SynthCreateSound(SYNTH_IMPACT, 0.16f);
-    audio->force = SynthCreateSound(SYNTH_FORCE, 0.24f);
+    audio->force = SynthCreateSound(SYNTH_FORCE, 0.42f);
     audio->chill = SynthCreateSound(SYNTH_CHILL, 0.2f);
     SetMasterVolume(0.72f);
 
@@ -153,7 +156,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->reaction)) SetSoundVolume(audio->reaction, 0.28f);
     if (IsSoundValid(audio->drill)) SetSoundVolume(audio->drill, 0.3f);
     if (IsSoundValid(audio->impact)) SetSoundVolume(audio->impact, 0.5f);
-    if (IsSoundValid(audio->force)) SetSoundVolume(audio->force, 0.26f);
+    if (IsSoundValid(audio->force)) SetSoundVolume(audio->force, 0.62f);
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
     return true;
 }
@@ -208,8 +211,14 @@ void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime)
     }
     GameAudioHold(audio->laser, state.laser);
     GameAudioHold(audio->drill, state.drilling);
-    GameAudioHold(audio->force, state.force);
     GameAudioHold(audio->chill, state.chill);
+}
+
+void GameAudioPlayForce(GameAudio *audio)
+{
+    if (audio != NULL && audio->ready && IsSoundValid(audio->force)) {
+        PlaySound(audio->force);
+    }
 }
 
 void GameAudioPlayImpact(GameAudio *audio, float strength)

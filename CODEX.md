@@ -115,6 +115,16 @@ over frameworks, generic containers, or unnecessary abstraction.
 - What a material *is* belongs in the `MATERIALS` table; only what it *does* per
   tick belongs in code. Adding a material means adding one table entry, and every
   entry needs a name — a gap is zero-filled and silently reads back as EMPTY.
+- A material carries a phase change in each direction, heating and cooling, and
+  each one is a `MaterialPhase` with an explicit `enabled` flag. Encoding "no
+  transition" as a target equal to the material itself is what let an unwritten
+  field read back as "become EMPTY at 0C", so the cryo beam deleted every rock,
+  dirt and sand cell it touched. Keep the zero value of a forgotten field inert.
+- When adding a power or a material, work through how it meets every power and
+  force that already exists, and add a test for each answer. Cold is not a
+  solvent, a blast does not reach round a corner, ice melts in fire: the
+  interactions are the design, and the ones nobody thought about are where the
+  bugs are.
 - Passive heat from lava is capped below rock's melt threshold, and a saturated
   neighbour is skipped rather than reheated. Without that ceiling one pocket
   turns the entire map to lava, the same failure the fire budget prevents, and
@@ -172,17 +182,27 @@ over frameworks, generic containers, or unnecessary abstraction.
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.
 - Movement uses delta time and remains smooth at varying render rates.
-- Player rendering is a compact, code-native pixel humanoid made from whole-cell
-  rectangles. Preserve its dark helmet/suit, cyan accent, separate limbs, and
-  orange stepped cape. Head/arm aim follows the cursor independently, while
-  velocity determines the cape side and vertical bend. The cape root and tail
-  must keep overlapping at every wave offset so the cape never splits into a
-  detached block, and body parts drawn over the cape must show a lit fill rather
-  than only their dark outline. Impact feedback brightens the fills and keeps the
-  rim dark; never recolour the outline itself, which floods the model and erases
-  the silhouette. Preserve separate idle, thrust, boost, drill, and impact
-  feedback driven by `animationTime`; do not use wall-clock time for player
-  animation. The collider stays a simple circle and does not follow the
+- Player rendering is a code-native pixel humanoid built in a body frame, not as
+  a sprite: `up` runs hips-to-head, `side` across the shoulders, and the frame
+  rotates from vertical toward the direction of travel as `leanAmount` rises, so
+  the same joints hover upright with the knees drawn back and lay out flat with
+  the arms forward at speed. Drive that lean from measured speed, not the boost
+  key. "Behind" for the legs comes from `-side` at rest and `-travel` at speed;
+  taking the direction of travel when there is none tucks the feet upward.
+- The model has **no outline**. A dark rim around every limb flattens it into a
+  silhouette — a brick with a cape — and hides the shading that makes it a body.
+  Contrast comes from a lit tone toward `up`, a shadow opposite, and distinctly
+  darker far-side limbs. Keep one cell of neck, or the head merges into the
+  shoulders; anchor the cape on the shoulder rather than beside it, or it reads
+  as a separate ribbon; keep it near-vertical at rest, or the torso covers all
+  but a ragged diagonal edge. Impact brightens the fills in pale gold — an orange
+  flash is the colour of the cape and the two merge into one blob.
+- Hand poses come from `PlayerPose`, set by the caller because only it knows
+  which power is firing: aim-tracking in free flight, one arm straight for the
+  laser, both palms out for cryo, a punch for the blast. Held powers refresh a
+  short pose every frame; a one-shot asks for its own length and is not cut short
+  by a shorter request. Animation is driven by `animationTime`; never use
+  wall-clock time. The collider stays a simple circle and does not follow the
   visible silhouette.
 - Visual references may guide scale, contrast, or broad genre language, but do
   not reproduce another game's character sprite, exact silhouette, palette, or
@@ -207,11 +227,16 @@ over frameworks, generic containers, or unnecessary abstraction.
   material must escape it before terrain can stop it. Settling writes only empty
   cells and only a fraction of debris settles, so effects can never overwrite
   terrain, bury the player, or refill a tunnel faster than the drill cuts it.
-- Holding `Q` sweeps a force cone that pushes dynamic cells and destroys none.
-  It is the one power that shapes the world instead of removing from it, so the
-  cell count it touches must be conserved; solids do not move. Apply it on a
-  fixed cadence, never per frame — whole cells move, so a per-frame gust would
-  be stronger at a higher frame rate.
+- `Q` delivers one heavy force blast, not a held stream: a sustained gust reads
+  as weak whatever its numbers, because nothing in it is a moment of impact.
+  Dynamic cells are thrown a long way on a linear falloff — squaring it leaves
+  everything past the first few cells barely moving. Solids do not move, but the
+  exposed face the blow lands on is scoured to ash, so the hit leaves a mark;
+  only cells actually exposed along the blast axis are marked, or the inside of a
+  hill hollows out. The blast is occluded by terrain: without that it shoves
+  material on the far side of a wall and scours the wall's back face. The player
+  takes recoil, because a blow that moves the world but not the person delivering
+  it reads as a button.
 - Holding `E` fires the cryo beam, the thermal inverse of the laser: water
   freezes to `ICE`, lava settles back to `ROCK`, fire is snuffed. Its rate on
   lava must clearly beat lava's own relaxation toward 900C, or the beam finds an
