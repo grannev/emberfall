@@ -257,10 +257,23 @@ Vector2 TerrainBodyLocalToWorld(const TerrainBody *body, float localX, float loc
 Vector2 TerrainBodyWorldToLocal(const TerrainBody *body, float worldX, float worldY);
 ```
 
-`DynamicTerrainUpdate` вызывается на фиксированном шаге из `GameAdvanceWorld`,
-не с frame delta. `World` он не получает: тела ни с чем не сталкиваются до
-EF-DYN-006. Спящие тела пропускаются целиком. Обход — плоский по 32 слотам, без
-аллокаций и без обхода растра: тело движется как единый transform.
+## Terrain physics API
+
+```c
+void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
+                          float deltaTime);
+bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
+                                float boundingRadius, float deltaTime);
+```
+
+Объявлено в `terrain_physics.h`. Единственная точка входа шага тела:
+интегрирование плюс столкновение со статическим миром, на фиксированном шаге из
+`GameAdvanceWorld`. `world` берётся как `const` — изменить клетку столкновение
+не может по сигнатуре; `NULL` даёт чистую кинематику. Спящие тела пропускаются
+целиком; обход — плоский по 32 слотам, без аллокаций.
+
+Модель, границы стоимости и стратегия anti-tunnelling —
+[dynamic-terrain.md](dynamic-terrain.md).
 
 Объявлено в `dynamic_terrain.h`; владеет подсистемой `GameState`. Ни одна
 функция не принимает `World` — изменить мир подсистема не может по сигнатуре.

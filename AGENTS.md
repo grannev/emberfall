@@ -115,6 +115,12 @@ coherent phase with an explanatory message.
   `World`. Bodies are addressed by generation handles, so a reference held
   across a free resolves to NULL instead of to whatever took the slot. See
   `docs/dynamic-terrain.md`.
+- Terrain-body collision reads the world through a `const World *` and never
+  writes it; the world knows nothing about bodies, and no TerrainBody logic
+  belongs in the cellular material simulation. Every cost is a compile-time
+  constant — substeps, contacts, solver iterations — and the speed ceilings are
+  chosen against the substep budget so tunnelling is impossible rather than
+  unlikely. See `docs/dynamic-terrain.md`.
 - Terrain bodies integrate on the fixed step, never on frame delta, and move as
   one transform: no integration step may walk a body's raster. The transform
   lives in `TerrainBodyLocalToWorld`/`TerrainBodyWorldToLocal` — read it there

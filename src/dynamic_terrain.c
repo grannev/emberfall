@@ -49,11 +49,17 @@ DynamicTerrainConfig DynamicTerrainDefaultConfig(void)
     config.gravity = 120.0f;
     config.linearDamping = 0.15f;
     config.angularDamping = 0.40f;
-    config.maximumSpeed = 900.0f;
-    config.maximumAngularSpeed = 12.0f;
+    /* Chosen against the collision substep budget rather than for feel: at the
+       60 Hz step these keep a body of ordinary size inside what
+       TERRAIN_MAX_SUBSTEPS can cover, so it cannot step over a one-cell wall.
+       TerrainPhysicsConfigIsSafe states the relation and a test holds it. */
+    config.maximumSpeed = 300.0f;
+    config.maximumAngularSpeed = 2.2f;
     config.linearSleepSpeed = 1.5f;
     config.angularSleepSpeed = 0.05f;
     config.sleepDelay = 0.5f;
+    config.restitution = 0.08f;
+    config.friction = 0.55f;
     return config;
 }
 
@@ -89,7 +95,14 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
                               sizeof(*system->material));
     system->temperature = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
                                  sizeof(*system->temperature));
-    if (system->material == NULL || system->temperature == NULL) {
+    system->surfaceX = calloc((size_t)MAX_TERRAIN_BODIES *
+                                  (size_t)MAX_TERRAIN_BODY_CELLS,
+                              sizeof(*system->surfaceX));
+    system->surfaceY = calloc((size_t)MAX_TERRAIN_BODIES *
+                                  (size_t)MAX_TERRAIN_BODY_CELLS,
+                              sizeof(*system->surfaceY));
+    if (system->material == NULL || system->temperature == NULL ||
+        system->surfaceX == NULL || system->surfaceY == NULL) {
         DynamicTerrainUnload(system);
         return false;
     }
@@ -103,6 +116,8 @@ void DynamicTerrainUnload(DynamicTerrainSystem *system)
     }
     free(system->material);
     free(system->temperature);
+    free(system->surfaceX);
+    free(system->surfaceY);
     memset(system, 0, sizeof(*system));
 }
 
@@ -362,6 +377,8 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
         body->maximumY = -1;
         body->centerOfMass = (Vector2){0.0f, 0.0f};
         body->inertia = 0.0f;
+        body->boundingRadius = 0.0f;
+        body->surfaceCount = 0;
         return;
     }
     body->centerOfMass = (Vector2){momentX / mass, momentY / mass};
@@ -390,6 +407,77 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
         }
     }
     body->inertia = inertia;
+
+    /* Third pass: the surface, and how far it reaches. Both are pure functions
+       of the raster, so computing them once here is what keeps collision from
+       rediscovering them every substep. */
+    {
+        size_t surfaceBase = (size_t)handle.index * (size_t)MAX_TERRAIN_BODY_CELLS;
+        float farthest = 0.0f;
+
+        body->surfaceCount = 0;
+        for (localY = 0; localY < body->height; ++localY) {
+            int localX;
+
+            for (localX = 0; localX < body->width; ++localX) {
+                static const int offsets[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+                size_t index = base + (size_t)localY * (size_t)body->width +
+                               (size_t)localX;
+                bool exposed = false;
+                float dx;
+                float dy;
+                int corner;
+                int i;
+
+                if (system->material[index] == (uint8_t)MATERIAL_EMPTY) {
+                    continue;
+                }
+                for (i = 0; i < 4 && !exposed; ++i) {
+                    int neighbourX = localX + offsets[i][0];
+                    int neighbourY = localY + offsets[i][1];
+
+                    /* A cell against the edge of the raster is exposed: there is
+                       no body beyond it to shield it. */
+                    if (neighbourX < 0 || neighbourY < 0 ||
+                        neighbourX >= body->width || neighbourY >= body->height) {
+                        exposed = true;
+                        break;
+                    }
+                    if (system->material[base +
+                                         (size_t)neighbourY * (size_t)body->width +
+                                         (size_t)neighbourX] ==
+                        (uint8_t)MATERIAL_EMPTY) {
+                        exposed = true;
+                    }
+                }
+                if (!exposed) {
+                    continue;
+                }
+                system->surfaceX[surfaceBase + (size_t)body->surfaceCount] =
+                    (int16_t)localX;
+                system->surfaceY[surfaceBase + (size_t)body->surfaceCount] =
+                    (int16_t)localY;
+                ++body->surfaceCount;
+
+                /* The farthest corner of this cell, not its centre: rotation
+                   carries corners, and an underestimate here would let a
+                   spinning body's edge outrun its substep budget. */
+                for (corner = 0; corner < 4; ++corner) {
+                    float cornerX = (float)localX + (float)(corner & 1);
+                    float cornerY = (float)localY + (float)((corner >> 1) & 1);
+                    float distance;
+
+                    dx = cornerX - body->centerOfMass.x;
+                    dy = cornerY - body->centerOfMass.y;
+                    distance = sqrtf(dx * dx + dy * dy);
+                    if (distance > farthest) {
+                        farthest = distance;
+                    }
+                }
+            }
+        }
+        body->boundingRadius = farthest;
+    }
 }
 
 
@@ -449,14 +537,22 @@ static void TerrainClampSpeeds(TerrainBody *body,
     }
 }
 
-static void TerrainIntegrateBody(TerrainBody *body,
-                                 const DynamicTerrainConfig *config, float deltaTime)
+void DynamicTerrainIntegrateBody(DynamicTerrainSystem *system, TerrainBody *body,
+                                 float deltaTime)
 {
+    const DynamicTerrainConfig *config;
+    float linearRetained;
+    float angularRetained;
+
+    if (system == NULL || body == NULL || !TerrainStepIsUsable(deltaTime)) {
+        return;
+    }
+    config = &system->config;
     /* exp(-k * dt) rather than a per-call multiplier: the fraction shed depends
        on elapsed time, so halving the step and doubling the count gives the
        same answer. */
-    float linearRetained = expf(-config->linearDamping * deltaTime);
-    float angularRetained = expf(-config->angularDamping * deltaTime);
+    linearRetained = expf(-config->linearDamping * deltaTime);
+    angularRetained = expf(-config->angularDamping * deltaTime);
 
     body->velocity.y += config->gravity * deltaTime;
     body->velocity.x *= linearRetained;
@@ -470,11 +566,18 @@ static void TerrainIntegrateBody(TerrainBody *body,
                                         body->angularVelocity * deltaTime);
 }
 
-static void TerrainUpdateSleep(TerrainBody *body,
-                               const DynamicTerrainConfig *config, float deltaTime)
+void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
+                              float deltaTime)
 {
-    float speed = sqrtf(body->velocity.x * body->velocity.x +
-                        body->velocity.y * body->velocity.y);
+    const DynamicTerrainConfig *config;
+    float speed;
+
+    if (system == NULL || body == NULL || !TerrainStepIsUsable(deltaTime)) {
+        return;
+    }
+    config = &system->config;
+    speed = sqrtf(body->velocity.x * body->velocity.x +
+                  body->velocity.y * body->velocity.y);
 
     if (speed >= config->linearSleepSpeed ||
         fabsf(body->angularVelocity) >= config->angularSleepSpeed) {
@@ -490,44 +593,6 @@ static void TerrainUpdateSleep(TerrainBody *body,
         body->sleepTimer = 0.0f;
         body->velocity = (Vector2){0.0f, 0.0f};
         body->angularVelocity = 0.0f;
-    }
-}
-
-void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime)
-{
-    int index;
-
-    if (system == NULL || system->material == NULL) {
-        return;
-    }
-    /* A bad step is a caller bug. Refusing it keeps one from being hidden by a
-       silent clamp, and 0.25 s is far beyond any fixed step this game uses. */
-    if (!TerrainFinite(deltaTime) || deltaTime <= 0.0f || deltaTime > 0.25f) {
-        return;
-    }
-
-    system->stats.awakeBodies = 0;
-    system->stats.sleepingBodies = 0;
-    /* A flat walk of thirty-two slots. A compact list of awake bodies would be
-       asymptotically tidier and, at this size, slower and harder to keep
-       correct than the scan it replaces. */
-    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
-        TerrainBody *body = &system->bodies[index];
-
-        if (!body->active) {
-            continue;
-        }
-        if (!body->awake) {
-            ++system->stats.sleepingBodies;
-            continue;
-        }
-        TerrainIntegrateBody(body, &system->config, deltaTime);
-        TerrainUpdateSleep(body, &system->config, deltaTime);
-        if (body->awake) {
-            ++system->stats.awakeBodies;
-        } else {
-            ++system->stats.sleepingBodies;
-        }
     }
 }
 

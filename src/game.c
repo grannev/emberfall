@@ -7,6 +7,8 @@
 
 #include <raymath.h>
 
+#include "terrain_physics.h"
+
 #define DEFAULT_WORLD_WIDTH 16384
 #define DEFAULT_WORLD_HEIGHT 864
 #define DEFAULT_FIXED_STEP (1.0f / 60.0f)
@@ -180,9 +182,12 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
 
         WorldUpdate(&game->world);
         /* On the fixed step, beside the world: bodies must advance at the same
-           rate the simulation does, never at the renderer's frame rate. No body
-           exists yet, so this is a walk of thirty-two empty slots. */
-        DynamicTerrainUpdate(&game->dynamicTerrain, game->config.fixedStep);
+           rate the simulation does, never at the renderer's frame rate. The
+           world goes in as a const pointer, which is what makes it impossible
+           for collision to change a cell. No body exists yet, so this is a walk
+           of thirty-two empty slots. */
+        TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
+                             game->config.fixedStep);
         for (reaction = 0; reaction < game->world.reactionCount; ++reaction) {
             Vector2 position = game->world.reactions[reaction].position;
 
