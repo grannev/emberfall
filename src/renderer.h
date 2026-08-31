@@ -13,6 +13,8 @@ typedef struct RendererFrameStats {
     double bloomSubmissionMilliseconds;
     uint32_t renderTargets;
     uint32_t offscreenPasses;
+    int targetWidth;
+    int targetHeight;
     int bloomWidth;
     int bloomHeight;
     bool bloomEnabled;
@@ -32,6 +34,7 @@ typedef struct Renderer {
     int bloomHeight;
     int resizeAttemptWidth;
     int resizeAttemptHeight;
+    uint16_t resizeRetryFrames;
     int downsampleSourceTexelLocation;
     int downsampleThresholdLocation;
     int blurTexelLocation;

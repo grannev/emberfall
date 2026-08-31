@@ -105,9 +105,10 @@ raylib render texture. Ошибка shader/half-resolution target оставля
 sharp fallback. HUD рисуется после composite.
 
 `WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
-world pages. `RendererStats` сообщает активен ли bloom, его resolution, число
-offscreen passes/targets и CPU submission time emissive/filter passes. Это не
-GPU timer: на software renderer значение включает стоимость rasterization.
+world pages. `RendererStats` сообщает фактический размер scene target, активен
+ли bloom, его resolution, число offscreen passes/targets и CPU submission time
+emissive/filter passes. Это не GPU timer: на software renderer значение
+включает стоимость rasterization.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и

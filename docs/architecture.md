@@ -178,7 +178,9 @@ emissive используют point filtering; half-resolution bloom targets —
 Они переиспользуются в steady-state и заменяются лишь при фактическом resize.
 Если обязательная full-resolution пара не выделилась, предыдущая остаётся
 валидной; если не выделился bloom pair или не загрузились shaders, renderer
-gracefully выводит резкую scene без bloom.
+gracefully выводит резкую scene без bloom. Неудачная allocation не повторяется
+каждый frame: renderer делает следующий retry через 120 кадров либо сразу после
+нового изменения фактического размера окна.
 
 Специализированный pipeline состоит из пяти offscreen passes: sharp scene,
 explicit emissive, threshold/downsample, horizontal blur и vertical blur.

@@ -421,6 +421,7 @@ int main(int argc, char **argv)
     bool smokeBloomObserved = false;
     bool smokeBloomResized = false;
     bool smokeBloomRestored = false;
+    bool smokeTargetsSynchronized = true;
     double smokeBloomSubmissionTotal = 0.0;
     double smokeBloomSubmissionMaximum = 0.0;
     int smokeBloomFrames = 0;
@@ -583,6 +584,19 @@ int main(int argc, char **argv)
                             VisibleWorldRectangle(camera));
         if (smokeTest) {
             const RendererFrameStats *frameStats = RendererStats(&renderer);
+            int screenWidth = GetScreenWidth();
+            int screenHeight = GetScreenHeight();
+
+            smokeTargetsSynchronized = smokeTargetsSynchronized &&
+                                       frameStats->targetWidth == screenWidth &&
+                                       frameStats->targetHeight == screenHeight;
+            if (frameStats->bloomEnabled) {
+                smokeTargetsSynchronized = smokeTargetsSynchronized &&
+                                           frameStats->bloomWidth ==
+                                               (screenWidth + 1) / 2 &&
+                                           frameStats->bloomHeight ==
+                                               (screenHeight + 1) / 2;
+            }
 
             smokeBloomObserved = smokeBloomObserved ||
                                  (frameStats->bloomEnabled &&
@@ -604,19 +618,18 @@ int main(int argc, char **argv)
                          frameStats->bloomSubmissionMilliseconds);
                 ++smokeBloomFrames;
             }
-        }
-        if (smokeTest && renderer.targetWidth == GetScreenWidth() &&
-            renderer.targetHeight == GetScreenHeight()) {
             smokeResizeObserved = smokeResizeObserved ||
-                                  (renderer.targetWidth == WINDOW_WIDTH - 320 &&
-                                   renderer.targetHeight == WINDOW_HEIGHT - 180);
+                                  (frameStats->targetWidth == WINDOW_WIDTH - 320 &&
+                                   frameStats->targetHeight == WINDOW_HEIGHT - 180);
             smokeResizeRestored = smokeResizeRestored ||
                                   (smokeResizeObserved && smokeFrames >= 7 &&
-                                   renderer.targetWidth == WINDOW_WIDTH &&
-                                   renderer.targetHeight == WINDOW_HEIGHT);
+                                   frameStats->targetWidth == WINDOW_WIDTH &&
+                                   frameStats->targetHeight == WINDOW_HEIGHT);
         }
 
         BeginDrawing();
+        /* This clear is intentionally retained as a safe backbuffer fallback
+           if RendererComposite ever has no valid scene target to draw. */
         ClearBackground((Color){2, 4, 9, 255});
         RendererComposite(&renderer);
         if (debugHud) {
@@ -639,30 +652,34 @@ int main(int argc, char **argv)
         const RendererFrameStats *frameStats = RendererStats(&renderer);
 
         printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
-               "submit_avg=%.3fms submit_max=%.3fms\n",
+               "submit_avg=%.3fms submit_max=%.3fms "
+               "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
+               "target_sync=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
-               smokeBloomSubmissionMaximum);
+               smokeBloomSubmissionMaximum, smokeResizeObserved,
+               smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
+               smokeTargetsSynchronized);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
-                      !smokeResizeObserved || !smokeResizeRestored ||
-                      !smokeBloomObserved || !smokeBloomResized ||
-                      !smokeBloomRestored ||
+                      !smokeBloomObserved || !smokeTargetsSynchronized ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
                 "drill=%d fire_contained=%d resize=%d restored=%d "
-                "bloom=%d bloom_resize=%d bloom_restored=%d chunks=%d/%d\n",
+                "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
+                "chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
                 smokeBloomObserved, smokeBloomResized, smokeBloomRestored,
+                smokeTargetsSynchronized,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;

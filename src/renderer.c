@@ -25,6 +25,7 @@ static const BloomTuning BLOOM = {
 
 #define BLOOM_DOWNSAMPLE_SHADER "assets/shaders/bloom_downsample.fs"
 #define BLOOM_BLUR_SHADER "assets/shaders/bloom_blur.fs"
+#define RENDERER_RESIZE_RETRY_FRAMES 120u
 
 static bool RendererTargetIsValid(RenderTexture2D target)
 {
@@ -44,6 +45,9 @@ static void RendererUnloadTarget(RenderTexture2D *target)
 
 static void RendererClearTarget(RenderTexture2D target, Color color)
 {
+    if (!RendererTargetIsValid(target)) {
+        return;
+    }
     BeginTextureMode(target);
     ClearBackground(color);
     EndTextureMode();
@@ -145,23 +149,33 @@ static bool RendererEnsureTargets(Renderer *renderer, int width, int height)
     int bloomWidth;
     int bloomHeight;
     bool bloomTargetsReady = false;
+    bool targetsMatch;
+    bool bloomMissing;
 
     if (width <= 0 || height <= 0) {
         return false;
     }
-    if (RendererTargetIsValid(renderer->sceneTarget) &&
-        RendererTargetIsValid(renderer->emissiveTarget) &&
-        renderer->targetWidth == width && renderer->targetHeight == height) {
+    targetsMatch = RendererTargetIsValid(renderer->sceneTarget) &&
+                   RendererTargetIsValid(renderer->emissiveTarget) &&
+                   renderer->targetWidth == width &&
+                   renderer->targetHeight == height;
+    bloomMissing = renderer->bloomShadersReady &&
+                   (!RendererTargetIsValid(renderer->bloomPingTarget) ||
+                    !RendererTargetIsValid(renderer->bloomPongTarget));
+    if (targetsMatch && !bloomMissing) {
         renderer->resizeAttemptWidth = width;
         renderer->resizeAttemptHeight = height;
+        renderer->resizeRetryFrames = 0u;
         return true;
     }
-    /* A failed pair allocation must not become a LoadRenderTexture loop. Try
-       each observed size once and keep scaling the previous valid target until
-       the window changes again. */
+    /* A failed allocation must not become a LoadRenderTexture loop. Keep the
+       previous valid scene and retry only after a long quiet interval, or
+       immediately when the actual window size changes. */
     if (renderer->resizeAttemptWidth == width &&
-        renderer->resizeAttemptHeight == height) {
-        return false;
+        renderer->resizeAttemptHeight == height &&
+        renderer->resizeRetryFrames > 0u) {
+        --renderer->resizeRetryFrames;
+        return targetsMatch;
     }
     renderer->resizeAttemptWidth = width;
     renderer->resizeAttemptHeight = height;
@@ -169,11 +183,19 @@ static bool RendererEnsureTargets(Renderer *renderer, int width, int height)
     scene = RendererLoadTarget(width, height, TEXTURE_FILTER_POINT,
                                (Color){2, 4, 9, 255});
     if (!RendererTargetIsValid(scene)) {
+        renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
+        TraceLog(LOG_WARNING,
+                 "RENDER: Scene target resize to %dx%d failed; retrying later",
+                 width, height);
         return false;
     }
     emissive = RendererLoadTarget(width, height, TEXTURE_FILTER_POINT, BLANK);
     if (!RendererTargetIsValid(emissive)) {
         RendererUnloadTarget(&scene);
+        renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
+        TraceLog(LOG_WARNING,
+                 "RENDER: Emissive target resize to %dx%d failed; retrying later",
+                 width, height);
         return false;
     }
 
@@ -193,6 +215,7 @@ static bool RendererEnsureTargets(Renderer *renderer, int width, int height)
             TraceLog(LOG_WARNING,
                      "RENDER: Bloom targets unavailable at %dx%d; using fallback",
                      bloomWidth, bloomHeight);
+            renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
         }
     }
 
@@ -209,6 +232,9 @@ static bool RendererEnsureTargets(Renderer *renderer, int width, int height)
     renderer->bloomWidth = bloomTargetsReady ? bloomWidth : 0;
     renderer->bloomHeight = bloomTargetsReady ? bloomHeight : 0;
     renderer->bloomTargetsReady = bloomTargetsReady;
+    if (bloomTargetsReady || !renderer->bloomShadersReady) {
+        renderer->resizeRetryFrames = 0u;
+    }
     return true;
 }
 
@@ -306,6 +332,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
     renderer->lastFrame = (RendererFrameStats){
         .renderTargets = bloomReady ? 4u : 2u,
         .offscreenPasses = bloomReady ? 5u : 1u,
+        .targetWidth = renderer->targetWidth,
+        .targetHeight = renderer->targetHeight,
         .bloomWidth = bloomReady ? renderer->bloomWidth : 0,
         .bloomHeight = bloomReady ? renderer->bloomHeight : 0,
         .bloomEnabled = bloomReady,
