@@ -353,19 +353,20 @@ static void PrintMemory(const World *world)
     size_t chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     size_t lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
     size_t cells = cellCount * sizeof(*world->cells);
-    size_t pixels = cellCount * sizeof(*world->pixels);
     size_t chunkMetadata = chunkCount * 4u * sizeof(uint8_t);
     size_t lighting = lightCount * 6u * sizeof(float);
-    size_t estimated = sizeof(*world) + cells + pixels + chunkMetadata + lighting;
+    size_t renderStaging =
+        WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * sizeof(Color);
+    size_t estimated = sizeof(*world) + cells + chunkMetadata + lighting;
 
-    printf("memory: Cell=%zu B  cells=%.2f MiB  pixels=%.2f MiB  "
+    printf("memory: Cell=%zu B  cells=%.2f MiB  persistent_pixels=0.00 MiB  "
            "chunks=%.2f MiB  lighting=%.2f MiB  estimated=%.2f MiB  "
-           "rss=%.2f MiB  peak_rss=%.2f MiB\n",
+           "render_staging=%.2f KiB  rss=%.2f MiB  peak_rss=%.2f MiB\n",
            sizeof(Cell), (double)cells / 1048576.0,
-           (double)pixels / 1048576.0,
            (double)chunkMetadata / 1048576.0,
            (double)lighting / 1048576.0,
            (double)estimated / 1048576.0,
+           (double)renderStaging / 1024.0,
            (double)CurrentRssBytes() / 1048576.0,
            (double)PeakRssBytes() / 1048576.0);
 }

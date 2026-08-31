@@ -60,9 +60,11 @@ coherent phase with an explanatory message.
 - `World.lastTickStats` exposes processed cells/chunks for non-flaky performance
   regression checks. `make bench` uses ten fixed scenarios on the production
   world size; timing assertions do not belong in tests.
-- Baseline CPU allocation is 275.12 MiB before GPU state: 216 MiB cells, 54 MiB
-  persistent pixels, 5.06 MiB lighting, and minor metadata. The persistent
-  pixel buffer and giant texture are confirmed migration targets.
+- Baseline CPU allocation was 275.12 MiB before GPU state: 216 MiB cells,
+  54 MiB persistent pixels, 5.06 MiB lighting, and minor metadata. The
+  persistent pixel buffer has been removed; current estimate is 221.12 MiB.
+  The remaining giant texture belongs to `WorldRenderer` and is the next
+  rendering scalability target.
 - Refactoring is deliberately phased. Do not combine game/input/events, world
   decomposition, Cell layout, active scheduling, and render paging into one
   rewrite. Keep every intermediate commit playable and measured.
@@ -70,3 +72,7 @@ coherent phase with an explanatory message.
   receives `GameInput`; only `input.c` polls raylib controls. Transient feedback
   crosses the boundary through the fixed-capacity `GameEventBuffer`; add event
   types there instead of another one-frame presentation flag in `main.c`.
+- `Renderer` owns presentation composition and `WorldRenderer` owns all GPU
+  world state. Player, ability, and particle drawing live in dedicated renderer
+  modules; simulation modules must not regain `Draw*` calls. `World` owns CPU
+  cells/chunks/lighting only and remains valid in headless tests.

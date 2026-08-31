@@ -7,6 +7,8 @@
 
 #include <raymath.h>
 
+#include "world_render_data.h"
+
 #define FIRE_NEIGHBOR_HEAT_PER_TICK 0.65f
 /* Lava heats whatever it touches, but a rock cell must never reach its melt
    threshold from lava alone: otherwise one pocket turns the entire map to lava,
@@ -733,7 +735,6 @@ bool WorldInit(World *world, int width, int height)
     cellCount = (size_t)width * (size_t)height;
     chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
     world->cells = calloc(cellCount, sizeof(*world->cells));
-    world->pixels = malloc(cellCount * sizeof(*world->pixels));
     world->activeChunks = calloc(chunkCount, sizeof(*world->activeChunks));
     world->nextActiveChunks = calloc(chunkCount, sizeof(*world->nextActiveChunks));
     world->lightColumns = (width + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
@@ -764,7 +765,7 @@ bool WorldInit(World *world, int width, int height)
         }
     }
 
-    if (world->cells == NULL || world->pixels == NULL || world->activeChunks == NULL ||
+    if (world->cells == NULL || world->activeChunks == NULL ||
         world->nextActiveChunks == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
@@ -788,40 +789,13 @@ bool WorldInit(World *world, int width, int height)
     return true;
 }
 
-bool WorldInitRenderer(World *world)
-{
-    Image image;
-
-    if (world == NULL || world->cells == NULL) {
-        return false;
-    }
-    if (world->texture.id != 0u) {
-        return true;
-    }
-
-    image = GenImageColor(world->width, world->height, BLACK);
-    world->texture = LoadTextureFromImage(image);
-    UnloadImage(image);
-    if (world->texture.id == 0u) {
-        return false;
-    }
-
-    SetTextureFilter(world->texture, TEXTURE_FILTER_POINT);
-    SetTextureWrap(world->texture, TEXTURE_WRAP_CLAMP);
-    return true;
-}
-
 void WorldUnload(World *world)
 {
     if (world == NULL) {
         return;
     }
 
-    if (world->texture.id != 0u) {
-        UnloadTexture(world->texture);
-    }
     free(world->cells);
-    free(world->pixels);
     free(world->activeChunks);
     free(world->nextActiveChunks);
     free(world->dirtyChunks);
@@ -1656,7 +1630,8 @@ void WorldSetPointLight(World *world, Vector2 position, float radius, float stre
     world->pointLightStrength = strength;
 }
 
-void WorldDraw(World *world, Rectangle visible)
+void WorldPrepareVisible(World *world, Rectangle visible,
+                         WorldRenderChunkVisitor visitor, void *context)
 {
     Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
@@ -1665,8 +1640,8 @@ void WorldDraw(World *world, Rectangle visible)
     int lastVisibleRow;
     int chunkY;
 
-    if (world == NULL || world->pixels == NULL || world->dirtyChunks == NULL ||
-        world->texture.id == 0u) {
+    if (world == NULL || world->cells == NULL || world->dirtyChunks == NULL ||
+        visitor == NULL) {
         return;
     }
 
@@ -1813,7 +1788,6 @@ void WorldDraw(World *world, Rectangle visible)
                     Color pixel = MaterialPixel(world, WorldCellConst(world, x, y),
                                                 x, y, red, green, blue);
 
-                    world->pixels[WorldIndex(world, x, y)] = pixel;
                     uploadPixels[(size_t)(y - minimumY) *
                                      (size_t)(maximumX - minimumX) +
                                  (size_t)(x - minimumX)] = pixel;
@@ -1823,15 +1797,13 @@ void WorldDraw(World *world, Rectangle visible)
                change moves tens of MiB. A 32x32 stack staging block keeps the
                source contiguous without any frame allocation and uploads only
                the chunk that was rebuilt. */
-            UpdateTextureRec(world->texture,
-                             (Rectangle){(float)minimumX, (float)minimumY,
-                                         (float)(maximumX - minimumX),
-                                         (float)(maximumY - minimumY)},
-                             uploadPixels);
+            visitor(context,
+                    (Rectangle){(float)minimumX, (float)minimumY,
+                                (float)(maximumX - minimumX),
+                                (float)(maximumY - minimumY)},
+                    uploadPixels);
         }
     }
-
-    DrawTexture(world->texture, 0, 0, WHITE);
 }
 
 /* Walking cells to produce one debug number is not worth doing every tick, so

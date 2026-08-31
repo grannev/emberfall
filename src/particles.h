@@ -39,7 +39,6 @@ typedef struct ParticleSystem {
 
 void ParticlesInit(ParticleSystem *system);
 void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
-void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2 direction);
 void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 normal,

@@ -66,11 +66,9 @@ update. При переполнении новые события отбрасы
 
 ### `world.c/.h`
 
-Владеет физическим миром и GPU-текстурой мира:
+Владеет CPU-состоянием физического мира:
 
 - непрерывный массив `Cell`;
-- постоянный `Color`-буфер;
-- `Texture2D` размером с симуляцию;
 - active-chunk буферы;
 - потоковая активация динамики вокруг игрока через `WorldActivateRegion`;
 - материалы, температура и фазовые переходы;
@@ -80,14 +78,14 @@ update. При переполнении новые события отбрасы
 
 ### `player.c/.h`
 
-Содержит движение, collision и отрисовку игрока:
+Содержит только simulation игрока:
 
 - инерционный полёт без гравитации;
 - три последовательные ступени ускоренного полёта, сверхзвук и бурение мира на
   Shift;
 - упругий circle-vs-cell collision и impact events;
 - защита от tunneling с помощью substeps;
-- state-based отрисовка компактного пиксельного героя.
+- gameplay/animation state, который renderer читает без обратной связи.
 
 ### `powers.c/.h`
 
@@ -97,8 +95,7 @@ update. При переполнении новые события отбрасы
 - cooldown взрыва и силового удара;
 - разрушение мира и ударная волна;
 - силовой конус, криолуч и их visual state;
-- события для camera shake, player impulse и audio;
-- world-space визуализация луча, прицела и кольца взрыва.
+- события для camera shake, player impulse и audio.
 
 ### `particles.c/.h`
 
@@ -106,6 +103,21 @@ update. При переполнении новые события отбрасы
 с рельефом и могут оседать в него настоящими cells. Они не выделяют память во
 время кадра. Разные spawn-функции задают скорость, цвет, lifetime, размер и
 индивидуальную gravity.
+
+### `renderer.c/.h` и renderer-модули
+
+`Renderer` — presentation owner, создаваемый в `main.c`. Он компонует:
+
+- `WorldRenderer` — единственный владелец world `Texture2D`, dirty uploads и
+  renderer counters;
+- `player_renderer` — процедурную модель героя и speed/impact effects;
+- `ability_renderer` — beams, force cone, shockwave и прицел;
+- `particle_renderer` — чтение фиксированного particle pool.
+
+`WorldPrepareVisible` — узкий внутренний CPU bridge: world готовит один
+stack-backed блок 32×32 и синхронно отдаёт его `WorldRenderer`. GPU calls,
+`Draw*` и texture lifecycle в `World` отсутствуют. Persistent full-world
+`Color` buffer удалён.
 
 ### `audio.c/.h`
 
@@ -127,7 +139,8 @@ device не является фатальной.
    world reactions в `GameEvents` и повторно разрешить player collision.
 6. Обновить held audio state и передать events audio/camera consumers.
 7. Обновить camera follow, затухание shake и player point light.
-8. Обновить texture мира и отрисовать world-space объекты.
+8. `RendererDrawWorldSpace` обновить видимые dirty chunks и отрисовать
+   world-space presentation.
 9. Отрисовать debug HUD.
 
 ## Владение памятью
@@ -135,24 +148,25 @@ device не является фатальной.
 | Ресурс | Создание | Освобождение |
 |---|---|---|
 | `World.cells` | `WorldInit` | `WorldUnload` |
-| `World.pixels` | `WorldInit` | `WorldUnload` |
 | chunk buffers | `WorldInit` | `WorldUnload` |
 | буфер грязных chunks | `WorldInit` | `WorldUnload` |
 | буфер грязных световых chunks | `WorldInit` | `WorldUnload` |
 | поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
-| world `Texture2D` | `WorldInitRenderer` | `WorldUnload` |
+| world `Texture2D` | `RendererInit -> WorldRendererInit` | `RendererUnload` |
+| chunk upload staging 32×32 | stack внутри `WorldPrepareVisible` | возврат из вызова |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
-`GameState` агрегирует CPU gameplay ownership; `GameInit`/`GameUnload` являются
-верхней lifecycle-парой. GPU texture ещё принадлежит `World` и поэтому пока
-освобождается внутри `GameUnload -> WorldUnload`; renderer phase перенесёт этот
-ресурс в отдельного владельца.
+`GameState` агрегирует CPU gameplay ownership; `GameInit`/`GameUnload`
+являются верхней lifecycle-парой. Независимая пара
+`RendererInit`/`RendererUnload` владеет GPU presentation и вызывается пока
+raylib window/context ещё жив.
 
 Heap allocation в frame loop запрещён. Размеры world buffers и particle pool не
 меняются во время игры. В стандартном мире 14 155 776 cells; `Cell` уплотнена до
 16 bytes (`material` — `uint8_t`), поэтому основной cell buffer занимает около
-216 MiB, а постоянный `Color`-буфер — около 54 MiB.
+216 MiB. После удаления persistent pixels текущий CPU estimate равен
+221.12 MiB; renderer использует временный staging размером 4 KiB.
 
 ## Координатные пространства
 

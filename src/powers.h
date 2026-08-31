@@ -38,8 +38,8 @@ typedef struct PowerSystem {
     float forceTime;
     float forceDuration;
     /* Gameplay tuning is state, not duplicated literals: PowersUpdate uses the
-       cone values, PowersDrawWorld reads the same geometry, and main consumes
-       the recoil when forceTriggered is published. */
+       cone values, presentation reads the same geometry, and Game publishes
+       the recoil when forceTriggered is observed. */
     float forceLength;
     float forceSpreadCosine;
     int forceReach;
@@ -60,7 +60,6 @@ void PowersUpdate(PowerSystem *powers, World *world, ParticleSystem *particles,
                   Vector2 origin, Vector2 aimPosition, float deltaTime,
                   bool laserHeld, bool explosionPressed, bool forcePressed,
                   bool chillHeld);
-void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);
 
 #endif

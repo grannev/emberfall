@@ -1,9 +1,9 @@
 /* Headless invariant tests for the simulation core.
  *
- * These never open a window and never touch the GPU: WorldInit allocates only
- * CPU state, and WorldInitRenderer (the one function that needs a GL context)
- * is deliberately not called here. That keeps the suite fast enough to run on
- * every build and lets it cover many more cases than the windowed smoke test.
+ * These never open a window and never touch the GPU: World owns only CPU state,
+ * while WorldRenderer is not linked into this binary. That keeps the suite fast
+ * enough to run on every build and lets it cover many more cases than the
+ * windowed smoke test.
  */
 #include <math.h>
 #include <stdio.h>
@@ -14,6 +14,7 @@
 #include "player.h"
 #include "powers.h"
 #include "world.h"
+#include "world_render_data.h"
 
 static int testsRun = 0;
 static int testsFailed = 0;
@@ -94,6 +95,50 @@ static bool HasGameEvent(const GameEventBuffer *events, GameEventType type)
 }
 
 /* --- game boundary ----------------------------------------------------- */
+
+typedef struct RenderProbe {
+    int regions;
+    uint64_t pixels;
+} RenderProbe;
+
+static void CaptureRenderChunk(void *context, Rectangle bounds,
+                               const Color *pixels)
+{
+    RenderProbe *probe = context;
+
+    CHECK(pixels != NULL, "render visitor received no staging pixels");
+    ++probe->regions;
+    probe->pixels += (uint64_t)bounds.width * (uint64_t)bounds.height;
+}
+
+static void test_world_render_preparation_is_headless_and_incremental(void)
+{
+    World world;
+    RenderProbe probe = {0};
+    Rectangle wholeWorld = {0.0f, 0.0f, 64.0f, 64.0f};
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    SetRandomSeed(0xE6BEu);
+    WorldGenerate(&world);
+
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    CHECK(probe.regions == 4, "first preparation visited %d/4 chunks",
+          probe.regions);
+    CHECK(probe.pixels == 64u * 64u,
+          "first preparation staged %llu/4096 pixels",
+          (unsigned long long)probe.pixels);
+
+    probe = (RenderProbe){0};
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    CHECK(probe.regions == 0,
+          "settled renderer rebuilt %d unchanged chunks", probe.regions);
+
+    WorldSetCell(&world, 10, 10, MATERIAL_EMPTY);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    CHECK(probe.regions == 1,
+          "one local edit rebuilt %d chunks instead of one", probe.regions);
+    WorldUnload(&world);
+}
 
 static void test_game_event_buffer_is_fixed_and_ordered(void)
 {
@@ -1345,6 +1390,7 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 
 int main(void)
 {
+    RUN(test_world_render_preparation_is_headless_and_incremental);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_every_material_has_table_data);

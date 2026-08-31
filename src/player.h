@@ -66,7 +66,8 @@ typedef struct Player {
     PlayerBoostStage boostStage;
     /* One-frame event consumed by main for particles, audio and camera kick. */
     PlayerBoostStage boostStageChanged;
-    /* Persists for boostBurstTimer so PlayerDraw can animate the stage ring. */
+    /* Presentation reads this while boostBurstTimer is active to animate the
+       stage ring without feeding visual state back into simulation. */
     PlayerBoostStage boostBurstStage;
     bool facingRight;
     bool thrusting;
@@ -86,6 +87,5 @@ void PlayerApplyImpulse(Player *player, Vector2 impulse);
    short time; a one-shot like the force blast asks for the length of its own
    animation. */
 void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
-void PlayerDraw(const Player *player, Vector2 aimPosition);
 
 #endif

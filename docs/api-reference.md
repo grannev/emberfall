@@ -33,19 +33,15 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 
 ```c
 bool WorldInit(World *world, int width, int height);
-bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
 Vector2 WorldPlayerSpawn(const World *world);
 void WorldActivateRegion(World *world, Rectangle region);
 ```
 
-- `WorldInit` выделяет cells, pixels, два active-chunk buffer, отдельные буферы
+- `WorldInit` выделяет cells, два active-chunk buffer, отдельные буферы
   pixel/light dirty chunks и поля света, затем выставляет всем cells ambient
-  temperature. Он не трогает GPU, поэтому вызывается и без окна.
-- `WorldInitRenderer` создаёт Texture2D. Это единственная функция мира, требующая
-  открытого raylib window/OpenGL context; headless-тесты её не вызывают, и это
-  разделение нужно сохранить.
+  temperature. `World` не владеет GPU ресурсами и работает без окна.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
   выделяет память и оставляет simulation chunks спящими.
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
@@ -54,13 +50,12 @@ void WorldActivateRegion(World *world, Rectangle region);
   там динамические или нагретые cells. `GameUpdate` вызывает её при переходе игрока
   в новый chunk для окна 960×576. Обычные изменения мира всё равно используют
   собственный wake-up и не зависят от streaming.
-- `WorldUnload` выгружает texture и освобождает все world allocations.
+- `WorldUnload` освобождает только CPU world allocations.
 
-### Simulation и rendering
+### Simulation и lighting state
 
 ```c
 void WorldUpdate(World *world);
-void WorldDraw(World *world, Rectangle visible);
 void WorldSetPointLight(World *world, Vector2 position, float radius,
                         float strength);
 float WorldLightAt(const World *world, int x, int y);
@@ -70,16 +65,32 @@ float WorldLightAt(const World *world, int x, int y);
   `world.lastTickStats` содержит число реально пройденных scheduler-ом chunks и
   cells. Это структурные performance counters: они предназначены для HUD,
   benchmark и regression-проверок, но не влияют на gameplay.
-- `WorldDraw` решает свет, пересчитывает Color buffer для грязных chunks внутри
-  `visible`, складывает каждый изменённый блок в локальный буфер 32×32 и
-  загружает его отдельным `UpdateTextureRec`, после чего рисует texture в world
-  origin. Вызывать внутри `BeginMode2D`. `visible` задаётся в cells; грязный
-  chunk вне его сохраняет флаг и перестраивается, когда попадёт в кадр.
-  Результат обязан быть попиксельно идентичен полному перестроению региона.
 - `WorldSetPointLight` задаёт единственный перемещаемый источник света, которым
   владеет вызывающий код; strength 0 выключает его. Применяется на следующем
-  `WorldDraw`.
+  renderer preparation.
 - `WorldLightAt` возвращает суммарную освещённость клетки, 0..1.
+
+### Renderer API
+
+```c
+bool RendererInit(Renderer *renderer, const GameState *game);
+void RendererDrawWorldSpace(Renderer *renderer, GameState *game,
+                            Vector2 aimPosition, Rectangle visible);
+const WorldRendererStats *RendererWorldStats(const Renderer *renderer);
+void RendererUnload(Renderer *renderer);
+```
+
+`Renderer` владеет presentation lifecycle. Его `WorldRenderer` создаёт и
+освобождает `Texture2D`, принимает CPU staging blocks 32×32 и выполняет
+`UpdateTextureRec`. Persistent full-world `Color` buffer отсутствует.
+`RendererDrawWorldSpace` вызывается внутри `BeginMode2D` и компонует мир,
+частицы, игрока и способности. `WorldRendererStats` публикует dirty regions,
+texture uploads, uploaded bytes и время подготовки последнего кадра.
+
+Внутренний `WorldPrepareVisible` не является gameplay API. Он синхронно
+передаёт renderer-у только видимые dirty chunks; невидимые сохраняют флаг до
+попадания в кадр. Headless test проверяет первый полный build, нулевую работу
+settled кадра и один region после локального изменения.
 
 ### Cell access
 
@@ -166,7 +177,6 @@ void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
                                  float radius, float force);
 void PlayerApplyImpulse(Player *player, Vector2 impulse);
 void PlayerSetPose(Player *player, PlayerPose pose, float holdTime);
-void PlayerDraw(const Player *player, Vector2 aimPosition);
 ```
 
 Рекомендуемый порядок: `PlayerUpdate` до world ticks и
@@ -174,6 +184,8 @@ void PlayerDraw(const Player *player, Vector2 aimPosition);
 потому что бурящий игрок прорезает материал, в который его затянуло, вместо
 перемещения с потерей скорости. `PlayerApplyExplosionImpulse` добавляет
 velocity с линейным ослаблением к краю shockwave, но не наносит урон.
+`PlayerRendererDraw` относится к presentation API и объявлен отдельно в
+`player_renderer.h`.
 
 ## Powers API
 
@@ -184,7 +196,6 @@ void PowersUpdate(PowerSystem *powers, World *world,
                   Vector2 aimPosition, float deltaTime,
                   bool laserHeld, bool explosionPressed,
                   bool forcePressed, bool chillHeld);
-void PowersDrawWorld(const PowerSystem *powers, Vector2 aimPosition);
 const char *PowersCurrentName(const PowerSystem *powers);
 ```
 
@@ -193,14 +204,13 @@ const char *PowersCurrentName(const PowerSystem *powers);
 обрабатывает camera/audio feedback. Параметры Q
 `forceLength`, `forceSpreadCosine`, `forceReach` и `forceRecoil` хранятся в
 `PowerSystem`, чтобы gameplay, рисунок конуса и отдача использовали одну
-конфигурацию. `PowersDrawWorld` вызывается внутри world-space camera mode.
+конфигурацию. `AbilityRendererDraw` читает этот state только в presentation.
 
 ## Particle API
 
 ```c
 void ParticlesInit(ParticleSystem *system);
 void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
-void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position,
                                Vector2 direction);
@@ -221,6 +231,7 @@ void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 становится плотнее и быстрее, а burst крупнее. `ParticlesInit` полностью очищает
 pool и используется также при полном reset. Все spawn-функции работают только с
 фиксированным массивом.
+`ParticleRendererDraw` объявлен отдельно и не участвует в simulation API.
 
 ## Audio API
 

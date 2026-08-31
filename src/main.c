@@ -9,6 +9,7 @@
 #include "audio.h"
 #include "game.h"
 #include "input.h"
+#include "renderer.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
@@ -59,9 +60,9 @@ static float CameraViewScaleForSpeed(const Player *player)
     return 1.0f + (CAMERA_FAST_VIEW_SCALE - 1.0f) * excess;
 }
 
-/* The part of the world the camera can see, in cells. WorldDraw rebuilds only
-   what falls inside it, so drawing costs what is on screen rather than what the
-   whole simulation happens to be doing. */
+/* The part of the world the camera can see, in cells. WorldRenderer rebuilds
+   only what falls inside it, so drawing costs what is on screen rather than
+   what the whole simulation happens to be doing. */
 static Rectangle VisibleWorldRectangle(Camera2D camera)
 {
     Vector2 topLeft = GetScreenToWorld2D((Vector2){0.0f, 0.0f}, camera);
@@ -106,14 +107,16 @@ static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 
 static void DrawDebugHud(const World *world, const Player *player,
                          const PowerSystem *powers,
-                         const GameEventBuffer *events, Vector2 cursorCell)
+                         const GameEventBuffer *events,
+                         const Renderer *renderer, Vector2 cursorCell)
 {
     const int panelWidth = 380;
-    const int panelHeight = 164;
+    const int panelHeight = 184;
     float cooldown = powers->explosionCooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
+    const WorldRendererStats *renderStats = RendererWorldStats(renderer);
 
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
@@ -138,10 +141,15 @@ static void DrawDebugHud(const World *world, const Player *player,
                         (unsigned int)events->count,
                         (unsigned int)events->dropped),
              24, 135, 14, (Color){150, 205, 178, 255});
+    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms",
+                        renderStats->textureUploads,
+                        (double)renderStats->uploadedBytes / 1024.0,
+                        renderStats->preparationMilliseconds),
+             24, 153, 14, (Color){166, 183, 223, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 153, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 171, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 153, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 171, 14,
                  LIGHTGRAY);
     }
 }
@@ -347,6 +355,7 @@ int main(int argc, char **argv)
     GameState game = {0};
     GameEventBuffer events = {0};
     GameAudio audio = {0};
+    Renderer renderer = {0};
     Camera2D camera = {0};
     bool debugHud = true;
     bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
@@ -376,8 +385,9 @@ int main(int argc, char **argv)
     (void)GameAudioInit(&audio);
 
     if (!GameInit(&game, GameDefaultConfig()) ||
-        !WorldInitRenderer(&game.world)) {
+        !RendererInit(&renderer, &game)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
+        RendererUnload(&renderer);
         GameUnload(&game);
         GameAudioUnload(&audio);
         CloseWindow();
@@ -493,17 +503,13 @@ int main(int argc, char **argv)
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
         BeginMode2D(camera);
-            WorldDraw(&game.world, VisibleWorldRectangle(camera));
-            DrawRectangleLines(0, 0, game.world.width, game.world.height,
-                               (Color){74, 103, 127, 255});
-            ParticlesDraw(&game.particles);
-            PlayerDraw(&game.player, aimPosition);
-            PowersDrawWorld(&game.powers, aimPosition);
+            RendererDrawWorldSpace(&renderer, &game, aimPosition,
+                                   VisibleWorldRectangle(camera));
         EndMode2D();
 
         if (debugHud) {
             DrawDebugHud(&game.world, &game.player, &game.powers, &events,
-                         cursorCell);
+                         &renderer, cursorCell);
         }
         DrawControlsHint();
         EndDrawing();
@@ -533,6 +539,7 @@ int main(int argc, char **argv)
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;
     }
+    RendererUnload(&renderer);
     GameUnload(&game);
     GameAudioUnload(&audio);
     CloseWindow();

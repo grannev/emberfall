@@ -66,8 +66,6 @@ typedef struct World {
     int width;
     int height;
     Cell *cells;
-    Color *pixels;
-    Texture2D texture;
     uint32_t tick;
     uint32_t effectSerial;
     WorldTickStats lastTickStats;
@@ -118,9 +116,6 @@ typedef struct World {
 } World;
 
 bool WorldInit(World *world, int width, int height);
-/* Creates the GPU texture. Separate from WorldInit so the simulation can run
-   headlessly in tests, where no window or GL context exists. */
-bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
 Vector2 WorldPlayerSpawn(const World *world);
@@ -128,7 +123,6 @@ Vector2 WorldPlayerSpawn(const World *world);
    Actual cell mutations wake themselves regardless of this region. */
 void WorldActivateRegion(World *world, Rectangle region);
 void WorldUpdate(World *world);
-void WorldDraw(World *world, Rectangle visible);
 /* Position of the caller-owned light, applied on the next draw. A strength of
    zero disables it. */
 void WorldSetPointLight(World *world, Vector2 position, float radius, float strength);

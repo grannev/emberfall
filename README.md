@@ -144,13 +144,15 @@ chunks видно в debug HUD.
 - `src/input.c` — единственное преобразование raw raylib keyboard/mouse в
   gameplay-oriented input
 - `src/world.c` — непрерывная сетка cells, температура, фазовые переходы,
-  генерация, fixed-step симуляция, бурение и локальные обновления dirty chunks
-  одной `Texture2D`
+  генерация, fixed-step симуляция, бурение и CPU-подготовка dirty chunks; GPU
+  ресурсами мир не владеет
 - `src/player.c` — инерционный полёт, упругий circle-vs-cell collision и
-  трёхступенчатый boost-бур со сверхзвуком, impact events и компактная модель
-  героя с state-based анимацией
+  трёхступенчатый boost-бур со сверхзвуком и impact/animation state
 - `src/powers.c` — лазер, разрушение rock и взрыв с cooldown
 - `src/particles.c` — фиксированный пул частиц без allocation во время кадра
+- `src/renderer.c` и `*_renderer.c` — presentation composition,
+  процедурная модель героя, способности/частицы и единственное владение world
+  `Texture2D`; persistent full-world pixel buffer не используется
 - `src/audio.c` — процедурно синтезированные звуки лазера, взрыва, реакций,
   бура и переходов между ступенями без внешних audio-ассетов
 - `src/main.c` — composition root, окно, camera/HUD, renderer/audio consumers
@@ -163,7 +165,8 @@ chunks видно в debug HUD.
 звуки. Wave-буферы генерируются только при старте и затем принадлежат raylib;
 если audio device недоступен, игра продолжает работать без звука.
 
-У мира есть отдельный постоянный `Color`-буфер. Пиксели не рисуются отдельными
-прямоугольниками: видимые dirty chunks загружаются в одну текстуру локальными
-`UpdateTextureRec`, а текстура масштабируется камерой с `TEXTURE_FILTER_POINT`,
-сохраняя чёткие границы cells.
+`WorldRenderer` не хранит постоянную CPU-копию всей текстуры. Пиксели не
+рисуются отдельными прямоугольниками: каждый видимый dirty chunk собирается в
+stack staging 32×32, загружается в world texture через `UpdateTextureRec`, а
+текстура масштабируется камерой с `TEXTURE_FILTER_POINT`, сохраняя чёткие
+границы cells.

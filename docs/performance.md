@@ -22,10 +22,12 @@ destruction, boost drilling, force, cryo и mixed chaos. Время каждог
 включает его gameplay action и `WorldUpdate`, но не повторную генерацию перед
 сценарием.
 
-GPU uploads, render preparation и lighting solve пока помечены `n/a`: на момент
-baseline они находятся внутри `WorldDraw` и требуют GL context. Их счётчики
-будут добавлены вместе с отделением renderer, чтобы headless benchmark не
-притворялся графическим.
+GPU uploads и render preparation в headless таблице помечены `n/a`, потому что
+benchmark намеренно не создаёт GL context. Runtime `WorldRendererStats` уже
+показывает dirty regions, texture uploads, uploaded bytes и совокупное время
+CPU preparation/upload в debug HUD. Отдельный воспроизводимый renderer
+benchmark будет добавлен вместе с render paging, чтобы измерять реальный cache,
+а не giant-texture implementation, которая уже запланирована к удалению.
 
 ## Baseline 2026-08-31
 
@@ -117,3 +119,47 @@ loops и layout не менялись. Повторный `make bench` дал:
 Structural workload совпал с baseline во всех сценариях. Разброс wall-clock
 остался обычным для этой машины; ускорение не заявляется. Memory layout и
 estimate не изменились.
+
+## После разделения presentation и GPU ownership
+
+`PlayerDraw`, `PowersDrawWorld` и `ParticlesDraw` механически перенесены в
+dedicated renderer modules. `Renderer` стал presentation owner, а
+`WorldRenderer` — единственным владельцем world `Texture2D`. Из `World`
+удалён persistent full-world `Color *pixels`; видимый dirty chunk теперь
+строится в stack staging 32×32 (4 KiB) и немедленно загружается.
+
+Memory для production world:
+
+| Owner | Baseline MiB | После MiB | Изменение |
+|---|---:|---:|---:|
+| Cells | 216.00 | 216.00 | 0 |
+| Persistent world pixels | 54.00 | 0.00 | -54.00 |
+| Chunk flags | 0.05 | 0.05 | 0 |
+| Lighting | 5.06 | 5.06 | 0 |
+| CPU estimate | 275.12 | 221.12 | **-54.00 MiB (-19.6%)** |
+| Renderer staging | 0 | 0.0039 | stack, не persistent heap |
+
+Полный повторный `make bench`:
+
+| Scenario | avg ms | p50 | p95 | p99 | cells/tick | chunks/tick |
+|---|---:|---:|---:|---:|---:|---:|
+| settled world | 0.587 | 0.535 | 0.923 | 1.182 | 0 | 0 |
+| falling sand | 1.884 | 1.634 | 3.059 | 3.550 | 59 630 | 58 |
+| large water | 4.421 | 3.930 | 6.591 | 8.623 | 86 664 | 84 |
+| fire and lava | 2.313 | 2.084 | 3.657 | 4.418 | 52 929 | 51 |
+| large explosion | 1.665 | 1.667 | 2.814 | 6.750 | 44 691 | 43 |
+| mass destruction | 0.971 | 0.893 | 1.259 | 1.986 | 23 045 | 22 |
+| boost drilling | 1.059 | 0.919 | 1.633 | 1.961 | 27 904 | 27 |
+| force ability | 2.068 | 1.807 | 3.307 | 5.008 | 48 372 | 47 |
+| cryo ability | 4.024 | 3.653 | 5.558 | 6.614 | 87 648 | 85 |
+| chaotic mixed | 5.930 | 5.353 | 8.736 | 10.365 | 139 628 | 136 |
+
+Init 49.6 ms, generation 427.4 ms, regeneration 459.7 ms; measured RSS and
+peak RSS after materializing the world were 220.95/220.87 MiB. Structural
+workload снова полностью совпал с baseline. Simulation algorithms не менялись,
+поэтому ускорение CPU tick не заявляется; результат этой phase — измеримое
+снижение памяти и чистая ownership boundary.
+
+Одна texture 16384×864 всё ещё требует примерно 54 MiB VRAM и остаётся hard
+limit текущего renderer. Теперь ограничение локализовано в `WorldRenderer`, так
+что render paging не потребует менять `World` или gameplay modules.
