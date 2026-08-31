@@ -73,14 +73,17 @@
 typedef struct TerrainBodyHandle {
     uint16_t index;
     /* Bumped every time the slot is freed, so a stale handle disagrees with the
-       slot it names. It wraps after 65 536 reuses of the same slot, which is
-       hours of continuous destruction; a stale handle that survives that long
-       and lands on the same slot is a risk taken knowingly. */
+       slot it names. Generation zero is never live, which is what makes a
+       zero-initialised handle — `TerrainBodyHandle handle = {0};`, which
+       callers write without thinking — fail every lookup instead of quietly
+       naming body zero. The counter skips zero when it wraps, after 65 536
+       reuses of one slot; a stale handle that survives that long and lands on
+       the same slot is a risk taken knowingly. */
     uint16_t generation;
 } TerrainBodyHandle;
 
-/* Never returned by a successful allocation: index is out of range, so it fails
-   every lookup. */
+/* Never returned by a successful allocation: the index is out of range and the
+   generation is the reserved dead value, so both halves fail the lookup. */
 #define TERRAIN_BODY_INVALID_INDEX 0xFFFFu
 
 static inline TerrainBodyHandle TerrainBodyInvalidHandle(void)
@@ -100,7 +103,8 @@ static inline bool TerrainBodyHandleEquals(TerrainBodyHandle a, TerrainBodyHandl
 /* ---- body ---------------------------------------------------------------- */
 
 typedef struct TerrainBody {
-    /* Slot bookkeeping. `generation` mirrors the live handle's. */
+    /* Slot bookkeeping. `generation` mirrors the live handle's and is never
+       zero. */
     bool active;
     uint16_t generation;
     /* A settled body still exists and still collides, but costs nothing to
@@ -209,7 +213,8 @@ float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
 
 /* Recomputes bounds, mass, centre of mass and inertia from the raster. Call it
    once a body has been populated or edited; until then those fields describe
-   the body as it was. */
+   the body as it was. A body whose cells all have zero density reports no
+   extent and no mass, and every consumer should treat it as empty. */
 void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
                                 TerrainBodyHandle handle);
 
