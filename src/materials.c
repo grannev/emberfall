@@ -25,6 +25,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .solid = true,
         .laserHeatRate = 2500.0f,
         .chillRate = 260.0f,
+        .density = 1.4f,
     },
     [MATERIAL_ROCK] = {
         .name = "ROCK", .color = {72, 77, 86, 255},
@@ -35,6 +36,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .solid = true,
         .laserHeatRate = 1080.0f,
         .chillRate = 260.0f,
+        .density = 2.6f,
     },
     [MATERIAL_SAND] = {
         .name = "SAND", .color = {218, 184, 91, 255},
@@ -45,6 +47,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .dynamic = true, .solid = true,
         .laserHeatRate = 3100.0f,
         .chillRate = 260.0f,
+        .density = 1.6f,
     },
     [MATERIAL_WATER] = {
         .name = "WATER", .color = {32, 111, 190, 225},
@@ -55,6 +58,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .onCool = {true, MATERIAL_ICE, -4.0f},
         .dynamic = true,
         .chillRate = 90.0f,
+        .density = 1.0f,
     },
     [MATERIAL_LAVA] = {
         .name = "LAVA", .color = {245, 73, 18, 255},
@@ -71,6 +75,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
            does not clearly beat that number does not cool lava at all — it just
            finds an equilibrium above the threshold and sits there. */
         .chillRate = 1900.0f,
+        .density = 2.9f,
     },
     [MATERIAL_STEAM] = {
         .name = "STEAM", .color = {204, 222, 229, 178},
@@ -118,6 +123,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .solid = true,
         .laserHeatRate = 600.0f,
         .chillRate = 260.0f,
+        .density = 0.92f,
     },
     [MATERIAL_ASH] = {
         .name = "ASH", .color = {112, 108, 104, 255},
@@ -126,6 +132,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .dynamic = true,
         .chillRate = 260.0f,
+        .density = 0.7f,
     },
 };
 
@@ -155,6 +162,11 @@ bool MaterialsValidate(void)
         }
         if (info->onCool.enabled &&
             (info->onCool.target < 0 || info->onCool.target >= MATERIAL_COUNT)) {
+            return false;
+        }
+        /* Anything the player can stand on can also be torn loose and thrown,
+           so a solid material without a mass would produce a weightless body. */
+        if (info->solid && info->density <= 0.0f) {
             return false;
         }
         /* A transition that fires the instant the cell is created would make the

@@ -13,3 +13,4 @@
 - [0006 — реестр способностей](0006-ability-registry.md)
 - [0007 — область решения света](0007-lighting-scope.md)
 - [0008 — обнаружение отделившихся components](0008-detached-component-detection.md)
+- [0009 — хранение TerrainBody](0009-terrain-body-storage.md)

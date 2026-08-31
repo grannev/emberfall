@@ -46,7 +46,8 @@ app/presentation-командой. Gameplay и headless tests не вызыва�
 
 ### `game.c/.h`
 
-`GameState` владеет `World`, `Player`, `AbilitySystem`, `ParticleSystem`, fixed-step
+`GameState` владеет `World`, `Player`, `AbilitySystem`, `ParticleSystem`,
+`DynamicTerrainSystem`, fixed-step
 accumulator и streaming position. `GameUpdate` задаёт единый gameplay order:
 player, activation, abilities, particles, необходимое число world ticks,
 reaction events и post-simulation collision. `GameConfig` собирает world size,
@@ -102,6 +103,20 @@ cross-module call в самый горячий цикл проекта; benchmar
 
 Материал добавляется одной записью таблицы — см.
 [development/adding-a-material.md](development/adding-a-material.md).
+
+### `dynamic_terrain.c/.h`
+
+Fixed-capacity хранилище кусков породы, переставших быть частью клеточного
+мира: `DynamicTerrainSystem` владеет `TerrainBody[32]` и одной raster arena на
+1.25 MiB, выделенной при init. `TerrainBody` — один крупный связный кусок
+terrain, а не entity на каждую клетку.
+
+Подсистема **никогда не получает `World`** и потому физически не может его
+изменить. Сейчас она behaviour-neutral: ничто не извлекает, не двигает, не
+сталкивает и не рисует тела. Владеет ею `GameState`.
+
+Подробности — [dynamic-terrain.md](dynamic-terrain.md),
+решения — [ADR 0009](adr/0009-terrain-body-storage.md).
 
 ### `player.c/.h`
 
@@ -197,6 +212,7 @@ device не является фатальной.
 | поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
 | кэш страниц мира (`Texture2D` × N) | `WorldRendererInit`, растёт под размер вида | `RendererUnload` |
 | chunk upload staging 32×32 | stack внутри `WorldPrepareVisible` | возврат из вызова |
+| raster arena динамического terrain (1.25 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
