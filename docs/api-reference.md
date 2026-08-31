@@ -128,7 +128,7 @@ world-space camera mode.
 
 ```c
 void ParticlesInit(ParticleSystem *system);
-void ParticlesUpdate(ParticleSystem *system, float deltaTime);
+void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
 void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position,

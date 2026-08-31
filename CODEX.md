@@ -48,7 +48,8 @@ test.
 - `src/player.c/.h`: sub-stepped gravity-free flight, boost drilling,
   circle-vs-cell collision, and state-based player rendering
 - `src/powers.c/.h`: continuous laser, explosion cooldown, world effects
-- `src/particles.c/.h`: fixed-capacity particle pool drawn as whole cells
+- `src/particles.c/.h`: fixed-capacity particle pool drawn as whole cells,
+  colliding with terrain and settling into it
 - `src/audio.c/.h`: startup-only procedural wave synthesis and sound playback
 - `docs/`: Russian developer documentation; `docs/README.md` is its index
 
@@ -167,6 +168,12 @@ over frameworks, generic containers, or unnecessary abstraction.
   terrain and turns some rock into lava; the outer shockwave pushes dynamic
   cells from outer bands inward and emits one event for player knockback,
   expanding-ring feedback, and camera shake.
+- Particles collide with solid terrain rather than flying through it, and their
+  behaviour on contact is a `ParticleContact` on the particle: gases and glow
+  pass, sparks and shards bounce, drill debris settles. A particle born inside
+  material must escape it before terrain can stop it. Settling writes only empty
+  cells and only a fraction of debris settles, so effects can never overwrite
+  terrain, bury the player, or refill a tunnel faster than the drill cuts it.
 - Powers have no energy, ammunition, or overheat resource. The laser is always
   available. Explosion keeps only its short input cooldown and physical
   feedback.

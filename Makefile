@@ -5,7 +5,7 @@ APP := emberfall
 SOURCES := src/main.c src/world.c src/player.c src/powers.c src/particles.c src/audio.c
 # The headless suite links the simulation core only: no window, no GL context.
 TEST_APP := emberfall-tests
-TEST_SOURCES := tests/world_tests.c src/world.c src/player.c
+TEST_SOURCES := tests/world_tests.c src/world.c src/player.c src/particles.c
 CONFIG ?= release
 RUN_ARGS ?=
 BUILD_DIR := build/$(CONFIG)

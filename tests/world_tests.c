@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "particles.h"
 #include "player.h"
 #include "world.h"
 
@@ -520,6 +521,113 @@ static void test_boosting_player_tunnels_through_sand(void)
     WorldUnload(&world);
 }
 
+static int CountActiveParticles(const ParticleSystem *particles)
+{
+    int i;
+    int count = 0;
+
+    for (i = 0; i < MAX_PARTICLES; ++i) {
+        if (particles->particles[i].active) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void test_bouncing_particles_do_not_pass_through_terrain(void)
+{
+    World world;
+    ParticleSystem particles;
+    int step;
+    int inside = 0;
+    int i;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 70, 0, 127, 63, MATERIAL_ROCK);
+    ParticlesInit(&particles);
+
+    /* Impact sparks fired straight at a rock wall from open air. */
+    ParticlesSpawnImpact(&particles, (Vector2){50.0f, 32.0f},
+                         (Vector2){1.0f, 0.0f}, 90.0f);
+    CHECK(CountActiveParticles(&particles) > 0, "no particles were spawned");
+
+    for (step = 0; step < 60; ++step) {
+        ParticlesUpdate(&particles, &world, 1.0f / 60.0f);
+        for (i = 0; i < MAX_PARTICLES; ++i) {
+            const Particle *particle = &particles.particles[i];
+
+            if (particle->active && particle->position.x >= 71.0f) {
+                ++inside;
+            }
+        }
+    }
+
+    CHECK(inside == 0, "%d particle samples ended up inside the rock", inside);
+    WorldUnload(&world);
+}
+
+static void test_drill_debris_settles_as_ash_without_overwriting_terrain(void)
+{
+    World world;
+    ParticleSystem particles;
+    int step;
+    int rockBefore;
+    int rockAfter;
+    int ash;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 0, 40, 127, 63, MATERIAL_ROCK);
+    rockBefore = CountMaterial(&world, MATERIAL_ROCK);
+    ParticlesInit(&particles);
+
+    for (step = 0; step < 40; ++step) {
+        ParticlesSpawnDrillDebris(&particles, (Vector2){64.0f, 30.0f},
+                                  (Vector2){0.0f, -120.0f}, 30);
+        ParticlesUpdate(&particles, &world, 1.0f / 60.0f);
+    }
+    for (step = 0; step < 120; ++step) {
+        ParticlesUpdate(&particles, &world, 1.0f / 60.0f);
+    }
+
+    ash = CountMaterial(&world, MATERIAL_ASH);
+    rockAfter = CountMaterial(&world, MATERIAL_ROCK);
+    CHECK(ash > 0, "debris never settled into the world");
+    CHECK(rockAfter == rockBefore,
+          "settling debris overwrote terrain: %d rock cells became %d",
+          rockBefore, rockAfter);
+    WorldUnload(&world);
+}
+
+static void test_passing_particles_ignore_terrain(void)
+{
+    World world;
+    ParticleSystem particles;
+    int step;
+    int i;
+    bool crossed = false;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 0, 20, 127, 24, MATERIAL_ROCK);
+    ParticlesInit(&particles);
+
+    /* Steam is a gas effect: a rock ceiling must not stop it, or reaction plumes
+       would pile up against the lid of a pocket instead of drifting. */
+    ParticlesSpawnSteam(&particles, (Vector2){64.0f, 40.0f});
+    for (step = 0; step < 120 && !crossed; ++step) {
+        ParticlesUpdate(&particles, &world, 1.0f / 60.0f);
+        for (i = 0; i < MAX_PARTICLES; ++i) {
+            const Particle *particle = &particles.particles[i];
+
+            if (particle->active && particle->position.y < 20.0f) {
+                crossed = true;
+            }
+        }
+    }
+
+    CHECK(crossed, "steam never rose past the rock ceiling");
+    WorldUnload(&world);
+}
+
 static void test_drill_resistance_never_stalls_the_boost(void)
 {
     World world;
@@ -616,6 +724,9 @@ int main(void)
     RUN(test_boosting_player_tunnels_through_rock);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
+    RUN(test_bouncing_particles_do_not_pass_through_terrain);
+    RUN(test_drill_debris_settles_as_ash_without_overwriting_terrain);
+    RUN(test_passing_particles_ignore_terrain);
     RUN(test_player_never_ends_a_frame_inside_solid_terrain);
 
     printf("\n%d tests, %d failed\n", testsRun, testsFailed);

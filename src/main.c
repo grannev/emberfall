@@ -420,7 +420,7 @@ int main(int argc, char **argv)
         }
         GameAudioUpdate(&audio, powers.laserActive, player.drilledCells > 0,
                         deltaTime);
-        ParticlesUpdate(&particles, deltaTime);
+        ParticlesUpdate(&particles, &world, deltaTime);
 
         simulationAccumulator += deltaTime;
         while (simulationAccumulator >= SIMULATION_STEP) {

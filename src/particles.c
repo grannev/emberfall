@@ -11,9 +11,12 @@ static float RandomUnit(void)
     return (float)GetRandomValue(0, 10000) / 10000.0f;
 }
 
-static void ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, Color color, float life, float size,
-                              float gravity)
+/* Returns the particle so callers can override its contact behaviour; passing
+   every field through the argument list would make the spawn helpers unreadable
+   for the two of them that actually differ. */
+static Particle *ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
+                                   Vector2 velocity, Color color, float life,
+                                   float size, float gravity)
 {
     Particle *particle;
 
@@ -26,7 +29,30 @@ static void ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
     particle->maxLife = life;
     particle->size = size;
     particle->gravity = gravity;
+    particle->restitution = 0.34f;
+    particle->contact = PARTICLE_CONTACT_PASS;
+    particle->settleMaterial = MATERIAL_EMPTY;
     particle->active = true;
+    return particle;
+}
+
+static bool ParticleCellBlocks(const World *world, float x, float y)
+{
+    return WorldMaterialIsSolid(WorldGetCell(world, (int)floorf(x), (int)floorf(y)));
+}
+
+/* Debris that stops moving becomes grit on the tunnel floor. Only empty cells
+   are written, so settling can never overwrite terrain or bury the player, and
+   the drill removes far more than the surviving fraction puts back. */
+static void ParticleSettle(Particle *particle, World *world)
+{
+    int x = (int)floorf(particle->position.x);
+    int y = (int)floorf(particle->position.y);
+
+    if (WorldGetCell(world, x, y) == MATERIAL_EMPTY) {
+        WorldSetCell(world, x, y, particle->settleMaterial);
+    }
+    particle->active = false;
 }
 
 void ParticlesInit(ParticleSystem *system)
@@ -37,7 +63,7 @@ void ParticlesInit(ParticleSystem *system)
     memset(system, 0, sizeof(*system));
 }
 
-void ParticlesUpdate(ParticleSystem *system, float deltaTime)
+void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime)
 {
     int i;
 
@@ -47,6 +73,9 @@ void ParticlesUpdate(ParticleSystem *system, float deltaTime)
 
     for (i = 0; i < MAX_PARTICLES; ++i) {
         Particle *particle = &system->particles[i];
+        bool embedded;
+        float nextX;
+        float nextY;
 
         if (!particle->active) {
             continue;
@@ -60,8 +89,42 @@ void ParticlesUpdate(ParticleSystem *system, float deltaTime)
 
         particle->velocity.y += particle->gravity * deltaTime;
         particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
-        particle->position.x += particle->velocity.x * deltaTime;
-        particle->position.y += particle->velocity.y * deltaTime;
+        nextX = particle->position.x + particle->velocity.x * deltaTime;
+        nextY = particle->position.y + particle->velocity.y * deltaTime;
+
+        if (world == NULL || particle->contact == PARTICLE_CONTACT_PASS) {
+            particle->position.x = nextX;
+            particle->position.y = nextY;
+            continue;
+        }
+
+        /* A particle spawned inside material — drill debris is born at the cut
+           face — must be allowed to escape before terrain can stop it. */
+        embedded = ParticleCellBlocks(world, particle->position.x,
+                                      particle->position.y);
+
+        /* Axis-separated like the player collider, so a shard that meets a wall
+           keeps sliding along it instead of stopping dead. */
+        if (!embedded && ParticleCellBlocks(world, nextX, particle->position.y)) {
+            if (particle->contact == PARTICLE_CONTACT_SETTLE) {
+                ParticleSettle(particle, world);
+                continue;
+            }
+            particle->velocity.x = -particle->velocity.x * particle->restitution;
+        } else {
+            particle->position.x = nextX;
+        }
+
+        if (!embedded && ParticleCellBlocks(world, particle->position.x, nextY)) {
+            if (particle->contact == PARTICLE_CONTACT_SETTLE) {
+                ParticleSettle(particle, world);
+                continue;
+            }
+            particle->velocity.y = -particle->velocity.y * particle->restitution;
+            particle->velocity.x *= 0.72f;
+        } else {
+            particle->position.y = nextY;
+        }
     }
 }
 
@@ -117,7 +180,8 @@ void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position)
         }
         ParticlesSpawnOne(system, position,
                           (Vector2){cosf(angle) * speed, sinf(angle) * speed},
-                          color, life, 0.7f + RandomUnit() * 1.5f, 30.0f);
+                          color, life, 0.7f + RandomUnit() * 1.5f, 30.0f)
+            ->contact = PARTICLE_CONTACT_BOUNCE;
     }
 }
 
@@ -134,10 +198,13 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2
                       (RandomUnit() - 0.5f) * 1.6f;
         float speed = 15.0f + RandomUnit() * 35.0f;
 
+        /* Sparks come off the cell the laser is eating, so they ricochet
+           along the face instead of sinking into it. */
         ParticlesSpawnOne(system, position,
                           (Vector2){cosf(angle) * speed, sinf(angle) * speed},
                           (Color){255, 225, 90, 255}, 0.12f + RandomUnit() * 0.18f,
-                          0.45f + RandomUnit() * 0.65f, 18.0f);
+                          0.45f + RandomUnit() * 0.65f, 18.0f)
+            ->contact = PARTICLE_CONTACT_BOUNCE;
     }
 }
 
@@ -163,7 +230,8 @@ void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 norm
                           (Vector2){normal.x * outward + tangent.x * sideways,
                                     normal.y * outward + tangent.y * sideways},
                           color, 0.18f + RandomUnit() * 0.25f,
-                          0.45f + RandomUnit() * 0.7f, 22.0f);
+                          0.45f + RandomUnit() * 0.7f, 22.0f)
+            ->contact = PARTICLE_CONTACT_BOUNCE;
     }
 }
 
@@ -228,11 +296,23 @@ void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
         } else {
             color = (Color){111, 116, 124, 235};
         }
-        ParticlesSpawnOne(system, position,
-                          (Vector2){-direction.x * backward + tangent.x * sideways,
-                                    -direction.y * backward + tangent.y * sideways},
-                          color, 0.2f + RandomUnit() * 0.34f,
-                          0.45f + RandomUnit() * 0.9f, 24.0f);
+        Particle *particle =
+            ParticlesSpawnOne(system, position,
+                              (Vector2){-direction.x * backward + tangent.x * sideways,
+                                        -direction.y * backward + tangent.y * sideways},
+                              color, 0.2f + RandomUnit() * 0.34f,
+                              0.45f + RandomUnit() * 0.9f, 24.0f);
+
+        /* Roughly a third of the spoil comes to rest as real ash, so a bored
+           tunnel collects grit on its floor instead of staying surgically
+           clean. The rest ricochets and expires: settling all of it would refill
+           the tunnel faster than it reads as debris. */
+        if (i % 3 == 0) {
+            particle->contact = PARTICLE_CONTACT_SETTLE;
+            particle->settleMaterial = MATERIAL_ASH;
+        } else {
+            particle->contact = PARTICLE_CONTACT_BOUNCE;
+        }
     }
 }
 

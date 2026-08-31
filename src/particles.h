@@ -5,7 +5,18 @@
 
 #include <raylib.h>
 
+#include "world.h"
+
 #define MAX_PARTICLES 1024
+
+/* What a particle does when it meets a solid cell. Effects used to ignore the
+   world entirely and fly through rock, which read as decoration painted over
+   the simulation rather than as part of it. */
+typedef enum ParticleContact {
+    PARTICLE_CONTACT_PASS = 0, /* glow and gases: terrain does not stop them */
+    PARTICLE_CONTACT_BOUNCE,   /* sparks and shards ricochet and lose energy */
+    PARTICLE_CONTACT_SETTLE    /* debris comes to rest as a real world cell */
+} ParticleContact;
 
 typedef struct Particle {
     Vector2 position;
@@ -15,6 +26,9 @@ typedef struct Particle {
     float maxLife;
     float size;
     float gravity;
+    float restitution;
+    ParticleContact contact;
+    CellMaterial settleMaterial;
     bool active;
 } Particle;
 
@@ -24,7 +38,7 @@ typedef struct ParticleSystem {
 } ParticleSystem;
 
 void ParticlesInit(ParticleSystem *system);
-void ParticlesUpdate(ParticleSystem *system, float deltaTime);
+void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime);
 void ParticlesDraw(const ParticleSystem *system);
 void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position);
 void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2 direction);
