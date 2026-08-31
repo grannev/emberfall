@@ -14,6 +14,13 @@ typedef enum PlayerPose {
     PLAYER_POSE_BLAST
 } PlayerPose;
 
+typedef enum PlayerBoostStage {
+    PLAYER_BOOST_NONE = 0,
+    PLAYER_BOOST_STAGE_ONE,
+    PLAYER_BOOST_STAGE_TWO,
+    PLAYER_BOOST_STAGE_THREE
+} PlayerBoostStage;
+
 typedef struct Player {
     Vector2 position;
     Vector2 velocity;
@@ -26,8 +33,18 @@ typedef struct Player {
     float acceleration;
     float maxSpeed;
     float boostAcceleration;
+    float boostStageTwoAcceleration;
+    float boostStageThreeAcceleration;
+    float boostStageOneSpeed;
+    float boostStageTwoSpeed;
     float boostMaxSpeed;
     float boostDrag;
+    float boostStageTwoDrag;
+    float boostStageThreeDrag;
+    float sonicSpeed;
+    float boostStageTwoDelay;
+    float boostStageThreeDelay;
+    float boostStageTime;
     float boostGrace;
     float drillSpeed;
     float drillResistance;
@@ -44,7 +61,13 @@ typedef struct Player {
     PlayerPose pose;
     float poseTimer;
     float boostTrailTimer;
+    float boostBurstTimer;
     int drilledCells;
+    PlayerBoostStage boostStage;
+    /* One-frame event consumed by main for particles, audio and camera kick. */
+    PlayerBoostStage boostStageChanged;
+    /* Persists for boostBurstTimer so PlayerDraw can animate the stage ring. */
+    PlayerBoostStage boostBurstStage;
     bool facingRight;
     bool thrusting;
     bool boosting;

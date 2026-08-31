@@ -121,6 +121,26 @@ static void WorldWakeCellAndNeighbors(World *world, int x, int y)
 static bool MaterialIsDynamic(CellMaterial material);
 static float MaterialInitialTemperature(CellMaterial material);
 
+/* Generation writes millions of cells, but none of them has interacted yet.
+   Keeping them asleep lets a huge map stream its simulation around the player;
+   WorldActivateRegion wakes generated dynamics before they enter play, while
+   every actual mutation still uses the ordinary local wake path. */
+static void WorldSetGeneratedCell(World *world, int x, int y,
+                                  CellMaterial material)
+{
+    Cell *cell;
+
+    if (!WorldInBounds(world, x, y)) {
+        return;
+    }
+
+    cell = WorldCell(world, x, y);
+    cell->material = (uint8_t)material;
+    cell->temperature = MaterialInitialTemperature(material);
+    cell->lifetime = 0;
+    cell->effectStamp = 0;
+}
+
 static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
 {
     Cell *cell;
@@ -130,7 +150,7 @@ static void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
     }
 
     cell = WorldCell(world, x, y);
-    cell->material = material;
+    cell->material = (uint8_t)material;
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
     cell->effectStamp = 0;
@@ -149,7 +169,7 @@ static void WorldFillEllipse(World *world, int centerX, int centerY,
             float dy = (float)(y - centerY) / (float)radiusY;
 
             if (dx * dx + dy * dy <= 1.0f) {
-                WorldSetCellRaw(world, x, y, material);
+                WorldSetGeneratedCell(world, x, y, material);
             }
         }
     }
@@ -916,7 +936,7 @@ void WorldGenerate(World *world)
                     ? MATERIAL_ROCK
                     : MATERIAL_DIRT;
 
-            WorldSetCellRaw(world, x, y, material);
+            WorldSetGeneratedCell(world, x, y, material);
         }
     }
 
@@ -985,7 +1005,7 @@ void WorldGenerate(World *world)
             int y;
 
             for (y = surfaceY - 1 - crown; y < surfaceY + bankDepth; ++y) {
-                WorldSetCellRaw(world, worldX, y, MATERIAL_SAND);
+                WorldSetGeneratedCell(world, worldX, y, MATERIAL_SAND);
             }
         }
     }
@@ -1006,7 +1026,7 @@ void WorldGenerate(World *world)
             int y;
 
             for (y = surfaceY - pillarHeight; y < surfaceY + 48; ++y) {
-                WorldSetCellRaw(world, worldX, y, MATERIAL_DIRT);
+                WorldSetGeneratedCell(world, worldX, y, MATERIAL_DIRT);
             }
         }
     }
@@ -1114,6 +1134,82 @@ static void WorldCountActiveState(World *world)
             }
         }
     }
+}
+
+void WorldActivateRegion(World *world, Rectangle region)
+{
+    int firstChunkX;
+    int lastChunkX;
+    int firstChunkY;
+    int lastChunkY;
+    int chunkY;
+
+    if (world == NULL || world->cells == NULL || world->activeChunks == NULL ||
+        world->nextActiveChunks == NULL || region.width <= 0.0f ||
+        region.height <= 0.0f) {
+        return;
+    }
+
+    firstChunkX = (int)floorf(region.x / (float)WORLD_CHUNK_SIZE);
+    lastChunkX = (int)floorf((region.x + region.width - 0.001f) /
+                            (float)WORLD_CHUNK_SIZE);
+    firstChunkY = (int)floorf(region.y / (float)WORLD_CHUNK_SIZE);
+    lastChunkY = (int)floorf((region.y + region.height - 0.001f) /
+                            (float)WORLD_CHUNK_SIZE);
+    if (firstChunkX < 0) firstChunkX = 0;
+    if (firstChunkY < 0) firstChunkY = 0;
+    if (lastChunkX >= world->chunkColumns) lastChunkX = world->chunkColumns - 1;
+    if (lastChunkY >= world->chunkRows) lastChunkY = world->chunkRows - 1;
+    if (firstChunkX > lastChunkX || firstChunkY > lastChunkY) {
+        return;
+    }
+
+    for (chunkY = firstChunkY; chunkY <= lastChunkY; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = firstChunkX; chunkX <= lastChunkX; ++chunkX) {
+            size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
+                                (size_t)chunkX;
+            int minimumX;
+            int maximumX;
+            int minimumY;
+            int maximumY;
+            int y;
+            bool needsSimulation = false;
+
+            if (world->activeChunks[chunkIndex] != 0u ||
+                world->nextActiveChunks[chunkIndex] != 0u) {
+                continue;
+            }
+            minimumX = chunkX * WORLD_CHUNK_SIZE;
+            maximumX = minimumX + WORLD_CHUNK_SIZE;
+            minimumY = chunkY * WORLD_CHUNK_SIZE;
+            maximumY = minimumY + WORLD_CHUNK_SIZE;
+            if (maximumX > world->width) maximumX = world->width;
+            if (maximumY > world->height) maximumY = world->height;
+
+            for (y = minimumY; y < maximumY && !needsSimulation; ++y) {
+                int x;
+
+                for (x = minimumX; x < maximumX; ++x) {
+                    const Cell *cell = WorldCellConst(world, x, y);
+                    CellMaterial material = (CellMaterial)cell->material;
+
+                    if (MaterialIsDynamic(material) ||
+                        fabsf(cell->temperature -
+                              MaterialInitialTemperature(material)) > 0.05f) {
+                        needsSimulation = true;
+                        break;
+                    }
+                }
+            }
+            if (needsSimulation) {
+                world->activeChunks[chunkIndex] = 1u;
+                world->nextActiveChunks[chunkIndex] = 1u;
+            }
+        }
+    }
+    WorldCountActiveState(world);
 }
 
 void WorldUpdate(World *world)
@@ -1555,8 +1651,7 @@ void WorldSetPointLight(World *world, Vector2 position, float radius, float stre
 
 void WorldDraw(World *world, Rectangle visible)
 {
-    int minimumRow;
-    int maximumRow;
+    Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
     int lastVisibleColumn;
     int firstVisibleRow;
@@ -1567,9 +1662,6 @@ void WorldDraw(World *world, Rectangle visible)
         world->texture.id == 0u) {
         return;
     }
-
-    minimumRow = world->chunkRows;
-    maximumRow = -1;
 
     /* Rebuilding costs what the player can see, not what the world is doing.
        Activity is spread over the whole map — a lava lake, a distant fire, a
@@ -1638,7 +1730,6 @@ void WorldDraw(World *world, Rectangle visible)
     /* Rebuild only the chunks that changed. The simulation sleeps on a settled
        world, and so must the renderer. */
     for (chunkY = firstVisibleRow; chunkY <= lastVisibleRow; ++chunkY) {
-        bool rowDirty = false;
         int chunkX;
 
         for (chunkX = firstVisibleColumn; chunkX <= lastVisibleColumn; ++chunkX) {
@@ -1658,7 +1749,6 @@ void WorldDraw(World *world, Rectangle visible)
                 continue;
             }
             world->dirtyChunks[chunkIndex] = 0u;
-            rowDirty = true;
             minimumX = chunkX * WORLD_CHUNK_SIZE;
             maximumX = minimumX + WORLD_CHUNK_SIZE;
             minimumY = chunkY * WORLD_CHUNK_SIZE;
@@ -1713,33 +1803,25 @@ void WorldDraw(World *world, Rectangle visible)
                     WorldLightTint(topSky + (bottomSky - topSky) * rowBlend,
                                    topEmber + (bottomEmber - topEmber) * rowBlend,
                                    &red, &green, &blue);
-                    world->pixels[WorldIndex(world, x, y)] =
-                        MaterialPixel(world, WorldCellConst(world, x, y), x, y,
-                                      red, green, blue);
+                    Color pixel = MaterialPixel(world, WorldCellConst(world, x, y),
+                                                x, y, red, green, blue);
+
+                    world->pixels[WorldIndex(world, x, y)] = pixel;
+                    uploadPixels[(size_t)(y - minimumY) *
+                                     (size_t)(maximumX - minimumX) +
+                                 (size_t)(x - minimumX)] = pixel;
                 }
             }
+            /* At 16384 cells wide, uploading one full-width band for a local
+               change moves tens of MiB. A 32x32 stack staging block keeps the
+               source contiguous without any frame allocation and uploads only
+               the chunk that was rebuilt. */
+            UpdateTextureRec(world->texture,
+                             (Rectangle){(float)minimumX, (float)minimumY,
+                                         (float)(maximumX - minimumX),
+                                         (float)(maximumY - minimumY)},
+                             uploadPixels);
         }
-
-        if (rowDirty) {
-            if (chunkY < minimumRow) minimumRow = chunkY;
-            if (chunkY > maximumRow) maximumRow = chunkY;
-        }
-    }
-
-    if (maximumRow >= 0) {
-        /* One upload covering the dirty rows. A full-width band keeps the
-           source rows contiguous, so no staging copy is needed. */
-        int bandStart = minimumRow * WORLD_CHUNK_SIZE;
-        int bandEnd = (maximumRow + 1) * WORLD_CHUNK_SIZE;
-        Rectangle band;
-
-        if (bandEnd > world->height) {
-            bandEnd = world->height;
-        }
-        band = (Rectangle){0.0f, (float)bandStart, (float)world->width,
-                           (float)(bandEnd - bandStart)};
-        UpdateTextureRec(world->texture, band,
-                         &world->pixels[WorldIndex(world, 0, bandStart)]);
     }
 
     DrawTexture(world->texture, 0, 0, WHITE);

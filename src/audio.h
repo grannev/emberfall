@@ -15,6 +15,7 @@ typedef struct GameAudio {
     Sound impact;
     Sound force;
     Sound chill;
+    Sound boost;
     float reactionCooldown;
     float impactCooldown;
     bool ready;
@@ -37,6 +38,7 @@ void GameAudioPlayExplosion(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioPlayImpact(GameAudio *audio, float strength);
 void GameAudioPlayForce(GameAudio *audio);
+void GameAudioPlayBoost(GameAudio *audio, int stage);
 void GameAudioUnload(GameAudio *audio);
 
 #endif

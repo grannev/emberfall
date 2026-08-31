@@ -13,18 +13,23 @@ bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
 Vector2 WorldPlayerSpawn(const World *world);
+void WorldActivateRegion(World *world, Rectangle region);
 ```
 
-- `WorldInit` выделяет cells, pixels, два chunk buffer и буфер грязных chunks и
-  выставляет всем cells ambient temperature. Он не трогает GPU, поэтому вызывается
-  и без окна.
+- `WorldInit` выделяет cells, pixels, два active-chunk buffer, отдельные буферы
+  pixel/light dirty chunks и поля света, затем выставляет всем cells ambient
+  temperature. Он не трогает GPU, поэтому вызывается и без окна.
 - `WorldInitRenderer` создаёт Texture2D. Это единственная функция мира, требующая
   открытого raylib window/OpenGL context; headless-тесты её не вызывают, и это
   разделение нужно сохранить.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
-  выделяет память.
+  выделяет память и оставляет simulation chunks спящими.
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
   чтобы вызывающий код не знал о форме рельефа.
+- `WorldActivateRegion` сканирует только запрошенные chunks и будит находящиеся
+  там динамические или нагретые cells. `main.c` вызывает её при переходе игрока
+  в новый chunk для окна 960×576. Обычные изменения мира всё равно используют
+  собственный wake-up и не зависят от streaming.
 - `WorldUnload` выгружает texture и освобождает все world allocations.
 
 ### Simulation и rendering
@@ -39,11 +44,11 @@ float WorldLightAt(const World *world, int x, int y);
 
 - `WorldUpdate` выполняет ровно один fixed tick.
 - `WorldDraw` решает свет, пересчитывает Color buffer для грязных chunks внутри
-  `visible`, загружает одним `UpdateTextureRec` полосу строк во всю ширину и
-  рисует texture в world origin. Вызывать внутри `BeginMode2D`. `visible`
-  задаётся в cells; грязный chunk вне его сохраняет флаг и перестраивается,
-  когда попадёт в кадр. Результат обязан быть попиксельно идентичен полному
-  перестроению того же региона.
+  `visible`, складывает каждый изменённый блок в локальный буфер 32×32 и
+  загружает его отдельным `UpdateTextureRec`, после чего рисует texture в world
+  origin. Вызывать внутри `BeginMode2D`. `visible` задаётся в cells; грязный
+  chunk вне его сохраняет флаг и перестраивается, когда попадёт в кадр.
+  Результат обязан быть попиксельно идентичен полному перестроению региона.
 - `WorldSetPointLight` задаёт единственный перемещаемый источник света, которым
   владеет вызывающий код; strength 0 выключает его. Применяется на следующем
   `WorldDraw`.
@@ -60,8 +65,9 @@ void WorldSetTemperature(World *world, int x, int y, float temperature);
 int WorldCountDynamicCells(const World *world);
 ```
 
-`WorldCountDynamicCells` считает динамические cells по запросу и линейно проходит
-весь мир, поэтому вызывается для HUD и тестов, а не каждый tick.
+`WorldCountDynamicCells` считает динамические cells только внутри текущих active
+chunks. Он вызывается для HUD и тестов, а не каждый tick; это число отражает
+активно симулируемую область, а не все спящие жидкости огромной карты.
 
 `WorldSetCell` сбрасывает temperature/lifetime к начальному состоянию материала
 и пробуждает chunks. Для изменения только температуры внутри world module нужно
@@ -114,6 +120,18 @@ const char *WorldMaterialName(CellMaterial material);
 ## Player API
 
 ```c
+typedef enum PlayerBoostStage {
+    PLAYER_BOOST_NONE = 0,
+    PLAYER_BOOST_STAGE_ONE,
+    PLAYER_BOOST_STAGE_TWO,
+    PLAYER_BOOST_STAGE_THREE
+} PlayerBoostStage;
+```
+
+`boostStageChanged` живёт один frame и предназначен для camera/audio/particle
+feedback; `boostBurstStage` сохраняется до окончания визуального кольца.
+
+```c
 void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input,
                   bool boostHeld, float deltaTime);
@@ -162,26 +180,36 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position,
 void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position,
                           Vector2 normal, float strength);
 void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity);
+                              Vector2 velocity, int stage);
+void ParticlesSpawnBoostBurst(ParticleSystem *system, Vector2 position,
+                              Vector2 velocity, int stage);
 void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
                                Vector2 velocity, int destroyedCells);
+void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
+                              Vector2 direction);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 ```
 
-`ParticlesInit` полностью очищает pool и используется также при полном reset.
-Все spawn-функции работают только с фиксированным массивом.
+`stage` в boost-функциях принимает `PlayerBoostStage`: с каждой ступенью шлейф
+становится плотнее и быстрее, а burst крупнее. `ParticlesInit` полностью очищает
+pool и используется также при полном reset. Все spawn-функции работают только с
+фиксированным массивом.
 
 ## Audio API
 
 ```c
 bool GameAudioInit(GameAudio *audio);
-void GameAudioUpdate(GameAudio *audio, bool laserActive, bool drilling,
-                     float deltaTime);
+void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime);
 void GameAudioPlayExplosion(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
+void GameAudioPlayImpact(GameAudio *audio, float strength);
+void GameAudioPlayForce(GameAudio *audio);
+void GameAudioPlayBoost(GameAudio *audio, int stage);
 void GameAudioUnload(GameAudio *audio);
 ```
 
-`GameAudioInit` вызывается после `InitWindow`, а `GameAudioUnload` — до
-`CloseWindow`. Возвращаемое false означает silent mode, а не ошибку всего
-приложения.
+`GameAudioState` объединяет held-состояния лазера, бура и криолуча и материал,
+который сейчас режет бур. `GameAudioPlayBoost` играет отдельный one-shot на
+границе ступени; номер меняет высоту и громкость. `GameAudioInit` вызывается
+после `InitWindow`, а `GameAudioUnload` — до `CloseWindow`. Возвращаемое false
+означает silent mode, а не ошибку всего приложения.

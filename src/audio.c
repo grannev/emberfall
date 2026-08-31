@@ -15,7 +15,8 @@ typedef enum SynthKind {
     SYNTH_DRILL,
     SYNTH_IMPACT,
     SYNTH_FORCE,
-    SYNTH_CHILL
+    SYNTH_CHILL,
+    SYNTH_BOOST
 } SynthKind;
 
 static float SynthNoise(uint32_t *state)
@@ -92,6 +93,18 @@ static float SynthSample(SynthKind kind, float time, float duration,
         return (hiss * 0.5f + shimmer * 0.16f) * envelope * 0.44f;
     }
 
+    if (kind == SYNTH_BOOST) {
+        /* One source pitched lower and louder at each stage. A falling thump is
+           the body of the kick; filtered noise is the air being left behind. */
+        float decay = expf(-6.5f * time);
+        float rush = SynthLowPass(SynthNoise(noiseState), filterState, 0.22f);
+        float thump = sinf(time * 2.0f * PI *
+                           (96.0f - 58.0f * (time / duration)));
+        float crack = sinf(time * 2.0f * PI * 410.0f) * expf(-28.0f * time);
+
+        return (thump * 0.72f + rush * 1.8f + crack * 0.28f) * decay * release;
+    }
+
     {
         float decay = expf(-4.5f * time);
         float hiss = SynthNoise(noiseState);
@@ -149,6 +162,7 @@ bool GameAudioInit(GameAudio *audio)
     audio->impact = SynthCreateSound(SYNTH_IMPACT, 0.16f);
     audio->force = SynthCreateSound(SYNTH_FORCE, 0.42f);
     audio->chill = SynthCreateSound(SYNTH_CHILL, 0.2f);
+    audio->boost = SynthCreateSound(SYNTH_BOOST, 0.52f);
     SetMasterVolume(0.72f);
 
     if (IsSoundValid(audio->laser)) SetSoundVolume(audio->laser, 0.34f);
@@ -158,6 +172,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->impact)) SetSoundVolume(audio->impact, 0.5f);
     if (IsSoundValid(audio->force)) SetSoundVolume(audio->force, 0.74f);
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
+    if (IsSoundValid(audio->boost)) SetSoundVolume(audio->boost, 0.45f);
     return true;
 }
 
@@ -221,6 +236,18 @@ void GameAudioPlayForce(GameAudio *audio)
     }
 }
 
+void GameAudioPlayBoost(GameAudio *audio, int stage)
+{
+    if (audio == NULL || !audio->ready || !IsSoundValid(audio->boost)) {
+        return;
+    }
+
+    stage = stage < 1 ? 1 : (stage > 3 ? 3 : stage);
+    SetSoundPitch(audio->boost, stage == 1 ? 1.16f : (stage == 2 ? 0.94f : 0.72f));
+    SetSoundVolume(audio->boost, stage == 1 ? 0.42f : (stage == 2 ? 0.58f : 0.82f));
+    PlaySound(audio->boost);
+}
+
 void GameAudioPlayImpact(GameAudio *audio, float strength)
 {
     if (audio == NULL || !audio->ready || audio->impactCooldown > 0.0f ||
@@ -268,6 +295,7 @@ void GameAudioUnload(GameAudio *audio)
         if (IsSoundValid(audio->impact)) UnloadSound(audio->impact);
         if (IsSoundValid(audio->force)) UnloadSound(audio->force);
         if (IsSoundValid(audio->chill)) UnloadSound(audio->chill);
+        if (IsSoundValid(audio->boost)) UnloadSound(audio->boost);
         CloseAudioDevice();
     }
     memset(audio, 0, sizeof(*audio));

@@ -474,6 +474,65 @@ static void test_activity_wakes_only_a_local_neighbourhood(void)
     WorldUnload(&world);
 }
 
+static void test_generation_streams_only_requested_dynamic_regions(void)
+{
+    World world;
+    int totalChunks;
+    int firstRegionChunks;
+    int chunkY;
+
+    CHECK(WorldInit(&world, 512, 288), "world allocation failed");
+    SetRandomSeed(0xE6BEu);
+    WorldGenerate(&world);
+    totalChunks = world.chunkColumns * world.chunkRows;
+
+    /* Generated terrain has not interacted yet, so a huge map begins asleep.
+       Streaming a region wakes only the chunks in it that actually contain
+       sand, fluids, gases or heat. Actual public writes use a separate wake path. */
+    CHECK(world.activeChunkCount == 0,
+          "generation woke %d distant chunks before a region was requested",
+          world.activeChunkCount);
+    WorldActivateRegion(&world,
+                        (Rectangle){0.0f, 0.0f, (float)world.width * 0.5f,
+                                    (float)world.height});
+    CHECK(world.activeChunkCount > 0,
+          "streaming the first region woke no sand or fluids");
+    firstRegionChunks = world.activeChunkCount;
+    for (chunkY = 0; chunkY < world.chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = world.chunkColumns / 2; chunkX < world.chunkColumns;
+             ++chunkX) {
+            size_t index = (size_t)chunkY * (size_t)world.chunkColumns +
+                           (size_t)chunkX;
+
+            CHECK(world.activeChunks[index] == 0u,
+                  "streaming the left half woke distant chunk %d,%d",
+                  chunkX, chunkY);
+        }
+    }
+    {
+        int farX = world.width - 2;
+        int farY = 2;
+        size_t farIndex = (size_t)(farY / WORLD_CHUNK_SIZE) *
+                              (size_t)world.chunkColumns +
+                          (size_t)(farX / WORLD_CHUNK_SIZE);
+
+        WorldSetCell(&world, farX, farY, MATERIAL_SAND);
+        CHECK(world.activeChunks[farIndex] != 0u,
+              "a real mutation outside the streamed region stayed asleep");
+    }
+    WorldActivateRegion(&world,
+                        (Rectangle){0.0f, 0.0f, (float)world.width,
+                                    (float)world.height});
+    CHECK(world.activeChunkCount > firstRegionChunks,
+          "streaming the second half found no additional dynamic chunks");
+    CHECK(world.activeChunkCount < totalChunks / 2,
+          "streaming woke %d of %d chunks instead of only dynamic regions",
+          world.activeChunkCount, totalChunks);
+    WorldUnload(&world);
+}
+
 /* --- player against the world ------------------------------------------ */
 
 static void test_boosting_player_tunnels_through_rock(void)
@@ -1051,6 +1110,91 @@ static void test_boost_flight_reaches_a_head_first_pose(void)
     WorldUnload(&world);
 }
 
+static void test_long_boost_climbs_three_stages_into_supersonic(void)
+{
+    World world;
+    Player player;
+    int expectedStage = 1;
+    int transitions = 0;
+    int stageThreeFrame = -1;
+    int sonicFrame = -1;
+    int frame;
+
+    CHECK(WorldInit(&world, 4096, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){128.0f, 64.0f});
+
+    for (frame = 0; frame < 960 && sonicFrame < 0; ++frame) {
+        float before = sqrtf(player.velocity.x * player.velocity.x +
+                             player.velocity.y * player.velocity.y);
+        float after;
+
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     1.0f / 120.0f);
+        after = sqrtf(player.velocity.x * player.velocity.x +
+                      player.velocity.y * player.velocity.y);
+        if (player.boostStageChanged != PLAYER_BOOST_NONE) {
+            CHECK((int)player.boostStageChanged == expectedStage,
+                  "boost skipped or reordered a stage: expected %d, got %d",
+                  expectedStage, (int)player.boostStageChanged);
+            if (player.boostStageChanged == PLAYER_BOOST_STAGE_TWO) {
+                CHECK(after - before > 70.0f,
+                      "stage II had no real kick: %.1f -> %.1f", before, after);
+            } else if (player.boostStageChanged == PLAYER_BOOST_STAGE_THREE) {
+                CHECK(after - before > 150.0f,
+                      "stage III had no real kick: %.1f -> %.1f", before, after);
+                stageThreeFrame = frame;
+            }
+            ++expectedStage;
+            ++transitions;
+        }
+        if (player.boostStage == PLAYER_BOOST_STAGE_THREE &&
+            after >= player.sonicSpeed) {
+            sonicFrame = frame;
+        }
+    }
+
+    CHECK(transitions == 3, "long boost emitted %d stage kicks instead of 3",
+          transitions);
+    CHECK(player.boostStage == PLAYER_BOOST_STAGE_THREE,
+          "long boost stopped at stage %d", (int)player.boostStage);
+    CHECK(sonicFrame >= 0, "stage III never crossed sonic speed %.1f",
+          player.sonicSpeed);
+    CHECK(sonicFrame - stageThreeFrame <= 30,
+          "stage III needed %.2fs to reach sonic speed instead of one kick",
+          (float)(sonicFrame - stageThreeFrame) / 120.0f);
+
+    PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, false, 1.0f / 120.0f);
+    CHECK(player.boostStage == PLAYER_BOOST_NONE,
+          "releasing Shift left boost stage %d armed", (int)player.boostStage);
+    WorldUnload(&world);
+}
+
+static void test_stalled_boost_cannot_charge_a_later_stage(void)
+{
+    World world;
+    Player player;
+    int frame;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    PlayerInit(&player, (Vector2){124.0f, 48.0f});
+
+    /* The outside of the simulation is indestructible rock. Holding thrust into
+       it exercises a long Shift press with neither sustained speed nor aligned
+       travel; elapsed key time alone must never unlock Stage II. */
+    for (frame = 0; frame < 600; ++frame) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     1.0f / 120.0f);
+    }
+
+    CHECK(player.boostStage == PLAYER_BOOST_STAGE_ONE,
+          "stalled boost charged stage %d at the world boundary",
+          (int)player.boostStage);
+    CHECK(player.boostStageTime < 0.01f,
+          "stalled boost retained %.3fs of false stage progress",
+          player.boostStageTime);
+    WorldUnload(&world);
+}
+
 static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 {
     World world;
@@ -1117,12 +1261,15 @@ int main(void)
     RUN(test_drill_heat_cannot_ignite_dirt_or_boil_water);
     RUN(test_a_settled_world_lets_chunks_sleep);
     RUN(test_activity_wakes_only_a_local_neighbourhood);
+    RUN(test_generation_streams_only_requested_dynamic_regions);
     RUN(test_boosting_player_tunnels_through_rock);
     RUN(test_boost_from_rest_bores_into_a_wall);
     RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
     RUN(test_normal_flight_keeps_a_hover_pose);
     RUN(test_boost_flight_reaches_a_head_first_pose);
+    RUN(test_long_boost_climbs_three_stages_into_supersonic);
+    RUN(test_stalled_boost_cannot_charge_a_later_stage);
     RUN(test_cryo_does_not_destroy_solid_terrain);
     RUN(test_no_material_evaporates_when_merely_cooled);
     RUN(test_cryo_snuffs_fire_into_smoke);

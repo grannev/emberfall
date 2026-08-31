@@ -29,12 +29,18 @@ typedef enum CellMaterial {
 } CellMaterial;
 
 typedef struct Cell {
-    CellMaterial material;
     uint32_t updatedTick;
     uint32_t effectStamp;
     float temperature;
     uint16_t lifetime;
+    /* MATERIAL_COUNT is deliberately kept below 256. Storing the enum as an
+       int wasted four bytes in every cell; on the 16384-wide world that was
+       about 54 MiB for no gameplay value. */
+    uint8_t material;
 } Cell;
+
+_Static_assert(MATERIAL_COUNT <= UINT8_MAX, "Cell.material no longer fits in uint8_t");
+_Static_assert(sizeof(Cell) == 16, "Cell layout grew; recheck large-world memory");
 
 #define MAX_WORLD_REACTIONS 64
 
@@ -109,6 +115,9 @@ bool WorldInitRenderer(World *world);
 void WorldUnload(World *world);
 void WorldGenerate(World *world);
 Vector2 WorldPlayerSpawn(const World *world);
+/* Wakes generated dynamic or heated cells inside a streamed gameplay region.
+   Actual cell mutations wake themselves regardless of this region. */
+void WorldActivateRegion(World *world, Rectangle region);
 void WorldUpdate(World *world);
 void WorldDraw(World *world, Rectangle visible);
 /* Position of the caller-owned light, applied on the next draw. A strength of

@@ -45,8 +45,8 @@ off; it is far cheaper and broader than the smoke test.
 - `src/main.c`: window, fixed-step loop, camera, input, HUD, reset flow
 - `src/world.c/.h`: materials, one-dimensional cell storage, generation,
   simulation, texture buffer, destruction helpers
-- `src/player.c/.h`: sub-stepped gravity-free flight, boost drilling,
-  circle-vs-cell collision, and state-based player rendering
+- `src/player.c/.h`: sub-stepped gravity-free flight, three-stage boost and
+  supersonic drilling, circle-vs-cell collision, and state-based rendering
 - `src/powers.c/.h`: laser/cryo beams, explosion/force cooldowns, world effects
 - `src/particles.c/.h`: fixed-capacity particle pool drawn as whole cells,
   colliding with terrain and settling into it
@@ -58,21 +58,27 @@ over frameworks, generic containers, or unnecessary abstraction.
 
 ## World invariants
 
-- The simulation grid is 1536×864 unless a deliberate design change requires
-  otherwise. Generation must stay parameterised by `world->width`/`height`: no
+- The simulation grid is 16384×864: from the centred spawn it provides roughly
+  8192 cells, or 25 base-width screens, in each horizontal direction. The width
+  is the practical ceiling for one Texture2D on common GL implementations; going
+  wider requires a deliberate tiled/streamed texture design, not a larger
+  constant. Generation stays parameterised by `world->width`/`height`: no
   fixed-size buffers and no literal feature coordinates. Feature sizes stay
   absolute and their counts scale with area, so a larger world gets more terrain
   of the same scale rather than the same layout stretched out.
 - Store all cells in one contiguous allocation using `y * width + x` indexing.
+- Keep `Cell.material` as `uint8_t` and the complete `Cell` at 16 bytes unless a
+  measured need justifies the memory increase. Four extra bytes per cell cost
+  about 54 MiB at the standard size; `_Static_assert` pins both assumptions.
 - Keep one persistent `Color` buffer and render the world with one Texture2D;
   never render cells with per-cell DrawRectangle calls. `WorldDraw` rebuilds only
-  dirty chunks that fall inside the visible rectangle it is given, and uploads
-  one full-width row band through `UpdateTextureRec`. Drawing must cost what the
-  player can see, not what the world is doing: activity is spread over the whole
-  map while the camera shows a small window of it. A chunk skipped for being off
-  screen keeps its dirty flag and is rebuilt on the frame it scrolls into view.
-  Incremental drawing must stay pixel-identical to a full rebuild of the same
-  region.
+  dirty chunks that fall inside the visible rectangle it is given. Each rebuilt
+  chunk is copied into the fixed 32×32 stack staging block and uploaded with its
+  own `UpdateTextureRec`; a full-width row band moves tens of MiB for one local
+  change on this map. Drawing must cost what the player can see, not what the
+  world is doing. A chunk skipped for being off screen keeps its dirty flag and
+  is rebuilt on the frame it scrolls into view. Incremental drawing must stay
+  pixel-identical to a full rebuild of the same region.
 - Pixel-dirty and light-dirty chunks are separate sets. A pixel rebuild may wait
   many frames for the chunk to come on screen; light must be refreshed once,
   everywhere it changed, because the solve is global. Sharing one flag makes the
@@ -109,6 +115,14 @@ over frameworks, generic containers, or unnecessary abstraction.
   adjacent chunk only when it sits against that chunk's border.
 - Active-chunk buffers are allocated in `WorldInit`, swapped after a fixed tick,
   and freed in `WorldUnload`. Never allocate chunk state in the frame loop.
+- World generation writes every material without normal wake propagation, so
+  simulation starts asleep while every chunk remains pixel/light dirty.
+  `main.c` calls `WorldActivateRegion` only when the player enters a new chunk,
+  scanning a 960×576 region (larger than the maximum 640×360 camera view) for
+  generated dynamic or heated cells. Real mutations still wake themselves even
+  outside this region. Do not make reset run every distant lake at once: it made
+  a standard fixed tick roughly 41.5 ms instead of 1.5 ms in the local harness.
+  Keep `test_generation_streams_only_requested_dynamic_regions` passing.
 - Every non-empty cell carries temperature. Laser, lava, and fire add heat;
   thermal thresholds drive dirt→fire, water→steam, and rock→lava transitions.
   Never reintroduce a separate rock-damage counter.
@@ -153,8 +167,16 @@ over frameworks, generic containers, or unnecessary abstraction.
   circular player collider; liquids, gases, fire, and ash are passable.
 - WASD applies normalized thrust to persistent velocity. Linear drag and a speed
   cap keep flight controllable without removing inertia.
-- Shift plus directional input activates boost acceleration and its higher speed
-  cap. Boost survives the loss of directional input for a short grace window so
+- Shift plus directional input enters `BOOST I` immediately. Sustained aligned
+  thrust then advances strictly through three configurations: acceleration/cap/
+  drag are 540/235/.38, 720/380/.24, and 980/620/.12. Every transition is a real
+  velocity kick — 34, 86, then 180 — and emits `boostStageChanged` for particles,
+  sound, and camera feedback. Stage I must spend 1.0 s and Stage II 1.4 s at 86%
+  of their own cap with input/velocity alignment at least .88. Otherwise the
+  progress timer decays at 1.5×: turning or grinding a wall cannot charge a late
+  stage. Releasing Shift resets the chain. Stage III becomes supersonic at 520.
+  Keep both the successful progression and stalled-boundary tests passing.
+- Boost survives the loss of directional input for a 0.14 s grace window so
   releasing WASD inside a tunnel does not drop the drill into a wall. Above the
   drill threshold, every movement substep clears a circle ahead of the collider
   through `WorldDrillCircle`; the out-of-bounds world boundary remains
@@ -166,9 +188,11 @@ over frameworks, generic containers, or unnecessary abstraction.
   survives. Freeing the collider must widen until it actually succeeds — the
   drill measures an integer radius from a floored centre while the collider is a
   float circle measured to the nearest cell edge, so one cut of the same nominal
-  radius can leave a blocking cell standing. Each cut cell costs speed, but the resistance is floored just
-  above the drill threshold so a boost can never stall inside solid terrain.
-  Boost has no energy resource or cooldown.
+  radius can leave a blocking cell standing. Each cut cell costs speed. Stage I
+  floors resistance just above drill threshold; Stage II divides resistance by
+  1.75 and floors near 169; Stage III divides by 3.25 and floors near 364. A
+  boost can never stall buried inside solid terrain. Boost has no energy resource
+  or cooldown.
 - Movement is split into steps no longer than 0.5 world cells to prevent
   tunneling. Solid impacts reflect the blocked velocity component with limited
   restitution and publish impact position/normal/strength for particles and
@@ -195,6 +219,11 @@ over frameworks, generic containers, or unnecessary abstraction.
   halfway and make the model snap. "Behind" for the legs comes from `-side` at
   rest and `-travel` at speed; taking the direction of travel when there is none
   tucks the feet upward.
+- Boost visuals scale with `PlayerBoostStage`: trail cadence is .025/.016/.009 s,
+  every transition produces a short ring/particle burst and camera/audio kick,
+  and Stage III draws a Mach cone only once measured speed reaches 520. Keep
+  effects driven by the same one-frame stage event and measured speed as the
+  gameplay; a key-held visual can claim acceleration that never happened.
 - The model has **no outline**. A dark rim around every limb flattens it into a
   silhouette — a brick with a cape — and hides the shading that makes it a body.
   Contrast comes from a lit tone toward `up`, a shadow opposite, and distinctly
@@ -215,10 +244,11 @@ over frameworks, generic containers, or unnecessary abstraction.
   animation one-for-one. Emberfall must keep an original character design.
 - The camera leads the player along their velocity and widens its view as they
   go faster, both clamped and smoothed, and magnifies the world with crisp pixel
-  edges. A camera locked to the player's exact position shows too little of what
-  a boost is about to hit. Drive the widening from measured speed, not from the
-  boost key, so knockback reads the same as thrust and a stalled boost does not
-  zoom out.
+  edges. Lookahead uses 0.42 s, capped at 30% of the 320×180 base view, and the
+  speed scale grows to 2.0 at 620 cells/s. A camera locked to the player's exact
+  position shows too little of what a boost is about to hit. Drive widening from
+  measured speed, not from the boost key, so knockback reads the same as thrust
+  and a stalled boost does not zoom out.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one
   local brush, and reports the hit point for glow and sparks. Rock takes
@@ -258,20 +288,22 @@ over frameworks, generic containers, or unnecessary abstraction.
   available. Explosion keeps only its short input cooldown and physical
   feedback.
 - `R` fully regenerates gameplay state. `F1` toggles the debug HUD.
-- The HUD reports FPS, player position, dynamic-cell count, and current power.
+- The HUD reports FPS, player position/speed, `HOVER`, `BOOST I/II/III` or
+  `MACH`, dynamic-cell/active-chunk count, material under cursor, and power.
 - What the laser does to a material is a rate in the `MATERIALS` table, and the
   beam stops at anything `WorldMaterialIsSolid` reports. Never reintroduce a
   switch on material identity there: the first version of `ICE` was solid,
   stopped no beam, and could not be melted, purely because the laser still named
   three materials by hand.
-- Laser, explosion, material-reaction, drill, impact, force, and cryo sounds are
-  synthesized at startup; no external assets are required. Laser, drill, force,
-  and cryo are held states driven by `GameAudioUpdate` through a `GameAudioState`
-  struct, not stacked one-shots. The drill pitches by the material it is cutting,
-  sampled before the cut — afterwards the cell is empty and there is nothing left
-  to identify. One-shots that can retrigger every frame, impact and reaction,
-  carry a short cooldown. Audio failure must remain non-fatal, and no wave memory
-  may be allocated in the frame loop.
+- Laser, explosion, material-reaction, drill, impact, force, cryo, and boost-stage
+  sounds are synthesized at startup; no external assets are required. Laser,
+  drill, and cryo are held states driven by `GameAudioUpdate` through a
+  `GameAudioState` struct, not stacked one-shots. Force, explosion, and each
+  boost boundary are deliberate one-shots. The drill pitches by the material it
+  is cutting, sampled before the cut — afterwards the cell is empty and there is
+  nothing left to identify. One-shots that can retrigger every frame, impact and
+  reaction, carry a short cooldown. Audio failure must remain non-fatal, and no
+  wave memory may be allocated in the frame loop.
 
 ## Change discipline
 

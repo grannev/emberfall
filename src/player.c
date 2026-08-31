@@ -20,8 +20,18 @@ void PlayerInit(Player *player, Vector2 position)
     player->acceleration = 250.0f;
     player->maxSpeed = 118.0f;
     player->boostAcceleration = 540.0f;
-    player->boostMaxSpeed = 235.0f;
+    player->boostStageTwoAcceleration = 720.0f;
+    player->boostStageThreeAcceleration = 980.0f;
+    player->boostStageOneSpeed = 235.0f;
+    player->boostStageTwoSpeed = 380.0f;
+    player->boostMaxSpeed = 620.0f;
     player->boostDrag = 0.38f;
+    player->boostStageTwoDrag = 0.24f;
+    player->boostStageThreeDrag = 0.12f;
+    player->sonicSpeed = 520.0f;
+    player->boostStageTwoDelay = 1.0f;
+    player->boostStageThreeDelay = 1.4f;
+    player->boostStageTime = 0.0f;
     player->boostGrace = 0.0f;
     player->drillSpeed = 92.0f;
     player->drillResistance = 0.004f;
@@ -35,7 +45,11 @@ void PlayerInit(Player *player, Vector2 position)
     player->pose = PLAYER_POSE_FLY;
     player->poseTimer = 0.0f;
     player->boostTrailTimer = 0.0f;
+    player->boostBurstTimer = 0.0f;
     player->drilledCells = 0;
+    player->boostStage = PLAYER_BOOST_NONE;
+    player->boostStageChanged = PLAYER_BOOST_NONE;
+    player->boostBurstStage = PLAYER_BOOST_NONE;
     player->facingRight = true;
     player->thrusting = false;
     player->boosting = false;
@@ -169,9 +183,19 @@ static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
     if (destroyed > 0) {
         /* Cutting terrain costs speed, but never enough to fall under the drill
            threshold: a boost that stalls would leave the player buried. */
+        float resistance = player->drillResistance;
         float floorSpeed = player->drillSpeed * 1.05f;
-        float slowed = speed * expf(-(float)destroyed * player->drillResistance);
+        float slowed;
         float scale;
+
+        if (player->boostStage == PLAYER_BOOST_STAGE_TWO) {
+            resistance /= 1.75f;
+            floorSpeed = fmaxf(floorSpeed, player->boostStageOneSpeed * 0.72f);
+        } else if (player->boostStage == PLAYER_BOOST_STAGE_THREE) {
+            resistance /= 3.25f;
+            floorSpeed = fmaxf(floorSpeed, player->sonicSpeed * 0.70f);
+        }
+        slowed = speed * expf(-(float)destroyed * resistance);
 
         if (slowed < floorSpeed) {
             slowed = fminf(speed, floorSpeed);
@@ -181,6 +205,78 @@ static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
         player->velocity.y *= scale;
         player->drilledCells += destroyed;
         player->drillPosition = drillPoint;
+    }
+}
+
+static float PlayerBoostStageSpeed(const Player *player)
+{
+    switch (player->boostStage) {
+    case PLAYER_BOOST_STAGE_TWO:
+        return player->boostStageTwoSpeed;
+    case PLAYER_BOOST_STAGE_THREE:
+        return player->boostMaxSpeed;
+    default:
+        return player->boostStageOneSpeed;
+    }
+}
+
+static void PlayerUpdateBoostStage(Player *player, Vector2 input, float speed,
+                                   float deltaTime)
+{
+    float alignment = 0.0f;
+    float requiredSpeed;
+    float delay;
+
+    if (!player->boosting) {
+        player->boostStage = PLAYER_BOOST_NONE;
+        player->boostStageTime = 0.0f;
+        return;
+    }
+
+    if (player->boostStage == PLAYER_BOOST_NONE) {
+        player->boostStage = PLAYER_BOOST_STAGE_ONE;
+        player->boostStageChanged = PLAYER_BOOST_STAGE_ONE;
+        player->boostStageTime = 0.0f;
+    }
+
+    if (player->thrusting && speed > 0.001f) {
+        alignment = (player->velocity.x * input.x + player->velocity.y * input.y) /
+                    speed;
+    }
+    requiredSpeed = PlayerBoostStageSpeed(player) * 0.86f;
+    if (player->thrusting && alignment >= 0.88f && speed >= requiredSpeed) {
+        player->boostStageTime += deltaTime;
+    } else {
+        /* A brief correction does not erase a long run, but turning around or
+           grinding through a wall cannot charge the next stage. */
+        player->boostStageTime =
+            fmaxf(0.0f, player->boostStageTime - deltaTime * 1.5f);
+    }
+
+    delay = player->boostStage == PLAYER_BOOST_STAGE_ONE
+                ? player->boostStageTwoDelay
+                : player->boostStageThreeDelay;
+    if ((player->boostStage == PLAYER_BOOST_STAGE_ONE ||
+         player->boostStage == PLAYER_BOOST_STAGE_TWO) &&
+        player->boostStageTime >= delay) {
+        player->boostStage = (PlayerBoostStage)((int)player->boostStage + 1);
+        player->boostStageChanged = player->boostStage;
+        player->boostStageTime = 0.0f;
+    }
+
+    if (player->boostStageChanged != PLAYER_BOOST_NONE) {
+        float impulse = player->boostStageChanged == PLAYER_BOOST_STAGE_ONE
+                            ? 34.0f
+                            : (player->boostStageChanged == PLAYER_BOOST_STAGE_TWO
+                                   ? 86.0f
+                                   : 180.0f);
+
+        player->velocity.x += input.x * impulse;
+        player->velocity.y += input.y * impulse;
+        player->boostBurstStage = player->boostStageChanged;
+        player->boostBurstTimer = player->boostStageChanged == PLAYER_BOOST_STAGE_THREE
+                                      ? 0.52f
+                                      : 0.30f;
     }
 }
 
@@ -195,7 +291,6 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     float moveX;
     float moveY;
     float stepTime;
-    bool wasBoosting;
     int moveSteps;
     int step;
 
@@ -208,9 +303,9 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->impactTimer = fmaxf(0.0f, player->impactTimer - deltaTime);
     player->drilledCells = 0;
     player->boostTrailEmitted = false;
+    player->boostStageChanged = PLAYER_BOOST_NONE;
+    player->boostBurstTimer = fmaxf(0.0f, player->boostBurstTimer - deltaTime);
     player->thrusting = false;
-    wasBoosting = player->boosting;
-
     inputLength = sqrtf(input.x * input.x + input.y * input.y);
     if (inputLength > 0.0f) {
         input.x /= inputLength;
@@ -225,20 +320,37 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         player->boostGrace = fmaxf(0.0f, player->boostGrace - deltaTime);
     }
     player->boosting = boostHeld && (player->thrusting || player->boostGrace > 0.0f);
-    acceleration = player->boosting ? player->boostAcceleration
-                                    : player->acceleration;
-    speedLimit = player->boosting ? player->boostMaxSpeed : player->maxSpeed;
-    if (player->thrusting) {
-        if (player->boosting && !wasBoosting) {
-            player->velocity.x += input.x * 34.0f;
-            player->velocity.y += input.y * 34.0f;
+    velocityLength = sqrtf(player->velocity.x * player->velocity.x +
+                           player->velocity.y * player->velocity.y);
+    PlayerUpdateBoostStage(player, input, velocityLength, deltaTime);
+    acceleration = player->acceleration;
+    speedLimit = player->maxSpeed;
+    damping = player->drag;
+    if (player->boosting) {
+        switch (player->boostStage) {
+        case PLAYER_BOOST_STAGE_TWO:
+            acceleration = player->boostStageTwoAcceleration;
+            speedLimit = player->boostStageTwoSpeed;
+            damping = player->boostStageTwoDrag;
+            break;
+        case PLAYER_BOOST_STAGE_THREE:
+            acceleration = player->boostStageThreeAcceleration;
+            speedLimit = player->boostMaxSpeed;
+            damping = player->boostStageThreeDrag;
+            break;
+        default:
+            acceleration = player->boostAcceleration;
+            speedLimit = player->boostStageOneSpeed;
+            damping = player->boostDrag;
+            break;
         }
+    }
+    if (player->thrusting) {
         player->velocity.x += input.x * acceleration * deltaTime;
         player->velocity.y += input.y * acceleration * deltaTime;
     }
 
-    damping = expf(-(player->boosting ? player->boostDrag : player->drag) *
-                   deltaTime);
+    damping = expf(-damping * deltaTime);
     player->velocity.x *= damping;
     player->velocity.y *= damping;
     velocityLength = sqrtf(player->velocity.x * player->velocity.x +
@@ -292,7 +404,11 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         player->boostTrailTimer -= deltaTime;
         if (player->boostTrailTimer <= 0.0f) {
             player->boostTrailEmitted = true;
-            player->boostTrailTimer = 0.025f;
+            player->boostTrailTimer = player->boostStage == PLAYER_BOOST_STAGE_THREE
+                                          ? 0.009f
+                                          : (player->boostStage == PLAYER_BOOST_STAGE_TWO
+                                                 ? 0.016f
+                                                 : 0.025f);
         }
     } else {
         player->boostTrailTimer = 0.0f;
@@ -712,7 +828,9 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
         }
     }
 
-    wave = sinf(player->animationTime * (player->boosting ? 13.0f : 5.0f));
+    wave = sinf(player->animationTime *
+                (player->boosting ? 11.0f + (float)player->boostStage * 2.0f
+                                  : 5.0f));
     bob = (1.0f - lean) * sinf(player->animationTime * 2.4f) * 0.7f;
     frame.origin = (Vector2){player->position.x + frame.up.x * bob,
                              player->position.y + frame.up.y * bob};
@@ -729,6 +847,31 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
         limbMid = (Color){228, 202, 142, 255};
         trim = (Color){255, 250, 226, 255};
         accent = (Color){255, 255, 255, 255};
+    }
+
+    /* ---- acceleration burst, behind the body ---- */
+    if (player->boostBurstTimer > 0.0f &&
+        player->boostBurstStage != PLAYER_BOOST_NONE) {
+        float duration = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
+                             ? 0.52f
+                             : 0.30f;
+        float progress = 1.0f - player->boostBurstTimer / duration;
+        float radius = 3.0f + progress *
+                                  (8.0f + (float)player->boostBurstStage * 5.0f);
+        float alpha = (1.0f - progress) * 0.8f;
+        Color ring = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
+                         ? (Color){255, 239, 190, 255}
+                         : (Color){137, 224, 255, 255};
+        int ringIndex;
+
+        for (ringIndex = 0; ringIndex < (int)player->boostBurstStage; ++ringIndex) {
+            float ringRadius = radius - (float)ringIndex * 3.0f;
+
+            if (ringRadius > 1.0f) {
+                DrawCircleLinesV(player->position, ringRadius,
+                                 Fade(ring, alpha / (1.0f + ringIndex * 0.35f)));
+            }
+        }
     }
 
     /* ---- cape ---- */
@@ -749,7 +892,9 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
                         back.y * (0.3f + 0.7f * lean) -
                             frame.up.y * (1.0f - lean) * 0.95f};
         float flowLength = sqrtf(flow.x * flow.x + flow.y * flow.y);
-        float length = 8.0f + 4.0f * lean + (player->boosting ? 2.5f : 0.0f);
+        float length = 8.0f + 4.0f * lean +
+                       (player->boosting ? 1.2f + (float)player->boostStage * 1.4f
+                                         : 0.0f);
         int steps = 24;
 
         if (flowLength > 0.001f) {
@@ -892,13 +1037,20 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
                                     (player->boostMaxSpeed - player->maxSpeed * 0.8f),
                                 0.0f, 1.0f);
         Vector2 across = {-travel.y, travel.x};
+        int streakCount = 4 + (int)player->boostStage * 2;
         int streak;
 
-        for (streak = 0; streak < 4; ++streak) {
-            float back = 8.0f + (float)streak * 5.0f;
+        if (player->boosting) {
+            intensity = fmaxf(intensity, 0.18f + (float)player->boostStage * 0.18f);
+        }
+
+        for (streak = 0; streak < streakCount; ++streak) {
+            float back = 8.0f + (float)streak * 4.0f;
             float offset = sinf(player->animationTime * 11.0f + (float)streak) * 3.4f;
-            int length = 4 - streak;
+            int length = 3 + (int)player->boostStage - streak / 2;
             int cell;
+
+            if (length < 1) length = 1;
 
             for (cell = 0; cell < length; ++cell) {
                 Vector2 point = {
@@ -910,8 +1062,26 @@ void PlayerDraw(const Player *player, Vector2 aimPosition)
 
                 DrawBodyCell(point, 1,
                              Fade(streak == 0 ? accent : (Color){186, 226, 255, 255},
-                                  intensity * (0.85f - 0.18f * (float)streak)));
+                                  intensity * (0.88f - 0.065f * (float)streak)));
             }
+        }
+
+        if (player->boostStage == PLAYER_BOOST_STAGE_THREE &&
+            speed >= player->sonicSpeed) {
+            float pulse = 10.0f + sinf(player->animationTime * 18.0f) * 1.8f;
+            Vector2 coneStart = {player->position.x - travel.x * 3.5f,
+                                 player->position.y - travel.y * 3.5f};
+            Vector2 coneBack = {player->position.x - travel.x * 28.0f,
+                                player->position.y - travel.y * 28.0f};
+
+            DrawLineEx(coneStart,
+                       (Vector2){coneBack.x + across.x * pulse,
+                                 coneBack.y + across.y * pulse},
+                       0.7f, (Color){203, 235, 255, 150});
+            DrawLineEx(coneStart,
+                       (Vector2){coneBack.x - across.x * pulse,
+                                 coneBack.y - across.y * pulse},
+                       0.7f, (Color){203, 235, 255, 150});
         }
     }
 

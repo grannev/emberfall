@@ -12,25 +12,30 @@
 #include "powers.h"
 #include "world.h"
 
-#define WORLD_WIDTH 1536
+#define WORLD_WIDTH 16384
 #define WORLD_HEIGHT 864
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
 #define VIEW_WIDTH 320.0f
 #define VIEW_HEIGHT 180.0f
 #define SIMULATION_STEP (1.0f / 60.0f)
+/* Generated physics streams in ahead of the camera instead of making every
+   distant water pocket and sand bank consume CPU from startup. The final view
+   is at most 640x360, so this leaves a generous pre-simulation margin. */
+#define WORLD_ACTIVE_RADIUS_X 480.0f
+#define WORLD_ACTIVE_RADIUS_Y 288.0f
 
 /* How far the camera leads the player, as a fraction of the view in each
-   direction, and over how many seconds of travel that lead is measured. At the
-   boost speed cap a centred camera shows only 0.68 s of travel ahead, which is
-   less than it takes to react to what the tunnel runs into. */
-#define CAMERA_LOOKAHEAD_TIME 0.35f
-#define CAMERA_LOOKAHEAD_VIEW_FRACTION 0.18f
+   direction, and over how many seconds of travel that lead is measured. The
+   final boost is much too fast for a centred 320-cell view, so lookahead works
+   together with speed-based widening below. */
+#define CAMERA_LOOKAHEAD_TIME 0.42f
+#define CAMERA_LOOKAHEAD_VIEW_FRACTION 0.30f
 /* The view also widens with speed, so the fastest flight is the one that sees
    the most. It follows measured speed rather than the boost key: a player
    thrown by an explosion gets the same widening, and a boost stalled against
    rock does not. */
-#define CAMERA_FAST_VIEW_SCALE 1.28f
+#define CAMERA_FAST_VIEW_SCALE 2.0f
 
 static float CameraZoomForWindow(float viewScale)
 {
@@ -77,6 +82,20 @@ static Rectangle VisibleWorldRectangle(Camera2D camera)
                        bottomRight.y - topLeft.y};
 }
 
+static const char *PlayerBoostLabel(const Player *player, float speed)
+{
+    if (player->boostStage == PLAYER_BOOST_STAGE_THREE) {
+        return speed >= player->sonicSpeed ? "MACH" : "BOOST III";
+    }
+    if (player->boostStage == PLAYER_BOOST_STAGE_TWO) {
+        return "BOOST II";
+    }
+    if (player->boostStage == PLAYER_BOOST_STAGE_ONE) {
+        return "BOOST I";
+    }
+    return "HOVER";
+}
+
 static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 {
     float halfWidth = (float)GetScreenWidth() / (2.0f * zoom);
@@ -98,7 +117,7 @@ static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 static void DrawDebugHud(const World *world, const Player *player,
                          const PowerSystem *powers, Vector2 cursorCell)
 {
-    const int panelWidth = 330;
+    const int panelWidth = 380;
     const int panelHeight = 140;
     float cooldown = powers->explosionCooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
@@ -108,9 +127,9 @@ static void DrawDebugHud(const World *world, const Player *player,
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
     DrawText(TextFormat("FPS: %d", GetFPS()), 24, 23, 20, RAYWHITE);
-    DrawText(TextFormat("PLAYER: %.1f, %.1f  V: %.0f%s", player->position.x,
+    DrawText(TextFormat("PLAYER: %.1f, %.1f  V: %.0f  %s", player->position.x,
                         player->position.y, playerSpeed,
-                        player->boosting ? " BOOST" : ""),
+                        PlayerBoostLabel(player, playerSpeed)),
              24, 47, 18, (Color){174, 219, 248, 255});
     DrawText(TextFormat("ACTIVE: %d CELLS | %d CHUNKS",
                         WorldCountDynamicCells(world),
@@ -132,7 +151,7 @@ static void DrawDebugHud(const World *world, const Player *player,
 static void DrawControlsHint(void)
 {
     const char *hint =
-        "WASD fly  |  Shift boost/drill  |  LMB laser  |  RMB explosion  |  "
+        "WASD fly  |  Shift staged boost/drill  |  LMB laser  |  RMB explosion  |  "
         "Q force  |  E cryo  |  R regenerate  |  F1 HUD";
     int fontSize = 18;
     int width = MeasureText(hint, fontSize);
@@ -177,7 +196,8 @@ static void RunSmokePlayerProbe(World *world, ParticleSystem *particles,
         /* Drive the same feedback the frame loop does, so the boost trail and
            drill debris paths stay covered without steering the live player. */
         if (probe.boostTrailEmitted) {
-            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity);
+            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity,
+                                     (int)probe.boostStage);
         }
         if (probe.drilledCells > 0) {
             ParticlesSpawnDrillDebris(particles, probe.drillPosition,
@@ -276,6 +296,8 @@ int main(int argc, char **argv)
     bool debugHud = true;
     bool smokeTest = argc > 1 && strcmp(argv[1], "--smoke-test") == 0;
     int smokeFrames = 0;
+    int activatedPlayerChunkX = -1;
+    int activatedPlayerChunkY = -1;
     Vector2 cameraFocus;
     Vector2 smokeAim = {0.0f, 0.0f};
     float cameraShake = 0.0f;
@@ -356,6 +378,8 @@ int main(int argc, char **argv)
             simulationAccumulator = 0.0f;
             cameraFocus = player.position;
             cameraShake = 0.0f;
+            activatedPlayerChunkX = -1;
+            activatedPlayerChunkY = -1;
         }
 
         if (IsKeyDown(KEY_A)) moveInput.x -= 1.0f;
@@ -364,6 +388,31 @@ int main(int argc, char **argv)
         if (IsKeyDown(KEY_S)) moveInput.y += 1.0f;
         boostHeld = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
         PlayerUpdate(&player, &world, moveInput, boostHeld, deltaTime);
+        {
+            int playerChunkX = (int)player.position.x / WORLD_CHUNK_SIZE;
+            int playerChunkY = (int)player.position.y / WORLD_CHUNK_SIZE;
+
+            if (playerChunkX != activatedPlayerChunkX ||
+                playerChunkY != activatedPlayerChunkY) {
+                WorldActivateRegion(
+                    &world,
+                    (Rectangle){player.position.x - WORLD_ACTIVE_RADIUS_X,
+                                player.position.y - WORLD_ACTIVE_RADIUS_Y,
+                                WORLD_ACTIVE_RADIUS_X * 2.0f,
+                                WORLD_ACTIVE_RADIUS_Y * 2.0f});
+                activatedPlayerChunkX = playerChunkX;
+                activatedPlayerChunkY = playerChunkY;
+            }
+        }
+        if (player.boostStageChanged != PLAYER_BOOST_NONE) {
+            int stage = (int)player.boostStageChanged;
+            float stageShake = stage == 1 ? 0.8f : (stage == 2 ? 1.8f : 4.0f);
+
+            ParticlesSpawnBoostBurst(&particles, player.position, player.velocity,
+                                     stage);
+            cameraShake = fmaxf(cameraShake, stageShake);
+            GameAudioPlayBoost(&audio, stage);
+        }
         if (player.impactStrength >= 14.0f) {
             float impactShake = Clamp((player.impactStrength - 10.0f) * 0.025f,
                                       0.0f, 2.6f);
@@ -373,7 +422,8 @@ int main(int argc, char **argv)
                                  player.impactNormal, player.impactStrength);
         }
         if (player.boostTrailEmitted) {
-            ParticlesSpawnBoostTrail(&particles, player.position, player.velocity);
+            ParticlesSpawnBoostTrail(&particles, player.position, player.velocity,
+                                     (int)player.boostStage);
         }
         if (player.drilledCells > 0) {
             float drillShake = Clamp(0.25f + (float)player.drilledCells * 0.025f,
@@ -493,8 +543,8 @@ int main(int argc, char **argv)
            the drill would be a way to blind yourself. It brightens with the
            boost, so the fastest flight also lights the furthest. */
         WorldSetPointLight(&world, player.position,
-                           player.boosting ? 74.0f : 52.0f,
-                           player.boosting ? 0.95f : 0.72f);
+                           52.0f + (float)player.boostStage * 22.0f,
+                           0.72f + (float)player.boostStage * 0.09f);
 
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
