@@ -90,6 +90,10 @@ coherent phase with an explanatory message.
   world state. Player, ability, and particle drawing live in dedicated renderer
   modules; simulation modules must not regain `Draw*` calls. `World` owns CPU
   cells/chunks/lighting only and remains valid in headless tests.
+- `Renderer` also owns window-sized scene and emissive render targets. They are
+  reused in steady state, replaced as an atomic pair only on a real resize, and
+  composited with raylib's render-texture Y flip. HUD remains a backbuffer
+  overlay; gameplay must not gain render-target or shader dependencies.
 - Abilities are a registry: `ABILITIES` in `abilities.c` holds what every power
   shares, one `apply` function holds what a power does, `input.c` owns the key
   bindings, and feedback leaves through `GameEvent` — knockback included, via

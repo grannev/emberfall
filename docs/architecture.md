@@ -147,6 +147,9 @@ cross-module call в самый горячий цикл проекта; benchmar
 
 `Renderer` — presentation owner, создаваемый в `main.c`. Он компонует:
 
+- `sceneTarget` — window-sized offscreen target для всей world-space сцены;
+- `emissiveTarget` — отдельный прозрачный target, зарезервированный для
+  emissive contributors и следующего bloom pass;
 - `WorldRenderer` — единственный владелец GPU-состояния мира: кэш страниц
   256×256 cells, dirty uploads и renderer counters. Резидентны только видимые
   страницы, поэтому размер мира больше не ограничен `GL_MAX_TEXTURE_SIZE`;
@@ -160,6 +163,18 @@ stack-backed блок 32×32 и синхронно отдаёт его `WorldRen
 резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
 GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
 full-world `Color` buffer удалён.
+
+Оба offscreen target принадлежат только `Renderer`: они создаются парой при
+`RendererInit`, переиспользуются в steady-state и заменяются новой парой лишь
+когда фактический размер окна изменился. Если resize allocation не удался,
+предыдущая пара остаётся валидной, а тот же неудачный размер не порождает новую
+allocation-попытку каждый кадр. `RendererComposite` исправляет перевёрнутую
+Y-ориентацию raylib render texture отрицательной высотой source rectangle.
+Targets используют `TEXTURE_FILTER_POINT`, поэтому промежуточный pass не
+размывает pixel-art. Gameplay видит только `GameState`/`GameInput`/events и не
+знает о `RenderTexture2D` или будущих shaders. При 1280×720 две RGBA8 textures
+занимают около 7.03 MiB VRAM; raylib также создаёт для них depth attachments,
+что на текущем OpenGL backend добавляет ещё примерно 7.03 MiB.
 
 ### `audio.c/.h`
 
@@ -181,9 +196,10 @@ device не является фатальной.
    world reactions в `GameEvents` и повторно разрешить player collision.
 6. Обновить held audio state и передать events audio/camera consumers.
 7. Обновить camera follow, затухание shake и player point light.
-8. `RendererDrawWorldSpace` обновить видимые dirty chunks и отрисовать
-   world-space presentation.
-9. Отрисовать debug HUD.
+8. `RendererRenderScene` при необходимости пересоздать targets, обновить
+   видимые dirty chunks и отрисовать world-space presentation в `sceneTarget`.
+9. `RendererComposite` вывести `sceneTarget` в backbuffer с корректным Y-flip.
+10. Отрисовать debug HUD и controls hint напрямую поверх composite.
 
 ## Владение памятью
 
@@ -195,6 +211,7 @@ device не является фатальной.
 | буфер грязных световых chunks | `WorldInit` | `WorldUnload` |
 | поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
 | кэш страниц мира (`Texture2D` × N) | `WorldRendererInit`, растёт под размер вида | `RendererUnload` |
+| scene/emissive `RenderTexture2D` | `RendererInit`, пересоздаются парой только при resize | `RendererUnload` |
 | chunk upload staging 32×32 | stack внутри `WorldPrepareVisible` | возврат из вызова |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
@@ -204,18 +221,21 @@ device не является фатальной.
 `RendererInit`/`RendererUnload` владеет GPU presentation и вызывается пока
 raylib window/context ещё жив.
 
-Heap allocation в frame loop запрещён. Размеры world buffers и particle pool не
-меняются во время игры. В стандартном мире 14 155 776 cells; `Cell` уплотнена до
-16 bytes (`material` — `uint8_t`), поэтому основной cell buffer занимает около
-216 MiB. После удаления persistent pixels текущий CPU estimate равен
-221.12 MiB; renderer использует временный staging размером 4 KiB.
+Heap allocation в steady-state frame loop запрещён. Размеры world buffers и
+particle pool не меняются во время игры; renderer allocations допустимы только
+при реальном resize, когда меняются targets и при необходимости ёмкость page
+cache. В стандартном мире 14 155 776 cells; `Cell` уплотнена до 12 bytes,
+поэтому основной cell buffer занимает 162 MiB. После удаления persistent pixels
+текущий CPU estimate равен 167.22 MiB; renderer использует временный staging
+размером 4 KiB.
 
 ## Координатные пространства
 
 - Cell/world space использует одну world unit на одну cell.
-- World texture имеет размер 16384×864 и рисуется в начале world space. Это
-  около 8192 cells влево и вправо от центрального spawn.
+- Мир 16384×864 выводится через резидентный кэш страниц 256×256, а не через
+  одну гигантскую texture. Это около 8192 cells влево и вправо от spawn.
 - Камера показывает логическую область 320×180 и масштабирует её к окну.
-- `TEXTURE_FILTER_POINT` сохраняет nearest-neighbor вид.
+- Page textures и offscreen targets используют `TEXTURE_FILTER_POINT`, сохраняя
+  nearest-neighbor вид; финальный render-texture composite выполняет Y-flip.
 - `InputPoll` применяет `GetScreenToWorld2D`, округляет вниз и ограничивает
   результат границами мира.

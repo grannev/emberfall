@@ -86,8 +86,9 @@ float WorldLightAt(const World *world, int x, int y);
 
 ```c
 bool RendererInit(Renderer *renderer, const GameState *game);
-void RendererDrawWorldSpace(Renderer *renderer, GameState *game,
-                            Vector2 aimPosition, Rectangle visible);
+void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
+                         Vector2 aimPosition, Rectangle visible);
+void RendererComposite(const Renderer *renderer);
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer);
 void RendererUnload(Renderer *renderer);
 ```
@@ -95,9 +96,18 @@ void RendererUnload(Renderer *renderer);
 `Renderer` владеет presentation lifecycle. Его `WorldRenderer` создаёт и
 освобождает `Texture2D`, принимает CPU staging blocks 32×32 и выполняет
 `UpdateTextureRec`. Persistent full-world `Color` buffer отсутствует.
-`RendererDrawWorldSpace` вызывается внутри `BeginMode2D` и компонует мир,
-частицы, игрока и способности. `WorldRendererStats` публикует dirty regions,
-texture uploads, uploaded bytes и время подготовки последнего кадра.
+`RendererRenderScene` компонует мир, частицы, игрока и способности в собственный
+window-sized `sceneTarget`; отдельный прозрачный `emissiveTarget` подготовлен
+для следующего post-processing этапа. Оба target создаются один раз и
+пересоздаются парой лишь при фактическом resize. `RendererComposite` выводит
+scene в текущий backbuffer, исправляя Y-ориентацию raylib render texture.
+HUD остаётся app-level overlay и рисуется после composite. `WorldRendererStats`
+публикует dirty regions, texture uploads, uploaded bytes и время подготовки
+последнего кадра.
+
+`RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
+`BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и
+render-texture passes и оставляет HUD вне будущего post-processing.
 
 Внутренний `WorldPrepareVisible` не является gameplay API. Он синхронно
 передаёт renderer-у только видимые dirty chunks; невидимые сохраняют флаг до

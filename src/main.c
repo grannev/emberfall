@@ -393,6 +393,8 @@ int main(int argc, char **argv)
     bool smokeCollisionObserved = false;
     bool smokeDrillObserved = false;
     bool smokeFireContained = false;
+    bool smokeResizeObserved = false;
+    bool smokeResizeRestored = false;
     int exitCode = 0;
 
     for (argument = 1; argument < argc; ++argument) {
@@ -462,6 +464,14 @@ int main(int argc, char **argv)
         Vector2 desiredCamera;
         Vector2 cursorCell = input.cursorCell;
         Vector2 aimPosition = input.game.aimWorld;
+
+        /* Exercise the render-target resize lifecycle in the automated GL
+           smoke run, then restore the reference screenshot dimensions. */
+        if (smokeTest && smokeFrames == 2) {
+            SetWindowSize(WINDOW_WIDTH - 320, WINDOW_HEIGHT - 180);
+        } else if (smokeTest && smokeFrames == 7) {
+            SetWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+        }
 
         if (input.toggleDebugPressed) {
             debugHud = !debugHud;
@@ -540,13 +550,22 @@ int main(int argc, char **argv)
                            52.0f + (float)game.player.boostStage * 22.0f,
                            0.72f + (float)game.player.boostStage * 0.09f);
 
+        RendererRenderScene(&renderer, &game, camera, aimPosition,
+                            VisibleWorldRectangle(camera));
+        if (smokeTest && renderer.targetWidth == GetScreenWidth() &&
+            renderer.targetHeight == GetScreenHeight()) {
+            smokeResizeObserved = smokeResizeObserved ||
+                                  (renderer.targetWidth == WINDOW_WIDTH - 320 &&
+                                   renderer.targetHeight == WINDOW_HEIGHT - 180);
+            smokeResizeRestored = smokeResizeRestored ||
+                                  (smokeResizeObserved && smokeFrames >= 7 &&
+                                   renderer.targetWidth == WINDOW_WIDTH &&
+                                   renderer.targetHeight == WINDOW_HEIGHT);
+        }
+
         BeginDrawing();
         ClearBackground((Color){2, 4, 9, 255});
-        BeginMode2D(camera);
-            RendererDrawWorldSpace(&renderer, &game, aimPosition,
-                                   VisibleWorldRectangle(camera));
-        EndMode2D();
-
+        RendererComposite(&renderer);
         if (debugHud) {
             DrawDebugHud(&game, &events, &renderer, cursorCell);
         }
@@ -566,14 +585,16 @@ int main(int argc, char **argv)
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
+                      !smokeResizeObserved || !smokeResizeRestored ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
-                "drill=%d fire_contained=%d chunks=%d/%d\n",
+                "drill=%d fire_contained=%d resize=%d restored=%d chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
+                smokeResizeObserved, smokeResizeRestored,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;

@@ -48,7 +48,7 @@ ECS вводится только тогда, когда появится кон
 |---|---|
 | Состояние и симуляция | новый модуль `src/<entity>.c/.h`, вызывается из `GameUpdate` |
 | Владение | поле в `GameState`, инициализация в `GameReset`, seed через `RngStreamSeed` |
-| Рисование | отдельный `src/<entity>_renderer.c`, вызывается из `RendererDrawWorldSpace` |
+| Рисование | отдельный `src/<entity>_renderer.c`, вызывается из `RendererRenderScene` |
 | Обратная связь | `GameEvent` — звук, тряска камеры, импульс игрока |
 | Столкновения с миром | `WorldMaterialIsSolid` + субшаги, как в `PlayerResolveWorldCollision` |
 | Настройки | именованные константы рядом с модулем, а не литералы по коду |
