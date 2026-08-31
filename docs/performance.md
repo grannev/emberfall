@@ -520,3 +520,41 @@ GCC 16.1.1, raylib 6.0.0, `-O2`):
 5. **Renderer benchmark.** GPU uploads и render preparation измеряются только
    runtime-счётчиками в HUD; воспроизводимого headless-замера для них нет,
    потому что он требует GL-контекста.
+
+## EF-RND-002 — explicit emissive bloom
+
+Замеры 2026-08-31 выполнены `xvfb-run` на Mesa llvmpipe 26.1.5 при 1280×720,
+после цикла resize 1280×720 → 960×540 → 1280×720. Два прогона стабильных
+кадров после восстановления размера дали `bloomSubmissionMilliseconds` avg
+**13.075–15.912 ms**, наибольший max **17.320 ms**. Это CPU submission interval
+вокруг emissive/downsample/blur; на software renderer он включает rasterization
+и не является оценкой времени обычной GPU. Headless `make bench` намеренно не
+измеряет эти passes.
+
+Структурная стоимость кадра с bloom:
+
+- 5 offscreen passes: sharp scene, explicit emissive, half-resolution
+  downsample/threshold, horizontal blur, vertical blur;
+- 4 `RenderTexture2D`: два 1280×720 и два 640×360;
+- final backbuffer composite: один sharp draw и один additive bloom draw;
+- steady-state resource allocations: 0.
+
+Memory/upload delta:
+
+| Ресурс | До | После |
+|---|---:|---:|
+| Render-target VRAM, RGBA8 + 32-bit depth | ~14.06 MiB | ~17.58 MiB |
+| Default 12-slot world page cache | ~3.00 MiB | ~6.00 MiB |
+| Chunk stack staging | 4 KiB | 8 KiB |
+| Persistent world CPU estimate | 167.22 MiB | 167.22 MiB |
+
+Каждый dirty chunk теперь делает два `UpdateTextureRec` и передаёт 8 KiB вместо
+4 KiB; settled chunks по-прежнему не загружаются. Новый headless regression
+проверяет, что lava/fire входят в mask, bright sand не входит, а particle glow
+задаётся явно. Xvfb screenshot подтвердил резкий terrain, Y-orientation и
+controlled glow у explosion particles и отдельного lava/fire fixture.
+
+Если shader source отсутствует или не компилируется, либо half-resolution
+targets не выделились, renderer сохраняет sharp scene path. Запуск из `/tmp`
+без `assets/shaders/` подтвердил fallback без crash; текущий asset lookup
+относителен к working directory и остаётся packaging-ограничением.

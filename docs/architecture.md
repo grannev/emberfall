@@ -142,39 +142,57 @@ cross-module call в самый горячий цикл проекта; benchmar
 структурно не способны изменить клетку. Debris (`PARTICLE_CONTACT_SETTLE`) —
 единственная роль, которой разрешено писать в мир, и только оседая в пустую
 клетку. Поэтому её случайность seeded, а поведение покрыто headless-тестами.
+`Particle.emission` задаёт только presentation contribution в bloom mask и
+сбрасывается при каждом reuse слота; на поведение частицы и мир оно не влияет.
 
 ### `renderer.c/.h` и renderer-модули
 
 `Renderer` — presentation owner, создаваемый в `main.c`. Он компонует:
 
-- `sceneTarget` — window-sized offscreen target для всей world-space сцены;
-- `emissiveTarget` — отдельный прозрачный target, зарезервированный для
-  emissive contributors и следующего bloom pass;
+- `sceneTarget` — window-sized offscreen target для резкой world-space сцены;
+- `emissiveTarget` — отдельный window-sized target только для выбранных
+  источников свечения;
+- `bloomPingTarget`/`bloomPongTarget` — half-resolution ping-pong targets для
+  threshold/downsample и separable blur;
+- два GLSL fragment shader из `assets/shaders/`;
 - `WorldRenderer` — единственный владелец GPU-состояния мира: кэш страниц
-  256×256 cells, dirty uploads и renderer counters. Резидентны только видимые
-  страницы, поэтому размер мира больше не ограничен `GL_MAX_TEXTURE_SIZE`;
+  256×256 cells, по scene и emissive texture на слот, dirty uploads и renderer
+  counters. Резидентны только видимые страницы, поэтому размер мира больше не
+  ограничен `GL_MAX_TEXTURE_SIZE`;
 - `player_renderer` — процедурную модель героя и speed/impact effects;
 - `ability_renderer` — beams, force cone, shockwave и прицел;
 - `particle_renderer` — чтение фиксированного particle pool.
 
-`WorldPrepareVisible` — узкий внутренний CPU bridge: world готовит один
-stack-backed блок 32×32 и синхронно отдаёт его `WorldRenderer`. Visitor
+`WorldPrepareVisible` — узкий внутренний CPU bridge: world за один проход
+готовит два stack-backed блока 32×32 (scene и explicit emissive mask) и
+синхронно отдаёт их `WorldRenderer`. Brightness extraction не используется:
+обычный яркий sand остаётся вне bloom, а material `emission` и нагретые solid
+faces попадают в mask. Visitor
 возвращает `bool`: chunk, который renderer не смог разместить (его страница не
 резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
 GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
 full-world `Color` buffer удалён.
 
-Оба offscreen target принадлежат только `Renderer`: они создаются парой при
-`RendererInit`, переиспользуются в steady-state и заменяются новой парой лишь
-когда фактический размер окна изменился. Если resize allocation не удался,
-предыдущая пара остаётся валидной, а тот же неудачный размер не порождает новую
-allocation-попытку каждый кадр. `RendererComposite` исправляет перевёрнутую
-Y-ориентацию raylib render texture отрицательной высотой source rectangle.
-Targets используют `TEXTURE_FILTER_POINT`, поэтому промежуточный pass не
-размывает pixel-art. Gameplay видит только `GameState`/`GameInput`/events и не
-знает о `RenderTexture2D` или будущих shaders. При 1280×720 две RGBA8 textures
-занимают около 7.03 MiB VRAM; raylib также создаёт для них depth attachments,
-что на текущем OpenGL backend добавляет ещё примерно 7.03 MiB.
+Четыре offscreen target принадлежат только `Renderer`. Full-resolution scene и
+emissive используют point filtering; half-resolution bloom targets — bilinear.
+Они переиспользуются в steady-state и заменяются лишь при фактическом resize.
+Если обязательная full-resolution пара не выделилась, предыдущая остаётся
+валидной; если не выделился bloom pair или не загрузились shaders, renderer
+gracefully выводит резкую scene без bloom. Неудачная allocation не повторяется
+каждый frame: renderer делает следующий retry через 120 кадров либо сразу после
+нового изменения фактического размера окна.
+
+Специализированный pipeline состоит из пяти offscreen passes: sharp scene,
+explicit emissive, threshold/downsample, horizontal blur и vertical blur.
+`RendererComposite` сначала выводит sharp scene, затем аддитивно накладывает
+только blurred emissive. Каждый переход исправляет Y-ориентацию raylib render
+texture отрицательной высотой source rectangle. Поэтому terrain не размывается,
+а gameplay по-прежнему не знает о `RenderTexture2D`/`Shader`.
+
+Tuning собран в `BLOOM` внутри `renderer.c`: intensity 0.72, radius 1.35,
+threshold 0.08, downsample factor 2. При 1280×720 четыре RGBA8/depth targets
+занимают на текущем OpenGL backend примерно 17.58 MiB VRAM: 14.06 MiB для двух
+full-resolution и 3.52 MiB для двух 640×360 targets.
 
 ### `audio.c/.h`
 
@@ -196,9 +214,11 @@ device не является фатальной.
    world reactions в `GameEvents` и повторно разрешить player collision.
 6. Обновить held audio state и передать events audio/camera consumers.
 7. Обновить camera follow, затухание shake и player point light.
-8. `RendererRenderScene` при необходимости пересоздать targets, обновить
-   видимые dirty chunks и отрисовать world-space presentation в `sceneTarget`.
-9. `RendererComposite` вывести `sceneTarget` в backbuffer с корректным Y-flip.
+8. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
+   paged world layers, отрисовать sharp scene и выполнить emissive/downsample/
+   horizontal-blur/vertical-blur passes.
+9. `RendererComposite` вывести sharp scene и аддитивно наложить blurred
+   emissive в backbuffer с корректным Y-flip.
 10. Отрисовать debug HUD и controls hint напрямую поверх composite.
 
 ## Владение памятью
@@ -210,9 +230,11 @@ device не является фатальной.
 | буфер грязных chunks | `WorldInit` | `WorldUnload` |
 | буфер грязных световых chunks | `WorldInit` | `WorldUnload` |
 | поля света (sky, ember, показанные копии, emission, opacity) | `WorldInit` | `WorldUnload` |
-| кэш страниц мира (`Texture2D` × N) | `WorldRendererInit`, растёт под размер вида | `RendererUnload` |
-| scene/emissive `RenderTexture2D` | `RendererInit`, пересоздаются парой только при resize | `RendererUnload` |
-| chunk upload staging 32×32 | stack внутри `WorldPrepareVisible` | возврат из вызова |
+| scene/emissive кэш страниц (`Texture2D` × 2N) | `WorldRendererInit`, растёт под размер вида | `RendererUnload` |
+| scene/emissive `RenderTexture2D` | `RendererInit`, пересоздаются только при resize | `RendererUnload` |
+| bloom ping/pong `RenderTexture2D` | `RendererInit`, half-resolution, только при resize | `RendererUnload` |
+| bloom shaders | `RendererInit`, ошибка включает sharp fallback | `RendererUnload` |
+| scene/emissive staging 32×32 × 2 | stack внутри `WorldPrepareVisible` | возврат из вызова |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
@@ -226,8 +248,8 @@ particle pool не меняются во время игры; renderer allocatio
 при реальном resize, когда меняются targets и при необходимости ёмкость page
 cache. В стандартном мире 14 155 776 cells; `Cell` уплотнена до 12 bytes,
 поэтому основной cell buffer занимает 162 MiB. После удаления persistent pixels
-текущий CPU estimate равен 167.22 MiB; renderer использует временный staging
-размером 4 KiB.
+текущий persistent CPU estimate равен 167.22 MiB; renderer использует временный
+staging размером 8 KiB.
 
 ## Координатные пространства
 

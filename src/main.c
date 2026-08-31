@@ -113,13 +113,14 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     const Player *player = &game->player;
     const AbilitySystem *abilities = &game->abilities;
     const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
-    const int panelWidth = 380;
-    const int panelHeight = 202;
+    const int panelWidth = 520;
+    const int panelHeight = 222;
     float cooldown = explosion->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
     const WorldRendererStats *renderStats = RendererWorldStats(renderer);
+    const RendererFrameStats *frameStats = RendererStats(renderer);
 
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
@@ -152,14 +153,20 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         renderStats->visiblePages, renderStats->residentPages,
                         renderStats->pageBinds),
              24, 153, 14, (Color){166, 183, 223, 255});
+    DrawText(TextFormat("POST: %s %dx%d | %u PASSES %u TARGETS | %.2f ms",
+                        frameStats->bloomEnabled ? "BLOOM" : "SHARP",
+                        frameStats->bloomWidth, frameStats->bloomHeight,
+                        frameStats->offscreenPasses, frameStats->renderTargets,
+                        frameStats->bloomSubmissionMilliseconds),
+             24, 171, 14, (Color){205, 156, 234, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
     DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 171, 14, (Color){186, 194, 205, 255});
+             24, 189, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 189, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 207, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 189, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 207, 14,
                  LIGHTGRAY);
     }
 }
@@ -260,6 +267,22 @@ static void SetupSmokeTarget(World *world, Vector2 aim)
     }
     WorldSetCell(world, centerX - 6, centerY - 12, MATERIAL_WATER);
     WorldSetCell(world, centerX - 5, centerY - 12, MATERIAL_LAVA);
+
+    /* A separate pocket survives the explosion long enough to make lava and
+       fire emissive visible in the reference screenshot. */
+    for (x = centerX + 26; x <= centerX + 36; ++x) {
+        WorldSetCell(world, x, centerY + 16, MATERIAL_ROCK);
+    }
+    for (y = centerY + 12; y <= centerY + 15; ++y) {
+        WorldSetCell(world, centerX + 26, y, MATERIAL_ROCK);
+        WorldSetCell(world, centerX + 36, y, MATERIAL_ROCK);
+    }
+    for (y = centerY + 13; y <= centerY + 15; ++y) {
+        for (x = centerX + 28; x <= centerX + 34; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_LAVA);
+        }
+    }
+    WorldSetCell(world, centerX + 31, centerY + 10, MATERIAL_FIRE);
 }
 
 static bool RunSmokeFireContainmentProbe(void)
@@ -395,6 +418,13 @@ int main(int argc, char **argv)
     bool smokeFireContained = false;
     bool smokeResizeObserved = false;
     bool smokeResizeRestored = false;
+    bool smokeBloomObserved = false;
+    bool smokeBloomResized = false;
+    bool smokeBloomRestored = false;
+    bool smokeTargetsSynchronized = true;
+    double smokeBloomSubmissionTotal = 0.0;
+    double smokeBloomSubmissionMaximum = 0.0;
+    int smokeBloomFrames = 0;
     int exitCode = 0;
 
     for (argument = 1; argument < argc; ++argument) {
@@ -552,18 +582,54 @@ int main(int argc, char **argv)
 
         RendererRenderScene(&renderer, &game, camera, aimPosition,
                             VisibleWorldRectangle(camera));
-        if (smokeTest && renderer.targetWidth == GetScreenWidth() &&
-            renderer.targetHeight == GetScreenHeight()) {
+        if (smokeTest) {
+            const RendererFrameStats *frameStats = RendererStats(&renderer);
+            int screenWidth = GetScreenWidth();
+            int screenHeight = GetScreenHeight();
+
+            smokeTargetsSynchronized = smokeTargetsSynchronized &&
+                                       frameStats->targetWidth == screenWidth &&
+                                       frameStats->targetHeight == screenHeight;
+            if (frameStats->bloomEnabled) {
+                smokeTargetsSynchronized = smokeTargetsSynchronized &&
+                                           frameStats->bloomWidth ==
+                                               (screenWidth + 1) / 2 &&
+                                           frameStats->bloomHeight ==
+                                               (screenHeight + 1) / 2;
+            }
+
+            smokeBloomObserved = smokeBloomObserved ||
+                                 (frameStats->bloomEnabled &&
+                                  frameStats->offscreenPasses == 5u &&
+                                  frameStats->renderTargets == 4u);
+            smokeBloomResized = smokeBloomResized ||
+                                (frameStats->bloomEnabled &&
+                                 frameStats->bloomWidth == (WINDOW_WIDTH - 320) / 2 &&
+                                 frameStats->bloomHeight == (WINDOW_HEIGHT - 180) / 2);
+            smokeBloomRestored = smokeBloomRestored ||
+                                 (smokeBloomResized && smokeFrames >= 7 &&
+                                  frameStats->bloomWidth == WINDOW_WIDTH / 2 &&
+                                  frameStats->bloomHeight == WINDOW_HEIGHT / 2);
+            if (frameStats->bloomEnabled && smokeFrames >= 8) {
+                smokeBloomSubmissionTotal +=
+                    frameStats->bloomSubmissionMilliseconds;
+                smokeBloomSubmissionMaximum =
+                    fmax(smokeBloomSubmissionMaximum,
+                         frameStats->bloomSubmissionMilliseconds);
+                ++smokeBloomFrames;
+            }
             smokeResizeObserved = smokeResizeObserved ||
-                                  (renderer.targetWidth == WINDOW_WIDTH - 320 &&
-                                   renderer.targetHeight == WINDOW_HEIGHT - 180);
+                                  (frameStats->targetWidth == WINDOW_WIDTH - 320 &&
+                                   frameStats->targetHeight == WINDOW_HEIGHT - 180);
             smokeResizeRestored = smokeResizeRestored ||
                                   (smokeResizeObserved && smokeFrames >= 7 &&
-                                   renderer.targetWidth == WINDOW_WIDTH &&
-                                   renderer.targetHeight == WINDOW_HEIGHT);
+                                   frameStats->targetWidth == WINDOW_WIDTH &&
+                                   frameStats->targetHeight == WINDOW_HEIGHT);
         }
 
         BeginDrawing();
+        /* This clear is intentionally retained as a safe backbuffer fallback
+           if RendererComposite ever has no valid scene target to draw. */
         ClearBackground((Color){2, 4, 9, 255});
         RendererComposite(&renderer);
         if (debugHud) {
@@ -582,19 +648,38 @@ int main(int argc, char **argv)
         }
     }
 
+    if (smokeTest && smokeBloomFrames > 0) {
+        const RendererFrameStats *frameStats = RendererStats(&renderer);
+
+        printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
+               "submit_avg=%.3fms submit_max=%.3fms "
+               "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
+               "target_sync=%d\n",
+               frameStats->bloomWidth, frameStats->bloomHeight,
+               frameStats->offscreenPasses, frameStats->renderTargets,
+               smokeBloomSubmissionTotal / (double)smokeBloomFrames,
+               smokeBloomSubmissionMaximum, smokeResizeObserved,
+               smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
+               smokeTargetsSynchronized);
+    }
+
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
-                      !smokeResizeObserved || !smokeResizeRestored ||
+                      !smokeBloomObserved || !smokeTargetsSynchronized ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
-                "drill=%d fire_contained=%d resize=%d restored=%d chunks=%d/%d\n",
+                "drill=%d fire_contained=%d resize=%d restored=%d "
+                "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
+                "chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
+                smokeBloomObserved, smokeBloomResized, smokeBloomRestored,
+                smokeTargetsSynchronized,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;

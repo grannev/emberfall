@@ -30,6 +30,7 @@ static Particle *ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
     particle->size = size;
     particle->gravity = gravity;
     particle->restitution = 0.34f;
+    particle->emission = 0.0f;
     particle->contact = PARTICLE_CONTACT_PASS;
     particle->settleMaterial = MATERIAL_EMPTY;
     particle->active = true;
@@ -200,10 +201,13 @@ void ParticlesSpawnExplosion(ParticleSystem *system, Vector2 position)
         } else {
             color = (Color){245, 83, 30, 255};
         }
-        ParticlesSpawnOne(system, position,
-                          (Vector2){cosf(angle) * speed, sinf(angle) * speed},
-                          color, life, 0.7f + RandomUnit(system) * 1.5f, 30.0f)
-            ->contact = PARTICLE_CONTACT_BOUNCE;
+        Particle *particle =
+            ParticlesSpawnOne(system, position,
+                              (Vector2){cosf(angle) * speed, sinf(angle) * speed},
+                              color, life, 0.7f + RandomUnit(system) * 1.5f, 30.0f);
+
+        particle->contact = PARTICLE_CONTACT_BOUNCE;
+        particle->emission = i % 4 == 0 ? 0.0f : 0.9f;
     }
 }
 
@@ -222,11 +226,15 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2
 
         /* Sparks come off the cell the laser is eating, so they ricochet
            along the face instead of sinking into it. */
-        ParticlesSpawnOne(system, position,
-                          (Vector2){cosf(angle) * speed, sinf(angle) * speed},
-                          (Color){255, 225, 90, 255}, 0.12f + RandomUnit(system) * 0.18f,
-                          0.45f + RandomUnit(system) * 0.65f, 18.0f)
-            ->contact = PARTICLE_CONTACT_BOUNCE;
+        Particle *particle =
+            ParticlesSpawnOne(system, position,
+                              (Vector2){cosf(angle) * speed, sinf(angle) * speed},
+                              (Color){255, 225, 90, 255},
+                              0.12f + RandomUnit(system) * 0.18f,
+                              0.45f + RandomUnit(system) * 0.65f, 18.0f);
+
+        particle->contact = PARTICLE_CONTACT_BOUNCE;
+        particle->emission = 1.0f;
     }
 }
 
@@ -248,12 +256,15 @@ void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 norm
         Color color = i % 3 == 0 ? (Color){255, 190, 77, 255}
                                  : (Color){132, 126, 119, 230};
 
-        ParticlesSpawnOne(system, position,
-                          (Vector2){normal.x * outward + tangent.x * sideways,
-                                    normal.y * outward + tangent.y * sideways},
-                          color, 0.18f + RandomUnit(system) * 0.25f,
-                          0.45f + RandomUnit(system) * 0.7f, 22.0f)
-            ->contact = PARTICLE_CONTACT_BOUNCE;
+        Particle *particle =
+            ParticlesSpawnOne(system, position,
+                              (Vector2){normal.x * outward + tangent.x * sideways,
+                                        normal.y * outward + tangent.y * sideways},
+                              color, 0.18f + RandomUnit(system) * 0.25f,
+                              0.45f + RandomUnit(system) * 0.7f, 22.0f);
+
+        particle->contact = PARTICLE_CONTACT_BOUNCE;
+        particle->emission = i % 3 == 0 ? 0.72f : 0.0f;
     }
 }
 
@@ -292,15 +303,19 @@ void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
                            : (Color){210, 241, 238, 175};
         }
 
-        ParticlesSpawnOne(system,
-                          (Vector2){position.x + tangent.x * spread,
-                                    position.y + tangent.y * spread},
-                          (Vector2){-direction.x * backward + tangent.x * spread,
-                                    -direction.y * backward + tangent.y * spread},
-                          color,
-                          0.12f + RandomUnit(system) * (0.12f + (float)stage * 0.04f),
-                          0.35f + RandomUnit(system) * (0.45f + (float)stage * 0.22f),
-                          0.0f);
+        Particle *particle =
+            ParticlesSpawnOne(
+                system,
+                (Vector2){position.x + tangent.x * spread,
+                          position.y + tangent.y * spread},
+                (Vector2){-direction.x * backward + tangent.x * spread,
+                          -direction.y * backward + tangent.y * spread},
+                color,
+                0.12f + RandomUnit(system) * (0.12f + (float)stage * 0.04f),
+                0.35f + RandomUnit(system) * (0.45f + (float)stage * 0.22f),
+                0.0f);
+
+        particle->emission = 0.72f + (float)stage * 0.08f;
     }
 }
 
@@ -330,11 +345,17 @@ void ParticlesSpawnBoostBurst(ParticleSystem *system, Vector2 position,
                           : (stage == 2 ? (Color){134, 221, 255, 225}
                                         : (Color){111, 239, 235, 210});
 
-        ParticlesSpawnOne(system, position,
-                          (Vector2){radial.x * outward - direction.x * wake,
-                                    radial.y * outward - direction.y * wake},
-                          color, 0.2f + (float)stage * 0.08f + RandomUnit(system) * 0.18f,
-                          0.7f + RandomUnit(system) * (0.7f + (float)stage * 0.35f), 0.0f);
+        Particle *particle =
+            ParticlesSpawnOne(
+                system, position,
+                (Vector2){radial.x * outward - direction.x * wake,
+                          radial.y * outward - direction.y * wake},
+                color,
+                0.2f + (float)stage * 0.08f + RandomUnit(system) * 0.18f,
+                0.7f + RandomUnit(system) * (0.7f + (float)stage * 0.35f),
+                0.0f);
+
+        particle->emission = 0.84f + (float)stage * 0.05f;
     }
 }
 
@@ -373,6 +394,8 @@ void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
                                         -direction.y * backward + tangent.y * sideways},
                               color, 0.2f + RandomUnit(system) * 0.34f,
                               0.45f + RandomUnit(system) * 0.9f, 24.0f);
+
+        particle->emission = i % 4 == 0 ? 0.65f : 0.0f;
 
         /* Roughly a third of the spoil comes to rest as real ash, so a bored
            tunnel collects grit on its floor instead of staying surgically

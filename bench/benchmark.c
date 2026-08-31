@@ -427,7 +427,7 @@ static void PrintMemory(const World *world)
                            (size_t)world->chunkRows * 2u * sizeof(int32_t);
     size_t lighting = lightCount * 6u * sizeof(float);
     size_t renderStaging =
-        WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * sizeof(Color);
+        WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * sizeof(Color) * 2u;
     size_t estimated = sizeof(*world) + cells + chunkMetadata + lighting;
 
     printf("memory: Cell=%zu B  cells=%.2f MiB  persistent_pixels=0.00 MiB  "

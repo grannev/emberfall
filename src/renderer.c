@@ -6,6 +6,27 @@
 #include "particle_renderer.h"
 #include "player_renderer.h"
 
+typedef struct BloomTuning {
+    float intensity;
+    float radius;
+    float threshold;
+    int downsampleFactor;
+} BloomTuning;
+
+/* EF-RND-002 tuning lives here rather than being scattered between shaders,
+   target creation and composite code. Half resolution keeps the blur cheap
+   while retaining enough shape for one-cell lava and laser contributions. */
+static const BloomTuning BLOOM = {
+    .intensity = 0.72f,
+    .radius = 1.35f,
+    .threshold = 0.08f,
+    .downsampleFactor = 2,
+};
+
+#define BLOOM_DOWNSAMPLE_SHADER "assets/shaders/bloom_downsample.fs"
+#define BLOOM_BLUR_SHADER "assets/shaders/bloom_blur.fs"
+#define RENDERER_RESIZE_RETRY_FRAMES 120u
+
 static bool RendererTargetIsValid(RenderTexture2D target)
 {
     return target.id != 0u && target.texture.id != 0u;
@@ -16,7 +37,7 @@ static void RendererUnloadTarget(RenderTexture2D *target)
     if (target == NULL) {
         return;
     }
-    if (RendererTargetIsValid(*target)) {
+    if (target->id != 0u || target->texture.id != 0u) {
         UnloadRenderTexture(*target);
     }
     *target = (RenderTexture2D){0};
@@ -24,63 +45,257 @@ static void RendererUnloadTarget(RenderTexture2D *target)
 
 static void RendererClearTarget(RenderTexture2D target, Color color)
 {
+    if (!RendererTargetIsValid(target)) {
+        return;
+    }
     BeginTextureMode(target);
     ClearBackground(color);
     EndTextureMode();
 }
 
-/* Creates both attachments before replacing either old one. A resize that
-   cannot allocate its new pair leaves the previous frame targets usable
-   instead of half-destroying presentation state. */
+static RenderTexture2D RendererLoadTarget(int width, int height, int filter,
+                                          Color clear)
+{
+    RenderTexture2D target = LoadRenderTexture(width, height);
+
+    if (!RendererTargetIsValid(target)) {
+        RendererUnloadTarget(&target);
+        return (RenderTexture2D){0};
+    }
+    SetTextureFilter(target.texture, filter);
+    SetTextureWrap(target.texture, TEXTURE_WRAP_CLAMP);
+    RendererClearTarget(target, clear);
+    return target;
+}
+
+static void RendererUnloadShader(Shader *shader)
+{
+    if (shader == NULL) {
+        return;
+    }
+    if (shader->id != 0u && IsShaderValid(*shader)) {
+        UnloadShader(*shader);
+    }
+    *shader = (Shader){0};
+}
+
+static bool RendererLoadFragmentShader(const char *path, Shader *shader)
+{
+    char *source = LoadFileText(path);
+
+    if (source == NULL) {
+        return false;
+    }
+    *shader = LoadShaderFromMemory(NULL, source);
+    UnloadFileText(source);
+    return IsShaderValid(*shader);
+}
+
+static bool RendererLoadBloomShaders(Renderer *renderer)
+{
+    if (!RendererLoadFragmentShader(BLOOM_DOWNSAMPLE_SHADER,
+                                    &renderer->bloomDownsampleShader) ||
+        !RendererLoadFragmentShader(BLOOM_BLUR_SHADER,
+                                    &renderer->bloomBlurShader)) {
+        goto fallback;
+    }
+
+    renderer->downsampleSourceTexelLocation =
+        GetShaderLocation(renderer->bloomDownsampleShader, "sourceTexelSize");
+    renderer->downsampleThresholdLocation =
+        GetShaderLocation(renderer->bloomDownsampleShader, "threshold");
+    renderer->blurTexelLocation =
+        GetShaderLocation(renderer->bloomBlurShader, "texelSize");
+    renderer->blurDirectionLocation =
+        GetShaderLocation(renderer->bloomBlurShader, "direction");
+    renderer->blurRadiusLocation =
+        GetShaderLocation(renderer->bloomBlurShader, "radius");
+    if (renderer->downsampleSourceTexelLocation < 0 ||
+        renderer->downsampleThresholdLocation < 0 ||
+        renderer->blurTexelLocation < 0 ||
+        renderer->blurDirectionLocation < 0 ||
+        renderer->blurRadiusLocation < 0) {
+        goto fallback;
+    }
+
+    renderer->bloomShadersReady = true;
+    return true;
+
+fallback:
+    RendererUnloadShader(&renderer->bloomDownsampleShader);
+    RendererUnloadShader(&renderer->bloomBlurShader);
+    renderer->bloomShadersReady = false;
+    TraceLog(LOG_WARNING,
+             "RENDER: Bloom shaders unavailable; using sharp scene fallback");
+    return false;
+}
+
+static bool RendererBloomReady(const Renderer *renderer)
+{
+    return renderer->bloomShadersReady && renderer->bloomTargetsReady &&
+           RendererTargetIsValid(renderer->bloomPingTarget) &&
+           RendererTargetIsValid(renderer->bloomPongTarget);
+}
+
+/* Creates the full-resolution pair before replacing either old attachment. A
+   bloom allocation failure degrades to the sharp scene rather than making the
+   whole renderer fail; a full-resolution failure keeps the previous pair. */
 static bool RendererEnsureTargets(Renderer *renderer, int width, int height)
 {
-    RenderTexture2D scene;
-    RenderTexture2D emissive;
+    RenderTexture2D scene = {0};
+    RenderTexture2D emissive = {0};
+    RenderTexture2D bloomPing = {0};
+    RenderTexture2D bloomPong = {0};
+    int bloomWidth;
+    int bloomHeight;
+    bool bloomTargetsReady = false;
+    bool targetsMatch;
+    bool bloomMissing;
 
     if (width <= 0 || height <= 0) {
         return false;
     }
-    if (RendererTargetIsValid(renderer->sceneTarget) &&
-        RendererTargetIsValid(renderer->emissiveTarget) &&
-        renderer->targetWidth == width && renderer->targetHeight == height) {
+    targetsMatch = RendererTargetIsValid(renderer->sceneTarget) &&
+                   RendererTargetIsValid(renderer->emissiveTarget) &&
+                   renderer->targetWidth == width &&
+                   renderer->targetHeight == height;
+    bloomMissing = renderer->bloomShadersReady &&
+                   (!RendererTargetIsValid(renderer->bloomPingTarget) ||
+                    !RendererTargetIsValid(renderer->bloomPongTarget));
+    if (targetsMatch && !bloomMissing) {
         renderer->resizeAttemptWidth = width;
         renderer->resizeAttemptHeight = height;
+        renderer->resizeRetryFrames = 0u;
         return true;
     }
-    /* A failed pair allocation must not become a LoadRenderTexture loop. Try
-       each observed size once and keep scaling the previous valid target until
-       the window changes again. */
+    /* A failed allocation must not become a LoadRenderTexture loop. Keep the
+       previous valid scene and retry only after a long quiet interval, or
+       immediately when the actual window size changes. */
     if (renderer->resizeAttemptWidth == width &&
-        renderer->resizeAttemptHeight == height) {
-        return false;
+        renderer->resizeAttemptHeight == height &&
+        renderer->resizeRetryFrames > 0u) {
+        --renderer->resizeRetryFrames;
+        return targetsMatch;
     }
     renderer->resizeAttemptWidth = width;
     renderer->resizeAttemptHeight = height;
 
-    scene = LoadRenderTexture(width, height);
+    scene = RendererLoadTarget(width, height, TEXTURE_FILTER_POINT,
+                               (Color){2, 4, 9, 255});
     if (!RendererTargetIsValid(scene)) {
+        renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
+        TraceLog(LOG_WARNING,
+                 "RENDER: Scene target resize to %dx%d failed; retrying later",
+                 width, height);
         return false;
     }
-    emissive = LoadRenderTexture(width, height);
+    emissive = RendererLoadTarget(width, height, TEXTURE_FILTER_POINT, BLANK);
     if (!RendererTargetIsValid(emissive)) {
-        UnloadRenderTexture(scene);
+        RendererUnloadTarget(&scene);
+        renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
+        TraceLog(LOG_WARNING,
+                 "RENDER: Emissive target resize to %dx%d failed; retrying later",
+                 width, height);
         return false;
     }
 
-    SetTextureFilter(scene.texture, TEXTURE_FILTER_POINT);
-    SetTextureFilter(emissive.texture, TEXTURE_FILTER_POINT);
-    SetTextureWrap(scene.texture, TEXTURE_WRAP_CLAMP);
-    SetTextureWrap(emissive.texture, TEXTURE_WRAP_CLAMP);
-    RendererClearTarget(scene, (Color){2, 4, 9, 255});
-    RendererClearTarget(emissive, BLANK);
+    bloomWidth = (width + BLOOM.downsampleFactor - 1) / BLOOM.downsampleFactor;
+    bloomHeight = (height + BLOOM.downsampleFactor - 1) /
+                  BLOOM.downsampleFactor;
+    if (renderer->bloomShadersReady) {
+        bloomPing = RendererLoadTarget(bloomWidth, bloomHeight,
+                                       TEXTURE_FILTER_BILINEAR, BLACK);
+        bloomPong = RendererLoadTarget(bloomWidth, bloomHeight,
+                                       TEXTURE_FILTER_BILINEAR, BLACK);
+        bloomTargetsReady = RendererTargetIsValid(bloomPing) &&
+                            RendererTargetIsValid(bloomPong);
+        if (!bloomTargetsReady) {
+            RendererUnloadTarget(&bloomPing);
+            RendererUnloadTarget(&bloomPong);
+            TraceLog(LOG_WARNING,
+                     "RENDER: Bloom targets unavailable at %dx%d; using fallback",
+                     bloomWidth, bloomHeight);
+            renderer->resizeRetryFrames = RENDERER_RESIZE_RETRY_FRAMES;
+        }
+    }
 
     RendererUnloadTarget(&renderer->sceneTarget);
     RendererUnloadTarget(&renderer->emissiveTarget);
+    RendererUnloadTarget(&renderer->bloomPingTarget);
+    RendererUnloadTarget(&renderer->bloomPongTarget);
     renderer->sceneTarget = scene;
     renderer->emissiveTarget = emissive;
+    renderer->bloomPingTarget = bloomPing;
+    renderer->bloomPongTarget = bloomPong;
     renderer->targetWidth = width;
     renderer->targetHeight = height;
+    renderer->bloomWidth = bloomTargetsReady ? bloomWidth : 0;
+    renderer->bloomHeight = bloomTargetsReady ? bloomHeight : 0;
+    renderer->bloomTargetsReady = bloomTargetsReady;
+    if (bloomTargetsReady || !renderer->bloomShadersReady) {
+        renderer->resizeRetryFrames = 0u;
+    }
     return true;
+}
+
+static void RendererDrawTarget(RenderTexture2D target, int destinationWidth,
+                               int destinationHeight, Color tint)
+{
+    Rectangle source = {0.0f, 0.0f, (float)target.texture.width,
+                        (float)-target.texture.height};
+    Rectangle destination = {0.0f, 0.0f, (float)destinationWidth,
+                             (float)destinationHeight};
+
+    DrawTexturePro(target.texture, source, destination,
+                   (Vector2){0.0f, 0.0f}, 0.0f, tint);
+}
+
+static void RendererFilterBloom(Renderer *renderer)
+{
+    Vector2 sourceTexel = {1.0f / (float)renderer->targetWidth,
+                           1.0f / (float)renderer->targetHeight};
+    Vector2 bloomTexel = {1.0f / (float)renderer->bloomWidth,
+                          1.0f / (float)renderer->bloomHeight};
+    Vector2 horizontal = {1.0f, 0.0f};
+    Vector2 vertical = {0.0f, 1.0f};
+
+    SetShaderValue(renderer->bloomDownsampleShader,
+                   renderer->downsampleSourceTexelLocation, &sourceTexel,
+                   SHADER_UNIFORM_VEC2);
+    SetShaderValue(renderer->bloomDownsampleShader,
+                   renderer->downsampleThresholdLocation, &BLOOM.threshold,
+                   SHADER_UNIFORM_FLOAT);
+    BeginTextureMode(renderer->bloomPingTarget);
+    ClearBackground(BLACK);
+    BeginShaderMode(renderer->bloomDownsampleShader);
+    RendererDrawTarget(renderer->emissiveTarget, renderer->bloomWidth,
+                       renderer->bloomHeight, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+
+    SetShaderValue(renderer->bloomBlurShader, renderer->blurTexelLocation,
+                   &bloomTexel, SHADER_UNIFORM_VEC2);
+    SetShaderValue(renderer->bloomBlurShader, renderer->blurRadiusLocation,
+                   &BLOOM.radius, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(renderer->bloomBlurShader, renderer->blurDirectionLocation,
+                   &horizontal, SHADER_UNIFORM_VEC2);
+    BeginTextureMode(renderer->bloomPongTarget);
+    ClearBackground(BLACK);
+    BeginShaderMode(renderer->bloomBlurShader);
+    RendererDrawTarget(renderer->bloomPingTarget, renderer->bloomWidth,
+                       renderer->bloomHeight, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+
+    SetShaderValue(renderer->bloomBlurShader, renderer->blurDirectionLocation,
+                   &vertical, SHADER_UNIFORM_VEC2);
+    BeginTextureMode(renderer->bloomPingTarget);
+    ClearBackground(BLACK);
+    BeginShaderMode(renderer->bloomBlurShader);
+    RendererDrawTarget(renderer->bloomPongTarget, renderer->bloomWidth,
+                       renderer->bloomHeight, WHITE);
+    EndShaderMode();
+    EndTextureMode();
 }
 
 bool RendererInit(Renderer *renderer, const GameState *game)
@@ -89,6 +304,7 @@ bool RendererInit(Renderer *renderer, const GameState *game)
         return false;
     }
     *renderer = (Renderer){0};
+    (void)RendererLoadBloomShaders(renderer);
     if (!WorldRendererInit(&renderer->world, &game->world) ||
         !RendererEnsureTargets(renderer, GetScreenWidth(), GetScreenHeight())) {
         RendererUnload(renderer);
@@ -100,6 +316,8 @@ bool RendererInit(Renderer *renderer, const GameState *game)
 void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                          Vector2 aimPosition, Rectangle visible)
 {
+    bool bloomReady;
+
     if (renderer == NULL || game == NULL) {
         return;
     }
@@ -110,6 +328,16 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
     if (!RendererTargetIsValid(renderer->sceneTarget)) {
         return;
     }
+    bloomReady = RendererBloomReady(renderer);
+    renderer->lastFrame = (RendererFrameStats){
+        .renderTargets = bloomReady ? 4u : 2u,
+        .offscreenPasses = bloomReady ? 5u : 1u,
+        .targetWidth = renderer->targetWidth,
+        .targetHeight = renderer->targetHeight,
+        .bloomWidth = bloomReady ? renderer->bloomWidth : 0,
+        .bloomHeight = bloomReady ? renderer->bloomHeight : 0,
+        .bloomEnabled = bloomReady,
+    };
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
@@ -123,34 +351,51 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
     EndMode2D();
     EndTextureMode();
 
-    /* EF-RND-002 will draw selected contributors here. Keeping this target
-       explicitly clear now makes it a stable contract without changing the
-       current image or inventing a generic render graph. */
-    RendererClearTarget(renderer->emissiveTarget, BLANK);
+    if (bloomReady) {
+        double started = GetTime();
+
+        BeginTextureMode(renderer->emissiveTarget);
+        ClearBackground(BLANK);
+        BeginMode2D(camera);
+            WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
+            ParticleRendererDrawEmissive(&game->particles);
+            PlayerRendererDrawEmissive(&game->player);
+            AbilityRendererDrawEmissive(&game->abilities);
+        EndMode2D();
+        EndTextureMode();
+
+        RendererFilterBloom(renderer);
+        renderer->lastFrame.bloomSubmissionMilliseconds =
+            (GetTime() - started) * 1000.0;
+    }
 }
 
 void RendererComposite(const Renderer *renderer)
 {
-    Rectangle source;
-    Rectangle destination;
-
     if (renderer == NULL || !RendererTargetIsValid(renderer->sceneTarget)) {
         return;
     }
     /* Render textures are vertically inverted in raylib/OpenGL. A negative
        source height flips only the final composite; world and camera
        coordinates stay exactly as they were in direct-to-backbuffer drawing. */
-    source = (Rectangle){0.0f, 0.0f, (float)renderer->targetWidth,
-                         (float)-renderer->targetHeight};
-    destination = (Rectangle){0.0f, 0.0f, (float)GetScreenWidth(),
-                              (float)GetScreenHeight()};
-    DrawTexturePro(renderer->sceneTarget.texture, source, destination,
-                   (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+    RendererDrawTarget(renderer->sceneTarget, GetScreenWidth(), GetScreenHeight(),
+                       WHITE);
+    if (RendererBloomReady(renderer)) {
+        BeginBlendMode(BLEND_ADDITIVE);
+        RendererDrawTarget(renderer->bloomPingTarget, GetScreenWidth(),
+                           GetScreenHeight(), Fade(WHITE, BLOOM.intensity));
+        EndBlendMode();
+    }
 }
 
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer)
 {
     return renderer != NULL ? &renderer->world.lastFrame : NULL;
+}
+
+const RendererFrameStats *RendererStats(const Renderer *renderer)
+{
+    return renderer != NULL ? &renderer->lastFrame : NULL;
 }
 
 void RendererUnload(Renderer *renderer)
@@ -160,6 +405,10 @@ void RendererUnload(Renderer *renderer)
     }
     RendererUnloadTarget(&renderer->sceneTarget);
     RendererUnloadTarget(&renderer->emissiveTarget);
+    RendererUnloadTarget(&renderer->bloomPingTarget);
+    RendererUnloadTarget(&renderer->bloomPongTarget);
+    RendererUnloadShader(&renderer->bloomDownsampleShader);
+    RendererUnloadShader(&renderer->bloomBlurShader);
     WorldRendererUnload(&renderer->world);
     *renderer = (Renderer){0};
 }
