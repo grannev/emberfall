@@ -1974,6 +1974,607 @@ static void test_reset_after_extraction_returns_the_store_to_empty(void)
     WorldUnload(&world);
 }
 
+/* --- terrain body kinematics -------------------------------------------- */
+
+#define KINEMATIC_STEP (1.0f / 60.0f)
+
+/* A solid block, finalised, so mass, centre of mass and inertia are real. */
+static TerrainBodyHandle MakeKinematicBody(DynamicTerrainSystem *system, int width,
+                                           int height, Vector2 position)
+{
+    TerrainBodyHandle handle = DynamicTerrainAllocBody(system, width, height);
+    TerrainBody *body;
+
+    FillBody(system, handle, 0, 0, width - 1, height - 1, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(system, handle);
+    body = DynamicTerrainGet(system, handle);
+    if (body != NULL) {
+        body->position = position;
+    }
+    return handle;
+}
+
+/* Most of these tests want to watch one effect at a time. */
+static DynamicTerrainConfig QuietConfig(void)
+{
+    DynamicTerrainConfig config = DynamicTerrainDefaultConfig();
+
+    config.gravity = 0.0f;
+    config.linearDamping = 0.0f;
+    config.angularDamping = 0.0f;
+    return config;
+}
+
+static void TickBodies(DynamicTerrainSystem *system, int count)
+{
+    int step;
+
+    for (step = 0; step < count; ++step) {
+        DynamicTerrainUpdate(system, KINEMATIC_STEP);
+    }
+}
+
+static void test_a_moving_body_travels_at_its_velocity(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){100.0f, 50.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){60.0f, -30.0f}, 0.0f);
+
+    TickBodies(&terrain, 60);
+    body = DynamicTerrainGetConst(&terrain, handle);
+    /* Sixty steps of 1/60 s at 60 and -30 cells per second. */
+    CHECK(fabsf(body->position.x - 160.0f) < 0.01f &&
+              fabsf(body->position.y - 20.0f) < 0.01f,
+          "body ended at %.3f,%.3f instead of 160,20", (double)body->position.x,
+          (double)body->position.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Gravity is an acceleration, so it must not care what a body weighs. */
+static void test_gravity_accelerates_every_body_equally(void)
+{
+    TerrainBodyHandle light;
+    TerrainBodyHandle heavy;
+    DynamicTerrainConfig config = QuietConfig();
+    const TerrainBody *lightBody;
+    const TerrainBody *heavyBody;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    config.gravity = 120.0f;
+    terrain.config = config;
+
+    light = DynamicTerrainAllocBody(&terrain, 1, 1);
+    DynamicTerrainSetCell(&terrain, light, 0, 0, MATERIAL_ICE, -14.0f);
+    DynamicTerrainFinalizeBody(&terrain, light);
+    heavy = MakeKinematicBody(&terrain, 8, 8, (Vector2){0.0f, 0.0f});
+    DynamicTerrainGet(&terrain, light)->position = (Vector2){0.0f, 0.0f};
+
+    lightBody = DynamicTerrainGetConst(&terrain, light);
+    heavyBody = DynamicTerrainGetConst(&terrain, heavy);
+    CHECK(heavyBody->mass > lightBody->mass * 10.0f,
+          "the fixture needs a real mass difference: %.3f vs %.3f",
+          (double)heavyBody->mass, (double)lightBody->mass);
+
+    TickBodies(&terrain, 60);
+    CHECK(fabsf(lightBody->velocity.y - 120.0f) < 0.01f,
+          "after a second of gravity the light body falls at %.3f, not 120",
+          (double)lightBody->velocity.y);
+    CHECK(fabsf(lightBody->velocity.y - heavyBody->velocity.y) < 0.001f &&
+              fabsf(lightBody->position.y - heavyBody->position.y) < 0.001f,
+          "mass changed the fall: %.4f vs %.4f cells",
+          (double)lightBody->position.y, (double)heavyBody->position.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_damping_depends_on_time_and_not_on_step_count(void)
+{
+    TerrainBodyHandle coarse;
+    TerrainBodyHandle fine;
+    DynamicTerrainConfig config = QuietConfig();
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    config.linearDamping = 1.5f;
+    terrain.config = config;
+    coarse = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    fine = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    DynamicTerrainSetVelocity(&terrain, coarse, (Vector2){100.0f, 0.0f}, 0.0f);
+    DynamicTerrainSetVelocity(&terrain, fine, (Vector2){100.0f, 0.0f}, 0.0f);
+
+    /* One second, integrated two different ways. A per-call multiplier would
+       leave these far apart; exp(-k*dt) leaves them equal. */
+    DynamicTerrainGet(&terrain, fine)->awake = true;
+    for (step = 0; step < 10; ++step) {
+        TerrainBody *asleep = DynamicTerrainGet(&terrain, fine);
+
+        asleep->awake = false;
+        DynamicTerrainUpdate(&terrain, 0.1f);
+        asleep->awake = true;
+    }
+    {
+        TerrainBody *other = DynamicTerrainGet(&terrain, coarse);
+
+        other->awake = false;
+        for (step = 0; step < 100; ++step) {
+            DynamicTerrainUpdate(&terrain, 0.01f);
+        }
+        other->awake = true;
+    }
+
+    CHECK(fabsf(DynamicTerrainGetConst(&terrain, coarse)->velocity.x -
+                DynamicTerrainGetConst(&terrain, fine)->velocity.x) < 0.05f,
+          "damping is step-count dependent: %.4f after ten steps vs %.4f after "
+          "a hundred",
+          (double)DynamicTerrainGetConst(&terrain, coarse)->velocity.x,
+          (double)DynamicTerrainGetConst(&terrain, fine)->velocity.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_angular_velocity_turns_a_body(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){100.0f, 50.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 1.0f);
+
+    TickBodies(&terrain, 60);
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(fabsf(body->angle - 1.0f) < 0.01f,
+          "a second at one radian per second reached %.4f", (double)body->angle);
+    /* Rotation must not move the centre of mass. */
+    CHECK(fabsf(body->position.x - 100.0f) < 0.001f &&
+              fabsf(body->position.y - 50.0f) < 0.001f,
+          "spinning moved the body to %.3f,%.3f", (double)body->position.x,
+          (double)body->position.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_angular_damping_slows_a_spin(void)
+{
+    TerrainBodyHandle handle;
+    DynamicTerrainConfig config = QuietConfig();
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    config.angularDamping = 2.0f;
+    terrain.config = config;
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 4.0f);
+
+    TickBodies(&terrain, 60);
+    /* exp(-2) of the original, give or take the step. */
+    CHECK(fabsf(DynamicTerrainGetConst(&terrain, handle)->angularVelocity -
+                4.0f * expf(-2.0f)) < 0.05f,
+          "a second of damping left %.4f rad/s instead of %.4f",
+          (double)DynamicTerrainGetConst(&terrain, handle)->angularVelocity,
+          (double)(4.0f * expf(-2.0f)));
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The transform is the contract every later system reads, so it has to survive
+   a round trip and it has to agree with the placement extraction chose. */
+static void test_the_body_transform_round_trips(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 world;
+    Vector2 local;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){44.0f, 33.0f});
+    body = DynamicTerrainGet(&terrain, handle);
+
+    /* Unrotated, the centre of mass sits exactly at the body's position. */
+    world = TerrainBodyLocalToWorld(body, body->centerOfMass.x,
+                                    body->centerOfMass.y);
+    CHECK(fabsf(world.x - 44.0f) < 0.001f && fabsf(world.y - 33.0f) < 0.001f,
+          "the centre of mass maps to %.3f,%.3f instead of the position",
+          (double)world.x, (double)world.y);
+
+    /* A quarter turn, then a round trip through both directions. */
+    body->angle = PI * 0.5f;
+    world = TerrainBodyLocalToWorld(body, 1.5f, 2.5f);
+    local = TerrainBodyWorldToLocal(body, world.x, world.y);
+    CHECK(fabsf(local.x - 1.5f) < 0.001f && fabsf(local.y - 2.5f) < 0.001f,
+          "the transform does not round trip: 1.5,2.5 -> %.3f,%.3f -> %.3f,%.3f",
+          (double)world.x, (double)world.y, (double)local.x, (double)local.y);
+
+    /* Rotating about the centre of mass keeps its distance from the body's
+       origin, which is what makes the origin choice worth having. */
+    world = TerrainBodyLocalToWorld(body, 0.0f, 0.0f);
+    CHECK(fabsf(sqrtf((world.x - 44.0f) * (world.x - 44.0f) +
+                      (world.y - 33.0f) * (world.y - 33.0f)) -
+                sqrtf(body->centerOfMass.x * body->centerOfMass.x +
+                      body->centerOfMass.y * body->centerOfMass.y)) < 0.001f,
+          "rotation changed a cell's distance from the centre of mass");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_kinematics_are_deterministic(void)
+{
+    DynamicTerrainSystem first;
+    DynamicTerrainSystem second;
+    TerrainBodyHandle a;
+    TerrainBodyHandle b;
+    int step;
+
+    CHECK(DynamicTerrainInit(&first), "dynamic terrain allocation failed");
+    CHECK(DynamicTerrainInit(&second), "dynamic terrain allocation failed");
+    a = MakeKinematicBody(&first, 6, 4, (Vector2){10.0f, 20.0f});
+    b = MakeKinematicBody(&second, 6, 4, (Vector2){10.0f, 20.0f});
+    DynamicTerrainSetVelocity(&first, a, (Vector2){33.0f, -17.0f}, 2.5f);
+    DynamicTerrainSetVelocity(&second, b, (Vector2){33.0f, -17.0f}, 2.5f);
+
+    for (step = 0; step < 240; ++step) {
+        DynamicTerrainUpdate(&first, KINEMATIC_STEP);
+        DynamicTerrainUpdate(&second, KINEMATIC_STEP);
+        if (step == 90) {
+            DynamicTerrainApplyImpulse(&first, a, (Vector2){400.0f, -200.0f},
+                                       (Vector2){12.0f, 30.0f});
+            DynamicTerrainApplyImpulse(&second, b, (Vector2){400.0f, -200.0f},
+                                       (Vector2){12.0f, 30.0f});
+        }
+    }
+
+    CHECK(DynamicTerrainGetConst(&first, a)->position.x ==
+                  DynamicTerrainGetConst(&second, b)->position.x &&
+              DynamicTerrainGetConst(&first, a)->position.y ==
+                  DynamicTerrainGetConst(&second, b)->position.y &&
+              DynamicTerrainGetConst(&first, a)->angle ==
+                  DynamicTerrainGetConst(&second, b)->angle,
+          "two identical runs diverged: %.6f,%.6f @ %.6f vs %.6f,%.6f @ %.6f",
+          (double)DynamicTerrainGetConst(&first, a)->position.x,
+          (double)DynamicTerrainGetConst(&first, a)->position.y,
+          (double)DynamicTerrainGetConst(&first, a)->angle,
+          (double)DynamicTerrainGetConst(&second, b)->position.x,
+          (double)DynamicTerrainGetConst(&second, b)->position.y,
+          (double)DynamicTerrainGetConst(&second, b)->angle);
+    DynamicTerrainUnload(&first);
+    DynamicTerrainUnload(&second);
+}
+
+/* --- sleep and wake ----------------------------------------------------- */
+
+static void test_a_still_body_falls_asleep(void)
+{
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->awake,
+          "a new body is not awake");
+
+    /* Less than the quiet time: still awake. */
+    TickBodies(&terrain, 20);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->awake,
+          "the body slept before its quiet time elapsed");
+
+    TickBodies(&terrain, 20);
+    CHECK(!DynamicTerrainGetConst(&terrain, handle)->awake,
+          "a still body never fell asleep");
+    CHECK(DynamicTerrainStatistics(&terrain)->sleepingBodies == 1 &&
+              DynamicTerrainStatistics(&terrain)->awakeBodies == 0,
+          "counters read %d awake / %d sleeping",
+          DynamicTerrainStatistics(&terrain)->awakeBodies,
+          DynamicTerrainStatistics(&terrain)->sleepingBodies);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_sleeping_body_keeps_its_transform_and_stops_integrating(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    Vector2 restingPlace;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    TickBodies(&terrain, 40);
+    body = DynamicTerrainGetConst(&terrain, handle);
+    CHECK(!body->awake, "the body did not fall asleep");
+    restingPlace = body->position;
+
+    /* Gravity switched on under a sleeping body must not move it: a sleeping
+       body is skipped entirely, which is the whole point. */
+    terrain.config.gravity = 120.0f;
+    TickBodies(&terrain, 120);
+    CHECK(body->position.x == restingPlace.x && body->position.y == restingPlace.y,
+          "a sleeping body drifted to %.3f,%.3f", (double)body->position.x,
+          (double)body->position.y);
+    CHECK(body->velocity.x == 0.0f && body->velocity.y == 0.0f,
+          "a sleeping body kept a velocity");
+
+    DynamicTerrainWakeBody(&terrain, handle);
+    CHECK(body->awake, "waking did not take");
+    TickBodies(&terrain, 60);
+    CHECK(body->position.y > restingPlace.y + 10.0f,
+          "a woken body did not resume falling: %.3f", (double)body->position.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_moving_or_spinning_body_stays_awake(void)
+{
+    TerrainBodyHandle moving;
+    TerrainBodyHandle spinning;
+    TerrainBodyHandle falling;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    moving = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    spinning = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    DynamicTerrainSetVelocity(&terrain, moving, (Vector2){20.0f, 0.0f}, 0.0f);
+    DynamicTerrainSetVelocity(&terrain, spinning, (Vector2){0.0f, 0.0f}, 1.0f);
+
+    TickBodies(&terrain, 120);
+    CHECK(DynamicTerrainGetConst(&terrain, moving)->awake,
+          "a travelling body fell asleep");
+    CHECK(DynamicTerrainGetConst(&terrain, spinning)->awake,
+          "a spinning body fell asleep");
+    DynamicTerrainUnload(&terrain);
+
+    /* The invariant the default config has to satisfy: a body in free fall can
+       never satisfy the sleep condition, because one step of gravity already
+       exceeds the linear threshold. */
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    CHECK(terrain.config.linearSleepSpeed <
+              terrain.config.gravity * KINEMATIC_STEP,
+          "the default sleep speed (%.3f) is not below one step of gravity "
+          "(%.3f): a falling body would doze off in mid-air",
+          (double)terrain.config.linearSleepSpeed,
+          (double)(terrain.config.gravity * KINEMATIC_STEP));
+    falling = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    TickBodies(&terrain, 300);
+    CHECK(DynamicTerrainGetConst(&terrain, falling)->awake,
+          "a body in free fall fell asleep");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The quiet spell has to be continuous. Accumulating it across periods of
+   motion would let a body that stops, moves and stops again drop off in the
+   middle of the second stop, having "earned" the time while it was travelling. */
+static void test_the_quiet_spell_restarts_whenever_a_body_moves(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    /* Most of a quiet spell, but not all of it. */
+    TickBodies(&terrain, 25);
+    CHECK(body->awake, "the body slept too early");
+
+    /* A shove, then quiet again for the same short while. Cumulative time would
+       now exceed the delay; continuous time would not.
+
+       The velocity is written directly rather than through
+       DynamicTerrainSetVelocity, which resets the timer itself: the rule under
+       test belongs to the integrator, and going through the API would prove
+       only that the API works. */
+    DynamicTerrainGet(&terrain, handle)->velocity.x = 40.0f;
+    TickBodies(&terrain, 5);
+    DynamicTerrainGet(&terrain, handle)->velocity.x = 0.0f;
+    TickBodies(&terrain, 25);
+    CHECK(body->awake,
+          "the body counted its quiet time across a period of motion");
+
+    /* Left alone, it still sleeps. */
+    TickBodies(&terrain, 10);
+    CHECK(!body->awake, "the body never slept at all");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_an_impulse_wakes_a_body_and_turns_it_about_its_centre(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    TickBodies(&terrain, 40);
+    body = DynamicTerrainGet(&terrain, handle);
+    CHECK(!body->awake, "the body did not fall asleep first");
+
+    /* Straight through the centre of mass: pure translation, no spin. */
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){body->mass * 10.0f, 0.0f},
+                               body->position);
+    CHECK(body->awake, "an impulse did not wake the body");
+    CHECK(fabsf(body->velocity.x - 10.0f) < 0.001f,
+          "an impulse of m*10 gave %.4f cells per second", (double)body->velocity.x);
+    CHECK(body->angularVelocity == 0.0f,
+          "an impulse through the centre of mass produced spin: %.6f",
+          (double)body->angularVelocity);
+
+    /* Off-centre: the same push now also turns it. */
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 0.0f);
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){body->mass * 10.0f, 0.0f},
+                               (Vector2){body->position.x, body->position.y - 3.0f});
+    CHECK(fabsf(body->velocity.x - 10.0f) < 0.001f,
+          "an off-centre impulse changed the linear response: %.4f",
+          (double)body->velocity.x);
+    /* Pushing +x above the centre turns it clockwise, which is positive when
+       Y grows downward. */
+    CHECK(body->angularVelocity > 0.0f,
+          "an off-centre impulse produced no rotation: %.6f",
+          (double)body->angularVelocity);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- lifecycle and safety ----------------------------------------------- */
+
+static void test_only_live_bodies_are_integrated(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 lastSeen;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    TickBodies(&terrain, 10);
+    body = DynamicTerrainGet(&terrain, handle);
+    lastSeen = body->position;
+    CHECK(lastSeen.y > 50.0f, "the body was meant to be falling");
+
+    DynamicTerrainFreeBody(&terrain, handle);
+    TickBodies(&terrain, 60);
+    CHECK(body->position.x == lastSeen.x && body->position.y == lastSeen.y,
+          "a freed body kept being integrated");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->sleepingBodies == 0,
+          "a freed body was still counted");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_reset_clears_kinetic_state(void)
+{
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){80.0f, 40.0f}, 3.0f);
+    TickBodies(&terrain, 30);
+
+    DynamicTerrainReset(&terrain);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "reset left bodies alive");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->sleepingBodies == 0,
+          "reset left %d awake and %d sleeping bodies counted",
+          DynamicTerrainStatistics(&terrain)->awakeBodies,
+          DynamicTerrainStatistics(&terrain)->sleepingBodies);
+
+    /* A slot reused after a reset starts from rest, not from whatever the
+       previous tenant was doing. */
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){10.0f, 10.0f});
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->velocity.x == 0.0f &&
+              DynamicTerrainGetConst(&terrain, handle)->velocity.y == 0.0f &&
+              DynamicTerrainGetConst(&terrain, handle)->angularVelocity == 0.0f &&
+              DynamicTerrainGetConst(&terrain, handle)->angle == 0.0f,
+          "a reused slot inherited the previous body's motion");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Bad input must be refused rather than turned into a NaN body, because a NaN
+   transform never recovers and every later system would read it. */
+static void test_the_integrator_refuses_impossible_input(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyHandle empty;
+    TerrainBody *body;
+    Vector2 before;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){50.0f, 50.0f});
+    body = DynamicTerrainGet(&terrain, handle);
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){10.0f, 0.0f}, 0.0f);
+    before = body->position;
+
+    /* An impossible step is a caller bug, and integrating it would hide one. */
+    DynamicTerrainUpdate(&terrain, 0.0f);
+    DynamicTerrainUpdate(&terrain, -1.0f);
+    DynamicTerrainUpdate(&terrain, 100.0f);
+    DynamicTerrainUpdate(&terrain, NAN);
+    CHECK(body->position.x == before.x && body->position.y == before.y,
+          "an impossible time step moved the body to %.3f,%.3f",
+          (double)body->position.x, (double)body->position.y);
+
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){NAN, 0.0f}, 0.0f);
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, INFINITY);
+    CHECK(body->velocity.x == 10.0f && body->velocity.y == 0.0f,
+          "a non-finite velocity was accepted: %.3f,%.3f",
+          (double)body->velocity.x, (double)body->velocity.y);
+
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){NAN, NAN},
+                               body->position);
+    CHECK(body->velocity.x == 10.0f, "a non-finite impulse was accepted");
+
+    /* A massless body cannot be pushed: dividing by its mass would poison the
+       transform. Extraction cannot produce one, but the guard is cheap. */
+    empty = DynamicTerrainAllocBody(&terrain, 4, 4);
+    DynamicTerrainFinalizeBody(&terrain, empty);
+    CHECK(DynamicTerrainGetConst(&terrain, empty)->mass == 0.0f,
+          "the fixture needs a massless body");
+    DynamicTerrainApplyImpulse(&terrain, empty, (Vector2){100.0f, 100.0f},
+                               (Vector2){0.0f, 0.0f});
+    CHECK(DynamicTerrainGetConst(&terrain, empty)->velocity.x == 0.0f &&
+              DynamicTerrainGetConst(&terrain, empty)->angularVelocity == 0.0f,
+          "a massless body was accelerated to %.3f",
+          (double)DynamicTerrainGetConst(&terrain, empty)->velocity.x);
+
+    /* Dead handles are inert everywhere. */
+    DynamicTerrainWakeBody(&terrain, TerrainBodyInvalidHandle());
+    DynamicTerrainSetVelocity(&terrain, TerrainBodyInvalidHandle(),
+                              (Vector2){5.0f, 5.0f}, 5.0f);
+    DynamicTerrainApplyImpulse(&terrain, TerrainBodyInvalidHandle(),
+                               (Vector2){5.0f, 5.0f}, (Vector2){0.0f, 0.0f});
+    DynamicTerrainUpdate(NULL, KINEMATIC_STEP);
+    CHECK(body->velocity.x == 10.0f, "an invalid handle reached a real body");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A speed ceiling is not tuning: it is what stops one bad impulse producing a
+   body that crosses the map between two ticks. */
+static void test_speeds_are_capped(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){1.0e6f, 0.0f}, 1.0e6f);
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    CHECK(fabsf(body->velocity.x) <= terrain.config.maximumSpeed + 0.001f,
+          "speed reached %.1f past the %.1f ceiling", (double)body->velocity.x,
+          (double)terrain.config.maximumSpeed);
+    CHECK(fabsf(body->angularVelocity) <=
+              terrain.config.maximumAngularSpeed + 0.001f,
+          "spin reached %.1f past the %.1f ceiling",
+          (double)body->angularVelocity,
+          (double)terrain.config.maximumAngularSpeed);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Integration must not touch the world; it does not even receive one. */
+static void test_integration_never_touches_the_world(void)
+{
+    World world;
+    TerrainExtractResult extracted;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "extraction reported %s",
+          TerrainExtractStatusName(extracted.status));
+
+    before = WorldDigest(&world);
+    DynamicTerrainSetVelocity(&terrain, extracted.body, (Vector2){-500.0f, 900.0f},
+                              6.0f);
+    /* Long enough to carry the body far outside the world, which must be
+       arithmetic and nothing more: no cell is read or written by position. */
+    TickBodies(&terrain, 600);
+    CHECK(WorldDigest(&world) == before,
+          "integrating a body changed the world it came from");
+    CHECK(DynamicTerrainGetConst(&terrain, extracted.body)->position.y > 96.0f,
+          "the body was meant to leave the world for this test");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -3371,6 +3972,23 @@ int main(void)
     RUN(test_a_malformed_component_changes_nothing);
     RUN(test_a_component_the_world_has_moved_past_changes_nothing);
     RUN(test_reset_after_extraction_returns_the_store_to_empty);
+    RUN(test_a_moving_body_travels_at_its_velocity);
+    RUN(test_gravity_accelerates_every_body_equally);
+    RUN(test_damping_depends_on_time_and_not_on_step_count);
+    RUN(test_angular_velocity_turns_a_body);
+    RUN(test_angular_damping_slows_a_spin);
+    RUN(test_the_body_transform_round_trips);
+    RUN(test_kinematics_are_deterministic);
+    RUN(test_a_still_body_falls_asleep);
+    RUN(test_a_sleeping_body_keeps_its_transform_and_stops_integrating);
+    RUN(test_a_moving_or_spinning_body_stays_awake);
+    RUN(test_the_quiet_spell_restarts_whenever_a_body_moves);
+    RUN(test_an_impulse_wakes_a_body_and_turns_it_about_its_centre);
+    RUN(test_only_live_bodies_are_integrated);
+    RUN(test_reset_clears_kinetic_state);
+    RUN(test_the_integrator_refuses_impossible_input);
+    RUN(test_speeds_are_capped);
+    RUN(test_integration_never_touches_the_world);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

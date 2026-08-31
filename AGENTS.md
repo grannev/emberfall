@@ -115,6 +115,10 @@ coherent phase with an explanatory message.
   `World`. Bodies are addressed by generation handles, so a reference held
   across a free resolves to NULL instead of to whatever took the slot. See
   `docs/dynamic-terrain.md`.
+- Terrain bodies integrate on the fixed step, never on frame delta, and move as
+  one transform: no integration step may walk a body's raster. The transform
+  lives in `TerrainBodyLocalToWorld`/`TerrainBodyWorldToLocal` — read it there
+  rather than re-deriving it, since rotation is about the centre of mass.
 - Extraction (`terrain_extraction.h`) moves a proven-detached component out of
   the world atomically: everything that can fail runs before the first cell is
   cleared, so a failure leaves the world byte-for-byte unchanged and no body
