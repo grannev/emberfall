@@ -36,7 +36,7 @@ typedef struct Player {
 void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
                   float deltaTime);
-void PlayerResolveWorldCollision(Player *player, const World *world);
+void PlayerResolveWorldCollision(Player *player, World *world);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center, float radius, float force);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
 

@@ -496,6 +496,30 @@ static void test_boosting_player_tunnels_through_rock(void)
     WorldUnload(&world);
 }
 
+static void test_boosting_player_tunnels_through_sand(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    FillRect(&world, 60, 40, 200, 90, MATERIAL_SAND);
+    PlayerInit(&player, (Vector2){20.0f, 64.0f});
+
+    /* Sand is dynamic, so this has to run a whole frame the way main.c does:
+       the drill cuts, the world settles into the fresh tunnel, and only then is
+       embedding resolved. Driving PlayerUpdate alone would never see it. */
+    for (step = 0; step < 240; ++step) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, 1.0f / 60.0f);
+        WorldUpdate(&world);
+        PlayerResolveWorldCollision(&player, &world);
+    }
+
+    CHECK(player.position.x > 200.0f,
+          "the player stalled at x=%.1f inside the sand", player.position.x);
+    WorldUnload(&world);
+}
+
 static void test_drill_resistance_never_stalls_the_boost(void)
 {
     World world;
@@ -590,6 +614,7 @@ int main(void)
     RUN(test_a_settled_world_lets_chunks_sleep);
     RUN(test_activity_wakes_only_a_local_neighbourhood);
     RUN(test_boosting_player_tunnels_through_rock);
+    RUN(test_boosting_player_tunnels_through_sand);
     RUN(test_drill_resistance_never_stalls_the_boost);
     RUN(test_player_never_ends_a_frame_inside_solid_terrain);
 

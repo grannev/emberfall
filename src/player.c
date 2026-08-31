@@ -264,7 +264,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     }
 }
 
-void PlayerResolveWorldCollision(Player *player, const World *world)
+void PlayerResolveWorldCollision(Player *player, World *world)
 {
     Vector2 origin;
     int distance;
@@ -272,6 +272,25 @@ void PlayerResolveWorldCollision(Player *player, const World *world)
     if (player == NULL || world == NULL ||
         !PlayerCollidesAt(player, world, player->position)) {
         return;
+    }
+
+    /* Sand closing over a boosting player is not an impact to be pushed out of:
+       the drill is already running, so cut the way clear and keep the momentum.
+       Relocating would zero the very velocity that was about to free them, and
+       because sand refills the tunnel every tick that happens on every frame —
+       a boost could never cross a sand body at all. */
+    if (player->boosting) {
+        int destroyed = WorldDrillCircle(world, (int)floorf(player->position.x),
+                                         (int)floorf(player->position.y),
+                                         (int)ceilf(player->radius));
+
+        if (destroyed > 0) {
+            player->drilledCells += destroyed;
+            player->drillPosition = player->position;
+        }
+        if (!PlayerCollidesAt(player, world, player->position)) {
+            return;
+        }
     }
 
     origin = player->position;
