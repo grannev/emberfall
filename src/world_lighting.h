@@ -43,11 +43,24 @@
 #define WORLD_LIGHT_HEAT_FLOOR 180.0f
 #define WORLD_LIGHT_HEAT_SPAN 520.0f
 
+/* Light outside the visible region is still solved, but only out to this many
+   light cells beyond it. Open air transmits 0.97 per light cell, so a source
+   this far outside the window arrives at the visible edge at 0.97^128 = 2% of
+   its strength — below what a byte-per-channel image can show and below the
+   quantisation step the renderer compares against. Sky light is unaffected by
+   the window at all: it is filled per column from the top, and a column is
+   solved independently of its neighbours. */
+#define WORLD_LIGHT_WINDOW_MARGIN 128
+
 /* Refreshes the light inputs of every dirty chunk and re-solves the field when
    something that can change it has moved. Dirties any chunk whose light changed
    even though its cells did not, so the incremental renderer never shows a
-   shaft that has been carved but not lit. */
-void WorldUpdateLighting(World *world);
+   shaft that has been carved but not lit.
+
+   `visible` is the region that must be correct, in cells. Solving the whole
+   16384-wide field cost 10 ms every time the player's own lamp moved far enough
+   to matter, which at flying speed is every single frame. */
+void WorldUpdateLighting(World *world, Rectangle visible);
 
 /* Resolves one axis of the bilinear sample: the two light rows or columns a cell
    falls between, and how far it sits between them. */

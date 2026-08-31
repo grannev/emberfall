@@ -158,7 +158,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
 
     /* Light first: the solve is global and can dirty chunks that were only
        re-lit, so it must finish before any pixel is built. */
-    WorldUpdateLighting(world);
+    WorldUpdateLighting(world, visible);
 
     /* Rebuild only the chunks that changed. The simulation sleeps on a settled
        world, and so must the renderer. */

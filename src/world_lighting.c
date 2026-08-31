@@ -89,34 +89,48 @@ static void WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
     }
 }
 
-static void WorldSeedLight(World *world)
+/* Sky light: fill each column from the top while it stays open. Doing this as
+   a column walk rather than as propagation is what lets open air stay at full
+   brightness however deep the world is, and it is also why the solve window
+   costs sky nothing — a column is solved independently of its neighbours. */
+static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
+{
+    int lightX;
+
+    for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+        int lightY;
+        bool open = true;
+
+        for (lightY = 0; lightY < world->lightRows; ++lightY) {
+            int index = WorldLightIndex(world, lightX, lightY);
+
+            if (open && world->lightOpacity[index] > 0.35f) {
+                open = false;
+            }
+            world->lightSky[index] = open ? 1.0f : 0.0f;
+        }
+    }
+}
+
+/* Ember starts as whatever the material itself gives off, plus the caller's
+   movable light. The player's lamp is ember rather than sky on purpose: it
+   should warm a tunnel the way a flare does, not read as a hole cut through to
+   daylight. */
+static void WorldSeedEmber(World *world, int firstColumn, int lastColumn)
 {
     int lightX;
     int lightY;
-    size_t lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
-    size_t index;
 
-    for (index = 0; index < lightCount; ++index) {
-        world->lightSky[index] = 0.0f;
-        world->lightEmber[index] = world->lightEmission[index];
-    }
+    for (lightY = 0; lightY < world->lightRows; ++lightY) {
+        int index = WorldLightIndex(world, firstColumn, lightY);
+        int span = lastColumn - firstColumn + 1;
+        int offset;
 
-    /* Sky light: fill each column from the top while it stays open. Doing this
-       as a column walk rather than as propagation is what lets open air stay at
-       full brightness however deep the world is. */
-    for (lightX = 0; lightX < world->lightColumns; ++lightX) {
-        for (lightY = 0; lightY < world->lightRows; ++lightY) {
-            int index2 = WorldLightIndex(world, lightX, lightY);
-
-            if (world->lightOpacity[index2] > 0.35f) {
-                break;
-            }
-            world->lightSky[index2] = 1.0f;
+        for (offset = 0; offset < span; ++offset) {
+            world->lightEmber[index + offset] = world->lightEmission[index + offset];
         }
     }
 
-    /* The player's own lamp is ember rather than sky: it should warm a tunnel
-       the way a flare does, not read as a hole cut through to daylight. */
     if (world->pointLightStrength > 0.0f && world->pointLightRadius > 0.0f) {
         float radius = world->pointLightRadius / (float)WORLD_LIGHT_SCALE;
         int centerX = (int)(world->pointLight.x / (float)WORLD_LIGHT_SCALE);
@@ -129,16 +143,16 @@ static void WorldSeedLight(World *world)
                 float dy = (float)(lightY - centerY);
                 float distance = sqrtf(dx * dx + dy * dy);
                 float value;
-                int index2;
+                int index;
 
-                if (lightX < 0 || lightY < 0 || lightX >= world->lightColumns ||
+                if (lightX < firstColumn || lightY < 0 || lightX > lastColumn ||
                     lightY >= world->lightRows || distance > radius) {
                     continue;
                 }
                 value = world->pointLightStrength * (1.0f - distance / radius);
-                index2 = WorldLightIndex(world, lightX, lightY);
-                if (value > world->lightEmber[index2]) {
-                    world->lightEmber[index2] = value;
+                index = WorldLightIndex(world, lightX, lightY);
+                if (value > world->lightEmber[index]) {
+                    world->lightEmber[index] = value;
                 }
             }
         }
@@ -174,7 +188,19 @@ static float WorldQuantiseLight(float value)
     return floorf(Clamp(value, 0.0f, 1.0f) * WORLD_LIGHT_STEPS) / WORLD_LIGHT_STEPS;
 }
 
-static void WorldSolveLight(World *world)
+/* Two raster sweeps: forward carries light down and right, backward carries it
+   up and left. Two sweeps are not an exact flood fill around a hairpin
+   corridor, but they are stable, allocation-free, and close enough that the
+   error is invisible at eight cells per sample.
+
+   Both channels are carried in the same pass. Solving them separately was
+   tried — sky only changes when the terrain does, so a lamp moving every frame
+   could in principle have skipped it — and measured worse: the two channels
+   share the transmission lookup and the whole index calculation, and in a game
+   whose core verb is digging, the terrain changes often enough that the second
+   pass costs more than the skipped one saves. Digging went from 1.6 ms to
+   3.2 ms per frame; flying gained 0.2 ms. */
+static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
 {
     int lightX;
     int lightY;
@@ -182,26 +208,27 @@ static void WorldSolveLight(World *world)
        root of two costs a call and changes nothing visible. */
     const float diagonal = 0.87f;
 
-    WorldSeedLight(world);
+    WorldSeedSky(world, firstColumn, lastColumn);
+    WorldSeedEmber(world, firstColumn, lastColumn);
 
     for (lightY = 0; lightY < world->lightRows; ++lightY) {
-        for (lightX = 0; lightX < world->lightColumns; ++lightX) {
+        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
             int index = WorldLightIndex(world, lightX, lightY);
             float transmission = WorldLightTransmission(world, index);
             float sky = world->lightSky[index];
             float ember = world->lightEmber[index];
 
-            if (lightX > 0) {
+            if (lightX > firstColumn) {
                 WorldSpreadLight(world, index - 1, transmission, &sky, &ember);
             }
             if (lightY > 0) {
                 WorldSpreadLight(world, index - world->lightColumns, transmission,
                                  &sky, &ember);
-                if (lightX > 0) {
+                if (lightX > firstColumn) {
                     WorldSpreadLight(world, index - world->lightColumns - 1,
                                      transmission * diagonal, &sky, &ember);
                 }
-                if (lightX + 1 < world->lightColumns) {
+                if (lightX < lastColumn) {
                     WorldSpreadLight(world, index - world->lightColumns + 1,
                                      transmission * diagonal, &sky, &ember);
                 }
@@ -212,27 +239,30 @@ static void WorldSolveLight(World *world)
     }
 
     for (lightY = world->lightRows - 1; lightY >= 0; --lightY) {
-        for (lightX = world->lightColumns - 1; lightX >= 0; --lightX) {
+        for (lightX = lastColumn; lightX >= firstColumn; --lightX) {
             int index = WorldLightIndex(world, lightX, lightY);
             float transmission = WorldLightTransmission(world, index);
             float sky = world->lightSky[index];
             float ember = world->lightEmber[index];
 
-            if (lightX + 1 < world->lightColumns) {
+            if (lightX < lastColumn) {
                 WorldSpreadLight(world, index + 1, transmission, &sky, &ember);
             }
             if (lightY + 1 < world->lightRows) {
                 WorldSpreadLight(world, index + world->lightColumns, transmission,
                                  &sky, &ember);
-                if (lightX > 0) {
+                if (lightX > firstColumn) {
                     WorldSpreadLight(world, index + world->lightColumns - 1,
                                      transmission * diagonal, &sky, &ember);
                 }
-                if (lightX + 1 < world->lightColumns) {
+                if (lightX < lastColumn) {
                     WorldSpreadLight(world, index + world->lightColumns + 1,
                                      transmission * diagonal, &sky, &ember);
                 }
             }
+            /* Quantised so the renderer can compare light exactly instead of
+               against a tolerance; a tolerance drifts, and a sample that moves
+               less than it each frame is never rebuilt. */
             world->lightSky[index] = WorldQuantiseLight(sky);
             world->lightEmber[index] = WorldQuantiseLight(ember);
         }
@@ -242,14 +272,14 @@ static void WorldSolveLight(World *world)
 /* A chunk whose light moved owes the texture a rebuild even though none of its
    cells changed. Without this the incremental renderer would show stale
    lighting: carving a shaft would brighten nothing until something moved. */
-static void WorldMarkRelitChunks(World *world)
+static void WorldMarkRelitChunks(World *world, int firstColumn, int lastColumn)
 {
     int lightX;
     int lightY;
     int perChunk = WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
 
     for (lightY = 0; lightY < world->lightRows; ++lightY) {
-        for (lightX = 0; lightX < world->lightColumns; ++lightX) {
+        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
             int index = WorldLightIndex(world, lightX, lightY);
             int chunkX;
             int chunkY;
@@ -280,44 +310,6 @@ static void WorldMarkRelitChunks(World *world)
     }
 }
 
-static float WorldSampleLightField(const float *field, int columns, int lowX,
-                                   int highX, float blendX, int lowY, int highY,
-                                   float blendY)
-{
-    const float *low = field + (size_t)lowY * (size_t)columns;
-    const float *high = field + (size_t)highY * (size_t)columns;
-    float top = low[lowX] + (low[highX] - low[lowX]) * blendX;
-    float bottom = high[lowX] + (high[highX] - high[lowX]) * blendX;
-
-    return top + (bottom - top) * blendY;
-}
-
-/* Bilinear sample of the coarse field at a cell. Nearest sampling would show the
-   light grid as visible blocks. */
-float WorldLightAt(const World *world, int x, int y)
-{
-    int lowX;
-    int highX;
-    int lowY;
-    int highY;
-    float blendX;
-    float blendY;
-    float sky;
-    float ember;
-
-    if (world == NULL || world->lightSky == NULL) {
-        return 1.0f;
-    }
-
-    WorldLightAxis(world->lightColumns, x, &lowX, &highX, &blendX);
-    WorldLightAxis(world->lightRows, y, &lowY, &highY, &blendY);
-    sky = WorldSampleLightField(world->lightSky, world->lightColumns, lowX, highX,
-                                blendX, lowY, highY, blendY);
-    ember = WorldSampleLightField(world->lightEmber, world->lightColumns, lowX,
-                                  highX, blendX, lowY, highY, blendY);
-    return WORLD_MINIMUM_LIGHT + (1.0f - WORLD_MINIMUM_LIGHT) * fmaxf(sky, ember);
-}
-
 /* The light only has to be re-solved when its source has actually moved far
    enough to change a sample; a light drifting inside one light cell changes
    nothing the field can represent. */
@@ -338,17 +330,35 @@ static bool WorldPointLightMoved(const World *world)
    changed, so it must not run on a world where nothing did. A renderer whose
    whole design is to sleep with the simulation cannot afford a few
    milliseconds of unconditional work every frame. */
-void WorldUpdateLighting(World *world)
+void WorldUpdateLighting(World *world, Rectangle visible)
 {
     bool sourceMoved;
     bool terrainChanged = false;
+    int firstColumn;
+    int lastColumn;
     int chunkY;
 
     if (world == NULL || world->cells == NULL || world->lightDirtyChunks == NULL) {
         return;
     }
 
+    /* The window the solve actually covers: what the camera can see, plus a
+       margin wide enough that anything outside it arrives invisible. */
+    firstColumn = (int)floorf(visible.x / (float)WORLD_LIGHT_SCALE) -
+                  WORLD_LIGHT_WINDOW_MARGIN;
+    lastColumn = (int)floorf((visible.x + visible.width) /
+                             (float)WORLD_LIGHT_SCALE) +
+                 WORLD_LIGHT_WINDOW_MARGIN;
+    if (firstColumn < 0) firstColumn = 0;
+    if (lastColumn > world->lightColumns - 1) lastColumn = world->lightColumns - 1;
+    if (firstColumn > lastColumn) {
+        return;
+    }
+
     sourceMoved = WorldPointLightMoved(world);
+    /* The light inputs are refreshed for every dirty chunk, not only visible
+       ones: a chunk that scrolls into view later must not still be showing the
+       emission and opacity of terrain that has since burned away. */
     for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
         int chunkX;
 
@@ -363,18 +373,28 @@ void WorldUpdateLighting(World *world)
         }
     }
 
-    /* Terrain only changes on a fixed tick, so re-solving more often than the
-       world ticks is pure waste at high frame rates. An effect that writes cells
-       between ticks — a laser, a settling particle — waits at most one tick to
-       be lit, which is below the threshold of notice. A moving light is the
-       exception: it has to track the player smoothly. */
-    if (sourceMoved || (terrainChanged && world->tick != world->solvedTick) ||
-        !world->lightSolved) {
-        WorldSolveLight(world);
-        WorldMarkRelitChunks(world);
+    {
+        /* Terrain only changes on a fixed tick, so re-solving more often than
+           the world ticks is pure waste at high frame rates. An effect that
+           writes cells between ticks — a laser, a settling particle — waits at
+           most one tick to be lit, which is below the threshold of notice. A
+           moving light is the exception: it has to track the player smoothly. */
+        bool terrainSettled = terrainChanged && world->tick != world->solvedTick;
+        bool windowMoved = firstColumn != world->solvedFirstColumn ||
+                           lastColumn != world->solvedLastColumn;
+
+        if (!sourceMoved && !terrainSettled && !windowMoved &&
+            world->lightSolved) {
+            return;
+        }
+        WorldSolveLight(world, firstColumn, lastColumn);
+        WorldMarkRelitChunks(world, firstColumn, lastColumn);
+
         world->solvedPointLight = world->pointLight;
         world->solvedPointLightStrength = world->pointLightStrength;
         world->solvedTick = world->tick;
+        world->solvedFirstColumn = firstColumn;
+        world->solvedLastColumn = lastColumn;
         world->lightSolved = true;
     }
 }

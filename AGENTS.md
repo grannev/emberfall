@@ -17,7 +17,7 @@ make                 # release
 make run
 make debug
 make test            # headless regression suite
-make bench           # deterministic 10-scenario benchmark
+make bench           # deterministic 10-scenario benchmark plus lighting
 make asan
 make ubsan
 make profile

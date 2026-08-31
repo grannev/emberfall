@@ -154,6 +154,11 @@ typedef struct World {
     Vector2 solvedPointLight;
     float solvedPointLightStrength;
     uint32_t solvedTick;
+    /* The column window the last solve covered. Sky light is re-solved when the
+       terrain changed or when the window moved onto columns the last solve did
+       not reach; a lamp moving inside an unchanged window needs only ember. */
+    int solvedFirstColumn;
+    int solvedLastColumn;
     bool lightSolved;
 } World;
 
@@ -171,7 +176,6 @@ void WorldUpdate(World *world);
 /* Position of the caller-owned light, applied on the next draw. A strength of
    zero disables it. */
 void WorldSetPointLight(World *world, Vector2 position, float radius, float strength);
-float WorldLightAt(const World *world, int x, int y);
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);

@@ -13,6 +13,7 @@
 
 #include "player.h"
 #include "world.h"
+#include "world_lighting.h"
 
 #define BENCH_WORLD_WIDTH 16384
 #define BENCH_WORLD_HEIGHT 864
@@ -346,6 +347,73 @@ static void RunScenario(BenchContext *context, const Scenario *scenario,
            dirtyRegions / (uint64_t)context->ticks);
 }
 
+/* Lighting is measured on its own because it is the one part of drawing that
+   is not proportional to what changed, and because it runs per frame rather
+   than per tick. No GL context is needed: WorldUpdateLighting works entirely on
+   CPU fields. */
+static void RunLightingBenchmark(BenchContext *context, double *samples)
+{
+    World *world = context->world;
+    /* A 640x360 view, the widest the camera reaches at full boost. */
+    Rectangle lightView = {(float)context->centerX - 320.0f, 100.0f, 640.0f, 360.0f};
+    double still;
+    double moving;
+    double disturbed;
+    double total;
+    int frame;
+
+    PrepareScenario(context);
+    /* Warm: the first solve always runs, because nothing has been solved yet. */
+    WorldSetPointLight(world, (Vector2){(float)context->centerX, 200.0f}, 60.0f,
+                       0.8f);
+    WorldUpdateLighting(world, lightView);
+
+    total = 0.0;
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start = NowSeconds();
+
+        WorldUpdateLighting(world, lightView);
+        total += NowSeconds() - start;
+    }
+    still = total * 1000.0 / (double)context->ticks;
+
+    /* A light moving at boost speed: about eight cells per frame, so it leaves
+       its light cell — and forces a solve — on every single frame. */
+    total = 0.0;
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start;
+
+        WorldSetPointLight(world,
+                           (Vector2){(float)context->centerX + (float)frame * 8.0f,
+                                     200.0f},
+                           60.0f, 0.8f);
+        lightView.x = (float)context->centerX + (float)frame * 8.0f - 320.0f;
+        start = NowSeconds();
+        WorldUpdateLighting(world, lightView);
+        samples[frame] = (NowSeconds() - start) * 1000.0;
+        total += samples[frame];
+    }
+    /* samples[] is already in milliseconds here. */
+    moving = total / (double)context->ticks;
+
+    total = 0.0;
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start;
+
+        WorldDrillCircle(world, context->centerX + frame, 300, 6);
+        WorldUpdate(world);
+        start = NowSeconds();
+        WorldUpdateLighting(world, lightView);
+        total += NowSeconds() - start;
+    }
+    disturbed = total * 1000.0 / (double)context->ticks;
+
+    printf("lighting           still=%7.3f ms  moving_light=%7.3f ms  "
+           "p95=%7.3f  digging=%7.3f ms  light_cells=%d\n",
+           still, moving, Percentile(samples, context->ticks, 0.95), disturbed,
+           world->lightColumns * world->lightRows);
+}
+
 static void PrintMemory(const World *world)
 {
     size_t cellCount = (size_t)world->width * (size_t)world->height;
@@ -435,6 +503,7 @@ int main(int argc, char **argv)
          ++scenarioIndex) {
         RunScenario(&context, &scenarios[scenarioIndex], samples);
     }
+    RunLightingBenchmark(&context, samples);
 
     printf("final_peak_rss=%.2f MiB\n", (double)PeakRssBytes() / 1048576.0);
     WorldUnload(&world);
