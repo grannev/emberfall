@@ -159,6 +159,10 @@ typedef struct DynamicTerrainStats {
     int allocatedDynamicCells;
     int peakBodies;
     int peakDynamicCells;
+    /* Extraction outcomes, counted by terrain_extraction.c. Structural rather
+       than timed, so they mean the same thing on every machine. */
+    int extractionsSucceeded;
+    int extractionsFailed;
 } DynamicTerrainStats;
 
 typedef struct DynamicTerrainSystem {

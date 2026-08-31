@@ -115,6 +115,12 @@ coherent phase with an explanatory message.
   `World`. Bodies are addressed by generation handles, so a reference held
   across a free resolves to NULL instead of to whatever took the slot. See
   `docs/dynamic-terrain.md`.
+- Extraction (`terrain_extraction.h`) moves a proven-detached component out of
+  the world atomically: everything that can fail runs before the first cell is
+  cleared, so a failure leaves the world byte-for-byte unchanged and no body
+  allocated. Only `WORLD_COMPONENT_DETACHED` may be extracted, and clearing
+  goes through `WorldSetCell` so wake, dirty and light invalidation happen the
+  ordinary way. Nothing calls it automatically yet.
 - Connected-component queries (`world_components.h`) are bounded by a
   caller-supplied region and a caller-owned workspace, and must stay that way:
   the production world's terrain is one connected mass of fourteen million
