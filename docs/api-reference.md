@@ -96,14 +96,16 @@ const char *WorldMaterialName(CellMaterial material);
 void PlayerInit(Player *player, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input,
                   bool boostHeld, float deltaTime);
-void PlayerResolveWorldCollision(Player *player, const World *world);
+void PlayerResolveWorldCollision(Player *player, World *world);
 void PlayerApplyExplosionImpulse(Player *player, Vector2 center,
                                  float radius, float force);
 void PlayerDraw(const Player *player, Vector2 aimPosition);
 ```
 
 Рекомендуемый порядок: `PlayerUpdate` до world ticks и
-`PlayerResolveWorldCollision` после них. `PlayerApplyExplosionImpulse` добавляет
+`PlayerResolveWorldCollision` после них. Последняя принимает изменяемый мир,
+потому что бурящий игрок прорезает материал, в который его затянуло, вместо
+перемещения с потерей скорости. `PlayerApplyExplosionImpulse` добавляет
 velocity с линейным ослаблением к краю shockwave, но не наносит урон.
 
 ## Powers API

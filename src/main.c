@@ -20,11 +20,48 @@
 #define VIEW_HEIGHT 180.0f
 #define SIMULATION_STEP (1.0f / 60.0f)
 
-static float CameraZoomForWindow(void)
+/* How far the camera leads the player, as a fraction of the view in each
+   direction, and over how many seconds of travel that lead is measured. At the
+   boost speed cap a centred camera shows only 0.68 s of travel ahead, which is
+   less than it takes to react to what the tunnel runs into. */
+#define CAMERA_LOOKAHEAD_TIME 0.35f
+#define CAMERA_LOOKAHEAD_VIEW_FRACTION 0.18f
+/* The view also widens with speed, so the fastest flight is the one that sees
+   the most. It follows measured speed rather than the boost key: a player
+   thrown by an explosion gets the same widening, and a boost stalled against
+   rock does not. */
+#define CAMERA_FAST_VIEW_SCALE 1.28f
+
+static float CameraZoomForWindow(float viewScale)
 {
-    float horizontal = (float)GetScreenWidth() / VIEW_WIDTH;
-    float vertical = (float)GetScreenHeight() / VIEW_HEIGHT;
+    float horizontal = (float)GetScreenWidth() / (VIEW_WIDTH * viewScale);
+    float vertical = (float)GetScreenHeight() / (VIEW_HEIGHT * viewScale);
     return fmaxf(1.0f, fminf(horizontal, vertical));
+}
+
+static Vector2 CameraLookahead(Vector2 velocity)
+{
+    float limitX = VIEW_WIDTH * CAMERA_LOOKAHEAD_VIEW_FRACTION;
+    float limitY = VIEW_HEIGHT * CAMERA_LOOKAHEAD_VIEW_FRACTION;
+
+    return (Vector2){
+        Clamp(velocity.x * CAMERA_LOOKAHEAD_TIME, -limitX, limitX),
+        Clamp(velocity.y * CAMERA_LOOKAHEAD_TIME, -limitY, limitY)
+    };
+}
+
+static float CameraViewScaleForSpeed(const Player *player)
+{
+    float speed = sqrtf(player->velocity.x * player->velocity.x +
+                        player->velocity.y * player->velocity.y);
+    float range = player->boostMaxSpeed - player->maxSpeed;
+    float excess;
+
+    if (range <= 0.001f) {
+        return 1.0f;
+    }
+    excess = Clamp((speed - player->maxSpeed) / range, 0.0f, 1.0f);
+    return 1.0f + (CAMERA_FAST_VIEW_SCALE - 1.0f) * excess;
 }
 
 static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
@@ -228,6 +265,7 @@ int main(int argc, char **argv)
     Vector2 cameraFocus;
     Vector2 smokeAim = {0.0f, 0.0f};
     float cameraShake = 0.0f;
+    float cameraViewScale = 1.0f;
     bool smokeReactionObserved = false;
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
@@ -278,7 +316,7 @@ int main(int argc, char **argv)
     camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                               (float)GetScreenHeight() * 0.5f};
     camera.rotation = 0.0f;
-    camera.zoom = CameraZoomForWindow();
+    camera.zoom = CameraZoomForWindow(cameraViewScale);
 
     while (!WindowShouldClose()) {
         float deltaTime = fminf(GetFrameTime(), 0.05f);
@@ -332,8 +370,19 @@ int main(int argc, char **argv)
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                                   (float)GetScreenHeight() * 0.5f};
-        camera.zoom = CameraZoomForWindow();
-        desiredCamera = ClampCameraTarget(player.position, camera.zoom, &world);
+        /* Smooth the view scale rather than the zoom so the rate does not depend
+           on window size, and keep it slower than the focus so the frame breathes
+           instead of snapping. */
+        cameraViewScale += (CameraViewScaleForSpeed(&player) - cameraViewScale) *
+                           (1.0f - expf(-4.5f * deltaTime));
+        camera.zoom = CameraZoomForWindow(cameraViewScale);
+        {
+            Vector2 lookahead = CameraLookahead(player.velocity);
+            Vector2 lead = {player.position.x + lookahead.x,
+                            player.position.y + lookahead.y};
+
+            desiredCamera = ClampCameraTarget(lead, camera.zoom, &world);
+        }
         cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
                          (1.0f - expf(-8.0f * deltaTime));
         cameraFocus.y += (desiredCamera.y - cameraFocus.y) *

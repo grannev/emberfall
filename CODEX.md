@@ -129,7 +129,11 @@ over frameworks, generic containers, or unnecessary abstraction.
   tunneling. Solid impacts reflect the blocked velocity component with limited
   restitution and publish impact position/normal/strength for particles and
   camera shake. Resolve embedding again after simulation because sand can enter
-  the player between movement updates.
+  the player between movement updates. A player who is boosting cuts free of
+  that embedding and keeps their momentum; relocating them would zero the very
+  velocity that was about to clear it, which made a sand body impassable even
+  though the drill removes sand. Relocation stays the fallback for every other
+  case.
 - The player has no health, damage, death, or respawn systems. Lava, fire, and
   self-explosions do not punish the player; this is intentionally a low-friction
   sandbox.
@@ -149,7 +153,12 @@ over frameworks, generic containers, or unnecessary abstraction.
 - Visual references may guide scale, contrast, or broad genre language, but do
   not reproduce another game's character sprite, exact silhouette, palette, or
   animation one-for-one. Emberfall must keep an original character design.
-- The camera follows the player and magnifies the world with crisp pixel edges.
+- The camera leads the player along their velocity and widens its view as they
+  go faster, both clamped and smoothed, and magnifies the world with crisp pixel
+  edges. A camera locked to the player's exact position shows too little of what
+  a boost is about to hit. Drive the widening from measured speed, not from the
+  boost key, so knockback reads the same as thrust and a stalled boost does not
+  zoom out.
 - Holding LMB traces a contact laser toward the cursor direction. It passes
   through air and liquids, stops at the nearest dirt/sand/rock cell, applies one
   local brush, and reports the hit point for glow and sparks. Rock takes
