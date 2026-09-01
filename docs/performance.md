@@ -573,6 +573,21 @@ active/peak/dropped FX; Xvfb smoke для одного explosion получил 
 `fx_dropped=0`. Отдельного wall-clock speedup не заявляется: задача добавляет
 bounded presentation work, а headless benchmark не rasterizes его geometry.
 
+### EF-VFX-001 budget delta
+
+Замер 2026-09-01 после combat presentation pass:
+`sizeof(PresentationFx) == 60`, весь 128-slot manager вместе с cooldown/RNG
+state занимает **7720 B (7.54 KiB)**. Capacity не менялась. Отдельный
+16-slot `CameraFeedback` занимает **532 B** (`CameraImpulse == 32 B`). Оба
+цикла жёстко ограничены своими capacities и не выделяют память в normal frame.
+
+Расширенный Xvfb smoke последовательно вызвал boost I, laser, explosion, force
+и cryo через `GameInput`: `fx_peak=48`, `fx_dropped=0`, bloom остался 5 passes /
+4 targets на 640×360 half-resolution target при окне 1280×720. Render passes,
+target resolutions, texture upload path и FX capacity не менялись; CPU
+`make bench` не является измерением этих draw primitives, поэтому новый
+wall-clock speedup/slowdown по headless simulation не заявляется.
+
 ## EF-DYN-005 — TerrainBody renderer cache
 
 Замер 2026-09-01: `sizeof(TerrainBodyRenderer) == 67 480` B, из которых 64 KiB
