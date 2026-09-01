@@ -10,7 +10,29 @@
 #include <raymath.h>
 
 #define BIOME_REGION_WIDTH 1536
-#define BIOME_BLEND_WIDTH 192
+#define BIOME_BLEND_WIDTH 384
+/* A boundary that runs dead straight down a fixed multiple of the region width
+   is the one thing in the landscape that could only have been drawn by a
+   program, and it is legible from a long way off. Warping the coordinate before
+   it is divided into regions bends every boundary without any of the code below
+   having to know that boundaries are not straight.
+
+   The amplitude is far smaller than the wavelength, so the warp changes by well
+   under one cell per cell and the warped coordinate still increases: a column
+   never falls back into a region it has already left, and a boundary is crossed
+   once rather than flickered across. */
+#define BIOME_BOUNDARY_WARP 300
+#define BIOME_WARP_WAVELENGTH 1100
+/* Lattice of the field that decides, cell by cell, which of two blending biomes
+   a cell belongs to. Large enough that the two materials interlock in fingers
+   the eye reads as one ground giving way to another, small enough that a finger
+   fits inside the blend band several times over. */
+#define BIOME_BLEND_PATCH 22
+/* Lattice rows the blend field is sampled at, which is the world's height in
+   patches plus the row past the bottom. Sized for a world far taller than the
+   production one; a taller world still generates correctly, it just stops
+   interleaving below the last row this covers. */
+#define BIOME_BLEND_ROWS_MAX 96
 #define CAVE_FEATURE_SPACING 64
 #define HYDROLOGY_FEATURE_SPACING 256
 #define SURFACE_FEATURE_SPACING 512
@@ -28,7 +50,8 @@ enum GenerationChannel {
     GENERATION_STRATA = 5,
     GENERATION_CAVES = 7,
     GENERATION_HYDROLOGY = 8,
-    GENERATION_SURFACE_FEATURES = 9
+    GENERATION_SURFACE_FEATURES = 9,
+    GENERATION_BIOME_WARP = 10
 };
 
 typedef struct BiomeSurfaceShape {
@@ -116,6 +139,11 @@ static uint32_t GenerationPatchHash(uint64_t seed, int x, int y)
     return value;
 }
 
+static float PatchUnit(uint64_t seed, int x, int y)
+{
+    return (float)(GenerationPatchHash(seed, x, y) >> 8) / (float)(1u << 24);
+}
+
 static Rng GenerationFeatureRng(uint64_t seed, int feature,
                                 enum GenerationChannel channel)
 {
@@ -145,6 +173,73 @@ static float ValueNoise1D(uint64_t seed, int x, int wavelength,
     return LerpFloat(first, second, amount);
 }
 
+/* Bends a column sideways before it is turned into a region index, so that the
+   seam between two biomes meanders instead of running straight down the map. */
+static int BiomeWarpedX(const World *world, int x)
+{
+    float warp = ValueNoise1D(world->seed, x, BIOME_WARP_WAVELENGTH,
+                              GENERATION_BIOME_WARP) *
+                 (float)BIOME_BOUNDARY_WARP;
+
+    return ClampInt(x + (int)warp, 0, world->width - 1);
+}
+
+/* The contour that separates two blending biomes: smooth value noise on a coarse
+   lattice.
+
+   White noise compared against the blend amount — which is what this replaced —
+   interleaves the two materials correctly on average and still looks wrong:
+   every cell decides alone, so the band between two biomes is television static
+   rather than terrain. A smooth field makes neighbouring cells agree, so the
+   same average produces connected patches that grow as the blend advances, and
+   a little per-cell hash is mixed back in to keep the edge of a patch ragged
+   instead of a clean curve.
+
+   Half the world now lies inside a blend band, so this is evaluated for millions
+   of cells and its cost is the generator's. The lattice is therefore resolved
+   once per column — the four corners of a patch only change every twenty-two
+   cells, and sampling them per cell cost more than everything else the generator
+   does put together. */
+typedef struct BiomeBlendColumn {
+    int rows;
+    float lattice[BIOME_BLEND_ROWS_MAX];
+} BiomeBlendColumn;
+
+static void BiomeBlendColumnInit(BiomeBlendColumn *column, const World *world,
+                                 int x)
+{
+    int latticeX = x / BIOME_BLEND_PATCH;
+    float alongX = SmoothStep((float)(x % BIOME_BLEND_PATCH) /
+                              (float)BIOME_BLEND_PATCH);
+    int rows = world->height / BIOME_BLEND_PATCH + 2;
+    int row;
+
+    if (rows > BIOME_BLEND_ROWS_MAX) rows = BIOME_BLEND_ROWS_MAX;
+    column->rows = rows;
+    for (row = 0; row < rows; ++row) {
+        column->lattice[row] =
+            LerpFloat(PatchUnit(world->seed, latticeX, row),
+                      PatchUnit(world->seed, latticeX + 1, row), alongX);
+    }
+}
+
+static float BiomeBlendAt(const BiomeBlendColumn *column, uint64_t seed, int x,
+                          int y)
+{
+    int latticeY = y / BIOME_BLEND_PATCH;
+    float alongY = SmoothStep((float)(y % BIOME_BLEND_PATCH) /
+                              (float)BIOME_BLEND_PATCH);
+
+    if (latticeY + 1 >= column->rows) {
+        latticeY = column->rows - 2;
+        alongY = 1.0f;
+    }
+    return LerpFloat(column->lattice[latticeY], column->lattice[latticeY + 1],
+                     alongY) *
+               0.82f +
+           PatchUnit(seed, x, y) * 0.18f;
+}
+
 static WorldBiome BiomeForRegion(const World *world, int region)
 {
     static const WorldBiome order[WORLD_BIOME_COUNT] = {
@@ -171,7 +266,7 @@ WorldBiome WorldBiomeAt(const World *world, int x)
         return WORLD_BIOME_TEMPERATE;
     }
     x = ClampInt(x, 0, world->width - 1);
-    return BiomeForRegion(world, x / BIOME_REGION_WIDTH);
+    return BiomeForRegion(world, BiomeWarpedX(world, x) / BIOME_REGION_WIDTH);
 }
 
 const char *WorldBiomeName(WorldBiome biome)
@@ -187,8 +282,9 @@ const char *WorldBiomeName(WorldBiome biome)
     return names[biome];
 }
 
-/* Nominal regions remain cheap to query, while terrain parameters blend for
-   192 cells on either side of a boundary. */
+/* Regions remain cheap to query, while terrain parameters blend for 384 cells on
+   either side of a boundary — half the width of a region, so a biome is a place
+   the world gradually becomes rather than a place it switches to. */
 static BiomeSample BiomeSampleAt(const World *world, int x)
 {
     int lastRegion;
@@ -196,7 +292,7 @@ static BiomeSample BiomeSampleAt(const World *world, int x)
     int localX;
     WorldBiome current;
 
-    x = ClampInt(x, 0, world->width - 1);
+    x = BiomeWarpedX(world, ClampInt(x, 0, world->width - 1));
     region = x / BIOME_REGION_WIDTH;
     lastRegion = (world->width - 1) / BIOME_REGION_WIDTH;
     localX = x - region * BIOME_REGION_WIDTH;
@@ -314,17 +410,16 @@ static CellMaterial BiomeMaterialAt(const World *world, WorldBiome biome,
 }
 
 static CellMaterial BaseMaterialAt(const World *world,
-                                   const BiomeSample *sample, int x, int y,
+                                   const BiomeSample *sample,
+                                   const BiomeBlendColumn *blend, int x, int y,
                                    uint64_t strata, int depth)
 {
     WorldBiome biome = sample->first;
 
     if (sample->first != sample->second) {
-        float patch = (float)(GenerationPatchHash(world->seed, x / 6, y / 6) >>
-                              8) /
-                      (float)(1u << 24);
-
-        if (patch < sample->mix) biome = sample->second;
+        if (BiomeBlendAt(blend, world->seed, x, y) < sample->mix) {
+            biome = sample->second;
+        }
     }
     return BiomeMaterialAt(world, biome, strata, depth);
 }
@@ -379,11 +474,19 @@ static void GenerateBaseTerrain(World *world)
         uint64_t strata = GenerationHash(world->seed, x, 0,
                                          GENERATION_STRATA);
         int surfaceY = SurfaceHeightAt(world, x);
+        BiomeBlendColumn blend;
         int y;
 
+        /* Only a column that straddles two biomes needs the blend field, and
+           half of them do not. */
+        if (sample.first != sample.second) {
+            BiomeBlendColumnInit(&blend, world, x);
+        } else {
+            blend.rows = 0;
+        }
         for (y = surfaceY; y < world->height; ++y) {
             WorldSetGeneratedCell(world, x, y,
-                                  BaseMaterialAt(world, &sample, x, y,
+                                  BaseMaterialAt(world, &sample, &blend, x, y,
                                                  strata, y - surfaceY));
         }
     }

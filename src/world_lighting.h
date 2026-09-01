@@ -21,17 +21,29 @@
 
 #include "world.h"
 
-/* Ambient floor: even sealed rock stays legible, and a light of zero would make
-   an unlit tunnel unplayable rather than atmospheric. Lighting must read as
-   atmosphere, not as an unlit image; sealed ground is meant to be dim and
-   obviously solid, never a black hole in the picture. */
-#define WORLD_MINIMUM_LIGHT 0.40f
+/* Ambient floor. It used to be 0.40, which kept sealed rock legible on the
+   argument that lighting should read as atmosphere rather than as an unlit
+   image. That argument loses to the one the game actually wants: ground you can
+   see through is not ground. What is buried has to be genuinely hidden, so that
+   digging is how you find out what is down there, and so that carrying a light
+   into the dark is worth doing.
+
+   It is not quite zero. A hair of ambient keeps a silhouette where a wall meets
+   a cavern, which is the difference between a dark room and a rendering bug,
+   and it costs nothing: at 0.02 a mid grey rock reads as two counts out of 255,
+   below what the eye separates from black on any display. */
+#define WORLD_MINIMUM_LIGHT 0.02f
 /* Transmission per light cell, i.e. per WORLD_LIGHT_SCALE world cells. Open air
    carries light across a large cavern; solid material swallows it over a few
    dozen cells, which is what makes a deep bore go dark while a shallow one still
    sees daylight. */
 #define WORLD_LIGHT_OPEN_TRANSMISSION 0.97f
-#define WORLD_LIGHT_SOLID_TRANSMISSION 0.74f
+/* Steeper than it was, now that reaching the floor means reaching darkness
+   rather than reaching a comfortable grey: at 0.66 per light cell, daylight is
+   down to a twentieth of itself some fifty cells into solid ground, so the band
+   between a sunlit surface and a black interior is a few body lengths deep
+   instead of most of the way to the bottom of the world. */
+#define WORLD_LIGHT_SOLID_TRANSMISSION 0.66f
 /* The solved light is quantised to this many steps. A pixel channel is one byte,
    so a finer change cannot alter the image; quantising lets the renderer compare
    light exactly instead of against a tolerance. A tolerance drifts: a sample
@@ -74,6 +86,26 @@ static inline void WorldLightAxis(int samples, int coordinate, int *low, int *hi
     *low = floored < 0 ? 0 : (floored > samples - 1 ? samples - 1 : floored);
     *high = floored + 1 < 0 ? 0
                             : (floored + 1 > samples - 1 ? samples - 1 : floored + 1);
+}
+
+/* How opaque the air itself is drawn, from the sky light reaching it.
+ *
+ * Air is the only thing in the world the background shows through, and that is
+ * right for the sky and wrong for a tunnel: a cave whose air is a window would
+ * show clouds and parallax hills behind the rock the player is standing in. The
+ * signal that separates the two is sky light, not brightness — a torch-lit
+ * cavern is still inside the ground, and lighting its walls must not punch a
+ * hole in it. So air open to the sky stays translucent and the environment
+ * shows through it, and air the sky does not reach is drawn solid.
+ *
+ * The fade between them follows the light field, which is smooth, so the ground
+ * closes over the sky gradually across the surface line rather than along a
+ * hard edge. */
+static inline unsigned char WorldAirVeilAlpha(float sky)
+{
+    float veil = 1.0f - (sky < 0.0f ? 0.0f : (sky > 1.0f ? 1.0f : sky));
+
+    return (unsigned char)(132.0f + 123.0f * veil * veil);
 }
 
 /* Turns the two light channels into a multiplier per colour channel. Light that

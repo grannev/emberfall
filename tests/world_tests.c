@@ -31,6 +31,7 @@
 #include "terrain_interaction.h"
 #include "terrain_physics.h"
 #include "world_components.h"
+#include "world_lighting.h"
 #include "world_render_data.h"
 
 static int testsRun = 0;
@@ -1243,6 +1244,140 @@ static void test_every_biome_can_host_the_protected_spawn(void)
           "seeded spawn cycle exposed only %d/%d biomes", checkedCount,
           WORLD_BIOME_COUNT);
     WorldUnload(&world);
+}
+
+/* Coarse light cell under a world cell, which is what the tests below assert
+   about: the field is solved eight cells at a time, so this is the finest
+   question that can be asked of it. */
+static float SkyLightAt(const World *world, int x, int y)
+{
+    return world->lightSky[(y / WORLD_LIGHT_SCALE) * world->lightColumns +
+                           x / WORLD_LIGHT_SCALE];
+}
+
+static float EmberLightAt(const World *world, int x, int y)
+{
+    return world->lightEmber[(y / WORLD_LIGHT_SCALE) * world->lightColumns +
+                             x / WORLD_LIGHT_SCALE];
+}
+
+/* A column with `depth` cells of unbroken ground under its surface, so that a
+   test about daylight dying underground is not accidentally run down a cave. */
+static int BuriedColumn(const World *world, int depth)
+{
+    int x;
+
+    for (x = 8; x < world->width - 8; x += 3) {
+        int surface = FirstSolidY(world, x);
+        int y;
+        bool solid = true;
+
+        if (surface + depth >= world->height) continue;
+        for (y = surface; y <= surface + depth; ++y) {
+            if (!WorldMaterialIsSolid(WorldGetCell(world, x, y))) {
+                solid = false;
+                break;
+            }
+        }
+        if (solid) return x;
+    }
+    return -1;
+}
+
+static void test_daylight_dies_a_short_way_into_solid_ground(void)
+{
+    World world;
+    int column;
+    int surface;
+
+    CHECK(WorldInit(&world, 1024, 288), "world allocation failed");
+    WorldGenerate(&world, 0x50144Bu);
+    WorldSetPointLight(&world, (Vector2){0.0f, 0.0f}, 0.0f, 0.0f);
+    WorldUpdateLighting(&world,
+                        (Rectangle){0.0f, 0.0f, (float)world.width,
+                                    (float)world.height});
+
+    column = BuriedColumn(&world, 120);
+    CHECK(column >= 0, "no column had 120 cells of unbroken ground under it");
+    surface = FirstSolidY(&world, column);
+
+    /* The open surface is full daylight: whatever the ground is made of, it is
+       shown in its own colour there. */
+    CHECK(SkyLightAt(&world, column, surface) > 0.7f,
+          "surface of column %d sits at %.3f daylight", column,
+          (double)SkyLightAt(&world, column, surface));
+    /* And a hundred cells down there is nothing to see. The threshold is the
+       point at which the ambient floor dominates: below it the tint is the
+       floor alone, and the floor is two counts out of 255. */
+    CHECK(SkyLightAt(&world, column, surface + 100) < 0.05f,
+          "ground 100 cells under column %d still gets %.3f daylight", column,
+          (double)SkyLightAt(&world, column, surface + 100));
+    /* Monotone in between, so the picture is a fade into the dark rather than a
+       band of light at some arbitrary depth. */
+    CHECK(SkyLightAt(&world, column, surface + 40) <=
+              SkyLightAt(&world, column, surface + 8) + 0.001f,
+          "daylight rose with depth in column %d", column);
+    WorldUnload(&world);
+}
+
+static void test_a_carried_light_is_what_makes_the_dark_passable(void)
+{
+    World world;
+    int column;
+    int surface;
+    int depth;
+    float unlit;
+
+    CHECK(WorldInit(&world, 1024, 288), "world allocation failed");
+    WorldGenerate(&world, 0x50144Bu);
+    column = BuriedColumn(&world, 120);
+    CHECK(column >= 0, "no column had 120 cells of unbroken ground under it");
+    surface = FirstSolidY(&world, column);
+    depth = surface + 90;
+
+    WorldSetPointLight(&world, (Vector2){0.0f, 0.0f}, 0.0f, 0.0f);
+    WorldUpdateLighting(&world,
+                        (Rectangle){0.0f, 0.0f, (float)world.width,
+                                    (float)world.height});
+    unlit = EmberLightAt(&world, column, depth);
+
+    WorldSetPointLight(&world, (Vector2){(float)column, (float)depth}, 52.0f,
+                       0.72f);
+    WorldUpdateLighting(&world,
+                        (Rectangle){0.0f, 0.0f, (float)world.width,
+                                    (float)world.height});
+
+    CHECK(EmberLightAt(&world, column, depth) > unlit + 0.3f,
+          "the carried light did not reach its own cell: %.3f against %.3f",
+          (double)EmberLightAt(&world, column, depth), (double)unlit);
+    /* And it is a lamp, not a switch that turns the ground on: two hundred
+       cells away at the same depth the dark is untouched. */
+    if (column + 200 < world.width) {
+        CHECK(EmberLightAt(&world, column + 200, depth) < 0.05f,
+              "the carried light lit ground 200 cells away to %.3f",
+              (double)EmberLightAt(&world, column + 200, depth));
+    }
+    WorldUnload(&world);
+}
+
+static void test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it(void)
+{
+    /* Air the sky does not reach is the inside of the ground, and the ground is
+       not transparent: no parallax background may show through it whatever else
+       is lighting it. */
+    CHECK(WorldAirVeilAlpha(0.0f) == 255,
+          "sealed air was drawn at alpha %u instead of opaque",
+          (unsigned int)WorldAirVeilAlpha(0.0f));
+    CHECK(WorldAirVeilAlpha(1.0f) < 160,
+          "open sky was veiled at alpha %u",
+          (unsigned int)WorldAirVeilAlpha(1.0f));
+    CHECK(WorldAirVeilAlpha(0.5f) > WorldAirVeilAlpha(1.0f) &&
+              WorldAirVeilAlpha(0.5f) < WorldAirVeilAlpha(0.0f),
+          "the veil does not close gradually across the surface line");
+    /* Out-of-range light must not wrap the byte. */
+    CHECK(WorldAirVeilAlpha(-4.0f) == 255 && WorldAirVeilAlpha(9.0f) ==
+                                                 WorldAirVeilAlpha(1.0f),
+          "the veil did not clamp light outside 0..1");
 }
 
 static void test_the_same_seed_always_generates_the_same_world(void)
@@ -8924,6 +9059,9 @@ int main(void)
     RUN(test_generated_biomes_have_distinct_material_identity);
     RUN(test_biome_boundaries_and_spawn_are_coherent);
     RUN(test_every_biome_can_host_the_protected_spawn);
+    RUN(test_daylight_dies_a_short_way_into_solid_ground);
+    RUN(test_a_carried_light_is_what_makes_the_dark_passable);
+    RUN(test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it);
     RUN(test_the_same_seed_always_generates_the_same_world);
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);

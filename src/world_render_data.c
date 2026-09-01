@@ -21,19 +21,20 @@
    clamps — cost more than the rest of drawing put together. The caller walks a
    chunk in order and can hoist all of that out of the loop. */
 static MaterialRenderSample MaterialPixel(const World *world, const Cell *cell,
-                                          int x, int y, float red, float green,
-                                          float blue)
+                                          int x, int y, float sky, float red,
+                                          float green, float blue)
 {
     MaterialRenderSample sample;
 
     if (cell->material == MATERIAL_EMPTY) {
         /* Empty space is a depth gradient rather than a flat colour. */
         unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
-        /* Keep the old cave-depth tint as a translucent veil: the procedural
-           environment remains visible through air while world lighting can
-           still darken tunnels and preserve foreground contrast. */
-        unsigned char depthAlpha =
-            (unsigned char)(150 + (y * 70) / world->height);
+        /* How much of the procedural environment shows through this air. Sky
+           light rather than depth decides it, so the world closes over the
+           background where the ground actually begins — under an overhang, at
+           the roof of a cavern, a few cells into a bore — instead of at a fixed
+           height that a tall mountain or a deep canyon would contradict. */
+        unsigned char depthAlpha = WorldAirVeilAlpha(sky);
         Color color =
             (Color){5, glow, (unsigned char)(18 + glow), depthAlpha};
 
@@ -189,16 +190,17 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                                      (emberLow[highX] - emberLow[lowX]) * blend;
                     float bottomEmber = emberHigh[lowX] +
                                         (emberHigh[highX] - emberHigh[lowX]) * blend;
+                    float cellSky = topSky + (bottomSky - topSky) * rowBlend;
                     float red;
                     float green;
                     float blue;
 
-                    WorldLightTint(topSky + (bottomSky - topSky) * rowBlend,
+                    WorldLightTint(cellSky,
                                    topEmber + (bottomEmber - topEmber) * rowBlend,
                                    &red, &green, &blue);
                     MaterialRenderSample sample =
                         MaterialPixel(world, WorldCellConst(world, x, y),
-                                      x, y, red, green, blue);
+                                      x, y, cellSky, red, green, blue);
 
                     size_t pixelIndex =
                         (size_t)(y - minimumY) *
