@@ -21,6 +21,12 @@ typedef enum PlayerBoostStage {
     PLAYER_BOOST_STAGE_THREE
 } PlayerBoostStage;
 
+/* Most pieces one frame of movement is ever broken into. The step is half a
+   cell, and the largest displacement a frame can produce is the top speed times
+   the longest step the game will take, so this covers it with room to spare:
+   the cap exists to bound the work, not to be reached. */
+#define PLAYER_MAX_MOVE_SUBSTEPS 64
+
 typedef struct Player {
     Vector2 position;
     Vector2 velocity;
@@ -48,6 +54,22 @@ typedef struct Player {
     float boostGrace;
     float drillSpeed;
     float drillResistance;
+    /* How much of the steering input survives at top speed, as a fraction of
+       what it is worth at rest. Thrust across the direction of travel is scaled
+       by it, so a turn at six hundred cells a second is a wide arc rather than
+       a right angle — and never a total loss of control, which is what a
+       fraction rather than a cutoff guarantees. */
+    float turnAuthorityAtHighSpeed;
+    /* Thrust straight back along the direction of travel is worth this many
+       times an ordinary push. It is a multiplier rather than an absolute rate
+       so that braking out of stage three is as forceful as getting into it: the
+       harder the engine, the harder it can also stop. */
+    float brakingAuthority;
+    /* Drag per second per unit of material density, applied while the player is
+       inside something they can move through. One rule covers every fluid the
+       table has or will have: water slows, lava slows harder, smoke barely
+       registers, and a new liquid needs no code here at all. */
+    float fluidDrag;
     float drag;
     float restitution;
     float radius;

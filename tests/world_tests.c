@@ -6346,6 +6346,425 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* --- high-speed movement -------------------------------------------------- */
+
+#define MOVEMENT_STEP (1.0f / 60.0f)
+
+static float PlayerSpeed(const Player *player)
+{
+    return sqrtf(player->velocity.x * player->velocity.x +
+                 player->velocity.y * player->velocity.y);
+}
+
+/* Flies `steps` frames with a fixed input, holding the player in place.
+
+   The velocity model is what these tests are about, and letting the player
+   actually travel would put them into the world's edge — which reads as rock —
+   long before a boost has finished building. Pinning the position leaves the
+   velocity untouched and keeps the world small. */
+static void FlyPlayer(Player *player, World *world, Vector2 input, bool boost,
+                      int steps)
+{
+    Vector2 at = player->position;
+    int step;
+
+    for (step = 0; step < steps; ++step) {
+        PlayerUpdate(player, world, input, boost, MOVEMENT_STEP);
+        player->position = at;
+    }
+}
+
+static void test_thrust_builds_speed_rather_than_setting_it(void)
+{
+    World world;
+    Player player;
+    float first;
+    float second;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){40.0f, 64.0f});
+
+    PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, false, MOVEMENT_STEP);
+    player.position = (Vector2){40.0f, 64.0f};
+    first = PlayerSpeed(&player);
+    CHECK(first > 0.0f && first < player.maxSpeed * 0.5f,
+          "one frame of thrust reached %.2f of a %.2f limit", (double)first,
+          (double)player.maxSpeed);
+
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, false, 8);
+    second = PlayerSpeed(&player);
+    CHECK(second > first, "speed did not keep building: %.2f then %.2f",
+          (double)first, (double)second);
+
+    /* And it settles at the limit rather than overshooting it. */
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, false, 240);
+    CHECK(PlayerSpeed(&player) <= player.maxSpeed + 0.01f,
+          "cruise speed %.2f exceeds the limit %.2f",
+          (double)PlayerSpeed(&player), (double)player.maxSpeed);
+    CHECK(PlayerSpeed(&player) > player.maxSpeed * 0.9f,
+          "cruise speed %.2f never reached the limit %.2f",
+          (double)PlayerSpeed(&player), (double)player.maxSpeed);
+    WorldUnload(&world);
+}
+
+/* The one thing momentum has to guarantee: a reversal passes through zero
+   rather than jumping across it. */
+static void test_a_reversal_brakes_through_zero(void)
+{
+    World world;
+    Player player;
+    float top;
+    int step;
+    bool crossed = false;
+    float previous;
+
+    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){60.0f, 64.0f});
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 300);
+    top = player.velocity.x;
+    CHECK(top > player.boostStageOneSpeed,
+          "the fixture never got up to speed: %.2f", (double)top);
+
+    previous = top;
+    for (step = 0; step < 300; ++step) {
+        Vector2 at = player.position;
+
+        PlayerUpdate(&player, &world, (Vector2){-1.0f, 0.0f}, false,
+                     MOVEMENT_STEP);
+        player.position = at;
+        /* Never more than one frame's worth of braking in one frame, and never
+           a sign flip that skips the middle. */
+        CHECK(player.velocity.x <= previous + 0.001f,
+              "velocity rose while braking: %.3f after %.3f",
+              (double)player.velocity.x, (double)previous);
+        if (previous > 0.0f && player.velocity.x <= 0.0f) {
+            /* The turn has to happen at a standstill, not across one. Crossing
+               from a fifth of the top speed straight into the negatives would
+               be the instant flip momentum exists to forbid; crossing from
+               almost nothing is simply what stopping looks like. */
+            CHECK(previous < top * 0.05f,
+                  "the reversal jumped from %.2f straight to %.2f, with a top "
+                  "speed of %.2f", (double)previous, (double)player.velocity.x,
+                  (double)top);
+            crossed = true;
+        }
+        previous = player.velocity.x;
+    }
+    CHECK(crossed, "the player never turned around at all");
+    CHECK(player.velocity.x < 0.0f, "the player did not end up going the other way");
+    WorldUnload(&world);
+}
+
+/* Braking beats coasting: the same reversal input has to shed speed faster than
+   simply letting go would. */
+static void test_braking_is_stronger_than_letting_go(void)
+{
+    World world;
+    Player braking;
+    Player coasting;
+
+    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    PlayerInit(&braking, (Vector2){60.0f, 64.0f});
+    FlyPlayer(&braking, &world, (Vector2){1.0f, 0.0f}, true, 300);
+    coasting = braking;
+
+    /* One frame each. Comparing against a coasting twin isolates the input's
+       own contribution: drag and the speed clamp act on both alike, so what is
+       left between them is exactly what pressing back was worth. */
+    FlyPlayer(&braking, &world, (Vector2){-1.0f, 0.0f}, false, 1);
+    FlyPlayer(&coasting, &world, (Vector2){0.0f, 0.0f}, false, 1);
+    {
+        float fromInput = coasting.velocity.x - braking.velocity.x;
+        float plainThrust = braking.acceleration * MOVEMENT_STEP;
+
+        CHECK(fromInput > 0.0f, "pressing back did not slow the player");
+        /* And it is worth more than an ordinary push, which is the whole point
+           of braking authority: speed has to be sheddable faster than it was
+           gained. */
+        CHECK(fromInput > plainThrust * 1.5f,
+              "braking was worth %.3f, barely more than a plain push of %.3f",
+              (double)fromInput, (double)plainThrust);
+    }
+
+    /* Over a longer burn it does actually bring the player down. */
+    FlyPlayer(&braking, &world, (Vector2){-1.0f, 0.0f}, false, 29);
+    FlyPlayer(&coasting, &world, (Vector2){0.0f, 0.0f}, false, 29);
+    CHECK(braking.velocity.x < coasting.velocity.x - 20.0f,
+          "braking reached %.2f and coasting %.2f — the input barely mattered",
+          (double)braking.velocity.x, (double)coasting.velocity.x);
+    WorldUnload(&world);
+}
+
+/* Braking stops at a standstill. A brake strong enough to overshoot in one
+   frame would read as an instant reversal, which is the one thing momentum is
+   there to make impossible. */
+static void test_braking_cannot_overshoot_into_reverse(void)
+{
+    World world;
+    Player player;
+    float budget;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){128.0f, 64.0f});
+    /* Slower than one frame of braking is worth, so an unclamped brake would
+       carry the velocity straight past zero. */
+    budget = player.acceleration * player.brakingAuthority * MOVEMENT_STEP;
+    player.velocity = (Vector2){budget * 0.4f, 0.0f};
+    CHECK(player.velocity.x > 1.0f,
+          "the fixture is too slow to exercise the decomposition: %.3f",
+          (double)player.velocity.x);
+
+    FlyPlayer(&player, &world, (Vector2){-1.0f, 0.0f}, false, 1);
+    CHECK(player.velocity.x >= 0.0f,
+          "one frame of braking threw the player into reverse at %.3f",
+          (double)player.velocity.x);
+    WorldUnload(&world);
+}
+
+/* Speed costs steering. It must cost some of it, and it must never cost all. */
+static void test_steering_is_weaker_at_speed_but_never_gone(void)
+{
+    World world;
+    Player slow;
+    Player fast;
+    float slowTurn;
+    float fastTurn;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    PlayerInit(&slow, (Vector2){60.0f, 128.0f});
+    PlayerInit(&fast, (Vector2){60.0f, 128.0f});
+    /* Both travelling right, one at cruise and one at the top of the boost. */
+    FlyPlayer(&slow, &world, (Vector2){1.0f, 0.0f}, false, 240);
+    FlyPlayer(&fast, &world, (Vector2){1.0f, 0.0f}, true, 400);
+    CHECK(PlayerSpeed(&fast) > PlayerSpeed(&slow) * 3.0f,
+          "the two fixtures are too close in speed: %.1f and %.1f",
+          (double)PlayerSpeed(&slow), (double)PlayerSpeed(&fast));
+
+    /* One frame of pure sideways thrust each. */
+    slowTurn = slow.velocity.y;
+    fastTurn = fast.velocity.y;
+    FlyPlayer(&slow, &world, (Vector2){0.0f, -1.0f}, false, 1);
+    FlyPlayer(&fast, &world, (Vector2){0.0f, -1.0f}, false, 1);
+    slowTurn = slow.velocity.y - slowTurn;
+    fastTurn = fast.velocity.y - fastTurn;
+
+    CHECK(fastTurn < 0.0f, "the fast player could not steer at all: %.4f",
+          (double)fastTurn);
+    /* Substantially weaker, not weaker by a hair. The speed clamp shaves a
+       fraction off a fast player's whole velocity vector every frame, which is
+       enough to make a strict inequality pass even if steering never changed at
+       all — so the margin has to be bigger than that effect. */
+    CHECK(fabsf(fastTurn) < fabsf(slowTurn) * 0.6f,
+          "steering did not weaken with speed: %.4f slow, %.4f fast",
+          (double)slowTurn, (double)fastTurn);
+    /* Never a total loss of control: the configured floor is a fraction, and a
+       fraction is not zero. */
+    CHECK(fabsf(fastTurn) > fabsf(slowTurn) * fast.turnAuthorityAtHighSpeed * 0.5f,
+          "steering collapsed at speed: %.4f against %.4f",
+          (double)fastTurn, (double)slowTurn);
+    WorldUnload(&world);
+}
+
+static void test_boost_stages_are_reached_and_survive_release(void)
+{
+    World world;
+    Player player;
+    float top;
+
+    CHECK(WorldInit(&world, 2048, 256), "world allocation failed");
+    PlayerInit(&player, (Vector2){60.0f, 128.0f});
+
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 30);
+    CHECK(player.boostStage == PLAYER_BOOST_STAGE_ONE, "stage one was not entered");
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 90);
+    CHECK(player.boostStage == PLAYER_BOOST_STAGE_TWO, "stage two was not reached");
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 140);
+    CHECK(player.boostStage == PLAYER_BOOST_STAGE_THREE,
+          "stage three was not reached");
+    top = PlayerSpeed(&player);
+    CHECK(top > player.boostStageTwoSpeed,
+          "stage three tops out at %.1f, below stage two's %.1f", (double)top,
+          (double)player.boostStageTwoSpeed);
+
+    /* Letting go drops the stage but not the momentum. */
+    FlyPlayer(&player, &world, (Vector2){0.0f, 0.0f}, false, 1);
+    CHECK(player.boostStage == PLAYER_BOOST_NONE, "the stage survived release");
+    CHECK(PlayerSpeed(&player) > top * 0.9f,
+          "releasing boost threw away the speed: %.1f of %.1f",
+          (double)PlayerSpeed(&player), (double)top);
+
+    /* And the excess bleeds off rather than vanishing. */
+    FlyPlayer(&player, &world, (Vector2){0.0f, 0.0f}, false, 120);
+    CHECK(PlayerSpeed(&player) < top * 0.6f,
+          "the excess speed never bled off: %.1f of %.1f",
+          (double)PlayerSpeed(&player), (double)top);
+    WorldUnload(&world);
+}
+
+/* Not boosting means not drilling, so a wall is a wall however fast it is hit. */
+static void test_a_fast_player_cannot_cross_a_thin_wall(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    /* Two cells thick, floor to ceiling. */
+    FillRect(&world, 300, 0, 301, 127, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){60.0f, 64.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 60; ++step) {
+        /* No boost: the drill is what is allowed through a wall, and it is not
+           running. */
+        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false,
+                     MOVEMENT_STEP);
+        CHECK(player.position.x < 300.0f + player.radius + 1.0f,
+              "the player reached x=%.2f, past a wall at 300",
+              (double)player.position.x);
+    }
+    CHECK(player.impactStrength >= 0.0f, "impact strength went negative");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == 2 * 128,
+          "the wall lost cells to a player who was not drilling");
+    WorldUnload(&world);
+}
+
+/* A diagonal cut is the case a purely horizontal or vertical drill test never
+   exercises: the tunnel has to keep up with a trajectory that is neither. */
+static void test_a_diagonal_drill_does_not_stall(void)
+{
+    World world;
+    Player player;
+    Vector2 start;
+    int step;
+    int drilled = 0;
+
+    CHECK(WorldInit(&world, 400, 400), "world allocation failed");
+    FillRect(&world, 40, 40, 360, 360, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){20.0f, 20.0f});
+    start = player.position;
+
+    for (step = 0; step < 240; ++step) {
+        PlayerUpdate(&player, &world, (Vector2){0.7071f, 0.7071f}, true,
+                     MOVEMENT_STEP);
+        drilled += player.drilledCells;
+        CHECK(player.drilledCells <= 4096,
+              "one frame cut %d cells, which is not a bounded mutation",
+              player.drilledCells);
+    }
+    CHECK(drilled > 0, "the diagonal drill never cut anything");
+    /* Well inside the block, and moved along both axes rather than sliding
+       along a face. */
+    CHECK(player.position.x > start.x + 120.0f && player.position.y > start.y + 120.0f,
+          "the diagonal drill stalled at (%.1f, %.1f)", (double)player.position.x,
+          (double)player.position.y);
+    CHECK(fabsf((player.position.x - start.x) - (player.position.y - start.y)) <
+              60.0f,
+          "the tunnel drifted off the diagonal: %.1f across, %.1f down",
+          (double)(player.position.x - start.x),
+          (double)(player.position.y - start.y));
+    WorldUnload(&world);
+}
+
+static void test_the_same_flight_replays_identically(void)
+{
+    World first;
+    World second;
+    Player a;
+    Player b;
+    int step;
+
+    CHECK(WorldInit(&first, 512, 256) && WorldInit(&second, 512, 256),
+          "world allocation failed");
+    FillRect(&first, 200, 100, 320, 200, MATERIAL_ROCK);
+    FillRect(&second, 200, 100, 320, 200, MATERIAL_ROCK);
+    PlayerInit(&a, (Vector2){60.0f, 150.0f});
+    PlayerInit(&b, (Vector2){60.0f, 150.0f});
+
+    for (step = 0; step < 300; ++step) {
+        /* A trajectory with turns in it, so the decomposition is exercised and
+           not just a straight line. */
+        Vector2 input = {1.0f, step > 150 ? -0.6f : 0.4f};
+
+        PlayerUpdate(&a, &first, input, step < 240, MOVEMENT_STEP);
+        PlayerUpdate(&b, &second, input, step < 240, MOVEMENT_STEP);
+    }
+    CHECK(a.position.x == b.position.x && a.position.y == b.position.y,
+          "two identical flights ended at (%.6f, %.6f) and (%.6f, %.6f)",
+          (double)a.position.x, (double)a.position.y, (double)b.position.x,
+          (double)b.position.y);
+    CHECK(a.velocity.x == b.velocity.x && a.velocity.y == b.velocity.y,
+          "two identical flights ended at different velocities");
+    CHECK(a.boostStage == b.boostStage, "the two runs reached different stages");
+    CHECK(WorldDigest(&first) == WorldDigest(&second),
+          "two identical flights carved different tunnels");
+    WorldUnload(&first);
+    WorldUnload(&second);
+}
+
+/* Nothing a caller can do to the velocity may turn into a transform the rest of
+   the game has to live with. */
+static void test_movement_survives_an_absurd_velocity(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    FillRect(&world, 0, 100, 255, 127, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){128.0f, 40.0f});
+
+    player.velocity = (Vector2){1.0e7f, -1.0e7f};
+    for (step = 0; step < 20; ++step) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+        CHECK(player.position.x == player.position.x &&
+                  player.position.y == player.position.y,
+              "the position went non-finite at step %d", step);
+        CHECK(player.velocity.x == player.velocity.x &&
+                  player.velocity.y == player.velocity.y,
+              "the velocity went non-finite at step %d", step);
+        CHECK(player.position.x >= 0.0f && player.position.x <= 256.0f &&
+                  player.position.y >= 0.0f && player.position.y <= 128.0f,
+              "the player left the world at (%.2f, %.2f)",
+              (double)player.position.x, (double)player.position.y);
+    }
+    CHECK(PlayerSpeed(&player) <= player.boostMaxSpeed + 1.0f,
+          "an absurd velocity survived as %.1f", (double)PlayerSpeed(&player));
+    WorldUnload(&world);
+}
+
+/* Moving through something costs speed in proportion to its density, which is
+   the whole of the water transition this task asks for. */
+static void test_entering_water_costs_speed(void)
+{
+    World world;
+    Player dry;
+    Player wet;
+
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    PlayerInit(&dry, (Vector2){60.0f, 60.0f});
+    PlayerInit(&wet, (Vector2){60.0f, 180.0f});
+    /* Both pinned where they start, so "one of them is in the pool" stays true
+       for the whole comparison. */
+    FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 300);
+    FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 300);
+    CHECK(fabsf(PlayerSpeed(&dry) - PlayerSpeed(&wet)) < 0.01f,
+          "the two fixtures did not start level");
+
+    /* A pool in front of one of them only. */
+    FillRect(&world, 0, 150, 511, 220, MATERIAL_WATER);
+    FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 30);
+    FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 30);
+
+    CHECK(PlayerSpeed(&wet) < PlayerSpeed(&dry) * 0.85f,
+          "water barely slowed the player: %.1f wet against %.1f dry",
+          (double)PlayerSpeed(&wet), (double)PlayerSpeed(&dry));
+    CHECK(PlayerSpeed(&wet) > 0.0f, "water stopped the player dead");
+    WorldUnload(&world);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -7854,6 +8273,17 @@ int main(void)
     RUN(test_the_raycast_never_steps_over_material);
     RUN(test_a_grab_never_lands_on_empty_raster);
     RUN(test_a_hold_follows_or_ends_when_its_side_is_cut_away);
+    RUN(test_thrust_builds_speed_rather_than_setting_it);
+    RUN(test_a_reversal_brakes_through_zero);
+    RUN(test_braking_is_stronger_than_letting_go);
+    RUN(test_braking_cannot_overshoot_into_reverse);
+    RUN(test_steering_is_weaker_at_speed_but_never_gone);
+    RUN(test_boost_stages_are_reached_and_survive_release);
+    RUN(test_a_fast_player_cannot_cross_a_thin_wall);
+    RUN(test_a_diagonal_drill_does_not_stall);
+    RUN(test_the_same_flight_replays_identically);
+    RUN(test_movement_survives_an_absurd_velocity);
+    RUN(test_entering_water_costs_speed);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

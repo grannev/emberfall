@@ -42,7 +42,14 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   tick schedules the next one.
 - Fire and lava heating stay local. Passive lava cannot melt its rock lining.
 - Player collision uses substeps and must not tunnel; boost drilling must not
-  leave the collider embedded.
+  leave the collider embedded. The substep count follows the displacement and is
+  capped, so one frame's work is bounded however fast the player is going.
+- Thrust is decomposed along and across the direction of travel: forward is
+  acceleration, backward is braking and is worth more than acceleration, across
+  is steering and is what speed takes away. Steering authority falls to a
+  fraction at top speed and never to zero — losing control entirely is not the
+  price of going fast. Braking never carries the velocity past zero in one
+  frame, which is what stops a hard brake reading as an instant reversal.
 - World mutations, particles, and events use persistent/fixed-capacity storage;
   normal update and render loops must not allocate from the heap.
 - Gameplay randomness is seeded and explicit. A seed plus a sequence of

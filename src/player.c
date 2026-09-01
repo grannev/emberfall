@@ -1,5 +1,7 @@
 #include "player.h"
 
+#include "materials.h"
+
 #include <math.h>
 #include <stddef.h>
 
@@ -35,6 +37,14 @@ void PlayerInit(Player *player, Vector2 position)
     player->boostGrace = 0.0f;
     player->drillSpeed = 92.0f;
     player->drillResistance = 0.004f;
+    /* A third of the steering left at top speed. Enough to pick a line through
+       a cavern at six hundred cells a second, not enough to turn a corner: the
+       cost of going that fast is that the world has to be read further ahead. */
+    player->turnAuthorityAtHighSpeed = 0.34f;
+    /* Braking beats accelerating, which is what makes committing to speed feel
+       safe rather than reckless. */
+    player->brakingAuthority = 2.6f;
+    player->fluidDrag = 3.4f;
     player->drag = 1.1f;
     player->restitution = 0.34f;
     player->radius = 3.2f;
@@ -220,6 +230,81 @@ static float PlayerBoostStageSpeed(const Player *player)
     }
 }
 
+/* Thrust, split into the part that acts along the direction of travel and the
+   part that acts across it, because those two are not the same request.
+
+   Pushing forward is acceleration. Pushing back is braking, and it is worth
+   more than acceleration is: committing to six hundred cells a second has to
+   feel survivable, and it only does if the player knows they can shed that
+   speed faster than they gained it. Pushing sideways is steering, and steering
+   is what speed takes away — the faster the flight, the wider the arc, down to
+   a fraction that is deliberately never zero.
+
+   At a standstill there is no direction of travel to decompose against, and the
+   input is simply thrust. */
+static void PlayerApplyThrust(Player *player, Vector2 input, float acceleration,
+                              float speed, float deltaTime)
+{
+    Vector2 forward;
+    float along;
+    Vector2 across;
+    float authority;
+    float alongDelta;
+
+    if (speed < 1.0f) {
+        player->velocity.x += input.x * acceleration * deltaTime;
+        player->velocity.y += input.y * acceleration * deltaTime;
+        return;
+    }
+
+    forward = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
+    along = input.x * forward.x + input.y * forward.y;
+    across = (Vector2){input.x - forward.x * along, input.y - forward.y * along};
+
+    /* Full steering at rest, `turnAuthorityAtHighSpeed` of it at the top of the
+       boost range, straight line between. */
+    authority = player->boostMaxSpeed > 0.001f
+                    ? Clamp(speed / player->boostMaxSpeed, 0.0f, 1.0f)
+                    : 0.0f;
+    authority = 1.0f + (player->turnAuthorityAtHighSpeed - 1.0f) * authority;
+
+    alongDelta = along * acceleration * deltaTime;
+    if (along < 0.0f) {
+        alongDelta *= player->brakingAuthority;
+        /* Braking stops at a standstill. Without this a hard enough brake in a
+           long frame reads as an instant reversal, which is the one thing
+           momentum is supposed to make impossible. */
+        if (alongDelta < -speed) {
+            alongDelta = -speed;
+        }
+    }
+
+    player->velocity.x += forward.x * alongDelta +
+                          across.x * acceleration * authority * deltaTime;
+    player->velocity.y += forward.y * alongDelta +
+                          across.y * acceleration * authority * deltaTime;
+}
+
+/* Moving through something costs speed in proportion to how heavy it is. The
+   rule is the material table's, not a list of names: anything the player can
+   pass through slows them by its own density, so water slows, lava slows
+   harder, and a gas barely registers. One cell read per frame. */
+static void PlayerApplyFluidDrag(Player *player, const World *world,
+                                 float deltaTime)
+{
+    CellMaterial material = WorldGetCell(world, (int)floorf(player->position.x),
+                                         (int)floorf(player->position.y));
+    float density = MaterialAt(material)->density;
+    float damping;
+
+    if (WorldMaterialIsSolid(material) || density <= 0.0f) {
+        return;
+    }
+    damping = expf(-player->fluidDrag * density * deltaTime);
+    player->velocity.x *= damping;
+    player->velocity.y *= damping;
+}
+
 static void PlayerUpdateBoostStage(Player *player, Vector2 input, float speed,
                                    float deltaTime)
 {
@@ -346,9 +431,9 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         }
     }
     if (player->thrusting) {
-        player->velocity.x += input.x * acceleration * deltaTime;
-        player->velocity.y += input.y * acceleration * deltaTime;
+        PlayerApplyThrust(player, input, acceleration, velocityLength, deltaTime);
     }
+    PlayerApplyFluidDrag(player, world, deltaTime);
 
     damping = expf(-damping * deltaTime);
     player->velocity.x *= damping;
@@ -416,9 +501,17 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
 
     moveX = player->velocity.x * deltaTime;
     moveY = player->velocity.y * deltaTime;
+    /* Half a cell per step, so the collider — more than three cells across —
+       can never straddle a wall between two tests. The cap bounds the work a
+       single frame can ask for; at the speeds the boost can reach it is not
+       met, and if it ever were the step would still be well under the
+       collider's own size. */
     moveSteps = (int)ceilf(fmaxf(fabsf(moveX), fabsf(moveY)) / 0.5f);
     if (moveSteps < 1) {
         moveSteps = 1;
+    }
+    if (moveSteps > PLAYER_MAX_MOVE_SUBSTEPS) {
+        moveSteps = PLAYER_MAX_MOVE_SUBSTEPS;
     }
     stepTime = deltaTime / (float)moveSteps;
 
