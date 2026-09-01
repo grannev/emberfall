@@ -427,7 +427,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition);
-        AbilityRendererDraw(&game->abilities);
+        AbilityRendererDraw(&game->abilities, &game->player,
+                            renderer->presentationTime);
         /* After the player, so the beam of force reads as leaving the hand
            rather than passing behind the character. */
         TerrainGrabRendererDrawScene(&game->interaction, &game->dynamicTerrain,
@@ -457,7 +458,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                             &game->dynamicTerrain, visible);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
-            AbilityRendererDrawEmissive(&game->abilities);
+            AbilityRendererDrawEmissive(&game->abilities, &game->player,
+                                        renderer->presentationTime);
             TerrainGrabRendererDrawEmissive(&game->interaction,
                                             &game->dynamicTerrain,
                                             &game->player,

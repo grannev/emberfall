@@ -8,6 +8,8 @@
  */
 #include "ability_renderer.h"
 
+#include "beam_render.h"
+
 #include <math.h>
 #include <stddef.h>
 
@@ -87,13 +89,16 @@ static void AbilityArcBlocks(Vector2 centre, float radius, float fromAngle,
     }
 }
 
-static void DrawBeam(const AbilityState *state, Color core, Color glow,
-                     float glowWidth, float coreWidth, float hitRadius)
+/* Where a drawn beam leaves the character. The stored origin is where the
+   simulation cast the ray from — a step clear of the face — and drawing from it
+   left a visible gap in front of the visor. This is the visor itself, rebuilt
+   from the player being drawn this frame. */
+static Vector2 BeamStart(const AbilityState *state, const Player *player)
 {
-    DrawLineEx(state->origin, state->endpoint, glowWidth, glow);
-    DrawLineEx(state->origin, state->endpoint, coreWidth, core);
-    AbilityContactBlocks(state->endpoint,
-                         state->hit ? hitRadius : hitRadius * 0.3f, 1.0f, glow);
+    if (player == NULL) {
+        return state->origin;
+    }
+    return PlayerVisorOrigin(player, state->endpoint);
 }
 
 static void DrawForceArc(const AbilityState *state, float duration)
@@ -115,16 +120,19 @@ static void DrawForceArc(const AbilityState *state, float duration)
         Color edge = Fade((Color){187, 224, 245, 255},
                           (1.0f - progress) * 0.42f);
 
-        DrawLineEx(state->origin,
+        /* In blocks like every other beam. These two were the last smooth
+           lines left in the abilities, and a hairline vector edge beside a
+           blocky cone reads as two effects from two different games. */
+        BeamStrand(state->origin,
                    Vector2Add(state->origin,
                               (Vector2){cosf(left) * edgeLength,
                                         sinf(left) * edgeLength}),
-                   0.55f, edge);
-        DrawLineEx(state->origin,
+                   0.6f, 0.6f, (int)(progress * 32.0f), edge, edge, 1.0f, 41);
+        BeamStrand(state->origin,
                    Vector2Add(state->origin,
                               (Vector2){cosf(right) * edgeLength,
                                         sinf(right) * edgeLength}),
-                   0.55f, edge);
+                   0.6f, 0.6f, (int)(progress * 32.0f), edge, edge, 1.0f, 43);
     }
 
     for (ring = 0; ring < 4; ++ring) {
@@ -144,9 +152,9 @@ static void DrawForceArc(const AbilityState *state, float duration)
     }
 }
 
-static void DrawCryoEdge(const AbilityState *state)
+static void DrawCryoEdge(const AbilityState *state, Vector2 start)
 {
-    Vector2 delta = Vector2Subtract(state->endpoint, state->origin);
+    Vector2 delta = Vector2Subtract(state->endpoint, start);
     float length = Vector2Length(delta);
     Vector2 direction;
     Vector2 normal;
@@ -160,21 +168,27 @@ static void DrawCryoEdge(const AbilityState *state)
     for (shard = 1; shard <= 7; ++shard) {
         float amount = (float)shard / 8.0f;
         float side = (shard & 1) == 0 ? 1.0f : -1.0f;
-        Vector2 point = Vector2Add(state->origin,
-                                   Vector2Scale(delta, amount));
+        Vector2 point = Vector2Add(start, Vector2Scale(delta, amount));
         Vector2 tip = Vector2Add(
             Vector2Add(point, Vector2Scale(normal, side * 1.6f)),
             Vector2Scale(direction, -1.2f));
 
-        DrawLineEx(point, tip, 0.45f, (Color){200, 244, 255, 190});
+        /* Frost growing off the beam, in blocks like everything else: a hairline
+           vector spike was the last smooth line left in the picture. */
+        BeamStrand(point, tip, 0.6f, 0.6f, shard, (Color){200, 244, 255, 190},
+                   (Color){236, 253, 255, 220}, 1.0f, shard * 7);
     }
 }
 
-void AbilityRendererDraw(const AbilitySystem *abilities)
+void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
+                         float time)
 {
     const AbilityState *laser;
     const AbilityState *cryo;
     const AbilityState *force;
+    /* Quantised, so the flicker steps rather than slides and so the same moment
+       always draws the same beam. */
+    int frame = (int)(time * 18.0f);
 
     if (abilities == NULL) {
         return;
@@ -184,22 +198,27 @@ void AbilityRendererDraw(const AbilitySystem *abilities)
     force = AbilityStateAt(abilities, ABILITY_FORCE);
 
     if (laser->active) {
-        DrawLineEx(laser->origin, laser->endpoint, 1.7f,
-                   (Color){255, 74, 31, 225});
-        DrawLineEx(laser->origin, laser->endpoint, 0.62f,
-                   (Color){255, 244, 188, 255});
-        if (laser->hit) {
-            Vector2 normal = {-laser->direction.y, laser->direction.x};
+        Vector2 start = BeamStart(laser, player);
 
+        /* Narrow and hot, tapering to a point where it bites. The eye end is
+           the wide end so the beam reads as leaving the face rather than as
+           being aimed at it. */
+        BeamStrand(start, laser->endpoint, 1.9f, 1.0f, frame,
+                   (Color){255, 96, 34, 210}, (Color){255, 238, 186, 240},
+                   1.0f, 3);
+        if (laser->hit) {
             AbilityContactBlocks(laser->endpoint, 4.2f, 1.0f,
                                  (Color){255, 74, 24, 62});
             AbilityContactBlocks(laser->endpoint, 2.5f, 1.0f,
                                  (Color){255, 161, 43, 205});
             AbilityContactBlocks(laser->endpoint, 1.1f, 1.0f,
                                  (Color){255, 248, 203, 255});
-            DrawLineEx(Vector2Add(laser->endpoint, Vector2Scale(normal, -3.6f)),
-                       Vector2Add(laser->endpoint, Vector2Scale(normal, 3.6f)),
-                       0.55f, (Color){255, 203, 106, 210});
+            BeamRings(laser->endpoint, time, 2, 3.4f, 2.6f,
+                      (Color){255, 156, 62, 200}, 1.0f);
+            /* Thrown back out of the cut, which is the direction sparks
+               actually leave a hole being burned. */
+            BeamSparks(laser->endpoint, start, time, 8, 4.0f, true,
+                       (Color){255, 214, 130, 225}, 1.0f);
         } else {
             AbilityContactBlocks(laser->endpoint, 0.9f, 1.0f,
                                  (Color){255, 198, 88, 180});
@@ -207,9 +226,22 @@ void AbilityRendererDraw(const AbilitySystem *abilities)
     }
 
     if (cryo->active) {
-        DrawBeam(cryo, (Color){239, 253, 255, 245},
-                 (Color){88, 196, 244, 175}, 1.65f, 0.56f, 3.8f);
-        DrawCryoEdge(cryo);
+        Vector2 start = BeamStart(cryo, player);
+
+        /* Wider and softer than the laser, and it does not taper: a freezing
+           cone spreads where a cutting beam narrows. */
+        BeamStrand(start, cryo->endpoint, 1.5f, 2.1f, frame,
+                   (Color){104, 194, 240, 190}, (Color){228, 249, 255, 235},
+                   1.0f, 11);
+        DrawCryoEdge(cryo, start);
+        if (cryo->hit) {
+            AbilityContactBlocks(cryo->endpoint, 3.8f, 1.0f,
+                                 (Color){88, 196, 244, 120});
+            AbilityContactBlocks(cryo->endpoint, 1.8f, 1.0f,
+                                 (Color){236, 253, 255, 235});
+            BeamRings(cryo->endpoint, time, 2, 4.0f, 3.0f,
+                      (Color){170, 232, 255, 190}, 1.0f);
+        }
     }
 
     if (force->effectTime > 0.0f) {
@@ -254,10 +286,12 @@ void AbilityRendererDrawReticle(const AbilitySystem *abilities,
     }
 }
 
-void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
+void AbilityRendererDrawEmissive(const AbilitySystem *abilities,
+                                 const Player *player, float time)
 {
     const AbilityState *laser;
     const AbilityState *cryo;
+    int frame = (int)(time * 18.0f);
 
     if (abilities == NULL) {
         return;
@@ -265,21 +299,24 @@ void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
     laser = AbilityStateAt(abilities, ABILITY_LASER);
     cryo = AbilityStateAt(abilities, ABILITY_CRYO);
 
+    /* Dimmer than the scene pass and drawn with coarser blocks: this is what
+       the bloom spreads into the glow around a beam, and a fine one costs many
+       times the fill for a result the blur erases anyway. */
     if (laser->active) {
-        DrawLineEx(laser->origin, laser->endpoint, 4.0f,
-                   (Color){255, 45, 12, 84});
-        DrawLineEx(laser->origin, laser->endpoint, 1.85f,
-                   (Color){255, 72, 24, 230});
-        DrawLineEx(laser->origin, laser->endpoint, 0.68f,
-                   (Color){255, 238, 166, 255});
+        Vector2 start = BeamStart(laser, player);
+
+        BeamStrand(start, laser->endpoint, 2.0f, 1.1f, frame,
+                   (Color){168, 54, 18, 255}, (Color){255, 214, 150, 255},
+                   2.0f, 3);
         AbilityContactBlocks(laser->endpoint, laser->hit ? 3.0f : 1.0f, 1.0f,
                              (Color){255, 126, 34, laser->hit ? 230 : 150});
     }
     if (cryo->active) {
-        DrawLineEx(cryo->origin, cryo->endpoint, 2.4f,
-                   (Color){69, 177, 242, 70});
-        DrawLineEx(cryo->origin, cryo->endpoint, 1.15f,
-                   (Color){104, 205, 255, 130});
+        Vector2 start = BeamStart(cryo, player);
+
+        BeamStrand(start, cryo->endpoint, 1.6f, 2.2f, frame,
+                   (Color){48, 118, 168, 255}, (Color){160, 216, 246, 255},
+                   2.0f, 11);
         AbilityContactBlocks(cryo->endpoint, cryo->hit ? 2.4f : 0.8f, 1.0f,
                              (Color){167, 232, 255, 130});
     }

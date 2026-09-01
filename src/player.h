@@ -141,6 +141,15 @@ float PlayerDrillRadius(const Player *player);
    bug the moment the player aims down. */
 Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim);
 
+/* The visor itself, without the step forward PlayerBeamOrigin adds.
+ *
+ * The gameplay ray has to start clear of the face or it would immediately hit
+ * the head it came out of; the *drawn* beam has to start on the face or it
+ * looks detached from it, which is exactly what a beam beginning a cell and a
+ * half in front of the eyes looked like. One derivation, two uses: whatever
+ * moves the eye moves both. */
+Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim);
+
 /* Where the shoulders sit along the body axis, and how far a two-handed power
    reaches past them. Here rather than in the renderer because the telekinetic
    hold is drawn from the hands and cast from the hands: the moment those are

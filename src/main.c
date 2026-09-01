@@ -1664,7 +1664,10 @@ int main(int argc, char **argv)
            if RendererComposite ever has no valid scene target to draw. */
         ClearBackground((Color){2, 4, 9, 255});
         RendererComposite(&renderer);
-        if (debugHud) {
+        /* The two beam frames are photographs of a beam, and the debug panel
+           sits exactly where the character does at the start of the run. */
+        if (debugHud &&
+            !(smokeTest && (smokeFrames == 3 || smokeFrames == 10))) {
             DrawDebugHud(&game, &events, &renderer, cursorCell);
         }
         DrawControlsHint();
@@ -1675,8 +1678,14 @@ int main(int argc, char **argv)
                character. It left the chest for a long time and nobody could
                tell from the reference screenshot, which is taken after the
                beam has stopped. */
-            if (smokeFrames == 6) {
+            /* Frame three: the beam is held and the explosion has not fired
+               yet, so the picture is the beam and nothing else. Frame ten is
+               the cryo beam for the same reason. */
+            if (smokeFrames == 3) {
                 TakeScreenshot("build/emberfall-beam.png");
+            }
+            if (smokeFrames == 10) {
+                TakeScreenshot("build/emberfall-cryo.png");
             }
             if (smokeFrames == 9) {
                 TakeScreenshot("build/emberfall-smoke-ember.png");

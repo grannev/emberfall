@@ -228,7 +228,7 @@ Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing)
     return (Vector2){shoulder.x + dx * reach, shoulder.y + dy * reach};
 }
 
-Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
+Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim)
 {
     Vector2 up;
     Vector2 side;
@@ -264,9 +264,28 @@ Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
                           side.x * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross),
                       player->position.y + up.y * PLAYER_VISOR_ALONG_UP +
                           side.y * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross)};
-    /* Just clear of the visor itself, so the beam starts in front of the face
-       rather than inside it. */
-    return (Vector2){visor.x + dx * 1.4f, visor.y + dy * 1.4f};
+    return visor;
+}
+
+Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
+{
+    Vector2 visor = PlayerVisorOrigin(player, aim);
+    float dx;
+    float dy;
+    float length;
+
+    if (player == NULL) {
+        return aim;
+    }
+    dx = aim.x - player->position.x;
+    dy = aim.y - player->position.y;
+    length = sqrtf(dx * dx + dy * dy);
+    if (length < 0.001f) {
+        return visor;
+    }
+    /* Just clear of the visor itself, so the cast ray starts in front of the
+       face rather than inside it. */
+    return (Vector2){visor.x + dx / length * 1.4f, visor.y + dy / length * 1.4f};
 }
 
 bool PlayerIsDrilling(const Player *player)
