@@ -111,6 +111,16 @@ int TerrainDamageApplyCircle(TerrainDamageSystem *system,
                              TerrainBodyHandle handle, Vector2 worldCentre,
                              float radius);
 
+/* Warms the cells a cut left behind, as a fraction of each material's own phase
+   threshold. A body carries its cells' temperatures, so a tunnel bored through
+   one should glow at its edges exactly as a tunnel through the static world
+   does; without this a slab is the one thing in the game that can be drilled
+   without getting hot. */
+void TerrainDamageHeatAround(TerrainDamageSystem *system,
+                             DynamicTerrainSystem *terrain,
+                             TerrainBodyHandle handle, Vector2 worldCentre,
+                             float radius, float strength);
+
 /* Advances the beam's cut rate and reports whether it may bite now. */
 bool TerrainDamageBeamReady(TerrainDamageSystem *system, float deltaTime);
 

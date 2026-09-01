@@ -30,6 +30,17 @@ typedef enum CellMaterial {
     MATERIAL_COUNT
 } CellMaterial;
 
+/* Large horizontal generation regions. Biomes choose terrain shape and
+   material composition; material physics remains defined by CellMaterial and
+   the single material table. */
+typedef enum WorldBiome {
+    WORLD_BIOME_TEMPERATE = 0,
+    WORLD_BIOME_DUNES,
+    WORLD_BIOME_FROST,
+    WORLD_BIOME_VOLCANIC,
+    WORLD_BIOME_COUNT
+} WorldBiome;
+
 /* Fourteen million of these exist, so every byte here is 13.5 MiB on the
    production map and the layout is a memory decision before it is anything
    else. Fields are ordered widest first so the struct packs to 12 bytes with a
@@ -206,6 +217,10 @@ void WorldUnload(World *world);
    the same world, which is what makes bug reports, regression tests and
    benchmark scenarios repeatable. */
 void WorldGenerate(World *world, uint64_t seed);
+/* The nominal biome at a column. Terrain parameters blend near boundaries, so
+   this is an identity/debug query rather than a hard material border. */
+WorldBiome WorldBiomeAt(const World *world, int x);
+const char *WorldBiomeName(WorldBiome biome);
 Vector2 WorldPlayerSpawn(const World *world);
 /* Wakes generated dynamic or heated cells inside a streamed gameplay region.
    Actual cell mutations wake themselves regardless of this region. */
@@ -237,6 +252,19 @@ void WorldClearDestruction(World *world);
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
+/* The dent a heavy blow leaves, plus the fractures running out of it.
+ *
+ * A crater rather than a hole: the bowl is wider than it is deep, so the impact
+ * reads as something enormous having struck a surface rather than as a shot
+ * having been fired into it. The cracks are short deterministic rays through
+ * whatever is still solid — no stress model, no propagation, just the shape a
+ * player recognises as "that hit hard".
+ *
+ * `direction` is the way the blow was travelling; cracks favour it and the
+ * surface either side of it. Everything is bounded by the radius and the crack
+ * length, and the damage is logged the way every other destructive cut is. */
+void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
+                     int crackCount, int crackLength);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
 /* One heavy blow along a cone: throws dynamic cells a long way and scours a thin

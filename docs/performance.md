@@ -614,3 +614,46 @@ Normal-frame CPU work структурно ограничено проходом
 обновляются in-place. Headless `make bench` не rasterizes raylib geometry,
 поэтому wall-clock speedup/overhead для GPU здесь не заявляется; benchmark
 нужен для подтверждения неизменности simulation workload counters.
+
+## EF-ENV-001 — procedural environment budget
+
+`EnvironmentRenderer` не добавляет texture, shader или render pass. Он хранит
+47 фиксированных descriptors по 20 B (940 B) и небольшой state/stats block —
+около 1 KiB CPU суммарно. Runtime generation происходит только при init/смене
+world seed; steady-state heap allocations, texture uploads и world scans равны
+нулю.
+
+Xvfb smoke при 1280×720 показал фиксированный максимум **76 scene + 11
+emissive primitive submissions**, все три palettes (`env_mask=0x7`), корректный
+resize, transient rotation/zoom feedback и принудительный high-speed zoom-out.
+Pipeline остался на 5 offscreen passes / 4 targets, bloom — 640×360. llvmpipe
+submission timing сильно зависит от software rasterizer и приведён только как
+информационный: два полных актуальных smoke дали 24.6..25.8 ms average и
+56.2..56.9 ms maximum.
+
+Headless simulation benchmark не rasterizes environment. Его counters должны
+оставаться неизменными, потому что `EnvironmentRenderer` не входит в
+`GameState`; отдельный wall-clock renderer speedup/slowdown не заявляется.
+## EF-WLD-001 — biome generation v1
+
+Замер 2026-09-01 выполнен на production world 16384×864 одним `make bench` до
+изменения и одним после в том же worktree. Генератор остался eager и не изменил
+memory layout: CPU estimate **167.22 MiB**, measured RSS **166.84 MiB** после.
+
+| Startup operation | До | После |
+|---|---:|---:|
+| `WorldGenerate` | 306.569 ms | 259.762 ms |
+| regeneration | 335.892 ms | 256.341 ms |
+
+Это уменьшение времени, а не устранение паузы reset: все 14,1 млн cells всё ещё
+записываются. Выигрыш получен несмотря на четыре biome profiles и новые surface
+features, потому что cave/liquid descriptors теперь масштабируются по ширине, а
+strata hash вычисляется один раз на колонку. Дополнительная постоянная память и
+heap allocations отсутствуют.
+
+Wall-clock и workload counters десяти gameplay scenarios после смены terrain
+**не сравниваются** с прежними: benchmark arena стоит в другом biome и её края
+соседствуют с другим набором generated dynamics. Settled contract сохранился:
+0 active chunks, 0 processed cells. Архитектурный долг остаётся прежним —
+coordinate-seeded descriptors уже пригодны для chunk generation, но storage и
+lifecycle пока eager, поэтому следующий шаг нельзя выдавать за сделанный.

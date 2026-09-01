@@ -6,6 +6,7 @@
 
 #include <raylib.h>
 
+#include "environment_renderer.h"
 #include "game.h"
 #include "presentation_fx.h"
 #include "terrain_body_renderer.h"
@@ -27,13 +28,23 @@ typedef struct RendererFrameStats {
     uint32_t terrainBodyDrawCalls;
     uint32_t terrainBodyTextureUpdates;
     uint64_t terrainBodyTextureMemoryBytes;
+    uint16_t environmentSceneDrawCalls;
+    uint16_t environmentEmissiveDrawCalls;
+    uint16_t environmentEmissiveContributors;
+    EnvironmentPalette environmentPalette;
+    bool environmentViewValid;
     bool bloomEnabled;
 } RendererFrameStats;
 
 typedef struct Renderer {
     WorldRenderer world;
+    EnvironmentRenderer environment;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;
+    /* Seconds of presentation, for effects that flicker or turn. Kept here
+       rather than read from the clock so that a run stepping at a fixed rate —
+       the smoke test — draws the same frame every time. */
+    float presentationTime;
     RenderTexture2D sceneTarget;
     RenderTexture2D emissiveTarget;
     RenderTexture2D bloomPingTarget;
@@ -57,11 +68,14 @@ typedef struct Renderer {
     RendererFrameStats lastFrame;
 } Renderer;
 
-bool RendererInit(Renderer *renderer, const GameState *game);
+bool RendererInit(Renderer *renderer, const GameState *game,
+                  EnvironmentPalette environmentPalette);
 void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime);
 void RendererClearPresentation(Renderer *renderer);
+bool RendererSetEnvironmentPalette(Renderer *renderer,
+                                   EnvironmentPalette palette);
 void RendererRenderScene(Renderer *renderer, GameState *game,
                          Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible);

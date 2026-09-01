@@ -101,15 +101,17 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     const World *world = &game->world;
     const Player *player = &game->player;
     const AbilitySystem *abilities = &game->abilities;
-    const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
+    const AbilityState *punch = AbilityStateAt(abilities, ABILITY_FORCE);
     const int panelWidth = 620;
-    const int panelHeight = 258;
-    float cooldown = explosion->cooldown;
+    const int panelHeight = 304;
+    float cooldown = punch->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
     const WorldRendererStats *renderStats = RendererWorldStats(renderer);
     const RendererFrameStats *frameStats = RendererStats(renderer);
+    const EnvironmentPaletteDefinition *environmentPalette =
+        EnvironmentPaletteDefinitionAt(frameStats->environmentPalette);
 
     DrawRectangle(12, 12, panelWidth, panelHeight, (Color){4, 8, 15, 205});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, (Color){82, 157, 208, 220});
@@ -122,9 +124,13 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         WorldCountDynamicCells(world),
                         world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
-    DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
-                        InputAbilityBinding(abilities->lastUsed)),
-             24, 91, 18, (Color){255, 126, 86, 255});
+    {
+        const char *binding = InputAbilityBinding(abilities->lastUsed);
+
+        DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
+                            binding != NULL ? binding : "—"),
+                 24, 91, 18, (Color){255, 126, 86, 255});
+    }
     DrawText(TextFormat("CURSOR: %d, %d  %s  %.0fC", (int)cursorCell.x,
                         (int)cursorCell.y, WorldMaterialName(cursorMaterial),
                         WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
@@ -191,15 +197,23 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         game->damage.stats.cellsCarved,
                         game->damage.stats.fractureSplits),
              24, 243, 14, (Color){228, 208, 140, 255});
+    DrawText(TextFormat("ENV: %s | %u+%u DRAWS",
+                        environmentPalette != NULL ? environmentPalette->name
+                                                   : "INVALID",
+                        (unsigned int)frameStats->environmentSceneDrawCalls,
+                        (unsigned int)frameStats->environmentEmissiveDrawCalls),
+             24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
-    DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 261, 14, (Color){186, 194, 205, 255});
+    DrawText(TextFormat("SEED: 0x%llx | BIOME: %s",
+                        (unsigned long long)game->worldSeed,
+                        WorldBiomeName(WorldBiomeAt(world,
+                                                    (int)player->position.x))),
+             24, 279, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 279, 14, LIME);
+        DrawText("PUNCH: READY", 24, 297, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 279, 14,
-                 LIGHTGRAY);
+        DrawText(TextFormat("PUNCH: %.2fs", cooldown), 24, 297, 14, LIGHTGRAY);
     }
 }
 
@@ -215,11 +229,18 @@ static void DrawControlsHint(void)
     int y;
 
     for (id = 0; id < ABILITY_COUNT; ++id) {
-        hint = TextFormat("%s  |  %s %s", hint,
-                          InputAbilityBinding((AbilityId)id),
+        const char *binding = InputAbilityBinding((AbilityId)id);
+
+        /* An ability with no control is not one of the player's, and listing it
+           would promise something the buttons cannot deliver. */
+        if (binding == NULL) {
+            continue;
+        }
+        hint = TextFormat("%s  |  %s %s", hint, binding,
                           AbilityDefinitionAt((AbilityId)id)->name);
     }
-    hint = TextFormat("%s  |  F grab terrain  |  R regenerate  |  F1 HUD", hint);
+    hint = TextFormat("%s  |  RMB grab terrain  |  R regenerate  |  F1 HUD",
+                      hint);
     width = MeasureText(hint, fontSize);
     x = (GetScreenWidth() - width) / 2;
     y = GetScreenHeight() - 34;
@@ -1009,6 +1030,7 @@ int main(int argc, char **argv)
     Renderer renderer = {0};
     CameraFeedback cameraFeedback = {0};
     Camera2D stableCamera = {0};
+    EnvironmentPalette environmentPalette = ENVIRONMENT_PALETTE_AUTO;
     bool debugHud = true;
     bool smokeTest = false;
     int argument;
@@ -1031,6 +1053,13 @@ int main(int argc, char **argv)
     bool smokeBloomRestored = false;
     bool smokeTargetsSynchronized = true;
     bool smokePresentationFxObserved = false;
+    bool smokeEnvironmentObserved = false;
+    bool smokeEnvironmentViewValid = true;
+    bool smokeEnvironmentCameraFeedback = false;
+    bool smokeEnvironmentZoomOut = false;
+    uint8_t smokeEnvironmentPaletteMask = 0u;
+    uint16_t smokeEnvironmentMaximumSceneDrawCalls = 0u;
+    uint16_t smokeEnvironmentMaximumEmissiveDrawCalls = 0u;
     TerrainBodyHandle smokeTerrainBody = TerrainBodyInvalidHandle();
     Vector2 smokeTerrainStartPosition = {0.0f, 0.0f};
     float smokeTerrainStartAngle = 0.0f;
@@ -1086,8 +1115,21 @@ int main(int argc, char **argv)
             /* Replays a reported world exactly. strtoull takes 0x forms, which
                is how the debug HUD prints the seed. */
             config.seed = strtoull(argv[++argument], NULL, 0);
+        } else if (strcmp(argv[argument], "--palette") == 0 &&
+                   argument + 1 < argc) {
+            if (!EnvironmentPaletteParse(argv[++argument],
+                                         &environmentPalette)) {
+                fprintf(stderr,
+                        "unknown palette '%s' (expected auto, ember, abyss, "
+                        "or storm)\n",
+                        argv[argument]);
+                return 1;
+            }
         } else {
-            fprintf(stderr, "usage: %s [--smoke-test] [--seed VALUE]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [--smoke-test] [--seed VALUE] "
+                    "[--palette auto|ember|abyss|storm]\n",
+                    argv[0]);
             return 1;
         }
     }
@@ -1110,7 +1152,7 @@ int main(int argc, char **argv)
     (void)GameAudioInit(&audio);
 
     if (!GameInit(&game, config) ||
-        !RendererInit(&renderer, &game)) {
+        !RendererInit(&renderer, &game, environmentPalette)) {
         fprintf(stderr, "Failed to allocate or initialize the world.\n");
         RendererUnload(&renderer);
         GameUnload(&game);
@@ -1186,6 +1228,13 @@ int main(int argc, char **argv)
         } else if (smokeTest && smokeFrames == 7) {
             SetWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
         }
+        /* Present the palette reference frames at the widened high-speed view.
+           They belong to the compact renderer phase before the long movement
+           run reaches boost III; this presentation-only injection exercises
+           the same camera scale without changing GameState. */
+        if (smokeTest && smokeFrames == 9) {
+            cameraFeedback.viewScale = 1.65f;
+        }
         /* Input and the reticle share this exact stable transform. Camera
            impulses are applied later to a copy and therefore cannot leak back
            through GetScreenToWorld2D on the next frame. */
@@ -1200,10 +1249,10 @@ int main(int argc, char **argv)
         input = InputPoll(&game.world, aimCamera);
         cursorCell = input.cursorCell;
         aimPosition = input.game.aimWorld;
-        /* The screenshot at frame ten contains the moving body. Free it on the
-           final frame so the same GL smoke run also proves that the generation-
-           keyed cache releases its textures and draws no ghost. */
-        if (smokeTest && smokeFrames == 11) {
+        /* All three palette screenshots contain the moving body. Free it as
+           the next acceptance phase starts, so the same GL run also proves
+           that the generation-keyed cache releases textures without a ghost. */
+        if (smokeTest && smokeFrames == ACCEPT_START) {
             int slot;
 
             /* Every body, not only the showcase one: the check below is that
@@ -1264,6 +1313,19 @@ int main(int argc, char **argv)
 
         if (input.toggleDebugPressed) {
             debugHud = !debugHud;
+        }
+
+        if (smokeTest) {
+            if (smokeFrames == 9) {
+                (void)RendererSetEnvironmentPalette(
+                    &renderer, ENVIRONMENT_PALETTE_EMBER_WASTE);
+            } else if (smokeFrames == 10) {
+                (void)RendererSetEnvironmentPalette(
+                    &renderer, ENVIRONMENT_PALETTE_ABYSSAL_BLUE);
+            } else if (smokeFrames == 11) {
+                (void)RendererSetEnvironmentPalette(
+                    &renderer, ENVIRONMENT_PALETTE_VERDIGRIS_STORM);
+            }
         }
 
         if (smokeTest && smokeFrames < ACCEPT_START) {
@@ -1455,6 +1517,37 @@ int main(int argc, char **argv)
                                           (frameStats->activeFx > 0u &&
                                            frameStats->peakFx >= 22u &&
                                            frameStats->droppedFx == 0u);
+            smokeEnvironmentObserved = smokeEnvironmentObserved ||
+                                       (frameStats->environmentSceneDrawCalls > 0u &&
+                                        frameStats->environmentEmissiveDrawCalls > 0u &&
+                                        frameStats->environmentEmissiveContributors > 0u);
+            smokeEnvironmentViewValid = smokeEnvironmentViewValid &&
+                                        frameStats->environmentViewValid;
+            if (frameStats->environmentPalette >= 0 &&
+                frameStats->environmentPalette < ENVIRONMENT_PALETTE_COUNT) {
+                smokeEnvironmentPaletteMask |=
+                    (uint8_t)(1u <<
+                              (unsigned int)frameStats->environmentPalette);
+            }
+            if (frameStats->environmentSceneDrawCalls >
+                smokeEnvironmentMaximumSceneDrawCalls) {
+                smokeEnvironmentMaximumSceneDrawCalls =
+                    frameStats->environmentSceneDrawCalls;
+            }
+            if (frameStats->environmentEmissiveDrawCalls >
+                smokeEnvironmentMaximumEmissiveDrawCalls) {
+                smokeEnvironmentMaximumEmissiveDrawCalls =
+                    frameStats->environmentEmissiveDrawCalls;
+            }
+            if ((fabsf(presentationCamera.rotation) > 0.001f ||
+                 fabsf(presentationCamera.zoom - aimCamera.zoom) > 0.001f) &&
+                frameStats->environmentViewValid) {
+                smokeEnvironmentCameraFeedback = true;
+            }
+            smokeEnvironmentZoomOut = smokeEnvironmentZoomOut ||
+                                      (smokeFrames >= 9 &&
+                                       cameraOutput.viewScale > 1.35f &&
+                                       frameStats->environmentViewValid);
             if (smokeFrames < ACCEPT_START) {
                 /* Counted for the render phase alone. The gameplay phase carves
                    and splits bodies on purpose, and every one of those is a
@@ -1491,7 +1584,7 @@ int main(int argc, char **argv)
                         fabsf(body->angle - smokeTerrainStartAngle) > 0.01f;
                 }
             }
-            if (smokeFrames == 11) {
+            if (smokeFrames == ACCEPT_START) {
                 smokeTerrainCacheReleased =
                     frameStats->cachedTerrainBodies == 0u &&
                     frameStats->visibleTerrainBodies == 0u &&
@@ -1534,8 +1627,27 @@ int main(int argc, char **argv)
         EndDrawing();
 
         if (smokeTest) {
+            /* Mid-beam, so the frame shows where a beam actually leaves the
+               character. It left the chest for a long time and nobody could
+               tell from the reference screenshot, which is taken after the
+               beam has stopped. */
+            if (smokeFrames == 6) {
+                TakeScreenshot("build/emberfall-beam.png");
+            }
+            if (smokeFrames == 9) {
+                TakeScreenshot("build/emberfall-smoke-ember.png");
+            } else if (smokeFrames == 10) {
+                TakeScreenshot("build/emberfall-smoke-abyss.png");
+            } else if (smokeFrames == 11) {
+                TakeScreenshot("build/emberfall-smoke-storm.png");
+            }
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");
+            }
+            /* Mid-hold, so the frame shows the telekinetic beam actually
+               reaching a slab rather than the aftermath of having moved it. */
+            if (smokeFrames == ACCEPT_GRAB + 30) {
+                TakeScreenshot("build/emberfall-grab.png");
             }
             if (smokeFrames == ACCEPT_SHOT) {
                 TakeScreenshot("build/emberfall-gameplay.png");
@@ -1563,6 +1675,7 @@ int main(int argc, char **argv)
                "light=%.1f heavy=%.1f spin=%.3f mass_matters=%d "
                "force_before=%.1f force_after=%.1f force_shift=%.2f "
                "force_hits=%d force_moved=%d impulses=%d "
+               "env_mask=0x%x env_draws=%u+%u env_camera=%d env_zoom=%d "
                "play_detached=%d play_pushed=%d(%.1f) play_grabbed=%d "
                "play_dragged=%d(%.1f) play_threw=%d(%.1f) play_carved=%d "
                "play_split=%d play_fragments=%d play_fx=%d play_camera=%d "
@@ -1595,6 +1708,10 @@ int main(int argc, char **argv)
                (double)smokeForceShiftX,
                game.impulses.stats.bodiesAffectedByForce, smokeForceMovedBody,
                game.impulses.stats.bodyImpulseApplications,
+               (unsigned int)smokeEnvironmentPaletteMask,
+               (unsigned int)smokeEnvironmentMaximumSceneDrawCalls,
+               (unsigned int)smokeEnvironmentMaximumEmissiveDrawCalls,
+               smokeEnvironmentCameraFeedback, smokeEnvironmentZoomOut,
                acceptance.detached, acceptance.pushed, (double)acceptance.pushSpeed,
                acceptance.grabbed, acceptance.dragged,
                (double)acceptance.dragDistance, acceptance.threw,
@@ -1616,6 +1733,12 @@ int main(int argc, char **argv)
                       !smokeDrillObserved || !smokeFireContained ||
                       !smokeBloomObserved || !smokeTargetsSynchronized ||
                       !smokePresentationFxObserved ||
+                      !smokeEnvironmentObserved ||
+                      !smokeEnvironmentViewValid ||
+                      !smokeEnvironmentCameraFeedback ||
+                      !smokeEnvironmentZoomOut ||
+                      smokeEnvironmentPaletteMask !=
+                          (uint8_t)((1u << ENVIRONMENT_PALETTE_COUNT) - 1u) ||
                       !smokeTerrainExtracted || !smokeTerrainWorldCleared ||
                       !smokeTerrainRendered || !smokeTerrainMoved ||
                       !smokeTerrainRotated ||
@@ -1651,6 +1774,7 @@ int main(int argc, char **argv)
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
                 "rotated=%d collision=%d released=%d auto_detach=%d "
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
+                "env=%d/valid%d/camera%d/zoom%d/palettes0x%x "
                 "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
                 "move=cruise%.0f/peak%.0f/stage%d/turn%.0f/drill%d/rev%d/stop%d "
                 "updates=%u chunks=%d/%d\n",
@@ -1667,7 +1791,11 @@ int main(int argc, char **argv)
                 smokeTerrainRotated, smokeTerrainCollisionObserved,
                 smokeTerrainCacheReleased, smokeAutoDetachObserved,
                 smokeAutoDetachEvent, smokeMassMattered, smokeForceMovedBody,
-                (double)smokeThrownSpin, acceptance.detached, acceptance.pushed,
+                (double)smokeThrownSpin,
+                smokeEnvironmentObserved, smokeEnvironmentViewValid,
+                smokeEnvironmentCameraFeedback, smokeEnvironmentZoomOut,
+                (unsigned int)smokeEnvironmentPaletteMask,
+                acceptance.detached, acceptance.pushed,
                 acceptance.grabbed, acceptance.dragged, acceptance.threw,
                 acceptance.carved, acceptance.split, acceptance.fragments,
                 acceptance.fxDuringPlay, acceptance.cameraFeedbackDuringPlay,

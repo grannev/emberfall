@@ -32,7 +32,7 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 
 `world.h` — единственный публичный заголовок мира. Реализация разделена на
 `materials.c`, `world_storage.c`, `world_simulation.c`, `world_thermal.c`,
-`world_generation.c`, `world_lighting.c`, `world_effects.c` и
+`world_generation.c`, `world_biomes.c`, `world_lighting.c`, `world_effects.c` и
 `world_render_data.c`. Заголовки `world_internal.h`, `world_thermal.h` и
 `world_lighting.h` внутренние: их включают только файлы модуля мира.
 `materials.h` описывает таблицу материалов и нужен всем, кто добавляет материал.
@@ -43,6 +43,8 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 bool WorldInit(World *world, int width, int height);
 void WorldUnload(World *world);
 void WorldGenerate(World *world, uint64_t seed);
+WorldBiome WorldBiomeAt(const World *world, int x);
+const char *WorldBiomeName(WorldBiome biome);
 Vector2 WorldPlayerSpawn(const World *world);
 void WorldActivateRegion(World *world, Rectangle region);
 ```
@@ -56,6 +58,10 @@ void WorldActivateRegion(World *world, Rectangle region);
   который производит seed.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
   выделяет память и оставляет simulation chunks спящими.
+- `WorldBiomeAt` возвращает nominal biome колонки: `TEMPERATE`, `DUNES`,
+  `FROST` или `VOLCANIC`. Рельеф вокруг границы уже смешан, поэтому query не
+  означает жёсткую стену материалов. `WorldBiomeName` даёт стабильное имя для
+  HUD/debug tooling.
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
   чтобы вызывающий код не знал о форме рельефа.
 - `WorldActivateRegion` сканирует только запрошенные chunks и будит находящиеся
@@ -85,12 +91,16 @@ float WorldLightAt(const World *world, int x, int y);
 ### Renderer API
 
 ```c
-bool RendererInit(Renderer *renderer, const GameState *game);
+bool RendererInit(Renderer *renderer, const GameState *game,
+                  EnvironmentPalette environmentPalette);
 void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime);
 void RendererClearPresentation(Renderer *renderer);
-void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
+bool RendererSetEnvironmentPalette(Renderer *renderer,
+                                   EnvironmentPalette palette);
+void RendererRenderScene(Renderer *renderer, GameState *game,
+                         Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer);
@@ -108,12 +118,20 @@ half-resolution downsample и separable horizontal/vertical blur. Scene не
 raylib render texture. Ошибка shader/half-resolution target оставляет рабочий
 sharp fallback. HUD рисуется после composite.
 
+Встроенный `EnvironmentRenderer` принимает только seed и presentation camera,
+рисует procedural sky/parallax/haze до world pages и небольшую explicit
+emissive contribution в существующем pass. `environmentPalette == AUTO`
+выбирает preset из seed; `RendererSetEnvironmentPalette` позволяет временный
+presentation-only override. Он не читает и не меняет `GameState`.
+
 `WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
 world pages. `RendererStats` сообщает фактический размер scene target, активен
 ли bloom, его resolution, число offscreen passes/targets и CPU submission time
 emissive/filter passes, active/peak/dropped presentation FX, а также
 cached/visible TerrainBody, body draw calls, texture updates и RGBA8 bytes. Это
 не GPU timer: на software renderer значение включает стоимость rasterization.
+Environment telemetry отдельно сообщает palette, view validity и число scene /
+emissive primitive submissions.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и

@@ -19,6 +19,8 @@
 #include "terrain_damage.h"
 
 #include <math.h>
+
+#include "materials.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -29,8 +31,12 @@ TerrainDamageConfig TerrainDamageDefaultConfig(void)
     /* Six cells is about where a piece stops reading as a chip and starts
        reading as a chunk worth tumbling on its own. */
     config.minimumFractureCells = 6;
-    config.beamCutInterval = 0.055f;
-    config.beamCutRadius = 1.35f;
+    /* Faster bites and a wider one than the first pass shipped with: the beam
+       was cutting so slowly that a player could not tell it was working on
+       rock at all. Still rate-limited, because a bite every frame evaporates a
+       slab in well under a second. */
+    config.beamCutInterval = 0.035f;
+    config.beamCutRadius = 1.9f;
     return config;
 }
 
@@ -396,6 +402,65 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
         ++system->stats.fractureSplits;
     }
     return created;
+}
+
+void TerrainDamageHeatAround(TerrainDamageSystem *system,
+                             DynamicTerrainSystem *terrain,
+                             TerrainBodyHandle handle, Vector2 worldCentre,
+                             float radius, float strength)
+{
+    TerrainBody *body = DynamicTerrainGet(terrain, handle);
+    Vector2 local;
+    int firstX;
+    int firstY;
+    int lastX;
+    int lastY;
+    int localY;
+
+    if (system == NULL || body == NULL || !(strength > 0.0f) ||
+        !(radius > 0.0f)) {
+        return;
+    }
+    /* Local space, for the same reason the carve uses it: rotation preserves
+       distance, so the ring around the cut is the same ring in either frame. */
+    local = TerrainBodyWorldToLocal(body, worldCentre.x, worldCentre.y);
+    firstX = (int)floorf(local.x - radius) - 3;
+    firstY = (int)floorf(local.y - radius) - 3;
+    lastX = (int)ceilf(local.x + radius) + 3;
+    lastY = (int)ceilf(local.y + radius) + 3;
+    if (firstX < 0) firstX = 0;
+    if (firstY < 0) firstY = 0;
+    if (lastX > body->width - 1) lastX = body->width - 1;
+    if (lastY > body->height - 1) lastY = body->height - 1;
+
+    for (localY = firstY; localY <= lastY; ++localY) {
+        int localX;
+
+        for (localX = firstX; localX <= lastX; ++localX) {
+            CellMaterial material = DynamicTerrainCellAt(terrain, handle, localX,
+                                                         localY);
+            const MaterialInfo *info = MaterialAt(material);
+            float dx = (float)localX + 0.5f - local.x;
+            float dy = (float)localY + 0.5f - local.y;
+            float distance = sqrtf(dx * dx + dy * dy);
+            float band;
+            float target;
+
+            if (material == MATERIAL_EMPTY || !info->onHeat.enabled ||
+                info->onHeat.threshold <= 60.0f || distance > radius + 3.0f) {
+                continue;
+            }
+            band = 1.0f - (distance - radius) / 3.0f;
+            if (band > 1.0f) band = 1.0f;
+            if (band <= 0.0f) continue;
+            target = info->onHeat.threshold * strength * band;
+            if (target > DynamicTerrainTemperatureAt(terrain, handle, localX,
+                                                     localY)) {
+                DynamicTerrainSetCell(terrain, handle, localX, localY, material,
+                                      target);
+            }
+        }
+    }
 }
 
 int TerrainDamageApplyCircle(TerrainDamageSystem *system,

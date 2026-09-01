@@ -44,6 +44,24 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 - Player collision uses substeps and must not tunnel; boost drilling must not
   leave the collider embedded. The substep count follows the displacement and is
   capped, so one frame's work is bounded however fast the player is going.
+- The drill cuts the frame's whole path in one swept carve, before the collision
+  substeps run. Cutting per substep re-carved almost the same ground sixty times
+  a frame, and — worse — left the collider's leading edge against fresh material
+  every step, so a boosting player bounced off the walls of their own tunnel.
+  Clear the corridor first, then travel down it.
+- A boosting player cuts through a terrain body exactly as they cut through the
+  static world, via TerrainDamage. A detached slab must not be the one thing in
+  the game that stops a drill boring through bedrock beside it.
+- Drill heat is a fraction of each material's own phase threshold, never an
+  absolute temperature: rock melts at 720 and dirt catches at 175, so one number
+  either fails to tint the rock or sets the dirt alight.
+- An ability with no row in the input binding table has no player control. That
+  is how a mechanic stays in the engine — reachable by tests and by world
+  reactions — without being something the player can fire. Explosion is exactly
+  that, and must not regain a binding.
+- Beams start at `PlayerBeamOrigin`, used by the gameplay ray and the drawn beam
+  alike. A beam cast from the chest and drawn from the head reads as a bug the
+  moment the player aims down.
 - Thrust is decomposed along and across the direction of travel: forward is
   acceleration, backward is braking and is worth more than acceleration, across
   is steering and is what speed takes away. Steering authority falls to a
@@ -56,6 +74,10 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   `GameInput` values must replay identically. Never call `GetRandomValue` from
   gameplay code — draw from the owning system's `Rng` (see `src/rng.h`).
   Presentation-only jitter may still use raylib's generator.
+- Biome order, terrain noise and feature descriptors are derived from seed plus
+  coordinates. Do not reintroduce one sequential generation stream whose draw
+  order makes adding a cave move every later lake; biome boundaries must keep
+  their blended, seam-free surface contract.
 - Preserve the original Emberfall character and gameplay. References are not a
   license to copy another game's sprite, UI, assets, levels, or lore.
 
@@ -103,6 +125,11 @@ coherent phase with an explanatory message.
   targets fall back to the sharp scene. Resources are reused in steady state
   and recreated only on resize. HUD remains a backbuffer overlay; gameplay must
   not gain render-target or shader dependencies.
+- `EnvironmentRenderer` is renderer-owned presentation state. Its 47 bounded
+  procedural descriptors and palette are derived from the world seed without
+  consuming gameplay RNG; it draws into the existing scene/emissive passes and
+  must never read or mutate `GameState`/`World`. Empty world pixels deliberately
+  retain a depth-dependent translucent tint so the background can show through.
 - Each resident world page has scene and emissive textures. One 8 KiB stack
   staging pair builds both from a dirty chunk; `MaterialInfo.emission` and hot
   solids enter bloom, ordinary bright terrain does not. Particle emission is
@@ -212,7 +239,7 @@ coherent phase with an explanatory message.
   `WORLD_COMPONENT_DETACHED` may be acted on; every other status means leave it
   alone.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
-  `world_simulation.c`, `world_thermal.c`, `world_generation.c`,
+  `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
   `world_lighting.c`, `world_effects.c`, `world_render_data.c` and
   `world_components.c`.
   `world_internal.h`, `world_thermal.h` and `world_lighting.h` are private to

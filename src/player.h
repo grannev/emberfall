@@ -27,6 +27,14 @@ typedef enum PlayerBoostStage {
    the cap exists to bound the work, not to be reached. */
 #define PLAYER_MAX_MOVE_SUBSTEPS 64
 
+/* How wide a tunnel each boost stage cuts, as a multiple of the player's own
+   radius. A tunnel the size of the collider reads as a worm hole; what a body
+   moving this fast should leave is a corridor with room around it. */
+#define PLAYER_DRILL_WIDTH_IDLE 1.15f
+#define PLAYER_DRILL_WIDTH_STAGE_ONE 1.55f
+#define PLAYER_DRILL_WIDTH_STAGE_TWO 2.00f
+#define PLAYER_DRILL_WIDTH_STAGE_THREE 2.45f
+
 typedef struct Player {
     Vector2 position;
     Vector2 velocity;
@@ -53,7 +61,18 @@ typedef struct Player {
     float boostStageTime;
     float boostGrace;
     float drillSpeed;
+    /* Speed shed per cell of travel through material, before the boost stage
+       and the material's own weight scale it. Measured per distance rather
+       than per cell removed: a wider tunnel destroys far more cells for the
+       same journey, and charging for those would mean every widening of the
+       drill silently slowed the player down. */
     float drillResistance;
+    /* Fraction of a material's own phase threshold the tunnel wall is heated
+       to, at the centre of the cut. Expressed as a fraction rather than a
+       temperature so that rock and dirt glow alike without either being pushed
+       over its own transition — the point is a visible hot wall, not automatic
+       lava. */
+    float drillHeat;
     /* How much of the steering input survives at top speed, as a fraction of
        what it is worth at rest. Thrust across the direction of travel is scaled
        by it, so a turn at six hundred cells a second is a wide arc rather than
@@ -104,6 +123,33 @@ void PlayerResolveWorldCollision(Player *player, World *world);
 /* Adds velocity directly. Used for recoil, where the direction is known and no
    falloff applies. */
 void PlayerApplyImpulse(Player *player, Vector2 impulse);
+
+/* True while the boost is actually cutting rather than merely running. Shared
+   so that detached terrain can be cut by the same drill that cuts the static
+   world: a slab that stopped a player who is boring through bedrock beside it
+   would be the odd one out, not the rule. */
+bool PlayerIsDrilling(const Player *player);
+/* Radius of the tunnel the current boost stage cuts. */
+float PlayerDrillRadius(const Player *player);
+
+/* Where a beam leaves the character: the eye, pushed just clear of the collider
+   along the line of aim.
+
+   One helper, used by the gameplay ray and by the drawn beam alike. Two
+   derivations of "where the laser starts" is two chances for them to disagree,
+   and a beam that is cast from the chest but drawn from the head reads as a
+   bug the moment the player aims down. */
+Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim);
+
+/* The body axis: hips to head. Straight up when hovering, turning toward the
+   direction of travel as the character leans, so at full boost it *is* the
+   direction of travel.
+
+   It lives here rather than in the renderer because the beam origin needs it
+   too, and the head has to be in one place: a visor drawn six cells up the body
+   axis while the laser is cast from a point measured straight up in world space
+   are two different heads, and the player sees both. */
+Vector2 PlayerBodyUp(const Player *player);
 /* Holds a pose for `holdTime` seconds. Held powers refresh it every frame with a
    short time; a one-shot like the force blast asks for the length of its own
    animation. */

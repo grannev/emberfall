@@ -13,12 +13,87 @@
 
 #include <raymath.h>
 
+/* The same block language the presentation effects use. A beam that ends in a
+   perfect little vector circle reads as belonging to another game; what the
+   reference shows at a contact point is a knot of square embers inside a large
+   soft glow, and the glow is the emissive pass's job rather than this one's. */
+static float AbilityFxNoise(int x, int y, int salt)
+{
+    unsigned int h = (unsigned int)x * 374761393u ^
+                     (unsigned int)y * 668265263u ^
+                     (unsigned int)salt * 2246822519u;
+
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return (float)((h ^ (h >> 16)) & 0xffffu) / 65535.0f;
+}
+
+static void AbilityBlock(float x, float y, float block, Color color)
+{
+    DrawRectangleV((Vector2){floorf(x / block) * block,
+                             floorf(y / block) * block},
+                   (Vector2){block, block}, color);
+}
+
+/* A ragged cluster of blocks: what a beam actually leaves where it lands. */
+static void AbilityContactBlocks(Vector2 at, float radius, float block,
+                                 Color color)
+{
+    float y;
+    int salt = (int)(at.x * 3.0f + at.y * 5.0f);
+
+    for (y = -radius; y <= radius; y += block) {
+        float x;
+
+        for (x = -radius; x <= radius; x += block) {
+            float distance = sqrtf(x * x + y * y);
+            float edge;
+
+            if (distance > radius) {
+                continue;
+            }
+            edge = radius > 0.0001f ? distance / radius : 0.0f;
+            if (edge > 0.5f &&
+                AbilityFxNoise((int)floorf((at.x + x) / block),
+                               (int)floorf((at.y + y) / block), salt) <
+                    (edge - 0.5f) / 0.5f) {
+                continue;
+            }
+            AbilityBlock(at.x + x, at.y + y, block, color);
+        }
+    }
+}
+
+/* Blocks scattered along an arc, instead of a drawn curve. */
+static void AbilityArcBlocks(Vector2 centre, float radius, float fromAngle,
+                             float toAngle, float block, Color color, int salt)
+{
+    int count = (int)(fabsf(toAngle - fromAngle) * radius / (block * 1.4f));
+    int index;
+
+    if (radius <= 0.0f || count <= 0) {
+        return;
+    }
+    if (count > 160) count = 160;
+    for (index = 0; index <= count; ++index) {
+        float amount = (float)index / (float)count;
+        float angle = fromAngle + (toAngle - fromAngle) * amount;
+        float wobble = 1.0f + (AbilityFxNoise(index, salt, 3) - 0.5f) * 0.14f;
+
+        if (AbilityFxNoise(index, salt, 9) < 0.3f) {
+            continue;
+        }
+        AbilityBlock(centre.x + cosf(angle) * radius * wobble,
+                     centre.y + sinf(angle) * radius * wobble, block, color);
+    }
+}
+
 static void DrawBeam(const AbilityState *state, Color core, Color glow,
                      float glowWidth, float coreWidth, float hitRadius)
 {
     DrawLineEx(state->origin, state->endpoint, glowWidth, glow);
     DrawLineEx(state->origin, state->endpoint, coreWidth, core);
-    DrawCircleV(state->endpoint, state->hit ? hitRadius : hitRadius * 0.3f, glow);
+    AbilityContactBlocks(state->endpoint,
+                         state->hit ? hitRadius : hitRadius * 0.3f, 1.0f, glow);
 }
 
 static void DrawForceArc(const AbilityState *state, float duration)
@@ -63,9 +138,9 @@ static void DrawForceArc(const AbilityState *state, float duration)
         alpha = (unsigned char)Clamp((1.0f - progress) * 210.0f -
                                          (float)ring * 40.0f,
                                      0.0f, 255.0f);
-        DrawCircleSectorLines(state->origin, radius, angle - halfAngle,
-                              angle + halfAngle, 20,
-                              (Color){182, 216, 255, alpha});
+        AbilityArcBlocks(state->origin, radius, (angle - halfAngle) * DEG2RAD,
+                         (angle + halfAngle) * DEG2RAD, 1.6f,
+                         (Color){182, 216, 255, alpha}, ring);
     }
 }
 
@@ -116,14 +191,18 @@ void AbilityRendererDraw(const AbilitySystem *abilities)
         if (laser->hit) {
             Vector2 normal = {-laser->direction.y, laser->direction.x};
 
-            DrawCircleV(laser->endpoint, 4.2f, (Color){255, 74, 24, 62});
-            DrawCircleV(laser->endpoint, 2.5f, (Color){255, 161, 43, 205});
-            DrawCircleV(laser->endpoint, 1.1f, (Color){255, 248, 203, 255});
+            AbilityContactBlocks(laser->endpoint, 4.2f, 1.0f,
+                                 (Color){255, 74, 24, 62});
+            AbilityContactBlocks(laser->endpoint, 2.5f, 1.0f,
+                                 (Color){255, 161, 43, 205});
+            AbilityContactBlocks(laser->endpoint, 1.1f, 1.0f,
+                                 (Color){255, 248, 203, 255});
             DrawLineEx(Vector2Add(laser->endpoint, Vector2Scale(normal, -3.6f)),
                        Vector2Add(laser->endpoint, Vector2Scale(normal, 3.6f)),
                        0.55f, (Color){255, 203, 106, 210});
         } else {
-            DrawCircleV(laser->endpoint, 0.9f, (Color){255, 198, 88, 180});
+            AbilityContactBlocks(laser->endpoint, 0.9f, 1.0f,
+                                 (Color){255, 198, 88, 180});
         }
     }
 
@@ -151,11 +230,28 @@ void AbilityRendererDrawReticle(const AbilitySystem *abilities,
     crosshair = explosion->cooldown <= 0.0f ? (Color){255, 232, 118, 230}
                                             : (Color){180, 188, 199, 190};
 
-    DrawCircleLinesV(aimPosition, 4.0f, crosshair);
-    DrawLineV((Vector2){aimPosition.x - 6.0f, aimPosition.y},
-              (Vector2){aimPosition.x + 6.0f, aimPosition.y}, crosshair);
-    DrawLineV((Vector2){aimPosition.x, aimPosition.y - 6.0f},
-              (Vector2){aimPosition.x, aimPosition.y + 6.0f}, crosshair);
+    /* Four corner ticks rather than a drawn circle: the crosshair is the one
+       piece of interface sitting in the world, and a smooth ring is the most
+       obvious thing in the frame that is not made of cells. */
+    {
+        float arm = 2.0f;
+        float gap = 3.0f;
+        int corner;
+
+        for (corner = 0; corner < 4; ++corner) {
+            float signX = (corner & 1) ? 1.0f : -1.0f;
+            float signY = (corner & 2) ? 1.0f : -1.0f;
+
+            DrawLineV((Vector2){aimPosition.x + signX * gap,
+                                aimPosition.y + signY * gap},
+                      (Vector2){aimPosition.x + signX * (gap + arm),
+                                aimPosition.y + signY * gap}, crosshair);
+            DrawLineV((Vector2){aimPosition.x + signX * gap,
+                                aimPosition.y + signY * gap},
+                      (Vector2){aimPosition.x + signX * gap,
+                                aimPosition.y + signY * (gap + arm)}, crosshair);
+        }
+    }
 }
 
 void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
@@ -176,15 +272,15 @@ void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
                    (Color){255, 72, 24, 230});
         DrawLineEx(laser->origin, laser->endpoint, 0.68f,
                    (Color){255, 238, 166, 255});
-        DrawCircleV(laser->endpoint, laser->hit ? 3.0f : 1.0f,
-                    (Color){255, 126, 34, laser->hit ? 230 : 150});
+        AbilityContactBlocks(laser->endpoint, laser->hit ? 3.0f : 1.0f, 1.0f,
+                             (Color){255, 126, 34, laser->hit ? 230 : 150});
     }
     if (cryo->active) {
         DrawLineEx(cryo->origin, cryo->endpoint, 2.4f,
                    (Color){69, 177, 242, 70});
         DrawLineEx(cryo->origin, cryo->endpoint, 1.15f,
                    (Color){104, 205, 255, 130});
-        DrawCircleV(cryo->endpoint, cryo->hit ? 2.4f : 0.8f,
-                    (Color){167, 232, 255, 130});
+        AbilityContactBlocks(cryo->endpoint, cryo->hit ? 2.4f : 0.8f, 1.0f,
+                             (Color){167, 232, 255, 130});
     }
 }

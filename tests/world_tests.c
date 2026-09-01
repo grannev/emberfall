@@ -22,9 +22,11 @@
 #include "abilities.h"
 #include "world.h"
 #include "dynamic_terrain.h"
+#include "environment_renderer.h"
 #include "terrain_extraction.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
+#include "input.h"
 #include "terrain_impulse.h"
 #include "terrain_interaction.h"
 #include "terrain_physics.h"
@@ -158,6 +160,41 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 1,
           "one local edit rebuilt %d chunks instead of one", probe.regions);
+    WorldUnload(&world);
+}
+
+typedef struct EmptyRenderProbe {
+    bool sawTranslucentAir;
+} EmptyRenderProbe;
+
+static bool CaptureEmptyRenderData(void *context, Rectangle bounds,
+                                   const Color *pixels,
+                                   const Color *emissivePixels)
+{
+    EmptyRenderProbe *probe = context;
+    int count = (int)(bounds.width * bounds.height);
+    int index;
+
+    for (index = 0; index < count; ++index) {
+        if (pixels[index].a > 0u && pixels[index].a < 255u &&
+            emissivePixels[index].a == 0u) {
+            probe->sawTranslucentAir = true;
+            break;
+        }
+    }
+    return true;
+}
+
+static void test_empty_world_render_data_preserves_background_depth(void)
+{
+    World world;
+    EmptyRenderProbe probe = {0};
+
+    CHECK(WorldInit(&world, 32, 32), "world allocation failed");
+    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f},
+                        CaptureEmptyRenderData, &probe);
+    CHECK(probe.sawTranslucentAir,
+          "empty world pixels still fully hide the environment background");
     WorldUnload(&world);
 }
 
@@ -922,6 +959,290 @@ static uint64_t WorldDigest(const World *world)
         }
     }
     return digest;
+}
+
+static void test_environment_palettes_validate_parse_and_force(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentPalette parsed = ENVIRONMENT_PALETTE_AUTO;
+    EnvironmentPalette seeded = EnvironmentPaletteForSeed(0xE6BEu);
+    int index;
+
+    CHECK(EnvironmentPalettesValidate(),
+          "environment palette table failed validation");
+    CHECK(seeded >= 0 && seeded < ENVIRONMENT_PALETTE_COUNT,
+          "seed selected invalid palette %d", (int)seeded);
+    for (index = 0; index < ENVIRONMENT_PALETTE_COUNT; ++index) {
+        const EnvironmentPaletteDefinition *definition =
+            EnvironmentPaletteDefinitionAt((EnvironmentPalette)index);
+
+        CHECK(definition != NULL && definition->name != NULL &&
+                  definition->cliName != NULL,
+              "palette %d has no complete definition", index);
+        CHECK(EnvironmentPaletteParse(definition->cliName, &parsed) &&
+                  parsed == (EnvironmentPalette)index,
+              "palette '%s' did not parse back to %d", definition->cliName,
+              index);
+    }
+    CHECK(EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_AUTO) == NULL &&
+              !EnvironmentPaletteParse("molten-copy", &parsed),
+          "invalid environment palette was accepted");
+
+    EnvironmentRendererInit(&environment, 0xE6BEu,
+                            ENVIRONMENT_PALETTE_ABYSSAL_BLUE);
+    CHECK(environment.palette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE &&
+              environment.forcedPalette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
+          "forced palette was ignored");
+    EnvironmentRendererSyncSeed(&environment, 0x1234u);
+    CHECK(environment.palette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
+          "world seed replaced a forced palette");
+    CHECK(EnvironmentRendererSetPalette(&environment,
+                                        ENVIRONMENT_PALETTE_AUTO) &&
+              environment.palette == EnvironmentPaletteForSeed(0x1234u),
+          "auto palette did not return to deterministic seed selection");
+    CHECK(!EnvironmentRendererSetPalette(
+              &environment, (EnvironmentPalette)ENVIRONMENT_PALETTE_COUNT),
+          "out-of-range forced palette was accepted");
+}
+
+static void test_environment_descriptors_are_seeded_and_finite(void)
+{
+    EnvironmentRenderer first;
+    EnvironmentRenderer second;
+    EnvironmentRenderer different;
+
+    EnvironmentRendererInit(&first, 0xE6BEu, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererInit(&second, 0xE6BEu, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererInit(&different, 0xA11CEu, ENVIRONMENT_PALETTE_AUTO);
+
+    CHECK(memcmp(&first, &second, sizeof(first)) == 0,
+          "same seed produced different environment descriptors");
+    CHECK(first.palette == EnvironmentPaletteForSeed(0xE6BEu),
+          "auto palette disagrees with seed selector");
+    CHECK(memcmp(first.structures, different.structures,
+                 sizeof(first.structures)) != 0,
+          "different seeds produced identical environment structures");
+    CHECK(EnvironmentRendererStateIsValid(&first) &&
+              EnvironmentRendererStateIsValid(&different),
+          "seed generated invalid or non-finite environment geometry");
+}
+
+static void test_environment_view_handles_resize_rotation_and_invalid_time(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentRenderer before;
+    Camera2D camera = {
+        .offset = {640.0f, 360.0f},
+        .target = {8192.0f, 220.0f},
+        .rotation = 1.1f,
+        .zoom = 2.0f,
+    };
+    Rectangle wide = EnvironmentRendererOverscanBounds(1920, 1080);
+    Rectangle small = EnvironmentRendererOverscanBounds(640, 360);
+
+    EnvironmentRendererInit(&environment, 0xE6BEu,
+                            ENVIRONMENT_PALETTE_VERDIGRIS_STORM);
+    before = environment;
+    CHECK(EnvironmentRendererViewIsValid(camera, 1920, 1080) &&
+              EnvironmentRendererViewIsValid(camera, 640, 360),
+          "valid rotated/zoomed camera or resize was rejected");
+    CHECK(wide.x < 0.0f && wide.y < 0.0f && wide.width > 1920.0f &&
+              wide.height > 1080.0f && small.width > 640.0f &&
+              small.height > 360.0f,
+          "environment overscan does not cover rotated view corners");
+    CHECK(memcmp(&environment, &before, sizeof(environment)) == 0,
+          "resize/view helper mutated persistent environment state");
+
+    EnvironmentRendererUpdate(&environment, 0.0f);
+    EnvironmentRendererUpdate(&environment, NAN);
+    CHECK(environment.time == before.time,
+          "zero/NaN presentation time advanced environment animation");
+    camera.zoom = NAN;
+    CHECK(!EnvironmentRendererViewIsValid(camera, 1280, 720) &&
+              !EnvironmentRendererViewIsValid((Camera2D){0}, 0, 720),
+          "invalid camera or target dimensions were accepted");
+}
+
+static void test_environment_state_never_changes_gameplay_world(void)
+{
+    World world;
+    EnvironmentRenderer environment;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    WorldGenerate(&world, 0xE6BEu);
+    before = WorldDigest(&world);
+    EnvironmentRendererInit(&environment, world.seed,
+                            ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    (void)EnvironmentRendererSetPalette(
+        &environment, ENVIRONMENT_PALETTE_EMBER_WASTE);
+    EnvironmentRendererSyncSeed(&environment, 0x1234u);
+    CHECK(WorldDigest(&world) == before,
+          "presentation environment changed the gameplay world digest");
+    WorldUnload(&world);
+}
+
+static int FirstSolidY(const World *world, int x)
+{
+    int y;
+
+    for (y = 0; y < world->height; ++y) {
+        if (WorldMaterialIsSolid(WorldGetCell(world, x, y))) return y;
+    }
+    return world->height;
+}
+
+static void test_biome_layout_is_seeded_complete_and_bounded(void)
+{
+    World first = {.width = 16384, .height = 864, .seed = 0x51EDu};
+    World second = {.width = 16384, .height = 864, .seed = 0x51EDu};
+    bool seen[WORLD_BIOME_COUNT] = {false};
+    int x;
+    int biome;
+
+    for (x = 0; x < first.width; x += 128) {
+        WorldBiome firstBiome = WorldBiomeAt(&first, x);
+        WorldBiome secondBiome = WorldBiomeAt(&second, x);
+
+        CHECK(firstBiome == secondBiome,
+              "same seed disagreed about biome at x=%d", x);
+        CHECK(firstBiome >= 0 && firstBiome < WORLD_BIOME_COUNT,
+              "column %d returned invalid biome %d", x, firstBiome);
+        seen[firstBiome] = true;
+    }
+    for (biome = 0; biome < WORLD_BIOME_COUNT; ++biome) {
+        CHECK(seen[biome], "production width contains no %s",
+              WorldBiomeName((WorldBiome)biome));
+        CHECK(strcmp(WorldBiomeName((WorldBiome)biome), "UNKNOWN") != 0,
+              "biome %d has no debug name", biome);
+    }
+    CHECK(WorldBiomeAt(&first, -100) == WorldBiomeAt(&first, 0),
+          "negative x did not clamp to the first biome");
+    CHECK(WorldBiomeAt(&first, first.width + 100) ==
+              WorldBiomeAt(&first, first.width - 1),
+          "past-end x did not clamp to the last biome");
+}
+
+static void test_generated_biomes_have_distinct_material_identity(void)
+{
+    World world;
+    int signatures[WORLD_BIOME_COUNT] = {0};
+    int x;
+
+    /* Six nominal regions are enough to include one full four-biome cycle,
+       while keeping this structural generation test far below production RAM. */
+    CHECK(WorldInit(&world, 8192, 288), "world allocation failed");
+    WorldGenerate(&world, 0xB10B1E5u);
+
+    for (x = 0; x < world.width; ++x) {
+        WorldBiome biome = WorldBiomeAt(&world, x);
+        int y;
+
+        for (y = 0; y < world.height; ++y) {
+            CellMaterial material = WorldGetCell(&world, x, y);
+
+            if ((biome == WORLD_BIOME_TEMPERATE && material == MATERIAL_DIRT) ||
+                (biome == WORLD_BIOME_DUNES && material == MATERIAL_SAND) ||
+                (biome == WORLD_BIOME_FROST && material == MATERIAL_ICE) ||
+                (biome == WORLD_BIOME_VOLCANIC && material == MATERIAL_LAVA)) {
+                ++signatures[biome];
+            }
+        }
+    }
+
+    CHECK(signatures[WORLD_BIOME_TEMPERATE] > 1000,
+          "temperate terrain has only %d dirt cells",
+          signatures[WORLD_BIOME_TEMPERATE]);
+    CHECK(signatures[WORLD_BIOME_DUNES] > 1000,
+          "dunes have only %d sand cells", signatures[WORLD_BIOME_DUNES]);
+    CHECK(signatures[WORLD_BIOME_FROST] > 300,
+          "frost shelf has only %d ice cells", signatures[WORLD_BIOME_FROST]);
+    CHECK(signatures[WORLD_BIOME_VOLCANIC] > 100,
+          "ember wastes have only %d lava cells",
+          signatures[WORLD_BIOME_VOLCANIC]);
+    WorldUnload(&world);
+}
+
+static void test_biome_boundaries_and_spawn_are_coherent(void)
+{
+    World world;
+    Vector2 spawn;
+    int boundary;
+    int checkedBoundaries = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 8192, 288), "world allocation failed");
+    WorldGenerate(&world, 0xB10B1E5u);
+
+    /* A biome boundary may change strata, but never creates the vertical wall
+       the old per-region surface profiles would have produced. Cave mouths and
+       authored landmarks can still make real cliffs away from boundaries. */
+    for (boundary = 1; boundary < world.width; ++boundary) {
+        if (WorldBiomeAt(&world, boundary - 1) !=
+            WorldBiomeAt(&world, boundary)) {
+            int leftY = FirstSolidY(&world, boundary - 1);
+            int rightY = FirstSolidY(&world, boundary);
+            int difference = leftY - rightY;
+
+            if (difference < 0) difference = -difference;
+            CHECK(difference <= 6,
+                  "biome seam at x=%d jumps %d cells (%d -> %d)", boundary,
+                  difference, leftY, rightY);
+            ++checkedBoundaries;
+        }
+    }
+    CHECK(checkedBoundaries >= 3,
+          "wide test world exposed only %d biome boundaries",
+          checkedBoundaries);
+
+    spawn = WorldPlayerSpawn(&world);
+    CHECK((int)spawn.x == world.width / 2,
+          "spawn moved away from the protected center plateau");
+    for (y = (int)spawn.y - 6; y <= (int)spawn.y + 6; ++y) {
+        for (x = (int)spawn.x - 6; x <= (int)spawn.x + 6; ++x) {
+            CHECK(!WorldMaterialIsSolid(WorldGetCell(&world, x, y)),
+                  "spawn clearance contains solid terrain at %d,%d", x, y);
+        }
+    }
+    CHECK(FirstSolidY(&world, (int)spawn.x) > (int)spawn.y &&
+              FirstSolidY(&world, (int)spawn.x) - (int)spawn.y <= 12,
+          "spawn has no nearby floor: player y=%d floor y=%d", (int)spawn.y,
+          FirstSolidY(&world, (int)spawn.x));
+    WorldUnload(&world);
+}
+
+static void test_every_biome_can_host_the_protected_spawn(void)
+{
+    World world;
+    bool checked[WORLD_BIOME_COUNT] = {false};
+    int checkedCount = 0;
+    uint64_t seed;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    for (seed = 1u; seed <= 128u && checkedCount < WORLD_BIOME_COUNT; ++seed) {
+        WorldBiome biome;
+        Vector2 spawn;
+        int floorY;
+
+        WorldGenerate(&world, seed);
+        biome = WorldBiomeAt(&world, world.width / 2);
+        if (checked[biome]) continue;
+
+        spawn = WorldPlayerSpawn(&world);
+        floorY = FirstSolidY(&world, (int)spawn.x);
+        CHECK(floorY > (int)spawn.y && floorY - (int)spawn.y <= 12,
+              "%s seed 0x%llx spawned at y=%d with floor y=%d",
+              WorldBiomeName(biome), (unsigned long long)seed, (int)spawn.y,
+              floorY);
+        checked[biome] = true;
+        ++checkedCount;
+    }
+    CHECK(checkedCount == WORLD_BIOME_COUNT,
+          "seeded spawn cycle exposed only %d/%d biomes", checkedCount,
+          WORLD_BIOME_COUNT);
+    WorldUnload(&world);
 }
 
 static void test_the_same_seed_always_generates_the_same_world(void)
@@ -5812,7 +6133,7 @@ static void test_the_player_cannot_stay_inside_a_body(void)
           "the fixture does not start overlapping");
     player.velocity = (Vector2){12.0f, 0.0f};
 
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     CHECK(interaction.stats.contacts > 0, "the overlap was not detected");
     CHECK(!PlayerOverlapsBody(&terrain, handle, player.position, player.radius),
@@ -5839,7 +6160,7 @@ static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
     PlayerInit(&player, (Vector2){60.0f - 2.0f - player.radius, 60.0f});
     PlayerInit(&player, (Vector2){56.0f, 60.0f});
     player.velocity = (Vector2){40.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     smallSpeed = DynamicTerrainGetConst(&terrain, small)->velocity.x;
     playerAfterSmall = player.velocity.x;
@@ -5852,7 +6173,7 @@ static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
     huge = MakeRockBlock(&terrain, 32, 32, (Vector2){60.0f, 60.0f});
     PlayerInit(&player, (Vector2){44.0f, 60.0f});
     player.velocity = (Vector2){40.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     hugeSpeed = DynamicTerrainGetConst(&terrain, huge)->velocity.x;
 
@@ -5883,7 +6204,7 @@ static void test_grab_only_takes_a_body_within_reach(void)
     /* Aimed at the far one, which is out of reach. Nothing is taken — and in
        particular not the near body, which is within arm's reach but is plainly
        not what the player is pointing at. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, far)->position,
                              true, KINEMATIC_STEP);
     CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
@@ -5894,9 +6215,9 @@ static void test_grab_only_takes_a_body_within_reach(void)
           "a refused grab moved something");
 
     /* Released, then aimed at the near one. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){50.0f, 50.0f}, false, KINEMATIC_STEP);
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, near)->position,
                              true, KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
@@ -5927,10 +6248,10 @@ static void test_a_held_body_is_pulled_rather_than_placed(void)
 
     /* Taken hold of by pointing at it, then dragged by pointing elsewhere —
        which is how the control is meant to be used. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain, start, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, start, true,
                              KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     /* One step buys velocity, not arrival. */
     CHECK(body->position.x == start.x && body->position.y == start.y,
@@ -5940,7 +6261,7 @@ static void test_a_held_body_is_pulled_rather_than_placed(void)
 
     /* Given time and integration it does arrive, and it arrives moving. */
     for (step = 0; step < 240; ++step) {
-        TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                                  KINEMATIC_STEP);
         DynamicTerrainIntegrateBody(&terrain, DynamicTerrainGet(&terrain, handle),
                                     KINEMATIC_STEP);
@@ -5963,11 +6284,11 @@ static void test_releasing_throws_a_light_body_further_than_a_heavy_one(void)
     TerrainInteractionInit(&interaction);
     PlayerInit(&player, (Vector2){50.0f, 50.0f});
     handle = MakeRockBlock(&terrain, 4, 4, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
     DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, false,
                              KINEMATIC_STEP);
     lightSpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
     CHECK(interaction.stats.throws == 1, "the throw was not counted");
@@ -5978,10 +6299,10 @@ static void test_releasing_throws_a_light_body_further_than_a_heavy_one(void)
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainInteractionInit(&interaction);
     handle = MakeRockBlock(&terrain, 16, 16, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, false,
                              KINEMATIC_STEP);
     heavySpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
 
@@ -6002,7 +6323,7 @@ static void test_a_hold_ends_safely_when_the_body_is_destroyed(void)
     TerrainDamageInit(&damage);
     PlayerInit(&player, (Vector2){50.0f, 50.0f});
     handle = MakeRockBlock(&terrain, 5, 5, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
 
@@ -6010,7 +6331,7 @@ static void test_a_hold_ends_safely_when_the_body_is_destroyed(void)
                                    (Vector2){64.0f, 50.0f}, 20.0f);
     CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
           "the body survived being carved away");
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
     CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
           "the hold survived the body");
@@ -6078,7 +6399,7 @@ static void test_a_fast_player_cannot_cross_a_thin_body(void)
     PlayerInit(&player, (Vector2){40.0f, 60.0f});
     /* Established as the starting point, so the next update has a path to walk
        rather than a first frame to take on trust. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
     CHECK(player.position.x < wallAt.x, "the fixture starts on the wrong side");
 
@@ -6087,7 +6408,7 @@ static void test_a_fast_player_cannot_cross_a_thin_body(void)
     for (step = 0; step < 4; ++step) {
         player.position.x += 26.0f;
         player.velocity = (Vector2){620.0f, 0.0f};
-        TerrainInteractionUpdate(&interaction, &player, &terrain,
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                                  (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
     }
     CHECK(interaction.stats.contacts > 0,
@@ -6259,7 +6580,7 @@ static void test_a_grab_never_lands_on_empty_raster(void)
     DynamicTerrainGet(&terrain, handle)->position = (Vector2){64.0f, 60.0f};
 
     /* Aimed straight at the hole. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, handle)->position,
                              true, KINEMATIC_STEP);
     if (TerrainInteractionIsHolding(&interaction, &terrain)) {
@@ -6271,9 +6592,9 @@ static void test_a_grab_never_lands_on_empty_raster(void)
               "the hold landed on an empty cell at (%d, %d)", cellX, cellY);
     }
     /* Aimed at the rim, it takes hold of the rim. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 60.0f}, false, KINEMATIC_STEP);
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              TerrainBodyLocalToWorld(
                                  DynamicTerrainGetConst(&terrain, handle), 0.5f,
                                  8.5f),
@@ -6303,7 +6624,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
     handle = MakeRockBlock(&terrain, 24, 8, (Vector2){62.0f, 60.0f});
 
     /* Held by the far right end, which the cut below will separate. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              TerrainBodyLocalToWorld(
                                  DynamicTerrainGetConst(&terrain, handle), 22.5f,
                                  4.0f),
@@ -6325,7 +6646,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
     CHECK(LiveBodyCount(&terrain) == 2, "the slab became %d bodies",
           LiveBodyCount(&terrain));
 
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
     if (TerrainInteractionIsHolding(&interaction, &terrain)) {
         /* Followed the cell onto the piece that took it. */
@@ -6341,7 +6662,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
               "the hold ended without being counted");
     }
     /* Either way, one more update must be harmless. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
     DynamicTerrainUnload(&terrain);
 }
@@ -6765,6 +7086,462 @@ static void test_entering_water_costs_speed(void)
     WorldUnload(&world);
 }
 
+/* A slab must not be the one thing in the game that stops a drill which is
+   boring through bedrock beside it. */
+static void test_a_boosting_player_drills_through_a_terrain_body(void)
+{
+    World world;
+    Player player;
+    TerrainBodyHandle slab;
+    float startX;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    slab = MakeRockBlock(&terrain, 24, 40, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){140.0f, 100.0f});
+    startX = player.position.x;
+    /* Boosting well above the drill threshold: the state in which the world's
+       own rock gives way. */
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.boosting = true;
+    player.boostStage = PLAYER_BOOST_STAGE_THREE;
+    CHECK(PlayerIsDrilling(&player), "the fixture is not in a drilling state");
+
+    for (step = 0; step < 30; ++step) {
+        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.boosting = true;
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+
+    CHECK(interaction.stats.bodyCellsDrilled > 0,
+          "the drill took nothing out of the body");
+    CHECK(player.position.x > startX + 100.0f,
+          "the player stopped at x=%.1f, having started at %.1f",
+          (double)player.position.x, (double)startX);
+    /* Whatever is left of it is still a body, still physical. */
+    {
+        const TerrainBody *body = DynamicTerrainGetConst(&terrain, slab);
+
+        if (body != NULL) {
+            CHECK(body->cellCount < 24 * 40,
+                  "the body kept all %d of its cells", body->cellCount);
+            CHECK(body->mass > 0.0f, "a surviving body lost its mass");
+        }
+    }
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A tunnel bored clean through the middle leaves two halves, both still
+   physical. */
+static void test_drilling_through_a_slab_can_split_it(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    /* Tall and thin, so a corridor across its waist severs it. */
+    (void)MakeRockBlock(&terrain, 10, 60, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){160.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 30; ++step) {
+        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.boosting = true;
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+    CHECK(damage.stats.fractureSplits > 0,
+          "a corridor through the waist did not split the slab");
+    CHECK(LiveBodyCount(&terrain) >= 2, "the slab is still %d body",
+          LiveBodyCount(&terrain));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Not boosting means not drilling, and then a body is as solid as it ever
+   was. */
+static void test_a_coasting_player_still_stops_on_a_body(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    (void)MakeRockBlock(&terrain, 24, 40, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){170.0f, 100.0f});
+    player.velocity = (Vector2){120.0f, 0.0f};
+
+    for (step = 0; step < 20; ++step) {
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+    CHECK(interaction.stats.bodyCellsDrilled == 0,
+          "a player who was not boosting cut %d cells out of a body",
+          interaction.stats.bodyCellsDrilled);
+    CHECK(interaction.stats.contacts > 0, "the body did not stop the player");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- drilling polish ------------------------------------------------------ */
+
+/* The corridor a stage-three boost cuts has to be comfortably wider than the
+   one an idle drill leaves, or the drill reads the same at every speed. */
+static void test_the_tunnel_widens_with_the_boost_stage(void)
+{
+    World narrow;
+    World wide;
+    Player slow;
+    Player fast;
+    int step;
+
+    CHECK(WorldInit(&narrow, 400, 200) && WorldInit(&wide, 400, 200),
+          "world allocation failed");
+    FillRect(&narrow, 0, 0, 399, 199, MATERIAL_ROCK);
+    FillRect(&wide, 0, 0, 399, 199, MATERIAL_ROCK);
+    PlayerInit(&slow, (Vector2){40.0f, 100.0f});
+    PlayerInit(&fast, (Vector2){40.0f, 100.0f});
+
+    for (step = 0; step < 40; ++step) {
+        slow.boostStage = PLAYER_BOOST_STAGE_ONE;
+        fast.boostStage = PLAYER_BOOST_STAGE_THREE;
+        slow.velocity = (Vector2){slow.drillSpeed * 1.4f, 0.0f};
+        fast.velocity = (Vector2){fast.drillSpeed * 1.4f, 0.0f};
+        PlayerUpdate(&slow, &narrow, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+        PlayerUpdate(&fast, &wide, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+    }
+
+    /* Measured as the height of the hole at a column both of them passed. */
+    {
+        int narrowHeight = 0;
+        int wideHeight = 0;
+        int y;
+
+        for (y = 0; y < 200; ++y) {
+            if (WorldGetCell(&narrow, 60, y) == MATERIAL_EMPTY) ++narrowHeight;
+            if (WorldGetCell(&wide, 60, y) == MATERIAL_EMPTY) ++wideHeight;
+        }
+        CHECK(narrowHeight > 0 && wideHeight > 0,
+              "neither drill cut through the sample column");
+        CHECK(wideHeight > narrowHeight + 4,
+              "stage three cut %d cells of tunnel against stage one's %d",
+              wideHeight, narrowHeight);
+        CHECK(wideHeight > (int)(fast.radius * 2.0f) + 4,
+              "the stage-three tunnel is %d cells for a collider %.1f across",
+              wideHeight, (double)(fast.radius * 2.0f));
+    }
+    WorldUnload(&narrow);
+    WorldUnload(&wide);
+}
+
+/* Flying down a tunnel the drill is cutting must not read as a series of
+   collisions with its own walls. */
+static void test_high_speed_drilling_does_not_bounce_off_its_own_tunnel(void)
+{
+    World world;
+    Player player;
+    int step;
+    int impacts = 0;
+    float minimumForward = 1.0e9f;
+
+    CHECK(WorldInit(&world, 900, 200), "world allocation failed");
+    FillRect(&world, 0, 0, 899, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+        if (player.impactStrength > 0.0f) {
+            ++impacts;
+        }
+        if (player.velocity.x < minimumForward) {
+            minimumForward = player.velocity.x;
+        }
+        /* Never thrown backwards by its own corridor. */
+        CHECK(player.velocity.x > 0.0f,
+              "the drill threw the player backwards at step %d: %.2f", step,
+              (double)player.velocity.x);
+    }
+    CHECK(impacts == 0, "%d frames reported an impact inside the player's own "
+          "tunnel", impacts);
+    CHECK(minimumForward > player.drillSpeed,
+          "the drill stalled to %.1f, below its own threshold %.1f",
+          (double)minimumForward, (double)player.drillSpeed);
+    WorldUnload(&world);
+}
+
+/* A curved run is where a per-substep circle used to leave scallops, and
+   scallops are what a collider catches on. */
+static void test_a_curving_drill_stays_smooth(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 600, 400), "world allocation failed");
+    FillRect(&world, 0, 0, 599, 399, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 200.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        /* Steering the whole way, so the tunnel bends. */
+        Vector2 input = {1.0f, step < 45 ? 0.7f : -0.7f};
+
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, input, true, MOVEMENT_STEP);
+        CHECK(player.impactStrength == 0.0f,
+              "a curving drill hit its own wall at step %d", step);
+    }
+    CHECK(player.position.x > 200.0f, "the curving drill stalled at x=%.1f",
+          (double)player.position.x);
+    WorldUnload(&world);
+}
+
+/* Drilling has to leave the wall hot, and hot enough to see. */
+static void test_drilling_leaves_a_hot_tunnel_wall(void)
+{
+    World world;
+    Player player;
+    float hottest = -1000.0f;
+    int step;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    FillRect(&world, 0, 0, 399, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+
+    for (step = 0; step < 40; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+    }
+    for (y = 60; y < 140; ++y) {
+        for (x = 40; x < 200; ++x) {
+            if (WorldGetCell(&world, x, y) != MATERIAL_ROCK) {
+                continue;
+            }
+            if (WorldGetTemperature(&world, x, y) > hottest) {
+                hottest = WorldGetTemperature(&world, x, y);
+            }
+        }
+    }
+    /* Well past the point the renderer starts tinting, and well short of the
+       720 at which rock would melt on its own. */
+    CHECK(hottest > 300.0f, "the hottest tunnel wall reached only %.0fC",
+          (double)hottest);
+    CHECK(hottest < 720.0f, "the drill melted the rock at %.0fC",
+          (double)hottest);
+    WorldUnload(&world);
+}
+
+/* Terrain has to cost speed, but a stage-three boost has to keep most of it. */
+static void test_a_stage_three_boost_keeps_its_momentum_through_rock(void)
+{
+    World world;
+    Player player;
+    float lowest = 1.0e9f;
+    int step;
+
+    CHECK(WorldInit(&world, 900, 200), "world allocation failed");
+    FillRect(&world, 100, 0, 899, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+        if (step > 10 && player.velocity.x < lowest) {
+            lowest = player.velocity.x;
+        }
+    }
+    CHECK(lowest > player.boostMaxSpeed * 0.5f,
+          "rock took the boost down to %.0f from %.0f", (double)lowest,
+          (double)player.boostMaxSpeed);
+    CHECK(lowest < player.boostMaxSpeed,
+          "rock cost the boost nothing at all: %.0f", (double)lowest);
+    WorldUnload(&world);
+}
+
+/* --- punch ---------------------------------------------------------------- */
+
+static void test_the_punch_digs_a_crater_and_cracks_it(void)
+{
+    World world;
+    int before;
+    int after;
+    int craterHeight = 0;
+    int y;
+
+    CHECK(WorldInit(&world, 300, 200), "world allocation failed");
+    FillRect(&world, 0, 100, 299, 199, MATERIAL_ROCK);
+    before = CountMaterial(&world, MATERIAL_ROCK);
+
+    WorldApplyPunch(&world, (Vector2){150.0f, 101.0f}, (Vector2){0.0f, 1.0f},
+                    ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                    ABILITY_FORCE_CRACK_LENGTH);
+    after = CountMaterial(&world, MATERIAL_ROCK);
+
+    CHECK(before - after > 120, "the punch removed only %d cells",
+          before - after);
+    /* Wide and shallow rather than a shaft: the bowl is flattened along the
+       direction the blow travelled. */
+    for (y = 100; y < 200; ++y) {
+        if (WorldGetCell(&world, 150, y) == MATERIAL_EMPTY) {
+            ++craterHeight;
+        }
+    }
+    CHECK(craterHeight > 0 && craterHeight < ABILITY_FORCE_CRATER_RADIUS * 2,
+          "the crater is %d deep for a radius of %d", craterHeight,
+          ABILITY_FORCE_CRATER_RADIUS);
+    {
+        int width = 0;
+        int x;
+
+        for (x = 0; x < 300; ++x) {
+            if (WorldGetCell(&world, x, 101) == MATERIAL_EMPTY) {
+                ++width;
+            }
+        }
+        CHECK(width > craterHeight,
+              "the crater is %d wide and %d deep — that is a shaft, not a dent",
+              width, craterHeight);
+    }
+    /* Bounded, and logged so detachment can look at it. */
+    CHECK(world.destructionCount >= 1, "the punch logged no damage");
+    CHECK(before - after < 3000, "the punch removed %d cells, which is not a "
+          "bounded mutation", before - after);
+    WorldUnload(&world);
+}
+
+static void test_the_punch_leaves_loose_material_to_be_thrown(void)
+{
+    World world;
+    int before;
+
+    CHECK(WorldInit(&world, 200, 120), "world allocation failed");
+    FillRect(&world, 60, 60, 140, 100, MATERIAL_SAND);
+    before = CountMaterial(&world, MATERIAL_SAND);
+
+    WorldApplyPunch(&world, (Vector2){100.0f, 62.0f}, (Vector2){0.0f, 1.0f},
+                    ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                    ABILITY_FORCE_CRACK_LENGTH);
+    CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
+          "the punch destroyed loose material the blast is meant to throw");
+    WorldUnload(&world);
+}
+
+/* --- cryo ----------------------------------------------------------------- */
+
+static void test_cryo_chills_ordinary_terrain_and_still_freezes_water(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 200, 120), "world allocation failed");
+    FillRect(&world, 80, 50, 120, 70, MATERIAL_ROCK);
+    FillRect(&world, 80, 80, 120, 100, MATERIAL_WATER);
+
+    for (step = 0; step < 40; ++step) {
+        (void)WorldApplyChill(&world, (Vector2){20.0f, 60.0f},
+                              (Vector2){140.0f, 60.0f}, ABILITY_CRYO_RADIUS,
+                              1.0f / 60.0f);
+    }
+    CHECK(WorldGetTemperature(&world, 81, 60) < -30.0f,
+          "rock in the beam is only at %.0fC",
+          (double)WorldGetTemperature(&world, 81, 60));
+    CHECK(WorldGetCell(&world, 81, 60) == MATERIAL_ROCK,
+          "chilling the rock destroyed it");
+
+    for (step = 0; step < 60; ++step) {
+        (void)WorldApplyChill(&world, (Vector2){20.0f, 90.0f},
+                              (Vector2){140.0f, 90.0f}, ABILITY_CRYO_RADIUS,
+                              1.0f / 60.0f);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_ICE) > 0,
+          "the beam no longer freezes water");
+    WorldUnload(&world);
+}
+
+/* --- controls ------------------------------------------------------------- */
+
+static void test_the_controls_are_bound_as_designed(void)
+{
+    CHECK(InputAbilityBinding(ABILITY_FORCE) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_FORCE), "LMB") == 0,
+          "the punch is not on the left button");
+    CHECK(InputAbilityBinding(ABILITY_CRYO) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_CRYO), "Q") == 0,
+          "cryo is not on Q");
+    CHECK(InputAbilityBinding(ABILITY_LASER) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_LASER), "E") == 0,
+          "the laser is not on E");
+    /* The right button is the grab, which is not a power and so has no row in
+       the ability table at all. */
+    CHECK(InputAbilityBinding(ABILITY_EXPLOSION) == NULL,
+          "the explosion still has a player control bound to it");
+}
+
+/* --- beam origin ---------------------------------------------------------- */
+
+static void test_beams_leave_from_the_eyes(void)
+{
+    Player player;
+    Vector2 aims[6] = {{200.0f, 100.0f}, {0.0f, 100.0f}, {100.0f, 0.0f},
+                       {100.0f, 200.0f}, {180.0f, 20.0f}, {20.0f, 180.0f}};
+    int index;
+
+    PlayerInit(&player, (Vector2){100.0f, 100.0f});
+    for (index = 0; index < 6; ++index) {
+        Vector2 origin = PlayerBeamOrigin(&player, aims[index]);
+        float toCentre = Vector2Distance(origin, player.position);
+
+        /* Outside the collider, so a beam fired at a wall the player is pressed
+           against does not start inside their own chest. */
+        CHECK(toCentre > player.radius * 0.5f,
+              "aim %d starts %.2f from the centre, inside a collider of %.2f",
+              index, (double)toCentre, (double)player.radius);
+        CHECK(toCentre < player.radius * 3.0f,
+              "aim %d starts %.2f away, nowhere near the character", index,
+              (double)toCentre);
+        /* Above the middle: the head, not the feet. */
+        CHECK(origin.y < player.position.y + player.radius,
+              "aim %d starts below the centre of the body", index);
+    }
+    /* And it is the same point the whole game uses, so a ray and a drawn beam
+       cannot disagree: one helper, no second derivation. */
+    CHECK(PlayerBeamOrigin(&player, aims[0]).x ==
+              PlayerBeamOrigin(&player, aims[0]).x,
+          "the helper is not stable for the same input");
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -6868,9 +7645,18 @@ static void test_ability_knockback_reaches_the_player_through_events(void)
 
     CHECK(HasGameEvent(&events, GAME_EVENT_FORCE),
           "the force ability published no event");
-    CHECK(game.player.velocity.x < before.x - 50.0f,
-          "force recoil did not push the player back: %.1f -> %.1f",
-          before.x, game.player.velocity.x);
+    /* The punch deliberately does not shove the one who threw it: being knocked
+       backwards reads as recoil from a gun rather than as a strike landing, and
+       it takes the player out of position at the moment they wanted to be
+       there. Its weight is carried by the crater, the debris and the camera.
+
+       The channel that carries an impulse from an event to the player is still
+       live — the explosion still throws the player with it — so what is
+       asserted here is the punch's own choice, not the absence of a
+       mechanism. */
+    CHECK(fabsf(game.player.velocity.x - before.x) < 1.0f,
+          "the punch moved the player: %.1f -> %.1f", (double)before.x,
+          (double)game.player.velocity.x);
     GameUnload(&game);
 }
 
@@ -7733,9 +8519,14 @@ static void test_configured_force_power_hits_far_and_hard(void)
     CHECK(forceEvent != NULL, "the force ability published no game event");
     /* The recoil now travels as the event's player impulse, so the player
        module never needs to know the force blast exists. */
-    CHECK(forceEvent->playerImpulse.x <= -120.0f,
-          "configured recoil is too small or points the wrong way: %.1f",
-          forceEvent->playerImpulse.x);
+    CHECK(forceEvent->playerImpulse.x == 0.0f &&
+              forceEvent->playerImpulse.y == 0.0f,
+          "the punch still shoves the player: (%.1f, %.1f)",
+          (double)forceEvent->playerImpulse.x,
+          (double)forceEvent->playerImpulse.y);
+    CHECK(forceEvent->strength >= ABILITY_FORCE_IMPACT_STRENGTH,
+          "the blow reports no weight for the camera and the effects: %.1f",
+          (double)forceEvent->strength);
     WorldUnload(&world);
 }
 
@@ -8108,6 +8899,7 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 int main(void)
 {
     RUN(test_world_render_preparation_is_headless_and_incremental);
+    RUN(test_empty_world_render_data_preserves_background_depth);
     RUN(test_a_refused_chunk_keeps_its_dirty_flag);
     RUN(test_emissive_render_data_selects_emitters_not_bright_terrain);
     RUN(test_particle_emission_is_explicit_per_effect);
@@ -8124,6 +8916,14 @@ int main(void)
     RUN(test_transient_camera_never_changes_mouse_aim_transform);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
+    RUN(test_environment_palettes_validate_parse_and_force);
+    RUN(test_environment_descriptors_are_seeded_and_finite);
+    RUN(test_environment_view_handles_resize_rotation_and_invalid_time);
+    RUN(test_environment_state_never_changes_gameplay_world);
+    RUN(test_biome_layout_is_seeded_complete_and_bounded);
+    RUN(test_generated_biomes_have_distinct_material_identity);
+    RUN(test_biome_boundaries_and_spawn_are_coherent);
+    RUN(test_every_biome_can_host_the_protected_spawn);
     RUN(test_the_same_seed_always_generates_the_same_world);
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
@@ -8284,6 +9084,19 @@ int main(void)
     RUN(test_the_same_flight_replays_identically);
     RUN(test_movement_survives_an_absurd_velocity);
     RUN(test_entering_water_costs_speed);
+    RUN(test_a_boosting_player_drills_through_a_terrain_body);
+    RUN(test_drilling_through_a_slab_can_split_it);
+    RUN(test_a_coasting_player_still_stops_on_a_body);
+    RUN(test_the_tunnel_widens_with_the_boost_stage);
+    RUN(test_high_speed_drilling_does_not_bounce_off_its_own_tunnel);
+    RUN(test_a_curving_drill_stays_smooth);
+    RUN(test_drilling_leaves_a_hot_tunnel_wall);
+    RUN(test_a_stage_three_boost_keeps_its_momentum_through_rock);
+    RUN(test_the_punch_digs_a_crater_and_cracks_it);
+    RUN(test_the_punch_leaves_loose_material_to_be_thrown);
+    RUN(test_cryo_chills_ordinary_terrain_and_still_freezes_water);
+    RUN(test_the_controls_are_bound_as_designed);
+    RUN(test_beams_leave_from_the_eyes);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

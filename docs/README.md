@@ -13,6 +13,8 @@ API, правила симуляции и порядок проверки изм
   модель персонажа и camera shake.
 - [Динамический terrain](dynamic-terrain.md) — модель отделившихся кусков
   породы, лимиты памяти, handles и масса/инерция.
+- [Представление мира](world-presentation.md) — procedural sky, три palettes,
+  parallax/haze, camera contract и bounded renderer budgets.
 - [Способности и эффекты](powers-and-effects.md) — лазер, взрыв, частицы и
   процедурный звук.
 - [Справочник API](api-reference.md) — структуры и публичные функции модулей.

@@ -3,13 +3,15 @@ PKG_CONFIG ?= pkg-config
 
 APP := emberfall
 WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
-	src/world_thermal.c src/world_generation.c src/world_lighting.c \
+	src/world_thermal.c src/world_generation.c src/world_biomes.c src/world_lighting.c \
 	src/world_effects.c src/material_render.c src/world_render_data.c \
 	src/world_components.c
 SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
-	src/renderer.c src/world_renderer.c src/presentation_fx.c src/camera_feedback.c \
-	src/presentation_fx_renderer.c src/terrain_body_render_data.c \
+	src/renderer.c src/environment_renderer.c src/world_renderer.c \
+	src/presentation_fx.c src/camera_feedback.c \
+	src/presentation_fx_renderer.c src/terrain_grab_renderer.c \
+	src/terrain_body_render_data.c \
 	src/terrain_body_renderer.c \
 	src/player.c src/player_renderer.c src/abilities.c src/ability_renderer.c \
 	src/dynamic_terrain.c src/terrain_extraction.c src/terrain_physics.c \
@@ -17,17 +19,24 @@ SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	src/particles.c src/particle_renderer.c src/audio.c
 # The headless suite links CPU-side gameplay only: no window or GL context.
 TEST_APP := emberfall-tests
-TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c \
+# input.c is linked for its binding table alone — the tests assert what the
+# controls are, and that table is the single place they are defined. Nothing in
+# the suite polls a key.
+TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
 	src/player.c src/abilities.c src/particles.c src/dynamic_terrain.c \
 	src/terrain_extraction.c src/terrain_physics.c src/terrain_detach.c \
 	src/terrain_impulse.c src/terrain_damage.c src/terrain_interaction.c \
-	src/presentation_fx.c src/camera_feedback.c src/terrain_body_render_data.c
+	src/presentation_fx.c src/camera_feedback.c src/terrain_body_render_data.c \
+	src/environment_renderer.c
 BENCH_APP := emberfall-bench
-BENCH_SOURCES := bench/benchmark.c $(WORLD_SOURCES) src/player.c \
-	src/game_events.c src/dynamic_terrain.c src/terrain_physics.c \
+# The traversal scenario drives the real GameUpdate, so the benchmark links the
+# whole headless gameplay stack rather than a hand-rolled imitation of it.
+BENCH_SOURCES := bench/benchmark.c $(WORLD_SOURCES) src/player.c src/game.c \
+	src/game_events.c src/abilities.c src/particles.c \
+	src/dynamic_terrain.c src/terrain_physics.c \
 	src/terrain_extraction.c src/terrain_detach.c src/terrain_impulse.c \
-	src/terrain_damage.c
+	src/terrain_damage.c src/terrain_interaction.c
 HEADERS := $(wildcard src/*.h)
 CONFIG ?= release
 RUN_ARGS ?=

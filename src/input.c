@@ -15,12 +15,19 @@ typedef struct AbilityBinding {
     int mouseButton;  /* MOUSE_BUTTON_* or -1 */
 } AbilityBinding;
 
-static const AbilityBinding ABILITY_BINDINGS[ABILITY_COUNT] = {
-    {ABILITY_LASER, "LMB", 0, MOUSE_BUTTON_LEFT},
-    {ABILITY_EXPLOSION, "RMB", 0, MOUSE_BUTTON_RIGHT},
-    {ABILITY_FORCE, "Q", KEY_Q, -1},
-    {ABILITY_CRYO, "E", KEY_E, -1},
+/* Only the powers the player actually has. The table is a list of bindings
+   rather than one entry per ability on purpose: an ability with no row here has
+   no control, and that is how a mechanic can stay in the engine — reachable by
+   tests, by world reactions, by whatever gameplay wants it later — without
+   being something the player can fire. Explosion is exactly that. */
+static const AbilityBinding ABILITY_BINDINGS[] = {
+    {ABILITY_FORCE, "LMB", 0, MOUSE_BUTTON_LEFT},
+    {ABILITY_CRYO, "Q", KEY_Q, -1},
+    {ABILITY_LASER, "E", KEY_E, -1},
 };
+
+#define ABILITY_BINDING_COUNT \
+    (int)(sizeof(ABILITY_BINDINGS) / sizeof(ABILITY_BINDINGS[0]))
 
 /* Held abilities want the button state, one-shot abilities want the press
    edge. Reading that from the ability's own definition means a new power
@@ -41,12 +48,14 @@ const char *InputAbilityBinding(AbilityId id)
 {
     int index;
 
-    for (index = 0; index < ABILITY_COUNT; ++index) {
+    for (index = 0; index < ABILITY_BINDING_COUNT; ++index) {
         if (ABILITY_BINDINGS[index].id == id) {
             return ABILITY_BINDINGS[index].label;
         }
     }
-    return "?";
+    /* NULL rather than a placeholder: an unbound ability has no control to
+       show, and a caller listing the controls has to be able to tell. */
+    return NULL;
 }
 
 AppInput InputPoll(const World *world, Camera2D camera)
@@ -68,13 +77,15 @@ AppInput InputPoll(const World *world, Camera2D camera)
     if (IsKeyDown(KEY_S)) input.game.move.y += 1.0f;
     input.game.boostHeld = IsKeyDown(KEY_LEFT_SHIFT) ||
                            IsKeyDown(KEY_RIGHT_SHIFT);
-    for (index = 0; index < ABILITY_COUNT; ++index) {
+    for (index = 0; index < ABILITY_BINDING_COUNT; ++index) {
         const AbilityBinding *binding = &ABILITY_BINDINGS[index];
 
         input.game.ability[binding->id] = AbilityRequested(binding);
     }
-    /* F, the one key near the movement hand that no power had taken. */
-    input.game.grabHeld = IsKeyDown(KEY_F);
+    /* The right hand's other button. Grab is held rather than pressed, and it
+       is not a power: no cooldown, no world effect of its own, nothing to put
+       in the ability table. */
+    input.game.grabHeld = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
     input.game.regeneratePressed = IsKeyPressed(KEY_R);
     input.toggleDebugPressed = IsKeyPressed(KEY_F1);
     return input;

@@ -26,17 +26,20 @@ TerrainInteractionConfig TerrainInteractionDefaultConfig(void)
     config.contactRestitution = 0.05f;
     config.maxContactImpulse = 9000.0f;
 
-    config.grabDistance = 26.0f;
-    config.holdDistance = 15.0f;
+    /* Reach across a good part of the screen. The power is telekinesis: having
+       to stand next to a slab to lift it makes it a pair of hands instead. */
+    config.grabDistance = 180.0f;
+    config.grabAimTolerance = 34.0f;
+    config.holdDistance = 170.0f;
     /* Strong enough to lift a slab of a few hundred cells against gravity, and
        capped so a boulder can still be too heavy to pick up: the cap divided by
        mass is the most the hold can accelerate anything, and once that falls
        below gravity the body can only be dragged along the ground. That is the
        whole difficulty curve, and it comes out of mass rather than out of a
        rule about what may be carried. */
-    config.pullStrength = 12000.0f;
-    config.pullDamping = 1200.0f;
-    config.maxPullForce = 400000.0f;
+    config.pullStrength = 26000.0f;
+    config.pullDamping = 2400.0f;
+    config.maxPullForce = 900000.0f;
     config.throwImpulse = 14000.0f;
     return config;
 }
@@ -63,7 +66,7 @@ void TerrainInteractionResetStats(TerrainInteractionSystem *system)
         return;
     }
     {
-        TerrainInteractionStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainInteractionStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         system->stats = empty;
     }
@@ -185,10 +188,53 @@ static Vector2 TerrainInteractionRotate(const TerrainBody *body, Vector2 local)
                      local.x * sine + local.y * cosine};
 }
 
+/* A boosting player meets a body the way they meet bedrock: by cutting through
+   it. Returns true when the body was cut, in which case there is no contact to
+   resolve — the material that would have stopped the player is gone.
+
+   The carve goes through TerrainDamage, so the mass, centre of mass and inertia
+   are recomputed, a body cut clean through fractures, and an emptied one is
+   freed. None of that is reimplemented here. */
+static bool TerrainInteractionDrill(TerrainInteractionSystem *system,
+                                    const Player *player,
+                                    DynamicTerrainSystem *terrain,
+                                    TerrainDamageSystem *damage, int slot)
+{
+    TerrainBody *body = &terrain->bodies[slot];
+    TerrainBodyHandle handle = {(uint16_t)slot, body->generation};
+    float radius = PlayerDrillRadius(player);
+    int before;
+    int removed;
+
+    if (damage == NULL || !PlayerIsDrilling(player)) {
+        return false;
+    }
+    before = body->cellCount;
+    removed = TerrainDamageApplyCircle(damage, terrain, handle,
+                                       player->position, radius);
+    if (removed <= 0) {
+        return false;
+    }
+    system->stats.bodyCellsDrilled += removed;
+    if (DynamicTerrainGetConst(terrain, handle) != NULL) {
+        /* Still there, so the walls of the cut can glow like any other tunnel
+           wall. A body that was freed or fractured away has nothing to heat. */
+        TerrainDamageHeatAround(damage, terrain, handle, player->position,
+                                radius, player->drillHeat);
+    } else {
+        ++system->stats.bodiesDrilled;
+    }
+    if (removed >= before) {
+        ++system->stats.bodiesDrilled;
+    }
+    return true;
+}
+
 /* One body against the player: separate them, then trade momentum. */
 static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
                                       Player *player,
-                                      DynamicTerrainSystem *terrain, int slot)
+                                      DynamicTerrainSystem *terrain,
+                                      TerrainDamageSystem *damage, int slot)
 {
     TerrainBody *body = &terrain->bodies[slot];
     TerrainBodyHandle handle = {(uint16_t)slot, body->generation};
@@ -226,6 +272,14 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     if (!TerrainInteractionProbe(terrain, handle, body, localCentre,
                                  player->radius, &localContact, &localNormal,
                                  &depth)) {
+        return false;
+    }
+    /* Asked only once the player is actually touching the body: carving on
+       proximity would eat slabs the player merely flew past. */
+    if (TerrainInteractionDrill(system, player, terrain, damage, slot)) {
+        return false;
+    }
+    if (!body->active) {
         return false;
     }
 
@@ -323,7 +377,8 @@ static bool TerrainInteractionGrabPoint(const DynamicTerrainSystem *terrain,
    true when anything touched. */
 static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
                                          Player *player,
-                                         DynamicTerrainSystem *terrain)
+                                         DynamicTerrainSystem *terrain,
+                                         TerrainDamageSystem *damage)
 {
     bool touched = false;
     int slot;
@@ -332,7 +387,7 @@ static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
         if (!terrain->bodies[slot].active) {
             continue;
         }
-        if (TerrainInteractionResolve(system, player, terrain, slot)) {
+        if (TerrainInteractionResolve(system, player, terrain, damage, slot)) {
             touched = true;
         }
     }
@@ -354,7 +409,8 @@ static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
    prevent. */
 static void TerrainInteractionSweep(TerrainInteractionSystem *system,
                                     Player *player,
-                                    DynamicTerrainSystem *terrain)
+                                    DynamicTerrainSystem *terrain,
+                                    TerrainDamageSystem *damage)
 {
     Vector2 target = player->position;
     float deltaX;
@@ -364,7 +420,7 @@ static void TerrainInteractionSweep(TerrainInteractionSystem *system,
     int substep;
 
     if (!system->hasPreviousPosition) {
-        (void)TerrainInteractionResolveAll(system, player, terrain);
+        (void)TerrainInteractionResolveAll(system, player, terrain, damage);
         system->previousPosition = player->position;
         system->hasPreviousPosition = true;
         return;
@@ -391,7 +447,7 @@ static void TerrainInteractionSweep(TerrainInteractionSystem *system,
         player->position = (Vector2){
             system->previousPosition.x + deltaX * amount,
             system->previousPosition.y + deltaY * amount};
-        if (TerrainInteractionResolveAll(system, player, terrain)) {
+        if (TerrainInteractionResolveAll(system, player, terrain, damage)) {
             /* Stopped here. The resolve has already moved them clear and taken
                its share of the momentum; carrying on to the end of the path
                would undo both. */
@@ -439,8 +495,10 @@ static TerrainBodyHandle TerrainInteractionPick(const DynamicTerrainSystem *terr
                 (nearestY - aim.y) * (nearestY - aim.y);
         /* Pointed at, not merely standing nearby. Taking hold of whatever
            happened to be within arm's reach while the player was clearly
-           looking somewhere else is the kind of control that feels haunted. */
-        if (toAim > config->grabDistance * config->grabDistance) {
+           looking somewhere else is the kind of control that feels haunted —
+           but the tolerance is its own number, and a forgiving one, because a
+           slab is a large thing to have to hit exactly. */
+        if (toAim > config->grabAimTolerance * config->grabAimTolerance) {
             continue;
         }
         if (best.generation != 0u && toAim >= bestDistance) {
@@ -603,14 +661,19 @@ static void TerrainInteractionHold(TerrainInteractionSystem *system,
                                         system->holdLocalPoint.y);
     system->holdWorldPoint = grabWorld;
 
+    /* The cursor *is* the target. Where the mouse is, the body goes — that is
+       what makes this telekinesis rather than carrying something at arm's
+       length, and it is the whole feel of the power. The leash only bites when
+       the cursor is further out than the hold can reach, and then the body
+       still travels along the same line, just not all the way. */
     dx = aim.x - playerAt.x;
     dy = aim.y - playerAt.y;
     length = sqrtf(dx * dx + dy * dy);
-    if (length < 0.001f) {
-        target = (Vector2){playerAt.x, playerAt.y - system->config.holdDistance};
-    } else {
+    if (length > system->config.holdDistance && length > 0.001f) {
         target = (Vector2){playerAt.x + dx / length * system->config.holdDistance,
                            playerAt.y + dy / length * system->config.holdDistance};
+    } else {
+        target = aim;
     }
 
     pointVelocity = TerrainBodyPointVelocity(body, grabWorld);
@@ -635,7 +698,8 @@ static void TerrainInteractionHold(TerrainInteractionSystem *system,
 }
 
 void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
-                              DynamicTerrainSystem *terrain, Vector2 aimWorld,
+                              DynamicTerrainSystem *terrain,
+                              TerrainDamageSystem *damage, Vector2 aimWorld,
                               bool grabHeld, float deltaTime)
 {
     Vector2 localPoint = {0.0f, 0.0f};
@@ -647,7 +711,7 @@ void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
 
     /* Contact first: the hold should pull against a body that is already where
        the player will find it this frame. */
-    TerrainInteractionSweep(system, player, terrain);
+    TerrainInteractionSweep(system, player, terrain, damage);
 
     system->hovered = TerrainInteractionPick(terrain, &system->config,
                                              player->position, aimWorld,
