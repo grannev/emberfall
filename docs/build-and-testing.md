@@ -159,8 +159,9 @@ make clean
 
 ## Smoke-test
 
-`--smoke-test` запускает обычное raylib-приложение, но подставляет короткую
-последовательность input и завершает его через несколько frames. Без явного
+`--smoke-test` запускает обычное raylib-приложение, но подставляет
+детерминированную scripted input sequence и завершает его после renderer,
+dynamic-terrain gameplay и полного movement acceptance phases. Без явного
 `--seed` он использует фиксированный seed, иначе reference screenshot нечего
 сравнивать между запусками.
 
@@ -170,6 +171,15 @@ seed текущего мира строкой `SEED`, и его достаточ
 ```sh
 make run RUN_ARGS="--seed 0x1234"
 ```
+
+Palette выбирается из seed и не входит в gameplay state. Для screenshot или
+сравнения presets её можно зафиксировать:
+
+```sh
+make run RUN_ARGS="--seed 0x1234 --palette ember"
+```
+
+Допустимые значения: `auto`, `ember`, `abyss`, `storm`.
 
 Проверяются:
 
@@ -187,6 +197,9 @@ make run RUN_ARGS="--seed 0x1234"
   static-world smoke shelf; scene/emissive cache делает ровно два initial
   uploads и после `FreeBody` оставляет ноль cached textures/bytes;
 - resize offscreen targets не пересоздаёт body-local textures.
+- procedural environment рисуется в scene и explicit emissive pass, корректно
+  переживает resize, transient camera rotation и high-speed zoom-out;
+- smoke принудительно проходит все три palettes и требует mask `0x7`.
 
 Проверка fire создаёт отдельный мир 48×32, зажигает в центре dirt-блока область
 3×3 и выполняет 240 simulation ticks. Тест требует, чтобы большая часть грунта
@@ -194,7 +207,9 @@ make run RUN_ARGS="--seed 0x1234"
 без изменения основной сгенерированной карты.
 
 При отсутствии любого события процесс возвращает код 2 и печатает значения
-проваленных checks. При успехе создаётся `build/emberfall-smoke.png`.
+проваленных checks. При успехе создаются `build/emberfall-smoke.png` и три
+palette reference: `build/emberfall-smoke-ember.png`,
+`build/emberfall-smoke-abyss.png`, `build/emberfall-smoke-storm.png`.
 
 Smoke-test требует display и OpenGL context. В headless Linux:
 

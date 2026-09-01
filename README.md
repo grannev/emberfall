@@ -4,7 +4,8 @@
 в оранжевом плаще свободно летает по разрушаемому миру, режет грунт лазером,
 замораживает материю криолучом, наносит силовые удары и создаёт взрывы. Это
 самостоятельный прототип без заимствованных персонажей, ассетов, уровней или
-lore.
+lore. Разрушаемый foreground находится перед процедурным индустриальным
+горизонтом с параллаксом, дымкой и редкими emissive-ориентирами.
 
 Подробная документация для разработчиков: [docs/README.md](docs/README.md).
 
@@ -39,6 +40,14 @@ make
 make run
 ```
 
+Environment palette обычно выбирается детерминированно из seed мира. Для
+снимков и визуальной настройки её можно зафиксировать без изменения gameplay:
+
+```sh
+make run RUN_ARGS="--seed 0x1234 --palette ember"
+# также: --palette abyss, --palette storm или --palette auto
+```
+
 Debug-сборка с `-g -O0`:
 
 ```sh
@@ -65,11 +74,12 @@ make ubsan
 make profile
 ```
 
-Короткий автоматический smoke-test открывает игру на несколько кадров,
+Автоматический smoke-test запускает детерминированную scripted session,
 проверяет реакцию water/lava, попадание лазера, взрыв, player collision,
 boost-бурение через rock, локализацию fire, засыпание chunks и renderer
-извлечённого движущегося TerrainBody с освобождением texture cache, затем
-сохраняет `build/emberfall-smoke.png`:
+извлечённого движущегося TerrainBody с освобождением texture cache, resize,
+camera feedback и все три environment palettes. Он сохраняет общий
+`build/emberfall-smoke.png` и отдельные `emberfall-smoke-{ember,abyss,storm}.png`:
 
 ```sh
 make run RUN_ARGS=--smoke-test
@@ -169,7 +179,9 @@ chunks видно в debug HUD.
   `Texture2D`; renderer-owned `PresentationFxSystem` превращает выбранные
   `GameEvent` в bounded transient visual primitives, которые никогда не меняют
   мир; `TerrainBodyRenderer` кэширует по две point-filtered texture для
-  отделённых кусков и вращает их вокруг simulation center of mass; persistent
+  отделённых кусков и вращает их вокруг simulation center of mass;
+  `EnvironmentRenderer` держит только фиксированные procedural descriptors и
+  рисует scene/emissive background без нового render pass; persistent
   full-world pixel buffer не используется
 - `src/audio.c` — процедурно синтезированные звуки лазера, взрыва, реакций,
   бура и переходов между ступенями без внешних audio-ассетов
@@ -187,4 +199,6 @@ chunks видно в debug HUD.
 рисуются отдельными прямоугольниками: каждый видимый dirty chunk собирается в
 stack staging 32×32, загружается в world texture через `UpdateTextureRec`, а
 текстура масштабируется камерой с `TEXTURE_FILTER_POINT`, сохраняя чёткие
-границы cells.
+границы cells. Empty texels оставляют глубинный cave tint полупрозрачным, чтобы
+renderer-owned environment был виден сквозь воздух; чем глубже клетка, тем
+плотнее tint и тем меньше фон конкурирует с foreground.

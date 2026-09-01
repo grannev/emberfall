@@ -29,7 +29,13 @@ static MaterialRenderSample MaterialPixel(const World *world, const Cell *cell,
     if (cell->material == MATERIAL_EMPTY) {
         /* Empty space is a depth gradient rather than a flat colour. */
         unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
-        Color color = (Color){5, glow, (unsigned char)(18 + glow), 255};
+        /* Keep the old cave-depth tint as a translucent veil: the procedural
+           environment remains visible through air while world lighting can
+           still darken tunnels and preserve foreground contrast. */
+        unsigned char depthAlpha =
+            (unsigned char)(150 + (y * 70) / world->height);
+        Color color =
+            (Color){5, glow, (unsigned char)(18 + glow), depthAlpha};
 
         color.r = (unsigned char)(red * (float)color.r);
         color.g = (unsigned char)(green * (float)color.g);

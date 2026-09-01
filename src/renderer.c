@@ -299,12 +299,15 @@ static void RendererFilterBloom(Renderer *renderer)
     EndTextureMode();
 }
 
-bool RendererInit(Renderer *renderer, const GameState *game)
+bool RendererInit(Renderer *renderer, const GameState *game,
+                  EnvironmentPalette environmentPalette)
 {
     if (renderer == NULL || game == NULL) {
         return false;
     }
     *renderer = (Renderer){0};
+    EnvironmentRendererInit(&renderer->environment, game->worldSeed,
+                            environmentPalette);
     PresentationFxInit(&renderer->effects);
     TerrainBodyRendererInit(&renderer->terrainBodies);
     (void)RendererLoadBloomShaders(renderer);
@@ -325,6 +328,7 @@ void RendererUpdatePresentation(Renderer *renderer,
     }
     /* Existing instances age before this frame's events are consumed, so a
        newly spawned flash is presented once at full intensity. */
+    EnvironmentRendererUpdate(&renderer->environment, deltaTime);
     PresentationFxUpdate(&renderer->effects, deltaTime);
     (void)PresentationFxConsumeEvents(&renderer->effects, events);
 }
@@ -337,6 +341,13 @@ void RendererClearPresentation(Renderer *renderer)
     PresentationFxClear(&renderer->effects);
 }
 
+bool RendererSetEnvironmentPalette(Renderer *renderer,
+                                   EnvironmentPalette palette)
+{
+    return renderer != NULL &&
+           EnvironmentRendererSetPalette(&renderer->environment, palette);
+}
+
 void RendererRenderScene(Renderer *renderer, GameState *game,
                          Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible)
@@ -344,10 +355,12 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     bool bloomReady;
     const PresentationFxStats *fxStats;
     const TerrainBodyRendererStats *terrainStats;
+    const EnvironmentRendererStats *environmentStats;
 
     if (renderer == NULL || game == NULL) {
         return;
     }
+    EnvironmentRendererSyncSeed(&renderer->environment, game->worldSeed);
     /* Comparing dimensions every frame is cheap and catches windowed,
        fullscreen and platform-driven resize paths. Allocation only happens
        when the dimensions really changed. */
@@ -372,6 +385,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
+    EnvironmentRendererDrawScene(&renderer->environment, presentationCamera,
+                                 renderer->targetWidth,
+                                 renderer->targetHeight);
     BeginMode2D(presentationCamera);
         WorldRendererDraw(&renderer->world, &game->world, visible);
         TerrainBodyRendererDrawScene(&renderer->terrainBodies,
@@ -396,6 +412,10 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
         BeginTextureMode(renderer->emissiveTarget);
         ClearBackground(BLANK);
+        EnvironmentRendererDrawEmissive(&renderer->environment,
+                                        presentationCamera,
+                                        renderer->targetWidth,
+                                        renderer->targetHeight);
         BeginMode2D(presentationCamera);
             WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
             TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
@@ -419,6 +439,16 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     renderer->lastFrame.terrainBodyTextureUpdates = terrainStats->textureUpdates;
     renderer->lastFrame.terrainBodyTextureMemoryBytes =
         terrainStats->textureMemoryBytes;
+    environmentStats =
+        EnvironmentRendererStatistics(&renderer->environment);
+    renderer->lastFrame.environmentSceneDrawCalls =
+        environmentStats->sceneDrawCalls;
+    renderer->lastFrame.environmentEmissiveDrawCalls =
+        environmentStats->emissiveDrawCalls;
+    renderer->lastFrame.environmentEmissiveContributors =
+        environmentStats->emissiveContributors;
+    renderer->lastFrame.environmentPalette = environmentStats->palette;
+    renderer->lastFrame.environmentViewValid = environmentStats->viewValid;
 }
 
 void RendererComposite(const Renderer *renderer)

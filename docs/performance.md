@@ -614,3 +614,23 @@ Normal-frame CPU work структурно ограничено проходом
 обновляются in-place. Headless `make bench` не rasterizes raylib geometry,
 поэтому wall-clock speedup/overhead для GPU здесь не заявляется; benchmark
 нужен для подтверждения неизменности simulation workload counters.
+
+## EF-ENV-001 — procedural environment budget
+
+`EnvironmentRenderer` не добавляет texture, shader или render pass. Он хранит
+47 фиксированных descriptors по 20 B (940 B) и небольшой state/stats block —
+около 1 KiB CPU суммарно. Runtime generation происходит только при init/смене
+world seed; steady-state heap allocations, texture uploads и world scans равны
+нулю.
+
+Xvfb smoke при 1280×720 показал фиксированный максимум **76 scene + 11
+emissive primitive submissions**, все три palettes (`env_mask=0x7`), корректный
+resize, transient rotation/zoom feedback и принудительный high-speed zoom-out.
+Pipeline остался на 5 offscreen passes / 4 targets, bloom — 640×360. llvmpipe
+submission timing сильно зависит от software rasterizer и приведён только как
+информационный: два полных актуальных smoke дали 24.6..25.8 ms average и
+56.2..56.9 ms maximum.
+
+Headless simulation benchmark не rasterizes environment. Его counters должны
+оставаться неизменными, потому что `EnvironmentRenderer` не входит в
+`GameState`; отдельный wall-clock renderer speedup/slowdown не заявляется.
