@@ -73,6 +73,134 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
     }
 }
 
+/* What a blow can dent: material that holds a shape. Sand and the other loose
+   solids are thrown by the cone instead, which is what the force blast has
+   always done with them — cratering a dune would be destroying the very thing
+   the blow is supposed to send flying. */
+static bool WorldPunchCanDent(CellMaterial material)
+{
+    return MaterialIsSolid(material) && !MaterialIsDynamic(material);
+}
+
+/* One fracture ray. Walks outward removing a thin line of solid material and
+   stops the moment it leaves solid ground, so a crack never crosses open air to
+   reappear somewhere else. Returns the cells removed. */
+static int WorldCrackRay(World *world, Vector2 from, float angle, int length,
+                         int *minimumX, int *minimumY, int *maximumX,
+                         int *maximumY)
+{
+    float stepX = cosf(angle);
+    float stepY = sinf(angle);
+    int removed = 0;
+    int step;
+    int misses = 0;
+
+    for (step = 1; step <= length; ++step) {
+        int x = (int)floorf(from.x + stepX * (float)step);
+        int y = (int)floorf(from.y + stepY * (float)step);
+        int width = step * 3 < length ? 1 : 0;
+        int offset;
+
+        if (!WorldInBounds(world, x, y)) {
+            break;
+        }
+        if (!WorldPunchCanDent(WorldMaterialAt(world, x, y))) {
+            /* A gap is allowed, a chasm is not: a crack that kept going through
+               open air would draw a line across the sky. */
+            if (++misses > 2) {
+                break;
+            }
+            continue;
+        }
+        misses = 0;
+        /* Wider near the impact, hairline at the tip. */
+        for (offset = -width; offset <= width; ++offset) {
+            int crackX = x + (int)(-stepY * (float)offset);
+            int crackY = y + (int)(stepX * (float)offset);
+
+            if (!WorldInBounds(world, crackX, crackY) ||
+                !WorldPunchCanDent(WorldMaterialAt(world, crackX, crackY))) {
+                continue;
+            }
+            WorldSetCellRaw(world, crackX, crackY, MATERIAL_EMPTY);
+            ++removed;
+            if (crackX < *minimumX) *minimumX = crackX;
+            if (crackX > *maximumX) *maximumX = crackX;
+            if (crackY < *minimumY) *minimumY = crackY;
+            if (crackY > *maximumY) *maximumY = crackY;
+        }
+    }
+    return removed;
+}
+
+void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
+                     int crackCount, int crackLength)
+{
+    int centreX = (int)floorf(at.x);
+    int centreY = (int)floorf(at.y);
+    int minimumX = centreX;
+    int minimumY = centreY;
+    int maximumX = centreX;
+    int maximumY = centreY;
+    float facing;
+    bool cut = false;
+    int crack;
+    int y;
+
+    if (world == NULL || world->cells == NULL || radius <= 0) {
+        return;
+    }
+    facing = atan2f(direction.y, direction.x);
+
+    /* The bowl. Flattened along the direction of travel, so a blow that lands
+       on the ground scoops a wide shallow dish rather than boring a shaft. */
+    for (y = centreY - radius; y <= centreY + radius; ++y) {
+        int x;
+
+        for (x = centreX - radius; x <= centreX + radius; ++x) {
+            float dx = ((float)x + 0.5f - at.x);
+            float dy = ((float)y + 0.5f - at.y);
+            float along = dx * cosf(facing) + dy * sinf(facing);
+            float across = -dx * sinf(facing) + dy * cosf(facing);
+            float shaped = along * along * 2.4f + across * across;
+
+            if (shaped > (float)(radius * radius) ||
+                !WorldInBounds(world, x, y)) {
+                continue;
+            }
+            if (!WorldPunchCanDent(WorldMaterialAt(world, x, y))) {
+                continue;
+            }
+            WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+            cut = true;
+            if (x < minimumX) minimumX = x;
+            if (x > maximumX) maximumX = x;
+            if (y < minimumY) minimumY = y;
+            if (y > maximumY) maximumY = y;
+        }
+    }
+
+    /* Fractures out of the rim, spread around the face the blow struck. The
+       variation is drawn from the world's own stream, so a replay of the same
+       seed and inputs cracks the same rock the same way. */
+    for (crack = 0; crack < crackCount; ++crack) {
+        float spread = ((float)crack / (float)(crackCount > 1 ? crackCount - 1
+                                                             : 1)) -
+                       0.5f;
+        float jitter = (float)RngRange(&world->rng, -18, 18) * 0.0175f;
+        float angle = facing + spread * 2.6f + jitter;
+
+        if (WorldCrackRay(world, at, angle, crackLength, &minimumX, &minimumY,
+                          &maximumX, &maximumY) > 0) {
+            cut = true;
+        }
+    }
+
+    if (cut) {
+        WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);
+    }
+}
+
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
 {
     int destroyed = 0;

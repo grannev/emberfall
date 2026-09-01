@@ -44,6 +44,24 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 - Player collision uses substeps and must not tunnel; boost drilling must not
   leave the collider embedded. The substep count follows the displacement and is
   capped, so one frame's work is bounded however fast the player is going.
+- The drill cuts the frame's whole path in one swept carve, before the collision
+  substeps run. Cutting per substep re-carved almost the same ground sixty times
+  a frame, and — worse — left the collider's leading edge against fresh material
+  every step, so a boosting player bounced off the walls of their own tunnel.
+  Clear the corridor first, then travel down it.
+- A boosting player cuts through a terrain body exactly as they cut through the
+  static world, via TerrainDamage. A detached slab must not be the one thing in
+  the game that stops a drill boring through bedrock beside it.
+- Drill heat is a fraction of each material's own phase threshold, never an
+  absolute temperature: rock melts at 720 and dirt catches at 175, so one number
+  either fails to tint the rock or sets the dirt alight.
+- An ability with no row in the input binding table has no player control. That
+  is how a mechanic stays in the engine — reachable by tests and by world
+  reactions — without being something the player can fire. Explosion is exactly
+  that, and must not regain a binding.
+- Beams start at `PlayerBeamOrigin`, used by the gameplay ray and the drawn beam
+  alike. A beam cast from the chest and drawn from the head reads as a bug the
+  moment the player aims down.
 - Thrust is decomposed along and across the direction of travel: forward is
   acceleration, backward is braking and is worth more than acceleration, across
   is steering and is what speed takes away. Steering authority falls to a

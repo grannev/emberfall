@@ -36,7 +36,8 @@ void PlayerInit(Player *player, Vector2 position)
     player->boostStageTime = 0.0f;
     player->boostGrace = 0.0f;
     player->drillSpeed = 92.0f;
-    player->drillResistance = 0.004f;
+    player->drillResistance = 0.010f;
+    player->drillHeat = 0.72f;
     /* A third of the steering left at top speed. Enough to pick a line through
        a cavern at six hundred cells a second, not enough to turn a corner: the
        cost of going that fast is that the world has to be read further ahead. */
@@ -151,61 +152,272 @@ static int PlayerCutFree(Player *player, World *world, Vector2 at)
     return removed;
 }
 
-static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
+Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
+{
+    Vector2 eye;
+    float dx;
+    float dy;
+    float length;
+
+    if (player == NULL) {
+        return aim;
+    }
+    /* The head sits above the middle of the collider, and leans forward with
+       the same posture the renderer draws: at full boost the character is laid
+       out along the direction of travel, and the eyes go with them. */
+    eye = (Vector2){player->position.x +
+                        (player->facingRight ? 1.0f : -1.0f) * player->radius *
+                            0.35f * player->leanAmount,
+                    player->position.y - player->radius * 0.55f};
+    dx = aim.x - eye.x;
+    dy = aim.y - eye.y;
+    length = sqrtf(dx * dx + dy * dy);
+    if (length < 0.001f) {
+        return eye;
+    }
+    dx /= length;
+    dy /= length;
+    {
+        Vector2 out = {eye.x + dx * player->radius * 0.85f,
+                       eye.y + dy * player->radius * 0.85f};
+        float clearance = sqrtf((out.x - player->position.x) *
+                                    (out.x - player->position.x) +
+                                (out.y - player->position.y) *
+                                    (out.y - player->position.y));
+
+        /* Aiming straight down, the offset to the head and the push along the
+           aim point opposite ways and very nearly cancel, leaving the beam
+           starting inside the character. Whatever the eye happens to be, the
+           muzzle has to end up clear of the collider. */
+        if (clearance < player->radius * 0.9f) {
+            out = (Vector2){player->position.x + dx * player->radius * 0.9f,
+                            player->position.y + dy * player->radius * 0.9f};
+        }
+        return out;
+    }
+}
+
+bool PlayerIsDrilling(const Player *player)
+{
+    float speed;
+
+    if (player == NULL || !player->boosting) {
+        return false;
+    }
+    speed = sqrtf(player->velocity.x * player->velocity.x +
+                  player->velocity.y * player->velocity.y);
+    return speed >= player->drillSpeed;
+}
+
+float PlayerDrillRadius(const Player *player)
+{
+    float scale;
+
+    switch (player->boostStage) {
+    case PLAYER_BOOST_STAGE_THREE: scale = PLAYER_DRILL_WIDTH_STAGE_THREE; break;
+    case PLAYER_BOOST_STAGE_TWO: scale = PLAYER_DRILL_WIDTH_STAGE_TWO; break;
+    case PLAYER_BOOST_STAGE_ONE: scale = PLAYER_DRILL_WIDTH_STAGE_ONE; break;
+    default: scale = PLAYER_DRILL_WIDTH_IDLE; break;
+    }
+    return player->radius * scale;
+}
+
+/* Leaves the tunnel wall glowing.
+
+   The heat is a fraction of each material's *own* phase threshold rather than a
+   temperature, which is what makes rock and dirt read alike: rock melts at 720
+   and dirt catches at 175, so a single number either barely tints the rock or
+   sets the dirt alight. A fraction glows both and pushes neither over, and the
+   ordinary thermal simulation takes it from there — the wall cools on its own,
+   and nothing here turns anything into lava.
+
+   Three bands, hottest at the cut. The scan is the ring between the tunnel and
+   its surroundings, so its cost is the area of one carve and not a function of
+   anything else. */
+static void PlayerHeatTunnel(World *world, Vector2 at, float radius,
+                             float strength)
+{
+    int centreX = (int)floorf(at.x);
+    int centreY = (int)floorf(at.y);
+    int reach = (int)ceilf(radius) + 3;
+    int y;
+
+    if (strength <= 0.0f) {
+        return;
+    }
+    for (y = centreY - reach; y <= centreY + reach; ++y) {
+        int x;
+
+        for (x = centreX - reach; x <= centreX + reach; ++x) {
+            float dx = (float)x + 0.5f - at.x;
+            float dy = (float)y + 0.5f - at.y;
+            float distance = sqrtf(dx * dx + dy * dy);
+            const MaterialInfo *info;
+            CellMaterial material;
+            float band;
+            float target;
+
+            if (distance > radius + 3.0f) {
+                continue;
+            }
+            material = WorldGetCell(world, x, y);
+            info = MaterialAt(material);
+            if (!info->solid || !info->onHeat.enabled ||
+                info->onHeat.threshold <= 60.0f) {
+                continue;
+            }
+            /* Full strength against the cut, falling away over three cells. */
+            band = 1.0f - Clamp((distance - radius) / 3.0f, 0.0f, 1.0f);
+            target = info->onHeat.threshold * strength * band;
+            if (target > WorldGetTemperature(world, x, y)) {
+                WorldSetTemperature(world, x, y, target);
+            }
+        }
+    }
+}
+
+/* Carves the corridor the player is about to travel down, as a line of bites
+   rather than one circle at the destination.
+
+   A single circle per substep leaves scallops on a diagonal — the collider
+   moves further than the circles overlap — and those scallops are exactly what
+   the collision resolver then bounces off. Sampling along the displacement at
+   less than a radius apart makes the swept shape a capsule, and a capsule has
+   no teeth to catch on.
+
+   Returns the cells removed. */
+static int PlayerCarveSweep(Player *player, World *world, Vector2 from,
+                            Vector2 to, float radius, float heat)
+{
+    float deltaX = to.x - from.x;
+    float deltaY = to.y - from.y;
+    float distance = sqrtf(deltaX * deltaX + deltaY * deltaY);
+    float spacing = radius * 0.6f;
+    int samples = 1;
+    int removed = 0;
+    int index;
+
+    if (spacing > 0.001f && distance > spacing) {
+        samples = (int)ceilf(distance / spacing) + 1;
+        if (samples > PLAYER_MAX_MOVE_SUBSTEPS) {
+            samples = PLAYER_MAX_MOVE_SUBSTEPS;
+        }
+    }
+    for (index = 0; index < samples; ++index) {
+        float amount = samples > 1 ? (float)index / (float)(samples - 1) : 1.0f;
+        Vector2 at = {from.x + deltaX * amount, from.y + deltaY * amount};
+        int cut = WorldDrillCircle(world, (int)floorf(at.x), (int)floorf(at.y),
+                                   (int)ceilf(radius));
+
+        removed += cut;
+        PlayerHeatTunnel(world, at, radius, heat);
+    }
+    player->drillPosition = to;
+    return removed;
+}
+
+/* The speed a cut costs, per cell of travel through material.
+
+   Charged by distance rather than by cells removed. The tunnel is far wider
+   than it was, so a cell count would make every widening of the drill a
+   slowdown — and the player would feel the upgrade as a punishment. What
+   actually resists is the material being pushed aside, so the weight of it is
+   the multiplier, and the stage is the divisor: the harder the boost, the less
+   of its speed the ground takes. */
+static float PlayerDrillDrag(const Player *player, CellMaterial material)
+{
+    float drag = player->drillResistance * MaterialAt(material)->density;
+
+    switch (player->boostStage) {
+    case PLAYER_BOOST_STAGE_THREE: return drag * 0.18f;
+    case PLAYER_BOOST_STAGE_TWO: return drag * 0.34f;
+    case PLAYER_BOOST_STAGE_ONE: return drag * 0.60f;
+    default: return drag;
+    }
+}
+
+/* The slow half of the drill: only where the player is actually pressed into
+   material, cutting around the collider rather than ahead of it.
+
+   Without this a boost begun from rest against a wall could never start: the
+   collision zeroes the blocked component every frame, so the speed can never
+   climb to the threshold that would have cut the wall away, and a cut placed
+   ahead of the collider lands inside the hole it already made while the rim
+   that is actually blocking survives. Still per substep, because it is a
+   reaction to a collision rather than a path being cleared. */
+static void PlayerDrillPressed(Player *player, World *world, Vector2 nextPosition)
+{
+    float speed = sqrtf(player->velocity.x * player->velocity.x +
+                        player->velocity.y * player->velocity.y);
+    int destroyed;
+
+    if (!player->boosting || speed < 1.0f || speed >= player->drillSpeed) {
+        return;
+    }
+    if (!PlayerCollidesAt(player, world, nextPosition)) {
+        return;
+    }
+    destroyed = PlayerCutFree(player, world, nextPosition);
+    if (destroyed > 0) {
+        player->drilledCells += destroyed;
+        player->drillPosition = nextPosition;
+    }
+}
+
+/* The fast half: the whole corridor this frame will travel down, cut once.
+
+   It used to be cut once per collision substep, which at speed meant sixty-odd
+   overlapping carves of very nearly the same ground — the substeps are half a
+   cell apart and the drill is eight cells across, so each one re-scanned almost
+   exactly what the last had already cleared. Cutting the frame's path in a
+   single sweep does the same job for a fifteenth of the work, and the substeps
+   that follow simply travel down a corridor that is already open. */
+static void PlayerDrillPath(Player *player, World *world, float deltaTime)
 {
     float speed = sqrtf(player->velocity.x * player->velocity.x +
                         player->velocity.y * player->velocity.y);
     Vector2 direction;
-    Vector2 drillPoint;
+    Vector2 lead;
+    float radius;
+    float travelled;
     int destroyed;
 
-    if (!player->boosting || speed < 1.0f) {
-        return;
-    }
-
-    /* Above the drill threshold a boost cuts continuously ahead of itself. Below
-       it the drill still bites, but only where the player is actually pressed
-       into material, and it cuts around the collider rather than ahead of it.
-       Without this a boost begun from rest against a wall could never start: the
-       collision zeroes the blocked component every frame, so the speed can never
-       climb to the threshold that would have cut the wall away, and a cut placed
-       ahead of the collider lands inside the hole it already made while the rim
-       that is actually blocking survives. */
-    if (speed < player->drillSpeed) {
-        if (!PlayerCollidesAt(player, world, nextPosition)) {
-            return;
-        }
-        destroyed = PlayerCutFree(player, world, nextPosition);
-        if (destroyed > 0) {
-            player->drilledCells += destroyed;
-            player->drillPosition = nextPosition;
-        }
+    if (!player->boosting || speed < player->drillSpeed) {
         return;
     }
 
     direction = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
-    drillPoint = (Vector2){nextPosition.x + direction.x * player->radius * 0.7f,
-                           nextPosition.y + direction.y * player->radius * 0.7f};
-    PlayerRecordDrillMaterial(player, world, drillPoint);
-    destroyed = WorldDrillCircle(world, (int)floorf(drillPoint.x),
-                                 (int)floorf(drillPoint.y),
-                                 (int)ceilf(player->radius));
+    radius = PlayerDrillRadius(player);
+    /* Reaching past where the frame ends, so the corridor is already open when
+       the collision resolver looks at it. Clearing only as far as the collider
+       will reach leaves its leading edge against fresh material every single
+       substep, and every one of those is a bounce off a wall that was about to
+       be cut anyway. */
+    lead = (Vector2){player->position.x + player->velocity.x * deltaTime +
+                         direction.x * radius,
+                     player->position.y + player->velocity.y * deltaTime +
+                         direction.y * radius};
+    PlayerRecordDrillMaterial(player, world, lead);
+    destroyed = PlayerCarveSweep(player, world, player->position, lead, radius,
+                                 player->drillHeat);
     if (destroyed > 0) {
         /* Cutting terrain costs speed, but never enough to fall under the drill
            threshold: a boost that stalls would leave the player buried. */
-        float resistance = player->drillResistance;
         float floorSpeed = player->drillSpeed * 1.05f;
         float slowed;
         float scale;
 
         if (player->boostStage == PLAYER_BOOST_STAGE_TWO) {
-            resistance /= 1.75f;
             floorSpeed = fmaxf(floorSpeed, player->boostStageOneSpeed * 0.72f);
         } else if (player->boostStage == PLAYER_BOOST_STAGE_THREE) {
-            resistance /= 3.25f;
             floorSpeed = fmaxf(floorSpeed, player->sonicSpeed * 0.70f);
         }
-        slowed = speed * expf(-(float)destroyed * resistance);
+        travelled = sqrtf((lead.x - player->position.x) *
+                              (lead.x - player->position.x) +
+                          (lead.y - player->position.y) *
+                              (lead.y - player->position.y));
+        slowed = speed * expf(-PlayerDrillDrag(player, player->drillMaterial) *
+                              travelled);
 
         if (slowed < floorSpeed) {
             slowed = fminf(speed, floorSpeed);
@@ -214,7 +426,6 @@ static void PlayerDrillAhead(Player *player, World *world, Vector2 nextPosition)
         player->velocity.x *= scale;
         player->velocity.y *= scale;
         player->drilledCells += destroyed;
-        player->drillPosition = drillPoint;
     }
 }
 
@@ -499,6 +710,10 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         player->boostTrailTimer = 0.0f;
     }
 
+    /* The corridor first, once, for the whole frame. Everything after this is
+       movement through space that is already clear. */
+    PlayerDrillPath(player, world, deltaTime);
+
     moveX = player->velocity.x * deltaTime;
     moveY = player->velocity.y * deltaTime;
     /* Half a cell per step, so the collider — more than three cells across —
@@ -523,7 +738,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         };
         float incomingSpeed;
 
-        PlayerDrillAhead(player, world, nextPosition);
+        PlayerDrillPressed(player, world, nextPosition);
         candidate.x += player->velocity.x * stepTime;
         if (!PlayerCollidesAt(player, world, candidate)) {
             player->position.x = candidate.x;

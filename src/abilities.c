@@ -152,9 +152,26 @@ static void AbilityApplyCryo(const AbilityContext *context, AbilityState *state)
 
 static void AbilityApplyForce(const AbilityContext *context, AbilityState *state)
 {
+    /* Where the blow lands: the first solid thing along the aim, or a point out
+       in front when there is nothing. Finding it first is what lets the crater
+       be cut into the surface that was actually struck rather than into
+       whatever happens to be under the cursor. */
+    LaserResult contact = WorldBeamHit(context->world, context->origin,
+                                       (Vector2){context->origin.x +
+                                                     context->direction.x *
+                                                         ABILITY_FORCE_PUNCH_REACH,
+                                                 context->origin.y +
+                                                     context->direction.y *
+                                                         ABILITY_FORCE_PUNCH_REACH});
+
     WorldApplyForceBlast(context->world, context->origin, context->direction,
                          ABILITY_FORCE_LENGTH, ABILITY_FORCE_SPREAD_COSINE,
                          ABILITY_FORCE_REACH);
+    if (contact.hit) {
+        WorldApplyPunch(context->world, contact.position, context->direction,
+                        ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                        ABILITY_FORCE_CRACK_LENGTH);
+    }
     /* The same cone, the same reach, the same refusal to reach round a corner:
        a detached slab standing in the blow is not a different kind of thing
        from the loose cells beside it. */
@@ -165,6 +182,7 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
         .radius = ABILITY_FORCE_LENGTH,
         .spreadCosine = ABILITY_FORCE_SPREAD_COSINE,
         .momentum = ABILITY_FORCE_BODY_IMPULSE,
+        .carveRadius = ABILITY_FORCE_BODY_CARVE,
     });
     ParticlesSpawnForceBlast(context->particles, context->origin,
                              context->direction);

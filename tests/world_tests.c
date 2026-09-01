@@ -25,6 +25,7 @@
 #include "terrain_extraction.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
+#include "input.h"
 #include "terrain_impulse.h"
 #include "terrain_interaction.h"
 #include "terrain_physics.h"
@@ -5812,7 +5813,7 @@ static void test_the_player_cannot_stay_inside_a_body(void)
           "the fixture does not start overlapping");
     player.velocity = (Vector2){12.0f, 0.0f};
 
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     CHECK(interaction.stats.contacts > 0, "the overlap was not detected");
     CHECK(!PlayerOverlapsBody(&terrain, handle, player.position, player.radius),
@@ -5839,7 +5840,7 @@ static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
     PlayerInit(&player, (Vector2){60.0f - 2.0f - player.radius, 60.0f});
     PlayerInit(&player, (Vector2){56.0f, 60.0f});
     player.velocity = (Vector2){40.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     smallSpeed = DynamicTerrainGetConst(&terrain, small)->velocity.x;
     playerAfterSmall = player.velocity.x;
@@ -5852,7 +5853,7 @@ static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
     huge = MakeRockBlock(&terrain, 32, 32, (Vector2){60.0f, 60.0f});
     PlayerInit(&player, (Vector2){44.0f, 60.0f});
     player.velocity = (Vector2){40.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
     hugeSpeed = DynamicTerrainGetConst(&terrain, huge)->velocity.x;
 
@@ -5883,7 +5884,7 @@ static void test_grab_only_takes_a_body_within_reach(void)
     /* Aimed at the far one, which is out of reach. Nothing is taken — and in
        particular not the near body, which is within arm's reach but is plainly
        not what the player is pointing at. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, far)->position,
                              true, KINEMATIC_STEP);
     CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
@@ -5894,9 +5895,9 @@ static void test_grab_only_takes_a_body_within_reach(void)
           "a refused grab moved something");
 
     /* Released, then aimed at the near one. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){50.0f, 50.0f}, false, KINEMATIC_STEP);
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, near)->position,
                              true, KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
@@ -5927,10 +5928,10 @@ static void test_a_held_body_is_pulled_rather_than_placed(void)
 
     /* Taken hold of by pointing at it, then dragged by pointing elsewhere —
        which is how the control is meant to be used. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain, start, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, start, true,
                              KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     /* One step buys velocity, not arrival. */
     CHECK(body->position.x == start.x && body->position.y == start.y,
@@ -5940,7 +5941,7 @@ static void test_a_held_body_is_pulled_rather_than_placed(void)
 
     /* Given time and integration it does arrive, and it arrives moving. */
     for (step = 0; step < 240; ++step) {
-        TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                                  KINEMATIC_STEP);
         DynamicTerrainIntegrateBody(&terrain, DynamicTerrainGet(&terrain, handle),
                                     KINEMATIC_STEP);
@@ -5963,11 +5964,11 @@ static void test_releasing_throws_a_light_body_further_than_a_heavy_one(void)
     TerrainInteractionInit(&interaction);
     PlayerInit(&player, (Vector2){50.0f, 50.0f});
     handle = MakeRockBlock(&terrain, 4, 4, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
     DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, false,
                              KINEMATIC_STEP);
     lightSpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
     CHECK(interaction.stats.throws == 1, "the throw was not counted");
@@ -5978,10 +5979,10 @@ static void test_releasing_throws_a_light_body_further_than_a_heavy_one(void)
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainInteractionInit(&interaction);
     handle = MakeRockBlock(&terrain, 16, 16, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                              KINEMATIC_STEP);
     DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
-    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, false,
                              KINEMATIC_STEP);
     heavySpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
 
@@ -6002,7 +6003,7 @@ static void test_a_hold_ends_safely_when_the_body_is_destroyed(void)
     TerrainDamageInit(&damage);
     PlayerInit(&player, (Vector2){50.0f, 50.0f});
     handle = MakeRockBlock(&terrain, 5, 5, (Vector2){64.0f, 50.0f});
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
     CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
 
@@ -6010,7 +6011,7 @@ static void test_a_hold_ends_safely_when_the_body_is_destroyed(void)
                                    (Vector2){64.0f, 50.0f}, 20.0f);
     CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
           "the body survived being carved away");
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
     CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
           "the hold survived the body");
@@ -6078,7 +6079,7 @@ static void test_a_fast_player_cannot_cross_a_thin_body(void)
     PlayerInit(&player, (Vector2){40.0f, 60.0f});
     /* Established as the starting point, so the next update has a path to walk
        rather than a first frame to take on trust. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
     CHECK(player.position.x < wallAt.x, "the fixture starts on the wrong side");
 
@@ -6087,7 +6088,7 @@ static void test_a_fast_player_cannot_cross_a_thin_body(void)
     for (step = 0; step < 4; ++step) {
         player.position.x += 26.0f;
         player.velocity = (Vector2){620.0f, 0.0f};
-        TerrainInteractionUpdate(&interaction, &player, &terrain,
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                                  (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
     }
     CHECK(interaction.stats.contacts > 0,
@@ -6259,7 +6260,7 @@ static void test_a_grab_never_lands_on_empty_raster(void)
     DynamicTerrainGet(&terrain, handle)->position = (Vector2){64.0f, 60.0f};
 
     /* Aimed straight at the hole. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              DynamicTerrainGetConst(&terrain, handle)->position,
                              true, KINEMATIC_STEP);
     if (TerrainInteractionIsHolding(&interaction, &terrain)) {
@@ -6271,9 +6272,9 @@ static void test_a_grab_never_lands_on_empty_raster(void)
               "the hold landed on an empty cell at (%d, %d)", cellX, cellY);
     }
     /* Aimed at the rim, it takes hold of the rim. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){64.0f, 60.0f}, false, KINEMATIC_STEP);
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              TerrainBodyLocalToWorld(
                                  DynamicTerrainGetConst(&terrain, handle), 0.5f,
                                  8.5f),
@@ -6303,7 +6304,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
     handle = MakeRockBlock(&terrain, 24, 8, (Vector2){62.0f, 60.0f});
 
     /* Held by the far right end, which the cut below will separate. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              TerrainBodyLocalToWorld(
                                  DynamicTerrainGetConst(&terrain, handle), 22.5f,
                                  4.0f),
@@ -6325,7 +6326,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
     CHECK(LiveBodyCount(&terrain) == 2, "the slab became %d bodies",
           LiveBodyCount(&terrain));
 
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
     if (TerrainInteractionIsHolding(&interaction, &terrain)) {
         /* Followed the cell onto the piece that took it. */
@@ -6341,7 +6342,7 @@ static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
               "the hold ended without being counted");
     }
     /* Either way, one more update must be harmless. */
-    TerrainInteractionUpdate(&interaction, &player, &terrain,
+    TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
                              (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
     DynamicTerrainUnload(&terrain);
 }
@@ -6763,6 +6764,462 @@ static void test_entering_water_costs_speed(void)
           (double)PlayerSpeed(&wet), (double)PlayerSpeed(&dry));
     CHECK(PlayerSpeed(&wet) > 0.0f, "water stopped the player dead");
     WorldUnload(&world);
+}
+
+/* A slab must not be the one thing in the game that stops a drill which is
+   boring through bedrock beside it. */
+static void test_a_boosting_player_drills_through_a_terrain_body(void)
+{
+    World world;
+    Player player;
+    TerrainBodyHandle slab;
+    float startX;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    slab = MakeRockBlock(&terrain, 24, 40, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){140.0f, 100.0f});
+    startX = player.position.x;
+    /* Boosting well above the drill threshold: the state in which the world's
+       own rock gives way. */
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.boosting = true;
+    player.boostStage = PLAYER_BOOST_STAGE_THREE;
+    CHECK(PlayerIsDrilling(&player), "the fixture is not in a drilling state");
+
+    for (step = 0; step < 30; ++step) {
+        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.boosting = true;
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+
+    CHECK(interaction.stats.bodyCellsDrilled > 0,
+          "the drill took nothing out of the body");
+    CHECK(player.position.x > startX + 100.0f,
+          "the player stopped at x=%.1f, having started at %.1f",
+          (double)player.position.x, (double)startX);
+    /* Whatever is left of it is still a body, still physical. */
+    {
+        const TerrainBody *body = DynamicTerrainGetConst(&terrain, slab);
+
+        if (body != NULL) {
+            CHECK(body->cellCount < 24 * 40,
+                  "the body kept all %d of its cells", body->cellCount);
+            CHECK(body->mass > 0.0f, "a surviving body lost its mass");
+        }
+    }
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A tunnel bored clean through the middle leaves two halves, both still
+   physical. */
+static void test_drilling_through_a_slab_can_split_it(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    /* Tall and thin, so a corridor across its waist severs it. */
+    (void)MakeRockBlock(&terrain, 10, 60, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){160.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 30; ++step) {
+        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.boosting = true;
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+    CHECK(damage.stats.fractureSplits > 0,
+          "a corridor through the waist did not split the slab");
+    CHECK(LiveBodyCount(&terrain) >= 2, "the slab is still %d body",
+          LiveBodyCount(&terrain));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Not boosting means not drilling, and then a body is as solid as it ever
+   was. */
+static void test_a_coasting_player_still_stops_on_a_body(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+
+    (void)MakeRockBlock(&terrain, 24, 40, (Vector2){200.0f, 100.0f});
+    PlayerInit(&player, (Vector2){170.0f, 100.0f});
+    player.velocity = (Vector2){120.0f, 0.0f};
+
+    for (step = 0; step < 20; ++step) {
+        player.position.x += player.velocity.x * MOVEMENT_STEP;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 (Vector2){400.0f, 100.0f}, false,
+                                 MOVEMENT_STEP);
+    }
+    CHECK(interaction.stats.bodyCellsDrilled == 0,
+          "a player who was not boosting cut %d cells out of a body",
+          interaction.stats.bodyCellsDrilled);
+    CHECK(interaction.stats.contacts > 0, "the body did not stop the player");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- drilling polish ------------------------------------------------------ */
+
+/* The corridor a stage-three boost cuts has to be comfortably wider than the
+   one an idle drill leaves, or the drill reads the same at every speed. */
+static void test_the_tunnel_widens_with_the_boost_stage(void)
+{
+    World narrow;
+    World wide;
+    Player slow;
+    Player fast;
+    int step;
+
+    CHECK(WorldInit(&narrow, 400, 200) && WorldInit(&wide, 400, 200),
+          "world allocation failed");
+    FillRect(&narrow, 0, 0, 399, 199, MATERIAL_ROCK);
+    FillRect(&wide, 0, 0, 399, 199, MATERIAL_ROCK);
+    PlayerInit(&slow, (Vector2){40.0f, 100.0f});
+    PlayerInit(&fast, (Vector2){40.0f, 100.0f});
+
+    for (step = 0; step < 40; ++step) {
+        slow.boostStage = PLAYER_BOOST_STAGE_ONE;
+        fast.boostStage = PLAYER_BOOST_STAGE_THREE;
+        slow.velocity = (Vector2){slow.drillSpeed * 1.4f, 0.0f};
+        fast.velocity = (Vector2){fast.drillSpeed * 1.4f, 0.0f};
+        PlayerUpdate(&slow, &narrow, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+        PlayerUpdate(&fast, &wide, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+    }
+
+    /* Measured as the height of the hole at a column both of them passed. */
+    {
+        int narrowHeight = 0;
+        int wideHeight = 0;
+        int y;
+
+        for (y = 0; y < 200; ++y) {
+            if (WorldGetCell(&narrow, 60, y) == MATERIAL_EMPTY) ++narrowHeight;
+            if (WorldGetCell(&wide, 60, y) == MATERIAL_EMPTY) ++wideHeight;
+        }
+        CHECK(narrowHeight > 0 && wideHeight > 0,
+              "neither drill cut through the sample column");
+        CHECK(wideHeight > narrowHeight + 4,
+              "stage three cut %d cells of tunnel against stage one's %d",
+              wideHeight, narrowHeight);
+        CHECK(wideHeight > (int)(fast.radius * 2.0f) + 4,
+              "the stage-three tunnel is %d cells for a collider %.1f across",
+              wideHeight, (double)(fast.radius * 2.0f));
+    }
+    WorldUnload(&narrow);
+    WorldUnload(&wide);
+}
+
+/* Flying down a tunnel the drill is cutting must not read as a series of
+   collisions with its own walls. */
+static void test_high_speed_drilling_does_not_bounce_off_its_own_tunnel(void)
+{
+    World world;
+    Player player;
+    int step;
+    int impacts = 0;
+    float minimumForward = 1.0e9f;
+
+    CHECK(WorldInit(&world, 900, 200), "world allocation failed");
+    FillRect(&world, 0, 0, 899, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+        if (player.impactStrength > 0.0f) {
+            ++impacts;
+        }
+        if (player.velocity.x < minimumForward) {
+            minimumForward = player.velocity.x;
+        }
+        /* Never thrown backwards by its own corridor. */
+        CHECK(player.velocity.x > 0.0f,
+              "the drill threw the player backwards at step %d: %.2f", step,
+              (double)player.velocity.x);
+    }
+    CHECK(impacts == 0, "%d frames reported an impact inside the player's own "
+          "tunnel", impacts);
+    CHECK(minimumForward > player.drillSpeed,
+          "the drill stalled to %.1f, below its own threshold %.1f",
+          (double)minimumForward, (double)player.drillSpeed);
+    WorldUnload(&world);
+}
+
+/* A curved run is where a per-substep circle used to leave scallops, and
+   scallops are what a collider catches on. */
+static void test_a_curving_drill_stays_smooth(void)
+{
+    World world;
+    Player player;
+    int step;
+
+    CHECK(WorldInit(&world, 600, 400), "world allocation failed");
+    FillRect(&world, 0, 0, 599, 399, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 200.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        /* Steering the whole way, so the tunnel bends. */
+        Vector2 input = {1.0f, step < 45 ? 0.7f : -0.7f};
+
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, input, true, MOVEMENT_STEP);
+        CHECK(player.impactStrength == 0.0f,
+              "a curving drill hit its own wall at step %d", step);
+    }
+    CHECK(player.position.x > 200.0f, "the curving drill stalled at x=%.1f",
+          (double)player.position.x);
+    WorldUnload(&world);
+}
+
+/* Drilling has to leave the wall hot, and hot enough to see. */
+static void test_drilling_leaves_a_hot_tunnel_wall(void)
+{
+    World world;
+    Player player;
+    float hottest = -1000.0f;
+    int step;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    FillRect(&world, 0, 0, 399, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+
+    for (step = 0; step < 40; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+    }
+    for (y = 60; y < 140; ++y) {
+        for (x = 40; x < 200; ++x) {
+            if (WorldGetCell(&world, x, y) != MATERIAL_ROCK) {
+                continue;
+            }
+            if (WorldGetTemperature(&world, x, y) > hottest) {
+                hottest = WorldGetTemperature(&world, x, y);
+            }
+        }
+    }
+    /* Well past the point the renderer starts tinting, and well short of the
+       720 at which rock would melt on its own. */
+    CHECK(hottest > 300.0f, "the hottest tunnel wall reached only %.0fC",
+          (double)hottest);
+    CHECK(hottest < 720.0f, "the drill melted the rock at %.0fC",
+          (double)hottest);
+    WorldUnload(&world);
+}
+
+/* Terrain has to cost speed, but a stage-three boost has to keep most of it. */
+static void test_a_stage_three_boost_keeps_its_momentum_through_rock(void)
+{
+    World world;
+    Player player;
+    float lowest = 1.0e9f;
+    int step;
+
+    CHECK(WorldInit(&world, 900, 200), "world allocation failed");
+    FillRect(&world, 100, 0, 899, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
+    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+
+    for (step = 0; step < 90; ++step) {
+        player.boostStage = PLAYER_BOOST_STAGE_THREE;
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     MOVEMENT_STEP);
+        if (step > 10 && player.velocity.x < lowest) {
+            lowest = player.velocity.x;
+        }
+    }
+    CHECK(lowest > player.boostMaxSpeed * 0.5f,
+          "rock took the boost down to %.0f from %.0f", (double)lowest,
+          (double)player.boostMaxSpeed);
+    CHECK(lowest < player.boostMaxSpeed,
+          "rock cost the boost nothing at all: %.0f", (double)lowest);
+    WorldUnload(&world);
+}
+
+/* --- punch ---------------------------------------------------------------- */
+
+static void test_the_punch_digs_a_crater_and_cracks_it(void)
+{
+    World world;
+    int before;
+    int after;
+    int craterHeight = 0;
+    int y;
+
+    CHECK(WorldInit(&world, 300, 200), "world allocation failed");
+    FillRect(&world, 0, 100, 299, 199, MATERIAL_ROCK);
+    before = CountMaterial(&world, MATERIAL_ROCK);
+
+    WorldApplyPunch(&world, (Vector2){150.0f, 101.0f}, (Vector2){0.0f, 1.0f},
+                    ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                    ABILITY_FORCE_CRACK_LENGTH);
+    after = CountMaterial(&world, MATERIAL_ROCK);
+
+    CHECK(before - after > 120, "the punch removed only %d cells",
+          before - after);
+    /* Wide and shallow rather than a shaft: the bowl is flattened along the
+       direction the blow travelled. */
+    for (y = 100; y < 200; ++y) {
+        if (WorldGetCell(&world, 150, y) == MATERIAL_EMPTY) {
+            ++craterHeight;
+        }
+    }
+    CHECK(craterHeight > 0 && craterHeight < ABILITY_FORCE_CRATER_RADIUS * 2,
+          "the crater is %d deep for a radius of %d", craterHeight,
+          ABILITY_FORCE_CRATER_RADIUS);
+    {
+        int width = 0;
+        int x;
+
+        for (x = 0; x < 300; ++x) {
+            if (WorldGetCell(&world, x, 101) == MATERIAL_EMPTY) {
+                ++width;
+            }
+        }
+        CHECK(width > craterHeight,
+              "the crater is %d wide and %d deep — that is a shaft, not a dent",
+              width, craterHeight);
+    }
+    /* Bounded, and logged so detachment can look at it. */
+    CHECK(world.destructionCount >= 1, "the punch logged no damage");
+    CHECK(before - after < 3000, "the punch removed %d cells, which is not a "
+          "bounded mutation", before - after);
+    WorldUnload(&world);
+}
+
+static void test_the_punch_leaves_loose_material_to_be_thrown(void)
+{
+    World world;
+    int before;
+
+    CHECK(WorldInit(&world, 200, 120), "world allocation failed");
+    FillRect(&world, 60, 60, 140, 100, MATERIAL_SAND);
+    before = CountMaterial(&world, MATERIAL_SAND);
+
+    WorldApplyPunch(&world, (Vector2){100.0f, 62.0f}, (Vector2){0.0f, 1.0f},
+                    ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                    ABILITY_FORCE_CRACK_LENGTH);
+    CHECK(CountMaterial(&world, MATERIAL_SAND) == before,
+          "the punch destroyed loose material the blast is meant to throw");
+    WorldUnload(&world);
+}
+
+/* --- cryo ----------------------------------------------------------------- */
+
+static void test_cryo_chills_ordinary_terrain_and_still_freezes_water(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 200, 120), "world allocation failed");
+    FillRect(&world, 80, 50, 120, 70, MATERIAL_ROCK);
+    FillRect(&world, 80, 80, 120, 100, MATERIAL_WATER);
+
+    for (step = 0; step < 40; ++step) {
+        (void)WorldApplyChill(&world, (Vector2){20.0f, 60.0f},
+                              (Vector2){140.0f, 60.0f}, ABILITY_CRYO_RADIUS,
+                              1.0f / 60.0f);
+    }
+    CHECK(WorldGetTemperature(&world, 81, 60) < -30.0f,
+          "rock in the beam is only at %.0fC",
+          (double)WorldGetTemperature(&world, 81, 60));
+    CHECK(WorldGetCell(&world, 81, 60) == MATERIAL_ROCK,
+          "chilling the rock destroyed it");
+
+    for (step = 0; step < 60; ++step) {
+        (void)WorldApplyChill(&world, (Vector2){20.0f, 90.0f},
+                              (Vector2){140.0f, 90.0f}, ABILITY_CRYO_RADIUS,
+                              1.0f / 60.0f);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_ICE) > 0,
+          "the beam no longer freezes water");
+    WorldUnload(&world);
+}
+
+/* --- controls ------------------------------------------------------------- */
+
+static void test_the_controls_are_bound_as_designed(void)
+{
+    CHECK(InputAbilityBinding(ABILITY_FORCE) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_FORCE), "LMB") == 0,
+          "the punch is not on the left button");
+    CHECK(InputAbilityBinding(ABILITY_CRYO) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_CRYO), "Q") == 0,
+          "cryo is not on Q");
+    CHECK(InputAbilityBinding(ABILITY_LASER) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_LASER), "E") == 0,
+          "the laser is not on E");
+    /* The right button is the grab, which is not a power and so has no row in
+       the ability table at all. */
+    CHECK(InputAbilityBinding(ABILITY_EXPLOSION) == NULL,
+          "the explosion still has a player control bound to it");
+}
+
+/* --- beam origin ---------------------------------------------------------- */
+
+static void test_beams_leave_from_the_eyes(void)
+{
+    Player player;
+    Vector2 aims[6] = {{200.0f, 100.0f}, {0.0f, 100.0f}, {100.0f, 0.0f},
+                       {100.0f, 200.0f}, {180.0f, 20.0f}, {20.0f, 180.0f}};
+    int index;
+
+    PlayerInit(&player, (Vector2){100.0f, 100.0f});
+    for (index = 0; index < 6; ++index) {
+        Vector2 origin = PlayerBeamOrigin(&player, aims[index]);
+        float toCentre = Vector2Distance(origin, player.position);
+
+        /* Outside the collider, so a beam fired at a wall the player is pressed
+           against does not start inside their own chest. */
+        CHECK(toCentre > player.radius * 0.5f,
+              "aim %d starts %.2f from the centre, inside a collider of %.2f",
+              index, (double)toCentre, (double)player.radius);
+        CHECK(toCentre < player.radius * 3.0f,
+              "aim %d starts %.2f away, nowhere near the character", index,
+              (double)toCentre);
+        /* Above the middle: the head, not the feet. */
+        CHECK(origin.y < player.position.y + player.radius,
+              "aim %d starts below the centre of the body", index);
+    }
+    /* And it is the same point the whole game uses, so a ray and a drawn beam
+       cannot disagree: one helper, no second derivation. */
+    CHECK(PlayerBeamOrigin(&player, aims[0]).x ==
+              PlayerBeamOrigin(&player, aims[0]).x,
+          "the helper is not stable for the same input");
 }
 
 /* --- abilities ----------------------------------------------------------- */
@@ -8284,6 +8741,19 @@ int main(void)
     RUN(test_the_same_flight_replays_identically);
     RUN(test_movement_survives_an_absurd_velocity);
     RUN(test_entering_water_costs_speed);
+    RUN(test_a_boosting_player_drills_through_a_terrain_body);
+    RUN(test_drilling_through_a_slab_can_split_it);
+    RUN(test_a_coasting_player_still_stops_on_a_body);
+    RUN(test_the_tunnel_widens_with_the_boost_stage);
+    RUN(test_high_speed_drilling_does_not_bounce_off_its_own_tunnel);
+    RUN(test_a_curving_drill_stays_smooth);
+    RUN(test_drilling_leaves_a_hot_tunnel_wall);
+    RUN(test_a_stage_three_boost_keeps_its_momentum_through_rock);
+    RUN(test_the_punch_digs_a_crater_and_cracks_it);
+    RUN(test_the_punch_leaves_loose_material_to_be_thrown);
+    RUN(test_cryo_chills_ordinary_terrain_and_still_freezes_water);
+    RUN(test_the_controls_are_bound_as_designed);
+    RUN(test_beams_leave_from_the_eyes);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

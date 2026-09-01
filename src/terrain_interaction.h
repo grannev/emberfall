@@ -26,6 +26,7 @@
 
 #include "dynamic_terrain.h"
 #include "player.h"
+#include "terrain_damage.h"
 
 typedef struct TerrainInteractionConfig {
     /* The player has no mass of their own — nothing else in the game needed
@@ -42,6 +43,12 @@ typedef struct TerrainInteractionConfig {
     /* How far from the player a body may be taken hold of, measured to the
        nearest point of its world box. */
     float grabDistance;
+    /* How far the aim may land from a body and still count as pointing at it.
+       Separate from the reach, and deliberately generous: a slab is a big
+       target, and demanding the cursor land on it exactly turns picking things
+       up into a precision task nobody asked for. Still bounded, so a body the
+       player is clearly not looking at is not taken. */
+    float grabAimTolerance;
     /* How far in front of the player the held body is pulled towards. */
     float holdDistance;
     /* Spring pulling the grab point towards that target, and the damping that
@@ -65,6 +72,10 @@ typedef struct TerrainInteractionStats {
     /* Holds that followed their cell onto the fragment it broke away with,
        rather than ending because the cell left the body. */
     int transferredHolds;
+    /* Cells the player's drill took out of a body, and the bodies it cut
+       clean through. */
+    int bodyCellsDrilled;
+    int bodiesDrilled;
     int grabs;
     int releases;
     int throws;
@@ -112,12 +123,18 @@ void TerrainInteractionResetStats(TerrainInteractionSystem *system);
    and run the hold. Call after the player has settled against the static world,
    so the correction applied here is the last word on where they are.
 
+   A boosting player cuts through a body rather than stopping on it: `damage`
+   may be NULL, and then a body is simply solid. The drill is the same drill
+   that cuts the static world, so a detached slab is not the one thing in the
+   game that can stop it.
+
    `grabHeld` is the interaction button's state; the transition into and out of
    it is what starts and ends a hold. Presentation reads the hold through the
    system's own state rather than through an event, because a highlight has to
    be drawn for as long as the hold lasts and not once when it starts. */
 void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
-                              DynamicTerrainSystem *terrain, Vector2 aimWorld,
+                              DynamicTerrainSystem *terrain,
+                              TerrainDamageSystem *damage, Vector2 aimWorld,
                               bool grabHeld, float deltaTime);
 
 /* True when the player is holding a body that still exists. */
