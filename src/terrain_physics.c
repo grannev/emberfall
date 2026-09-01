@@ -429,8 +429,12 @@ void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
         substeps = world != NULL ? TerrainSubstepCount(body, deltaTime) : 1;
         system->stats.collisionSubsteps += substeps;
         for (substep = 0; substep < substeps; ++substep) {
+            /* Re-asked every substep, so a body climbing through the band
+               loses its weight while it climbs rather than at the end. */
             DynamicTerrainIntegrateBody(system, body,
-                                        deltaTime / (float)substeps);
+                                        deltaTime / (float)substeps,
+                                        WorldGravityScaleAt(world,
+                                                            body->position.y));
             if (world == NULL) {
                 continue;
             }

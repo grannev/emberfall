@@ -307,6 +307,7 @@ bool RendererInit(Renderer *renderer, const GameState *game,
         return false;
     }
     *renderer = (Renderer){0};
+    SkyRendererInit(&renderer->sky, game->worldSeed);
     EnvironmentRendererInit(&renderer->environment, game->worldSeed,
                             environmentPalette);
     PresentationFxInit(&renderer->effects);
@@ -381,6 +382,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         return;
     }
     EnvironmentRendererSyncSeed(&renderer->environment, game->worldSeed);
+    SkyRendererSyncSeed(&renderer->sky, game->worldSeed);
     /* Comparing dimensions every frame is cheap and catches windowed,
        fullscreen and platform-driven resize paths. Allocation only happens
        when the dimensions really changed. */
@@ -420,7 +422,17 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                  renderer->targetWidth,
                                  renderer->targetHeight);
     BeginMode2D(presentationCamera);
+        /* Between the backdrop and the terrain, and inside the camera, because
+           a cloud is at an altitude rather than at a place on the screen: the
+           player is meant to be able to climb above it. */
+        SkyRendererDraw(&renderer->sky, visible, game->world.height,
+                        GameDaylightAt(game->dayPhase),
+                        renderer->presentationTime);
         WorldRendererDraw(&renderer->world, &game->world, visible);
+        renderer->lastFrame.skyClouds = SkyRendererStatistics(&renderer->sky)->cloudsDrawn;
+        renderer->lastFrame.skyStars = SkyRendererStatistics(&renderer->sky)->starsDrawn;
+        renderer->lastFrame.skySpaceVisible =
+            SkyRendererStatistics(&renderer->sky)->spaceVisible;
         TerrainBodyRendererDrawScene(&renderer->terrainBodies,
                                      &game->dynamicTerrain, visible);
         DrawRectangleLines(0, 0, game->world.width, game->world.height,
@@ -453,6 +465,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                         renderer->targetWidth,
                                         renderer->targetHeight);
         BeginMode2D(presentationCamera);
+            SkyRendererDrawEmissive(&renderer->sky, visible, game->world.height,
+                                    GameDaylightAt(game->dayPhase),
+                                    renderer->presentationTime);
             WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
             TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
                                             &game->dynamicTerrain, visible);

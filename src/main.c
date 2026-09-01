@@ -199,7 +199,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         game->damage.stats.cellsCarved,
                         game->damage.stats.fractureSplits),
              24, 243, 14, (Color){228, 208, 140, 255});
-    DrawText(TextFormat("ENV: %s | %u+%u DRAWS | %02d:%02d %s",
+    DrawText(TextFormat("ENV: %s | %u+%u DRAWS | %02d:%02d %s | SKY %u/%u",
                         environmentPalette != NULL ? environmentPalette->name
                                                    : "INVALID",
                         (unsigned int)frameStats->environmentSceneDrawCalls,
@@ -208,7 +208,10 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                            and the clock agrees with the sky. */
                         ((int)(game->dayPhase * 24.0f) + 6) % 24,
                         (int)(game->dayPhase * 1440.0f) % 60,
-                        GameDaylightAt(game->dayPhase) > 0.5f ? "DAY" : "NIGHT"),
+                        GameDaylightAt(game->dayPhase) > 0.5f ? "DAY" : "NIGHT",
+                        (unsigned int)frameStats->skyClouds,
+                        (unsigned int)frameStats->skyStars,
+                        frameStats->skySpaceVisible ? " ORBIT" : ""),
              24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
@@ -1116,6 +1119,8 @@ int main(int argc, char **argv)
        than read off one frame of the HUD. A single frame's number varies by
        several times between runs on a loaded machine, which is enough to tune
        a renderer in the wrong direction. */
+    Vector2 smokeGroundPosition = {0.0f, 0.0f};
+    Vector2 smokeGroundVelocity = {0.0f, 0.0f};
     double smokePrepareTotal = 0.0;
     double smokePrepareMaximum = 0.0;
     int smokePrepareFrames = 0;
@@ -1350,6 +1355,26 @@ int main(int argc, char **argv)
                    the player is over, which is what a session actually does. */
                 (void)RendererSetEnvironmentPalette(&renderer,
                                                     ENVIRONMENT_PALETTE_AUTO);
+            }
+            /* Above the clouds, where there is nothing to hold anything down.
+               Asked for the same way midnight is: the run is ten seconds long
+               and cannot fly there on its own. Two frames so the light and the
+               page cache catch up before the photograph. */
+            if (smokeFrames == 18) {
+                smokeGroundPosition = game.player.position;
+                smokeGroundVelocity = game.player.velocity;
+            }
+            if (smokeFrames >= 18 && smokeFrames <= 26) {
+                game.player.position.y =
+                    (float)game.world.height * WORLD_SPACE_LINE * 0.9f;
+                game.player.velocity = (Vector2){40.0f, 0.0f};
+            }
+            if (smokeFrames == 27) {
+                /* Put back exactly where it was: the acceptance run that starts
+                   here is about a slab on a platform, and it must not find its
+                   player three hundred cells up. */
+                game.player.position = smokeGroundPosition;
+                game.player.velocity = smokeGroundVelocity;
             }
             /* A day lasts seven minutes and the run lasts ten seconds, so
                midnight has to be asked for. Held over two frames — one for the
@@ -1700,6 +1725,9 @@ int main(int argc, char **argv)
             }
             if (smokeFrames == 16) {
                 TakeScreenshot("build/emberfall-night.png");
+            }
+            if (smokeFrames == 26) {
+                TakeScreenshot("build/emberfall-space.png");
             }
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");

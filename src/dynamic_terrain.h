@@ -347,8 +347,13 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
 /* The pieces of a step, exposed so terrain_physics.c can interleave them with
    collision. They act on one body and do no bookkeeping of their own; callers
    outside that module want TerrainPhysicsUpdate instead. */
+/* `gravityScale` is how much of the configured gravity applies where the body
+   currently is: one on the ground, zero in space. It is a parameter rather than
+   something this module looks up, because dynamic terrain never receives a
+   World and is not going to start now — the caller has the world and knows the
+   body's altitude. */
 void DynamicTerrainIntegrateBody(DynamicTerrainSystem *system, TerrainBody *body,
-                                 float deltaTime);
+                                 float deltaTime, float gravityScale);
 void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
                               float deltaTime);
 

@@ -30,6 +30,7 @@
 #include "terrain_impulse.h"
 #include "terrain_interaction.h"
 #include "terrain_physics.h"
+#include "sky_renderer.h"
 #include "terrain_weld.h"
 #include "world_components.h"
 #include "world_lighting.h"
@@ -1439,6 +1440,70 @@ static void test_flora_is_solid_but_is_never_the_ground(void)
               MaterialAt(MATERIAL_LEAF)->onHeat.threshold <
                   MaterialAt(MATERIAL_WOOD)->onHeat.threshold,
           "foliage does not catch before the trunk it hangs on");
+}
+
+static void test_gravity_fades_out_between_the_clouds_and_space(void)
+{
+    World world;
+    float previous;
+    float y;
+
+    CHECK(WorldInit(&world, 256, 400), "world allocation failed");
+
+    /* Full weight on the ground and none in space, with no corner in between:
+       a body climbing through the band slows its fall continuously. */
+    CHECK(WorldGravityScaleAt(&world, (float)world.height - 1.0f) == 1.0f,
+          "gravity is not whole at the bottom of the world");
+    CHECK(WorldGravityScaleAt(&world, WorldCloudLineY(&world)) == 1.0f,
+          "gravity is already fading at the cloud line");
+    CHECK(WorldGravityScaleAt(&world, WorldSpaceLineY(&world)) == 0.0f,
+          "gravity still reaches the space line");
+    CHECK(WorldGravityScaleAt(&world, 0.0f) == 0.0f,
+          "gravity reaches the top of the world");
+    CHECK(WorldGravityScaleAt(&world, -400.0f) == 0.0f,
+          "gravity reaches above the world");
+
+    previous = 0.0f;
+    for (y = WorldSpaceLineY(&world); y <= WorldCloudLineY(&world); y += 1.0f) {
+        float scale = WorldGravityScaleAt(&world, y);
+
+        CHECK(scale >= previous - 0.0001f,
+              "gravity fell back to %.3f at y=%.0f", (double)scale, (double)y);
+        CHECK(scale >= 0.0f && scale <= 1.0f,
+              "gravity is %.3f at y=%.0f", (double)scale, (double)y);
+        previous = scale;
+    }
+    /* Halfway up the band it is genuinely partial, not one or the other. */
+    {
+        float middle = WorldGravityScaleAt(
+            &world, (WorldSpaceLineY(&world) + WorldCloudLineY(&world)) * 0.5f);
+
+        CHECK(middle > 0.2f && middle < 0.8f,
+              "the middle of the band pulls at %.3f", (double)middle);
+    }
+    WorldUnload(&world);
+}
+
+static void test_the_sky_is_the_same_sky_for_the_same_seed(void)
+{
+    SkyRenderer first;
+    SkyRenderer second;
+
+    /* The sky stores nothing: it is a slot index hashed into a shape, so the
+       only thing that can make two of them differ is the seed. This is what
+       lets a smoke run photograph one. */
+    SkyRendererInit(&first, 0x5C1Fu);
+    SkyRendererInit(&second, 0x5C1Fu);
+    CHECK(first.seed == second.seed, "the same seed built two different skies");
+    CHECK(SkyRendererStatistics(&first)->cloudsDrawn == 0 &&
+              SkyRendererStatistics(&first)->starsDrawn == 0,
+          "a sky reported drawing before it was asked to draw");
+    SkyRendererSyncSeed(&second, 0x0Du);
+    CHECK(first.seed != second.seed, "a new world seed did not reach the sky");
+    /* A null sky answers rather than crashing, because the renderer asks for
+       statistics whether or not one exists. */
+    CHECK(SkyRendererStatistics(NULL)->cloudsDrawn == 0,
+          "statistics for no sky are not empty");
 }
 
 static void test_the_day_turns_and_takes_the_sky_with_it(void)
@@ -5272,6 +5337,61 @@ static TerrainBodyHandle BuildSleepingBlock(DynamicTerrainSystem *bodies,
     return handle;
 }
 
+static void test_a_body_in_space_drifts_and_one_on_the_ground_falls(void)
+{
+    World world;
+    TerrainBodyHandle high;
+    TerrainBodyHandle low;
+    TerrainBody *highBody;
+    TerrainBody *lowBody;
+    float highStart;
+    float lowStart;
+    int step;
+
+    CHECK(WorldInit(&world, 512, 400), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    /* Two identical slabs, one above the space line and one well below the
+       cloud line, dropped for two seconds with nothing under either. */
+    high = DynamicTerrainAllocBody(&terrain, 4, 4);
+    low = DynamicTerrainAllocBody(&terrain, 4, 4);
+    highBody = DynamicTerrainGet(&terrain, high);
+    lowBody = DynamicTerrainGet(&terrain, low);
+    CHECK(highBody != NULL && lowBody != NULL, "the fixtures were not created");
+    for (step = 0; step < 16; ++step) {
+        DynamicTerrainSetCell(&terrain, high, step % 4, step / 4, MATERIAL_ROCK,
+                              20.0f);
+        DynamicTerrainSetCell(&terrain, low, step % 4, step / 4, MATERIAL_ROCK,
+                              20.0f);
+    }
+    DynamicTerrainFinalizeBody(&terrain, high);
+    DynamicTerrainFinalizeBody(&terrain, low);
+    highBody->position = (Vector2){120.0f, 12.0f};
+    lowBody->position = (Vector2){300.0f, 300.0f};
+    highBody->velocity = (Vector2){0.0f, 0.0f};
+    lowBody->velocity = (Vector2){0.0f, 0.0f};
+    highStart = highBody->position.y;
+    lowStart = lowBody->position.y;
+
+    for (step = 0; step < 120; ++step) {
+        DynamicTerrainIntegrateBody(&terrain, highBody, 1.0f / 60.0f,
+                                    WorldGravityScaleAt(&world,
+                                                        highBody->position.y));
+        DynamicTerrainIntegrateBody(&terrain, lowBody, 1.0f / 60.0f,
+                                    WorldGravityScaleAt(&world,
+                                                        lowBody->position.y));
+    }
+
+    CHECK(fabsf(highBody->position.y - highStart) < 0.5f,
+          "the slab in space fell %.2f cells",
+          (double)(highBody->position.y - highStart));
+    CHECK(lowBody->position.y - lowStart > 40.0f,
+          "the slab on the ground only fell %.2f cells",
+          (double)(lowBody->position.y - lowStart));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_rubble_that_lies_still_long_enough_becomes_ground_again(void)
 {
     World world;
@@ -7163,7 +7283,7 @@ static void test_a_held_body_is_pulled_rather_than_placed(void)
         TerrainInteractionUpdate(&interaction, &player, &terrain, NULL, aim, true,
                                  KINEMATIC_STEP);
         DynamicTerrainIntegrateBody(&terrain, DynamicTerrainGet(&terrain, handle),
-                                    KINEMATIC_STEP);
+                                    KINEMATIC_STEP, 1.0f);
     }
     CHECK(body->position.x > start.x + 5.0f,
           "the held body only reached %.2f from %.2f", (double)body->position.x,
@@ -9823,6 +9943,9 @@ int main(void)
     RUN(test_generated_biomes_have_distinct_material_identity);
     RUN(test_biome_boundaries_and_spawn_are_coherent);
     RUN(test_every_biome_can_host_the_protected_spawn);
+    RUN(test_gravity_fades_out_between_the_clouds_and_space);
+    RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
+    RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
     RUN(test_flora_is_solid_but_is_never_the_ground);
     RUN(test_the_day_turns_and_takes_the_sky_with_it);

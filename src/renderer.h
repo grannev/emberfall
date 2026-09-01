@@ -7,6 +7,7 @@
 #include <raylib.h>
 
 #include "environment_renderer.h"
+#include "sky_renderer.h"
 #include "game.h"
 #include "presentation_fx.h"
 #include "terrain_body_renderer.h"
@@ -33,12 +34,16 @@ typedef struct RendererFrameStats {
     uint16_t environmentEmissiveContributors;
     EnvironmentPalette environmentPalette;
     bool environmentViewValid;
+    uint16_t skyClouds;
+    uint16_t skyStars;
+    bool skySpaceVisible;
     bool bloomEnabled;
 } RendererFrameStats;
 
 typedef struct Renderer {
     WorldRenderer world;
     EnvironmentRenderer environment;
+    SkyRenderer sky;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;
     /* Seconds of presentation, for effects that flicker or turn. Kept here

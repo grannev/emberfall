@@ -67,10 +67,14 @@ void ParticlesInit(ParticleSystem *system, uint64_t seed)
 
 /* Integrates one particle and returns where it wants to be next. Shared by
    both roles so their motion cannot drift apart. */
-static void ParticleIntegrate(Particle *particle, float deltaTime, float *nextX,
-                              float *nextY)
+static void ParticleIntegrate(Particle *particle, const World *world,
+                              float deltaTime, float *nextX, float *nextY)
 {
-    particle->velocity.y += particle->gravity * deltaTime;
+    /* Debris in the weightless band drifts instead of falling, exactly as a
+       slab does: the two must not disagree about where gravity stops. */
+    particle->velocity.y += particle->gravity *
+                            WorldGravityScaleAt(world, particle->position.y) *
+                            deltaTime;
     particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
     *nextX = particle->position.x + particle->velocity.x * deltaTime;
     *nextY = particle->position.y + particle->velocity.y * deltaTime;
@@ -86,7 +90,7 @@ static void ParticleStepVisual(Particle *particle, const World *world,
     float nextY;
     bool embedded;
 
-    ParticleIntegrate(particle, deltaTime, &nextX, &nextY);
+    ParticleIntegrate(particle, world, deltaTime, &nextX, &nextY);
 
     if (world == NULL || particle->contact == PARTICLE_CONTACT_PASS) {
         particle->position.x = nextX;
@@ -123,7 +127,7 @@ static void ParticleStepDebris(Particle *particle, World *world, float deltaTime
     float nextY;
     bool embedded;
 
-    ParticleIntegrate(particle, deltaTime, &nextX, &nextY);
+    ParticleIntegrate(particle, world, deltaTime, &nextX, &nextY);
 
     if (world == NULL) {
         particle->position.x = nextX;

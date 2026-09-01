@@ -591,7 +591,7 @@ static void TerrainClampSpeeds(TerrainBody *body,
 }
 
 void DynamicTerrainIntegrateBody(DynamicTerrainSystem *system, TerrainBody *body,
-                                 float deltaTime)
+                                 float deltaTime, float gravityScale)
 {
     const DynamicTerrainConfig *config;
     float linearRetained;
@@ -607,7 +607,7 @@ void DynamicTerrainIntegrateBody(DynamicTerrainSystem *system, TerrainBody *body
     linearRetained = expf(-config->linearDamping * deltaTime);
     angularRetained = expf(-config->angularDamping * deltaTime);
 
-    body->velocity.y += config->gravity * deltaTime;
+    body->velocity.y += config->gravity * gravityScale * deltaTime;
     body->velocity.x *= linearRetained;
     body->velocity.y *= linearRetained;
     body->angularVelocity *= angularRetained;

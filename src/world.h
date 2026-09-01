@@ -2,6 +2,7 @@
 #define WORLD_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <raylib.h>
@@ -251,6 +252,49 @@ void WorldSetPointLight(World *world, Vector2 position, float radius, float stre
 /* Sets how much daylight the sky gives, clamped to 0..1. Applied on the next
    solve, like the point light. */
 void WorldSetDaylight(World *world, float daylight);
+
+/* ---- altitude ------------------------------------------------------------
+ *
+ * The world has a top as well as a bottom. Below the cloud line everything is
+ * ground and weather; above the space line there is nothing to hold anything
+ * down, and between them the pull fades out rather than switching off, so a
+ * body thrown hard enough leaves the sky gradually and visibly.
+ *
+ * Fractions of the world's height rather than fixed cells, because a test world
+ * a hundred and forty cells tall has to have the same three bands as a
+ * production one, in the same places relative to its ground.
+ */
+#define WORLD_SPACE_LINE 0.09f
+#define WORLD_CLOUD_LINE 0.30f
+
+static inline float WorldSpaceLineY(const World *world)
+{
+    return (float)world->height * WORLD_SPACE_LINE;
+}
+
+static inline float WorldCloudLineY(const World *world)
+{
+    return (float)world->height * WORLD_CLOUD_LINE;
+}
+
+/* How much of gravity reaches `y`: one at and below the cloud line, zero at and
+   above the space line, and a smooth fall between them. */
+static inline float WorldGravityScaleAt(const World *world, float y)
+{
+    float space;
+    float cloud;
+    float amount;
+
+    if (world == NULL || world->height <= 0) return 1.0f;
+    space = WorldSpaceLineY(world);
+    cloud = WorldCloudLineY(world);
+    if (y >= cloud) return 1.0f;
+    if (y <= space) return 0.0f;
+    amount = (y - space) / (cloud - space);
+    /* Smoothstep, so neither end has a corner in it: a body drifting up through
+       the band slows its fall continuously instead of stepping. */
+    return amount * amount * (3.0f - 2.0f * amount);
+}
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);
