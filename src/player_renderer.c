@@ -285,6 +285,24 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         accent = (Color){255, 255, 255, 255};
     }
 
+    /* A compact sharp exhaust anchors the longer particle/FX trail to the
+       character. It grows by stage, while the separate emissive pass supplies
+       the soft halo without blurring this core. */
+    if (player->boosting && player->boostStage != PLAYER_BOOST_NONE) {
+        float stage = (float)player->boostStage;
+        Vector2 nozzle = Vector2Add(player->position,
+                                    Vector2Scale(travel, -3.5f));
+        Vector2 tail = Vector2Add(
+            nozzle, Vector2Scale(travel, -(5.0f + stage * 4.5f)));
+        Color exhaust = player->boostStage == PLAYER_BOOST_STAGE_THREE
+                            ? (Color){255, 224, 151, 230}
+                            : (Color){104, 222, 255, 215};
+
+        DrawLineEx(nozzle, tail, 1.45f + stage * 0.24f,
+                   Fade(exhaust, 0.48f));
+        DrawLineEx(nozzle, tail, 0.55f, exhaust);
+    }
+
     /* ---- acceleration burst, behind the body ---- */
     if (player->boostBurstTimer > 0.0f &&
         player->boostBurstStage != PLAYER_BOOST_NONE) {
@@ -555,6 +573,7 @@ void PlayerRendererDrawEmissive(const Player *player)
 
     if (player->boosting || player->boostStage != PLAYER_BOOST_NONE) {
         float stage = (float)player->boostStage;
+        Vector2 normal = {-direction.y, direction.x};
         Vector2 trail = {player->position.x - direction.x * (6.0f + stage * 3.0f),
                          player->position.y - direction.y * (6.0f + stage * 3.0f)};
         Color color = player->boostStage == PLAYER_BOOST_STAGE_THREE
@@ -563,6 +582,14 @@ void PlayerRendererDrawEmissive(const Player *player)
 
         DrawLineEx(player->position, trail, 1.2f + stage * 0.45f, color);
         DrawCircleV(player->position, 1.2f + stage * 0.5f, color);
+        if (player->boostStage >= PLAYER_BOOST_STAGE_TWO) {
+            DrawLineEx(Vector2Add(player->position, Vector2Scale(normal, 1.8f)),
+                       Vector2Add(trail, Vector2Scale(normal, 3.2f)),
+                       0.65f, Fade(color, 0.66f));
+            DrawLineEx(Vector2Add(player->position, Vector2Scale(normal, -1.8f)),
+                       Vector2Add(trail, Vector2Scale(normal, -3.2f)),
+                       0.65f, Fade(color, 0.66f));
+        }
     }
     if (player->boostBurstTimer > 0.0f &&
         player->boostBurstStage != PLAYER_BOOST_NONE) {

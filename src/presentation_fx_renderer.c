@@ -33,6 +33,20 @@ static void PresentationFxDrawPrimitive(const PresentationFx *effect,
     case PRESENTATION_FX_GLOW:
         DrawCircleV(description->start, radius, color);
         break;
+    case PRESENTATION_FX_PUFF: {
+        /* Three overlapping circles keep smoke/dust readable as a clustered
+           puff rather than a single perfect vector circle. */
+        float lobe = radius * 0.58f;
+
+        DrawCircleV(description->start, radius * 0.72f, color);
+        DrawCircleV((Vector2){description->start.x - radius * 0.40f,
+                              description->start.y + radius * 0.12f},
+                    lobe, Fade(color, 0.72f));
+        DrawCircleV((Vector2){description->start.x + radius * 0.36f,
+                              description->start.y - radius * 0.16f},
+                    lobe * 0.82f, Fade(color, 0.62f));
+        break;
+    }
     case PRESENTATION_FX_RING: {
         float width = description->width * (0.45f + remaining * 0.55f);
         float innerRadius = fmaxf(0.0f, radius - width * 0.5f);
@@ -63,6 +77,10 @@ void PresentationFxRendererDrawScene(const PresentationFxSystem *system)
     }
     for (index = 0u; index < system->stats.active; ++index) {
         const PresentationFx *effect = &system->effects[index];
+
+        if (effect->age < 0.0f) {
+            continue;
+        }
         float remaining = 1.0f - PresentationFxProgress(effect);
         float opacity = Clamp(effect->description.intensity * remaining,
                               0.0f, 1.0f);
@@ -88,7 +106,7 @@ void PresentationFxRendererDrawEmissive(const PresentationFxSystem *system)
         float strength;
         Color color;
 
-        if (!effect->description.emissive) {
+        if (effect->age < 0.0f || !effect->description.emissive) {
             continue;
         }
         alpha = (float)effect->description.color.a / 255.0f;

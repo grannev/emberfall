@@ -27,6 +27,7 @@ typedef enum PresentationFxType {
     PRESENTATION_FX_GLOW,
     PRESENTATION_FX_LINE,
     PRESENTATION_FX_TRAIL,
+    PRESENTATION_FX_PUFF,
     PRESENTATION_FX_TYPE_COUNT
 } PresentationFxType;
 
@@ -51,6 +52,9 @@ typedef struct PresentationFxDescription {
     float width;
     float intensity;
     float lifetime;
+    /* A small presentation-side delay lets one gameplay event describe a
+       readable attack -> impact -> decay sequence without timers in gameplay. */
+    float delay;
     bool emissive;
 } PresentationFxDescription;
 
@@ -68,6 +72,13 @@ typedef struct PresentationFxStats {
 typedef struct PresentationFxSystem {
     PresentationFx effects[PRESENTATION_FX_CAPACITY];
     PresentationFxStats stats;
+    uint32_t randomState;
+    Vector2 lastLaserContact;
+    float laserContactTime;
+    float laserSpawnCooldown;
+    float cryoSpawnCooldown;
+    float drillSpawnCooldown;
+    bool laserContactValid;
 } PresentationFxSystem;
 
 void PresentationFxInit(PresentationFxSystem *system);

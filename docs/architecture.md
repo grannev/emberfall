@@ -31,7 +31,7 @@ raylib input -> input.c -> GameInput
 
 - создание окна и `GameState`/renderer/audio lifecycle;
 - владение `GameAudio`, `Camera2D` и presentation state;
-- camera follow и camera shake;
+- владение `CameraFeedback`, camera follow и применение его bounded output;
 - потребление `GameEvents` звуком и камерой;
 - порядок platform update и отрисовки;
 - HUD и smoke-test integration.
@@ -70,8 +70,9 @@ process-wide генератора, общего со всем остальным
 particles; все они выводятся из одного seed через `RngStreamSeed`, поэтому
 добавление броска в одну систему не сдвигает результат другой.
 
-Presentation-случайность (camera shake) по-прежнему может брать из raylib: она
-не способна изменить симуляцию.
+Presentation randomness имеет отдельные локальные состояния в FX/audio и не
+трогает gameplay streams. Camera вообще не делает случайный draw каждый frame:
+её bounded impulses используют однажды вычисленный phase и гладкие волны.
 
 ### `game_events.c/.h`
 
@@ -233,9 +234,10 @@ force, laser и thermal — нет, и почему именно, записан
 ### `presentation_fx.c/.h` и `presentation_fx_renderer.c/.h`
 
 `PresentationFxSystem` — renderer-owned компактный массив из максимум 128
-короткоживущих world-space primitives: flash, expanding ring, glow core, line и
-trail segment. Он обновляет только `age`, удаляет истёкшие instances swap-remove
-и не делает allocation во время кадра.
+короткоживущих world-space primitives: flash, expanding ring, glow core, line,
+trail segment и smoke/dust puff. Он обновляет age/delay и три held-contact
+cooldown, удаляет истёкшие instances swap-remove и не делает allocation во
+время кадра.
 
 Поток данных однонаправленный:
 
@@ -246,16 +248,18 @@ GameEvent -> PresentationFxConsumeEvents -> fixed array
                                       scene pass  emissive pass
 ```
 
-Сейчас explosion event создаёт flash + ring, а player impact — небольшой
-flash. Это proof интеграции, не staged explosion polish. При заполненной
+Explosion, laser/cryo contact, force, boost-stage, drill и player impact имеют
+конкретные event converters. Explosion создаёт staged flash/core/rings/sparks/
+dust/afterglow; delay находится только в presentation state. При заполненной
 ёмкости incoming effect заменяет instance с наименьшим priority, ближайший к
 expiration; low-priority effect не может вытеснить high-priority. Каждая
 замена/отказ увеличивает `dropped`, а HUD показывает active/peak/dropped.
 
 **Visual `PresentationFx` никогда не читает и не меняет `World`.** Это отличает
 его от `PARTICLE_CONTACT_SETTLE` debris, который может осесть реальной cell.
-Система сейчас не использует randomness; любой будущий visual jitter обязан
-иметь отдельный presentation RNG и не касаться seeded gameplay streams.
+Visual spread использует собственный xorshift state. Он не входит в
+`GameState`, не касается seeded gameplay streams и не меняет deterministic
+simulation digest.
 
 ### `renderer.c/.h` и renderer-модули
 
@@ -323,8 +327,9 @@ full-resolution и 3.52 MiB для двух 640×360 targets.
 
 ### `audio.c/.h`
 
-При старте синтезирует короткие PCM wave-буферы для лазера, криолуча, бура,
-ступеней ускорения, столкновений, силового удара, взрыва и реакции материалов. После
+При старте синтезирует короткие PCM wave-буферы для лазера/контакта, криолуча/
+cold crack, бура, ступеней ускорения, столкновений, силового удара, трёх слоёв
+взрыва и реакции материалов. После
 `LoadSoundFromWave` временные CPU-буферы освобождаются. Ошибка инициализации audio
 device не является фатальной.
 
@@ -333,16 +338,21 @@ device не является фатальной.
 Текущий порядок между `main.c` и `GameUpdate` важен:
 
 1. Ограничить `deltaTime` значением 0.05 секунды.
-2. `InputPoll` создать `GameInput`; F1 переключить на app-уровне.
+2. Зафиксировать stable aim camera без transient feedback; `InputPoll` создать
+   из неё `GameInput`, а F1 переключить на app-уровне.
 3. `GameUpdate` при необходимости выполнить reset, обновить player и streaming.
 4. Обновить abilities, gameplay/visual particle pool и накопить transient
    `GameEvents`.
 5. Выполнить необходимое число fixed ticks мира по 1/60 секунды; преобразовать
    world reactions в `GameEvents` и повторно разрешить player collision.
-6. Обновить held audio state и передать events audio/camera consumers.
+6. Обновить held audio state, передать events audio и bounded
+   `CameraFeedback` consumers.
 7. Состарить прежние `PresentationFx`, затем один раз преобразовать события
    текущего кадра в новые instances; при reset очистить presentation pool.
-8. Обновить camera follow, затухание shake и player point light.
+8. Сгладить speed lookahead/view scale, собрать camera impulse stack; вывести
+   из stable aim camera отдельную presentation camera и обновить player point
+   light. Reticle рисуется через stable camera, world-space scene — через
+   presentation camera.
 9. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
    paged world layers, синхронизировать generation/revision cache динамических
    тел, отрисовать static и detached terrain в sharp scene и выполнить

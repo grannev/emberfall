@@ -2,6 +2,7 @@
 #define GAME_AUDIO_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <raylib.h>
 
@@ -9,15 +10,25 @@
 
 typedef struct GameAudio {
     Sound laser;
-    Sound explosion;
+    Sound laserImpact;
+    Sound explosionAttack;
+    Sound explosionBody;
+    Sound explosionTail;
     Sound reaction;
     Sound drill;
     Sound impact;
     Sound force;
     Sound chill;
+    Sound chillImpact;
     Sound boost;
     float reactionCooldown;
     float impactCooldown;
+    float laserImpactCooldown;
+    float chillImpactCooldown;
+    float explosionBodyDelay;
+    float explosionTailDelay;
+    float explosionStrength;
+    uint32_t randomState;
     bool ready;
 } GameAudio;
 
@@ -34,7 +45,9 @@ typedef struct GameAudioState {
 
 bool GameAudioInit(GameAudio *audio);
 void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime);
-void GameAudioPlayExplosion(GameAudio *audio);
+void GameAudioPlayExplosion(GameAudio *audio, float strength);
+void GameAudioPlayLaserImpact(GameAudio *audio, float strength);
+void GameAudioPlayChillImpact(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioPlayImpact(GameAudio *audio, float strength);
 void GameAudioPlayForce(GameAudio *audio);

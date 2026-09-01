@@ -337,7 +337,8 @@ void RendererClearPresentation(Renderer *renderer)
     PresentationFxClear(&renderer->effects);
 }
 
-void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
+void RendererRenderScene(Renderer *renderer, GameState *game,
+                         Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible)
 {
     bool bloomReady;
@@ -371,7 +372,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
-    BeginMode2D(camera);
+    BeginMode2D(presentationCamera);
         WorldRendererDraw(&renderer->world, &game->world, visible);
         TerrainBodyRendererDrawScene(&renderer->terrainBodies,
                                      &game->dynamicTerrain, visible);
@@ -379,8 +380,14 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition);
-        AbilityRendererDraw(&game->abilities, aimPosition);
+        AbilityRendererDraw(&game->abilities);
         PresentationFxRendererDrawScene(&renderer->effects);
+    EndMode2D();
+    /* The reticle uses exactly the stable transform that converted the mouse
+       into aimWorld. Transient shake may move the presented world beneath the
+       cursor, but it can never feed back into or visually displace aiming. */
+    BeginMode2D(aimCamera);
+        AbilityRendererDrawReticle(&game->abilities, aimPosition);
     EndMode2D();
     EndTextureMode();
 
@@ -389,7 +396,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
 
         BeginTextureMode(renderer->emissiveTarget);
         ClearBackground(BLANK);
-        BeginMode2D(camera);
+        BeginMode2D(presentationCamera);
             WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
             TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
                                             &game->dynamicTerrain, visible);

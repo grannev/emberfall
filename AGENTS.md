@@ -107,6 +107,11 @@ coherent phase with an explanatory message.
   is compact, bounded at 128 instances and replaces the lowest-priority effect
   nearest expiration on overflow; do not turn it into another particle engine
   or move it into `GameState`.
+- Combat presentation maps explosion, beam contacts, force, boost and drill
+  events into delayed staged FX without duplicating gameplay. Visual/audio
+  variation owns separate presentation RNG state. `CameraFeedback` is a
+  bounded 16-impulse presentation stack; it alone owns shake/rotation/zoom
+  kicks and never writes player/world state.
 - Abilities are a registry: `ABILITIES` in `abilities.c` holds what every power
   shares, one `apply` function holds what a power does, `input.c` owns the key
   bindings, and feedback leaves through `GameEvent` — knockback included, via

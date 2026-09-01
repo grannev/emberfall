@@ -52,8 +52,12 @@ origin/endpoint/direction для рисования.
 3. `WorldApplyShockwave` выталкивает динамические материалы до радиуса 42.
 4. Создаётся 120 explosion particles.
 5. Устанавливается cooldown 0.7 секунды.
-6. Публикуется `explosionTriggered` для player impulse, audio и camera shake.
-7. В течение 0.32 секунды рисуется расширяющееся кольцо.
+6. Публикуется `GAME_EVENT_EXPLOSION` для player impulse и presentation.
+7. Presentation разворачивает событие по стадиям: мгновенный flash, горячее
+   ядро, два shock ring, искры, пыль и затухающее свечение. Gameplay crater при
+   этом не вычисляется и не применяется второй раз.
+8. Camera получает ограниченный position/rotation/zoom impulse, а procedural
+   audio — отдельные attack, body и delayed tail слои.
 
 ## Силовой удар (Q)
 
@@ -88,9 +92,10 @@ Cells обходятся от дальнего края конуса внутр�
 конус расшвыривал песок по ту сторону скалы и скоблил её обратную грань — удар
 проходил сквозь мир насквозь.
 
-Игрок получает импульс 132 units/s в обратную сторону, camera shake 4.2 и burst
-из 52 быстрых частиц: удар, который двигает мир, но не того, кто его наносит,
-читается как кнопка, а не как сила.
+Игрок получает импульс 132 units/s в обратную сторону, bounded camera impulse и
+burst из 52 быстрых частиц. Presentation добавляет origin flash, направленные
+pressure-линии, расширяющийся импульс и пыль вдоль конуса; геометрия лишь
+визуализирует уже выполненный удар и не меняет импульсы `TerrainBody`.
 
 ## Способности и отделившийся terrain
 
@@ -124,6 +129,12 @@ Cells обходятся от дальнего края конуса внутр�
 Криолуч — единственная способность, добавляющая материю: замороженная вода
 становится `ICE`, а `ICE` solid. Это делает игру не только разрушением.
 
+В sharp pass луч остаётся тонкой белой линией с голубым краем и короткими
+ледяными насечками. Контакт создаёт cold flash, crisp ring и два ice shard;
+emissive contribution намеренно слабее лазерного, поэтому синий bloom не
+выбеливает всю сцену. Эти эффекты подчёркивают переходы материалов, но не
+дублируют `WorldApplyChill` или thermal simulation.
+
 ## Эффекты ускорения
 
 `Player.boostStageChanged` — однофреймовое событие каждой из трёх границ
@@ -131,7 +142,7 @@ Cells обходятся от дальнего края конуса внутр�
 presentation consumers превращают его в три согласованных сигнала:
 
 - `ParticlesSpawnBoostBurst` создаёт расходящийся импульс и быстрый след;
-- камера получает shake 0.8, 1.8 или 4.0;
+- камера получает всё более сильный bounded position/rotation/zoom impulse;
 - `GameAudioPlayBoost` меняет громкость и высоту синтезированного толчка.
 
 Обычный `ParticlesSpawnBoostTrail` тоже принимает номер ступени. На первой он
@@ -165,17 +176,21 @@ Particles рисуются целыми cells через `DrawRectangle`, а н�
 ## Transient presentation FX
 
 Отдельный renderer-owned `PresentationFxSystem` хранит до 128 коротких flash,
-ring, glow, line и trail primitives. Gameplay не вызывает его напрямую:
-`GAME_EVENT_EXPLOSION` преобразуется presentation layer в простой flash + ring,
-а `GAME_EVENT_PLAYER_IMPACT` — в короткий impact flash. Существующее explosion
-ring удалено из `AbilityRenderer`, поэтому один и тот же event не рисуется
-дважды.
+ring, glow, line, trail и smoke/dust puff primitives. Gameplay не вызывает его
+напрямую. Один `GAME_EVENT_EXPLOSION` превращается в staged последовательность,
+а события laser/cryo contact, force, boost, drill и player impact — в свои
+короткие accents. Delay хранится внутри presentation instance: gameplay не
+получает FX timers.
 
 Эффект может иметь emissive contribution, но это лишь второй draw того же
 presentation instance в bloom mask. Он не повторяет explosion/world logic.
 `PresentationFx` не получает `World *`, не создаёт gameplay particles и
 **никогда не изменяет cells**. В отличие от него, debris-частицы ниже могут
 осесть в пустую cell и потому остаются частью gameplay-owned `ParticleSystem`.
+Визуальный разброс использует отдельный xorshift state внутри manager; seeded
+gameplay RNG и deterministic simulation digest от него не зависят. Held-contact
+cooldowns ограничивают laser/cryo/drill spawn rate и не дают trail/smoke расти
+без границ.
 
 ## Контакт частиц с миром
 
@@ -208,16 +223,16 @@ ash). Тоннель получает осыпь на полу, но не зар
 
 `GameAudioInit` создаёт mono 16-bit PCM с sample rate 22050 Hz:
 
-- laser — тон с harmonic и frequency wobble;
-- explosion — затухающий rumble плюс noise;
+- laser — loop с harmonic/frequency wobble и отдельный contact snap;
+- explosion — crack attack, rumble/noise body и отложенный low-pass tail;
 - reaction — короткий hiss/fizz;
 - drill — низкий grind с rasp-гармоникой и noise;
 - impact — короткий стук с быстро падающей высотой;
 - force — одиночный удар: низкочастотный шум через однополюсный фильтр (сырой
   белый шум читается как статика, срезанный верх — как движущийся воздух) плюс
   падающий по высоте толчок и быстрое затухание;
-- chill — яркий тонкий hiss с шиммером на 1480 Hz, противоположный конец спектра
-  от лазера, чтобы два луча различались на слух;
+- chill — яркий тонкий hiss с шиммером на 1480 Hz и короткий cold crack в
+  контакте, противоположный конец спектра от лазера;
 - boost — низкий толчок, фильтрованный поток воздуха и короткий crack;
   `GameAudioPlayBoost` делает последующие ступени ниже и громче, а третий переход
   подчёркивает звуковой барьер.
@@ -238,6 +253,10 @@ one-shots не накапливаются. Force, boost-переход и взр
 Impact громче и ниже при более сильном ударе. У него cooldown 0.09 секунды, иначе
 игрок, скребущий по стене, запускал бы стук каждый кадр; у reaction — 0.13
 секунды по той же причине.
+
+Высота и громкость one-shot слоёв слегка варьируются отдельным audio-owned RNG.
+Размер/strength explosion влияет на pitch и volume всех трёх слоёв; эта
+случайность не видна gameplay и не меняет replay.
 
 Если `InitAudioDevice` не готов, `GameAudio.ready` остаётся false, а все audio
 функции безопасно становятся no-op.
