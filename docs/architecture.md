@@ -47,10 +47,12 @@ app/presentation-командой. Gameplay и headless tests не вызыва�
 ### `game.c/.h`
 
 `GameState` владеет `World`, `Player`, `AbilitySystem`, `ParticleSystem`,
-`DynamicTerrainSystem`, fixed-step
+`DynamicTerrainSystem`, `TerrainDetachSystem`, fixed-step
 accumulator и streaming position. `GameUpdate` задаёт единый gameplay order:
 player, activation, abilities, particles, необходимое число world ticks,
-reaction events и post-simulation collision. `GameConfig` собирает world size,
+reaction events и post-simulation collision. Внутри каждого fixed tick порядок
+тоже фиксирован: `WorldUpdate`, затем автоматический detach, затем физика тел —
+связность спрашивают только у мира, закончившего свои записи. `GameConfig` собирает world size,
 fixed step и размеры active region в одном месте.
 
 Particle ownership пока переходное: debris действительно меняет World, но в
@@ -95,7 +97,7 @@ update. При переполнении новые события отбрасы
 | `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
 | `material_render.c/.h` | Общая CPU-конверсия material/temperature в scene+emissive pixels; static world и detached bodies не имеют двух расходящихся palette paths. |
 | `world_render_data.c` | Единственное место, превращающее `Cell` в `Color`; отдаёт renderer готовые прямоугольники пикселей. |
-| `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает, никем пока не вызывается. |
+| `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает; вызывается из `terrain_detach.c` после разрушения. |
 
 `world_internal.h` держит горячие accessors (`WorldCell`, `WorldMaterialAt`,
 `CoordinateHash`) как `static inline`. Разделение файлов не должно вставлять
@@ -127,6 +129,28 @@ raster arena на 1.25 MiB и surface-coordinate arena на 0.50 MiB, выдел
 старые обломки не удаляются никогда: уничтожается только тело, покинувшее мир.
 Это правило безопасности мира, а не камеры.
 
+### `terrain_detach.c/.h`
+
+Мост «разрушение → тело»: единственное место, где рельеф отделяется сам.
+Владеет `TerrainDetachSystem` (`GameState`), одним `WorldComponentWorkspace` и
+bitmap покрытия; вызывается из `GameAdvanceWorld` между `WorldUpdate` и
+`TerrainPhysicsUpdate`.
+
+**Emberfall не сканирует весь World в поисках detached terrain.** Проверки
+запускаются только локально после известных destructive mutations: `World` ведёт
+маленький журнал вырезов (`WorldRecordDestruction`), модуль осушает его,
+просматривает коробку повреждения на seed-ы и спрашивает ограниченный детектор
+внутри окна фиксированного размера. Подключены explosion и drill; shockwave,
+force, laser и thermal — нет, и почему именно, записано в
+[dynamic-terrain.md](dynamic-terrain.md).
+
+Стоимость одного вызова целиком выводится из констант и не зависит от размера
+мира: регионы × проверки × клеток на проверку. Тик без разрушения не делает
+ничего и стоит 0.0000 мс.
+
+Извлечение идёт через обычный `TerrainExtractComponent`, поэтому атомарность и
+бюджеты достаются бесплатно: своего кода записи клеток здесь нет.
+
 ### `terrain_extraction.c/.h`
 
 Атомарный перенос доказанно отделённой component из `World` в `TerrainBody`.
@@ -139,7 +163,7 @@ raster arena на 1.25 MiB и surface-coordinate arena на 0.50 MiB, выдел
 растр тела служит staging-областью, поэтому неудача — это освобождение тела,
 которого никто не видел, а не откат половины мутации.
 
-Автоматически не вызывается: подключение к взрыву и буру — EF-DYN-011.
+Вызывается явно и — с EF-DYN-011 — автоматически, из `terrain_detach.c`.
 
 Подробности — [dynamic-terrain.md](dynamic-terrain.md),
 решения — [ADR 0009](adr/0009-terrain-body-storage.md).

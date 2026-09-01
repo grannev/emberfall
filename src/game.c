@@ -48,6 +48,7 @@ bool GameInit(GameState *game, GameConfig config)
         WorldUnload(&game->world);
         return false;
     }
+    TerrainDetachInit(&game->detach);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -73,8 +74,10 @@ void GameReset(GameState *game, uint64_t seed)
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
     AbilitiesInit(&game->abilities, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
     ParticlesInit(&game->particles, RngStreamSeed(seed, GAME_RNG_STREAM_PARTICLES));
-    /* A new world cannot keep pieces cut from the old one. */
+    /* A new world cannot keep pieces cut from the old one. WorldGenerate has
+       already dropped the damage log for the same reason. */
     DynamicTerrainReset(&game->dynamicTerrain);
+    TerrainDetachResetStats(&game->detach);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -181,11 +184,20 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         int reaction;
 
         WorldUpdate(&game->world);
+        /* Between the world's tick and the bodies': the world has finished
+           every cell write it was going to make, so connectivity now describes
+           a state that actually existed, and a piece that comes loose here is
+           integrated by the very next line instead of hanging for a tick.
+
+           This is also the only place automatic detachment runs. It does no
+           scanning of its own — it drains the damage the destructive powers
+           recorded, and a tick with no destruction in it does nothing at all. */
+        TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
+                             events);
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible
-           for collision to change a cell. The fixed body budget keeps this
-           bounded even once automatic extraction is connected. */
+           for collision to change a cell. */
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
         for (reaction = 0; reaction < game->world.reactionCount; ++reaction) {

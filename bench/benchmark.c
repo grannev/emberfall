@@ -13,6 +13,7 @@
 
 #include "player.h"
 #include "world.h"
+#include "terrain_detach.h"
 #include "terrain_physics.h"
 #include "world_lighting.h"
 
@@ -512,6 +513,121 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
     DynamicTerrainUnload(&terrain);
 }
 
+/* Automatic detachment is event-driven, and the first row below is the claim
+   that matters: a tick with no destruction in it must cost nothing measurable,
+   because otherwise the feature would be a tax on every frame of a game that is
+   mostly not blowing anything up.
+
+   Only TerrainDetachProcess is timed. Building the scene and firing the blast
+   happen outside the clock: they are the benchmark's setup, not the cost under
+   test. */
+typedef struct {
+    const char *name;
+    bool destroy;      /* fire a blast into the scene each frame */
+    int fragments;     /* block-on-pillar assemblies to build */
+    bool anchored;     /* build a large structure that cannot come loose */
+    int blastY;
+    int blastRadius;
+} DetachBenchScenario;
+
+#define DETACH_BENCH_GROUND 400
+/* Pillars close enough together that one blast severs all of them, blocks
+   narrow enough to stay separate components, and blocks high enough that the
+   blast cuts the supports without touching what it is meant to set free. */
+#define DETACH_BENCH_PILLAR_STEP 12
+#define DETACH_BENCH_BLOCK_WIDTH 8
+#define DETACH_BENCH_BLOCK_HEIGHT 12
+#define DETACH_BENCH_BLOCK_BOTTOM (DETACH_BENCH_GROUND - 50)
+
+static void BuildDetachScene(BenchContext *context,
+                             const DetachBenchScenario *scenario)
+{
+    int centre = context->centerX;
+    int index;
+
+    FillRectangle(context->world, centre - 260, DETACH_BENCH_GROUND - 220,
+                  centre + 260, DETACH_BENCH_GROUND + 40, MATERIAL_EMPTY);
+    FillRectangle(context->world, centre - 260, DETACH_BENCH_GROUND,
+                  centre + 260, DETACH_BENCH_GROUND + 40, MATERIAL_ROCK);
+
+    if (scenario->anchored) {
+        /* A slab welded to the ground on both sides: the worst case for a
+           detector, because every seed on it explores until it gives up. */
+        FillRectangle(context->world, centre - 60, DETACH_BENCH_GROUND - 60,
+                      centre + 60, DETACH_BENCH_GROUND - 1, MATERIAL_ROCK);
+    }
+    for (index = 0; index < scenario->fragments; ++index) {
+        int pillarX = centre - (scenario->fragments - 1) *
+                                   DETACH_BENCH_PILLAR_STEP / 2 +
+                      index * DETACH_BENCH_PILLAR_STEP;
+        int blockBottom = DETACH_BENCH_BLOCK_BOTTOM;
+
+        FillRectangle(context->world, pillarX, blockBottom + 1,
+                      pillarX, DETACH_BENCH_GROUND - 1, MATERIAL_ROCK);
+        FillRectangle(context->world, pillarX - DETACH_BENCH_BLOCK_WIDTH / 2,
+                      blockBottom - DETACH_BENCH_BLOCK_HEIGHT + 1,
+                      pillarX + DETACH_BENCH_BLOCK_WIDTH / 2, blockBottom,
+                      MATERIAL_ROCK);
+    }
+}
+
+static void RunDetachBenchmark(BenchContext *context, double *samples,
+                               DetachBenchScenario scenario)
+{
+    DynamicTerrainSystem terrain;
+    TerrainDetachSystem detach;
+    World *world = context->world;
+    double total = 0.0;
+    int frame;
+
+    if (!DynamicTerrainInit(&terrain)) {
+        printf("detach               allocation failed\n");
+        return;
+    }
+    TerrainDetachInit(&detach);
+    PrepareScenario(context);
+
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start;
+        int slot;
+
+        if (scenario.destroy) {
+            BuildDetachScene(context, &scenario);
+            WorldDestroyCircle(world, context->centerX, scenario.blastY,
+                               scenario.blastRadius, 0.0f);
+        }
+
+        start = NowSeconds();
+        (void)TerrainDetachProcess(&detach, world, &terrain, NULL);
+        samples[frame] = (NowSeconds() - start) * 1000.0;
+        total += samples[frame];
+
+        /* Bodies are freed outside the clock so every frame starts from the
+           same budget and the row measures detection, not accumulation. */
+        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+            if (terrain.bodies[slot].active) {
+                DynamicTerrainFreeBody(&terrain, (TerrainBodyHandle){
+                    (uint16_t)slot, terrain.bodies[slot].generation});
+            }
+        }
+    }
+
+    printf("detach %-20s avg=%7.4f ms  p50=%7.4f  p95=%7.4f  "
+           "regions=%5d checks=%6d explored=%8d detached=%5d cells=%7d  "
+           "anchored=%5d unknown=%5d small=%5d large=%5d\n",
+           scenario.name, total / (double)context->ticks,
+           Percentile(samples, context->ticks, 0.50),
+           Percentile(samples, context->ticks, 0.95),
+           detach.stats.regionsProcessed, detach.stats.detachChecks,
+           detach.stats.detachCellsExplored, detach.stats.autoDetachSucceeded,
+           detach.stats.autoDetachCells,
+           detach.stats.autoDetachRejectedAnchored,
+           detach.stats.autoDetachRejectedUnknown,
+           detach.stats.autoDetachRejectedTooSmall,
+           detach.stats.autoDetachRejectedTooLarge);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void PrintMemory(const World *world)
 {
     size_t cellCount = (size_t)world->width * (size_t)world->height;
@@ -622,6 +738,23 @@ int main(int argc, char **argv)
              ++terrainIndex) {
             RunDynamicTerrainBenchmark(&context, samples,
                                        terrainScenarios[terrainIndex]);
+        }
+    }
+    {
+        static const DetachBenchScenario detachScenarios[] = {
+            /*  name                  destroy frags anchored blastY   radius */
+            {"no destruction",        false,  0,    false,   0,                       0},
+            {"blast in solid rock",   true,   0,    false,   DETACH_BENCH_GROUND + 12, 8},
+            {"one fragment",          true,   1,    false,   DETACH_BENCH_GROUND - 14, 20},
+            {"four fragments",        true,   4,    false,   DETACH_BENCH_GROUND - 14, 20},
+            {"large anchored slab",   true,   0,    true,    DETACH_BENCH_GROUND - 20, 12},
+        };
+        size_t detachIndex;
+
+        for (detachIndex = 0u;
+             detachIndex < sizeof(detachScenarios) / sizeof(detachScenarios[0]);
+             ++detachIndex) {
+            RunDetachBenchmark(&context, samples, detachScenarios[detachIndex]);
         }
     }
 
