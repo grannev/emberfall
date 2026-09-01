@@ -300,8 +300,9 @@ typedef struct DynamicTerrainSystem {
     DynamicTerrainStats stats;
 } DynamicTerrainSystem;
 
-/* One allocation at init, freed at unload, nothing in between: the same
-   lifecycle World uses. Returns false if the raster could not be allocated. */
+/* All fixed-capacity arenas are allocated at init and freed at unload, with
+   nothing allocated in between: the same lifecycle World uses. Returns false
+   if any raster or surface arena could not be allocated. */
 bool DynamicTerrainInit(DynamicTerrainSystem *system);
 void DynamicTerrainUnload(DynamicTerrainSystem *system);
 /* Frees every body and clears the live statistics. Peak figures survive, since

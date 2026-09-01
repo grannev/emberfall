@@ -1,11 +1,10 @@
-/* The bridge from simulation state to pixels.
+/* The bridge from simulation state to dirty pixel regions.
  *
- * This is the only place that turns a Cell into a Color, and it deliberately
- * sits inside the world module rather than in the renderer: it needs the
- * material table, the light field and the dirty-chunk flags, none of which
- * should leave the world's own headers. What it hands the renderer is a plain
- * rectangle of pixels, so the renderer stays free to decide how they reach the
- * GPU.
+ * This module owns world-specific light sampling and dirty-chunk traversal,
+ * then delegates material/temperature conversion to material_render so static
+ * pages and detached bodies share one palette path. What it hands the renderer
+ * is a plain rectangle of pixels, so the renderer stays free to decide how
+ * those pixels reach the GPU.
  */
 #include "world_render_data.h"
 
