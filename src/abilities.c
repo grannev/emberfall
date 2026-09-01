@@ -59,12 +59,53 @@ static Vector2 RadialImpulse(Vector2 target, Vector2 center, float radius,
     return (Vector2){away.x * force * strength, away.y * force * strength};
 }
 
+static float BeamDistance(Vector2 from, Vector2 to)
+{
+    float dx = to.x - from.x;
+    float dy = to.y - from.y;
+
+    return sqrtf(dx * dx + dy * dy);
+}
+
 static void AbilityApplyLaser(const AbilityContext *context, AbilityState *state)
 {
     Vector2 reach = BeamEndAtWorldEdge(context->world, context->origin,
                                        context->direction, ABILITY_LASER_RANGE);
-    LaserResult result = WorldApplyLaser(context->world, context->origin, reach,
-                                         ABILITY_LASER_RADIUS, context->deltaTime);
+    /* Which of the two the beam actually reaches is decided before either of
+       them is touched. Burning the wall first and only then noticing that a
+       slab stood in front of it damages terrain the shot never arrived at, and
+       no amount of later correction puts those cells back. */
+    LaserResult result = WorldBeamHit(context->world, context->origin, reach);
+    TerrainBodyHandle cutBody;
+    Vector2 cutAt;
+    bool bodyFirst = false;
+
+    if (context->terrain != NULL && context->damage != NULL &&
+        DynamicTerrainRaycast(context->terrain, context->origin, reach, &cutBody,
+                              &cutAt)) {
+        bodyFirst = !result.hit ||
+                    BeamDistance(context->origin, cutAt) <
+                        BeamDistance(context->origin, result.position);
+    }
+
+    if (bodyFirst) {
+        /* Rate-limited: the beam is held, and a bite on every frame would
+           evaporate a slab in well under a second. The world is left alone
+           entirely — the beam stopped here. */
+        if (TerrainDamageBeamReady(context->damage, context->deltaTime)) {
+            (void)TerrainDamageApplyCircle(context->damage, context->terrain,
+                                           cutBody, cutAt,
+                                           context->damage->config.beamCutRadius);
+        }
+        result.position = cutAt;
+        result.material = MATERIAL_ROCK;
+        result.hit = true;
+    } else {
+        /* The wall is what the beam reached, so it is the only thing that takes
+           heat. A body behind it is shielded exactly as loose cells are. */
+        result = WorldApplyLaser(context->world, context->origin, reach,
+                                 ABILITY_LASER_RADIUS, context->deltaTime);
+    }
 
     state->origin = context->origin;
     state->direction = context->direction;
@@ -165,6 +206,7 @@ static void AbilityApplyExplosion(const AbilityContext *context,
         .origin = context->aim,
         .radius = ABILITY_EXPLOSION_SHOCK_RADIUS,
         .momentum = ABILITY_EXPLOSION_BODY_IMPULSE,
+        .carveRadius = ABILITY_EXPLOSION_BODY_CARVE,
     });
     ParticlesSpawnExplosion(context->particles, context->aim);
     state->origin = context->aim;
@@ -277,6 +319,7 @@ void AbilitiesInit(AbilitySystem *abilities, uint64_t seed)
 }
 
 void AbilitiesUpdate(AbilitySystem *abilities, World *world,
+                     DynamicTerrainSystem *terrain, TerrainDamageSystem *damage,
                      TerrainImpulseSystem *impulses, ParticleSystem *particles,
                      GameEventBuffer *events, Vector2 origin, Vector2 aim,
                      float deltaTime, const bool *requested)
@@ -299,6 +342,8 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
     }
 
     context.world = world;
+    context.terrain = terrain;
+    context.damage = damage;
     context.impulses = impulses;
     context.particles = particles;
     context.events = events;

@@ -24,6 +24,7 @@
 #include <stdbool.h>
 
 #include "dynamic_terrain.h"
+#include "terrain_damage.h"
 #include "world.h"
 
 /* Blasts awaiting the next fixed step. Abilities have cooldowns, so more than a
@@ -54,9 +55,15 @@ typedef struct TerrainBlast {
        second. Divided by a body's mass, so the same blast moves a small
        fragment far and a hillside barely at all — which is the point. */
     float momentum;
+    /* Cells this blast eats out of any body it overlaps, before the shove.
+       Zero for a blast that only pushes. A slab caught in an explosion loses
+       material to it exactly as the static world does, and if the bite severs
+       the slab the pieces are thrown separately. */
+    float carveRadius;
 } TerrainBlast;
 
 typedef struct TerrainImpulseStats {
+    int bodiesCarved;
     int blastsQueued;
     int blastsDropped;
     int blastsApplied;
@@ -89,10 +96,16 @@ bool TerrainImpulseQueueBlast(TerrainImpulseSystem *system, TerrainBlast blast);
    impulses delivered.
 
    Must run after detachment and before the bodies are integrated, so that a
-   fragment freed by the same blast is thrown by it. `world` is read only, and
-   only to decide whether terrain blocks a cone blast; passing NULL skips that
-   test. Cost is O(queued blasts x live bodies) and nothing is allocated. */
+   fragment freed by the same blast is thrown by it. Each blast carves first and
+   pushes second, in two separate passes over the slots: a piece a blast splits
+   off is therefore thrown by the same blast, and the order it happens in does
+   not depend on which slot the piece landed in.
+
+   `damage` may be NULL, which skips carving. `world` is read only, and only to
+   decide whether terrain blocks a cone blast; passing NULL skips that test.
+   Cost is O(queued blasts x live bodies) and nothing is allocated. */
 int TerrainImpulseApply(TerrainImpulseSystem *system,
-                        DynamicTerrainSystem *terrain, const World *world);
+                        DynamicTerrainSystem *terrain,
+                        TerrainDamageSystem *damage, const World *world);
 
 #endif

@@ -176,14 +176,29 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         game->impulses.stats.bodiesAffectedByExplosion,
                         game->impulses.stats.bodiesAffectedByForce),
              24, 225, 14, (Color){139, 218, 201, 255});
+    /* What the player can take hold of, and what they have. Read from the
+       simulation's own state — nothing here writes back into it, and the
+       simulation draws nothing. */
+    DrawText(TextFormat("HOLD: %s | CUT %d CELLS %d SPLITS",
+                        TerrainInteractionIsHolding(&game->interaction,
+                                                    &game->dynamicTerrain)
+                            ? "CARRYING (F)"
+                            : (DynamicTerrainGetConst(&game->dynamicTerrain,
+                                                      game->interaction.hovered) !=
+                                       NULL
+                                   ? "READY (F)"
+                                   : "-"),
+                        game->damage.stats.cellsCarved,
+                        game->damage.stats.fractureSplits),
+             24, 243, 14, (Color){228, 208, 140, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
     DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 243, 14, (Color){186, 194, 205, 255});
+             24, 261, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 261, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 279, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 261, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 279, 14,
                  LIGHTGRAY);
     }
 }
@@ -204,7 +219,7 @@ static void DrawControlsHint(void)
                           InputAbilityBinding((AbilityId)id),
                           AbilityDefinitionAt((AbilityId)id)->name);
     }
-    hint = TextFormat("%s  |  R regenerate  |  F1 HUD", hint);
+    hint = TextFormat("%s  |  F grab terrain  |  R regenerate  |  F1 HUD", hint);
     width = MeasureText(hint, fontSize);
     x = (GetScreenWidth() - width) / 2;
     y = GetScreenHeight() - 34;
@@ -486,6 +501,212 @@ static const TerrainBody *SmokeHeaviestBody(const DynamicTerrainSystem *terrain)
     return heaviest;
 }
 
+/* --- gameplay acceptance run --------------------------------------------- */
+
+/* The whole point of EF-PHY-001, played through once on a script so it can be
+   watched rather than only asserted:
+
+       platform on a thin support
+         -> the support is blown away
+         -> the platform comes loose and falls
+         -> the player walks into it and shoves it
+         -> takes hold of it and drags it
+         -> lets go, throwing it
+         -> an explosion bites a hole in it
+         -> the hole severs it and the pieces fly apart
+
+   It runs after the render smoke has taken its reference screenshot and freed
+   its bodies, so the two phases never argue about what is on screen. Frame
+   numbers are deliberately plain: the run steps one fixed tick per frame, so a
+   frame is a known amount of simulated time and the schedule reads as one. */
+#define ACCEPT_START 12
+#define ACCEPT_BLAST (ACCEPT_START + 1)
+#define ACCEPT_PUSH (ACCEPT_START + 40)
+#define ACCEPT_GRAB (ACCEPT_START + 70)
+#define ACCEPT_RELEASE (ACCEPT_START + 130)
+#define ACCEPT_CUT (ACCEPT_START + 150)
+#define ACCEPT_SHOT (ACCEPT_START + 165)
+#define ACCEPT_END (ACCEPT_START + 172)
+
+typedef struct SmokeAcceptance {
+    Vector2 platformAt;
+    Vector2 supportAt;
+    bool detached;
+    bool pushed;
+    bool grabbed;
+    bool dragged;
+    bool threw;
+    bool carved;
+    bool split;
+    /* Presentation observed while the gameplay phase was running. The two
+       features were built on separate branches, so "they both work" is not the
+       same claim as "they work at the same time", and only the second is worth
+       asserting. */
+    bool fxDuringPlay;
+    bool cameraFeedbackDuringPlay;
+    float pushSpeed;
+    float dragDistance;
+    float throwSpeed;
+    int fragments;
+    Vector2 dragStart;
+} SmokeAcceptance;
+
+/* A wide slab resting on one thin column, in cleared ground so the surrounding
+   world cannot join in. */
+static void SetupSmokeAcceptanceScene(World *world, Vector2 centre,
+                                      SmokeAcceptance *state)
+{
+    int columnX = (int)centre.x;
+    int platformBottom = (int)centre.y;
+    int groundTop = platformBottom + 28;
+    int x;
+    int y;
+
+    for (y = platformBottom - 30; y < groundTop; ++y) {
+        for (x = columnX - 40; x <= columnX + 40; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_EMPTY);
+        }
+    }
+    for (y = groundTop; y <= groundTop + 10; ++y) {
+        for (x = columnX - 56; x <= columnX + 56; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
+        }
+    }
+    for (y = platformBottom + 1; y < groundTop; ++y) {
+        WorldSetCell(world, columnX, y, MATERIAL_ROCK);
+    }
+    for (y = platformBottom - 7; y <= platformBottom; ++y) {
+        for (x = columnX - 15; x <= columnX + 14; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
+        }
+    }
+    state->platformAt = (Vector2){(float)columnX, (float)platformBottom - 4.0f};
+    state->supportAt = (Vector2){(float)columnX,
+                                 (float)(platformBottom + groundTop) / 2.0f};
+}
+
+/* The largest live body, which through the whole run is the platform or, after
+   the cut, the bigger of its halves. */
+static const TerrainBody *SmokeAcceptanceBody(const DynamicTerrainSystem *terrain)
+{
+    return SmokeHeaviestBody(terrain);
+}
+
+/* Drives one frame of the script. Returns the input the frame should run
+   with. */
+static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
+                               int frame, GameInput *input)
+{
+    const TerrainBody *body = SmokeAcceptanceBody(&game->dynamicTerrain);
+
+    memset(input->ability, 0, sizeof(input->ability));
+    input->move = (Vector2){0.0f, 0.0f};
+    input->grabHeld = false;
+    input->boostHeld = false;
+    input->regeneratePressed = false;
+    if (body != NULL) {
+        input->aimWorld = body->position;
+    }
+
+    if (frame == ACCEPT_START) {
+        SetupSmokeAcceptanceScene(&game->world, state->platformAt, state);
+        /* Beside the scene, so the camera frames it and the player is in
+           position to walk into the slab once it lands. */
+        game->player.position = (Vector2){state->platformAt.x - 46.0f,
+                                          state->platformAt.y + 20.0f};
+        game->player.velocity = (Vector2){0.0f, 0.0f};
+        return;
+    }
+    if (frame == ACCEPT_BLAST) {
+        WorldDestroyCircle(&game->world, (int)state->supportAt.x,
+                           (int)state->supportAt.y, 7, 0.0f);
+        (void)TerrainImpulseQueueBlast(&game->impulses, (TerrainBlast){
+            .shape = TERRAIN_BLAST_RADIAL,
+            .origin = state->supportAt,
+            .radius = ABILITY_EXPLOSION_SHOCK_RADIUS,
+            .momentum = ABILITY_EXPLOSION_BODY_IMPULSE,
+            .carveRadius = 0.0f,
+        });
+        return;
+    }
+    if (body == NULL) {
+        return;
+    }
+    state->detached = state->detached || game->detach.stats.autoDetachSucceeded > 0;
+
+    if (frame >= ACCEPT_PUSH && frame < ACCEPT_GRAB) {
+        /* Walked into the side of the slab. Placed rather than flown so the
+           contact happens at a known moment; everything the contact then does
+           is the production path. */
+        if (frame == ACCEPT_PUSH) {
+            game->player.position = (Vector2){body->position.x - 24.0f,
+                                              body->position.y};
+        }
+        game->player.velocity = (Vector2){52.0f, 0.0f};
+        input->move = (Vector2){1.0f, 0.0f};
+        if (game->interaction.stats.contacts > 0 && !state->pushed) {
+            state->pushed = true;
+            state->pushSpeed = body->velocity.x;
+        }
+        return;
+    }
+    if (frame >= ACCEPT_GRAB && frame < ACCEPT_RELEASE) {
+        input->grabHeld = true;
+        if (frame == ACCEPT_GRAB) {
+            state->dragStart = body->position;
+        } else {
+            /* Dragged upward and to the left, away from where it was. */
+            input->aimWorld = (Vector2){game->player.position.x - 18.0f,
+                                        game->player.position.y - 12.0f};
+        }
+        state->grabbed = state->grabbed ||
+                         TerrainInteractionIsHolding(&game->interaction,
+                                                     &game->dynamicTerrain);
+        state->dragDistance = Vector2Distance(body->position, state->dragStart);
+        state->dragged = state->dragged || state->dragDistance > 6.0f;
+        return;
+    }
+    if (frame == ACCEPT_RELEASE) {
+        /* Let go while pointing away: the throw carries it off. The result is
+           read on the next frame, because the release happens inside the update
+           this input is being prepared for. */
+        input->aimWorld = (Vector2){body->position.x + 40.0f,
+                                    body->position.y - 10.0f};
+        return;
+    }
+    if (frame == ACCEPT_RELEASE + 1) {
+        state->threw = game->interaction.stats.throws > 0;
+        state->throwSpeed = Vector2Length(body->velocity);
+        return;
+    }
+    if (frame == ACCEPT_CUT) {
+        /* The real power, aimed at the middle of the slab — not a blast queued
+           straight into the terrain system. Going through the ability is the
+           point: it publishes the event that drives the staged FX, the audio
+           and the camera kick, and a run that skipped it would prove the
+           gameplay works while saying nothing about whether it works *with*
+           the presentation built beside it. */
+        input->ability[ABILITY_EXPLOSION] = true;
+        input->aimWorld = body->position;
+        return;
+    }
+    if (frame > ACCEPT_CUT) {
+        int slot;
+        int live = 0;
+
+        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+            if (game->dynamicTerrain.bodies[slot].active) {
+                ++live;
+            }
+        }
+        if (live > state->fragments) {
+            state->fragments = live;
+        }
+        state->carved = game->damage.stats.cellsCarved > 0;
+        state->split = game->damage.stats.fractureSplits > 0;
+    }
+}
+
 static bool RunSmokeFireContainmentProbe(void)
 {
     const int minimumX = 8;
@@ -646,7 +867,16 @@ int main(int argc, char **argv)
     float smokeForceShiftX = 0.0f;
     bool smokeMassMattered = false;
     bool smokeForceMovedBody = false;
+    /* The gameplay acceptance run's progress. Zeroed at setup rather than here
+       so the whole struct is cleared in one place. */
+    SmokeAcceptance acceptance = {{0.0f, 0.0f}, {0.0f, 0.0f}, false, false,
+                                  false, false, false, false, false, false,
+                                  false, 0.0f, 0.0f, 0.0f, 0, {0.0f, 0.0f}};
     uint32_t smokeTerrainTextureUpdates = 0u;
+    /* Bodies the render phase alone detached, so the upload count can be
+       checked against what that phase produced rather than against everything
+       the gameplay phase goes on to break apart. */
+    int smokeRenderDetaches = 0;
     uint32_t smokeTerrainMaximumDrawCalls = 0u;
     uint64_t smokeTerrainMaximumTextureBytes = 0u;
     double smokeBloomSubmissionTotal = 0.0;
@@ -710,6 +940,10 @@ int main(int argc, char **argv)
         smokeTerrainBody = SetupSmokeTerrainBody(
             &game, smokeAim, &smokeTerrainWorldCleared);
         smokeDetachBlast = SetupSmokeDetachScene(&game.world, smokeAim);
+        memset(&acceptance, 0, sizeof(acceptance));
+        /* Far enough from every other smoke fixture that the two phases never
+           share a cell. */
+        acceptance.platformAt = (Vector2){smokeAim.x + 150.0f, smokeAim.y - 6.0f};
         {
             const TerrainBody *body = DynamicTerrainGetConst(
                 &game.dynamicTerrain, smokeTerrainBody);
@@ -831,7 +1065,7 @@ int main(int argc, char **argv)
             debugHud = !debugHud;
         }
 
-        if (smokeTest) {
+        if (smokeTest && smokeFrames < ACCEPT_START) {
             aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
             cursorCell = smokeAim;
             input.game.aimWorld = aimPosition;
@@ -844,6 +1078,10 @@ int main(int argc, char **argv)
             input.game.ability[ABILITY_FORCE] = smokeFrames == 8;
             input.game.ability[ABILITY_CRYO] = smokeFrames >= 9;
             input.game.regeneratePressed = false;
+        } else if (smokeTest) {
+            RunSmokeAcceptance(&game, &acceptance, smokeFrames, &input.game);
+            aimPosition = input.game.aimWorld;
+            cursorCell = aimPosition;
         }
 
         GameUpdate(&game, &input.game, deltaTime, &events);
@@ -937,6 +1175,16 @@ int main(int argc, char **argv)
                 .viewHeight = VIEW_HEIGHT,
             },
             deltaTime);
+        if (smokeTest && smokeFrames >= ACCEPT_CUT) {
+            /* The camera answering to what the gameplay phase is doing, on the
+               frames where a body is being blown apart. */
+            acceptance.cameraFeedbackDuringPlay =
+                acceptance.cameraFeedbackDuringPlay ||
+                fabsf(cameraOutput.impulseOffset.x) > 0.01f ||
+                fabsf(cameraOutput.impulseOffset.y) > 0.01f ||
+                fabsf(cameraOutput.rotationDegrees) > 0.01f ||
+                fabsf(cameraOutput.zoomKick) > 0.0001f;
+        }
         /* Widening belongs to the stable camera used on the next input frame.
            The immediate kick is applied only to the presentation copy below,
            so transient feedback never changes mouse-to-world conversion. */
@@ -991,12 +1239,25 @@ int main(int argc, char **argv)
                                  (frameStats->bloomEnabled &&
                                   frameStats->offscreenPasses == 5u &&
                                   frameStats->renderTargets == 4u);
+            if (smokeFrames >= ACCEPT_CUT) {
+                /* Staged FX still spawning while the gameplay phase blows a
+                   body apart: the two features are running at once, not merely
+                   both present. */
+                acceptance.fxDuringPlay = acceptance.fxDuringPlay ||
+                                          frameStats->activeFx > 0u;
+            }
             smokePresentationFxObserved = smokePresentationFxObserved ||
                                           (frameStats->activeFx > 0u &&
                                            frameStats->peakFx >= 22u &&
                                            frameStats->droppedFx == 0u);
-            smokeTerrainTextureUpdates +=
-                frameStats->terrainBodyTextureUpdates;
+            if (smokeFrames < ACCEPT_START) {
+                /* Counted for the render phase alone. The gameplay phase carves
+                   and splits bodies on purpose, and every one of those is a
+                   legitimate new upload. */
+                smokeTerrainTextureUpdates +=
+                    frameStats->terrainBodyTextureUpdates;
+                smokeRenderDetaches = game.detach.stats.autoDetachSucceeded;
+            }
             if (frameStats->terrainBodyDrawCalls >
                 smokeTerrainMaximumDrawCalls) {
                 smokeTerrainMaximumDrawCalls =
@@ -1071,7 +1332,10 @@ int main(int argc, char **argv)
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");
             }
-            if (++smokeFrames >= 12) {
+            if (smokeFrames == ACCEPT_SHOT) {
+                TakeScreenshot("build/emberfall-gameplay.png");
+            }
+            if (++smokeFrames >= ACCEPT_END) {
                 break;
             }
         }
@@ -1090,7 +1354,10 @@ int main(int argc, char **argv)
                "detach_cells=%d detach_rejects=a%d/u%d/s%d/l%d/b%d "
                "light=%.1f heavy=%.1f spin=%.3f mass_matters=%d "
                "force_before=%.1f force_after=%.1f force_shift=%.2f "
-               "force_hits=%d force_moved=%d impulses=%d\n",
+               "force_hits=%d force_moved=%d impulses=%d "
+               "play_detached=%d play_pushed=%d(%.1f) play_grabbed=%d "
+               "play_dragged=%d(%.1f) play_threw=%d(%.1f) play_carved=%d "
+               "play_split=%d play_fragments=%d play_fx=%d play_camera=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -1115,7 +1382,13 @@ int main(int argc, char **argv)
                (double)smokeForceSpeedBefore, (double)smokeForceSpeedAfter,
                (double)smokeForceShiftX,
                game.impulses.stats.bodiesAffectedByForce, smokeForceMovedBody,
-               game.impulses.stats.bodyImpulseApplications);
+               game.impulses.stats.bodyImpulseApplications,
+               acceptance.detached, acceptance.pushed, (double)acceptance.pushSpeed,
+               acceptance.grabbed, acceptance.dragged,
+               (double)acceptance.dragDistance, acceptance.threw,
+               (double)acceptance.throwSpeed, acceptance.carved, acceptance.split,
+               acceptance.fragments, acceptance.fxDuringPlay,
+               acceptance.cameraFeedbackDuringPlay);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -1132,13 +1405,18 @@ int main(int argc, char **argv)
                       !smokeTerrainCacheReleased ||
                       !smokeAutoDetachObserved || !smokeAutoDetachEvent ||
                       !smokeMassMattered || !smokeForceMovedBody ||
+                      !acceptance.detached || !acceptance.pushed ||
+                      !acceptance.grabbed || !acceptance.dragged ||
+                      !acceptance.threw || !acceptance.carved ||
+                      !acceptance.split || acceptance.fragments < 2 ||
+                      !acceptance.fxDuringPlay ||
+                      !acceptance.cameraFeedbackDuringPlay ||
                       fabsf(smokeThrownSpin) <= 0.0f ||
                       /* Two uploads — scene and emissive — for each body that
                          ever existed, and not one more: a body whose raster
                          never changes must not be re-uploaded per frame. */
                       smokeTerrainTextureUpdates !=
-                          2u * (1u + (unsigned int)
-                                         game.detach.stats.autoDetachSucceeded) ||
+                          2u * (1u + (unsigned int)smokeRenderDetaches) ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
@@ -1150,6 +1428,7 @@ int main(int argc, char **argv)
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
                 "rotated=%d collision=%d released=%d auto_detach=%d "
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
+                "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
                 "updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved,
                 smokeExplosionObserved, smokeForceObserved,
@@ -1164,7 +1443,10 @@ int main(int argc, char **argv)
                 smokeTerrainRotated, smokeTerrainCollisionObserved,
                 smokeTerrainCacheReleased, smokeAutoDetachObserved,
                 smokeAutoDetachEvent, smokeMassMattered, smokeForceMovedBody,
-                (double)smokeThrownSpin,
+                (double)smokeThrownSpin, acceptance.detached, acceptance.pushed,
+                acceptance.grabbed, acceptance.dragged, acceptance.threw,
+                acceptance.carved, acceptance.split, acceptance.fragments,
+                acceptance.fxDuringPlay, acceptance.cameraFeedbackDuringPlay,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);

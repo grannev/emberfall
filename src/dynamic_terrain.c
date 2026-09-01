@@ -650,6 +650,104 @@ void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
     }
 }
 
+/* Distance along the segment, in the body's own frame, at which it first enters
+   an occupied cell. Returns -1 when it never does.
+
+   Walking in local space is what makes rotation free: the segment is still a
+   segment there, and the raster is still axis-aligned, so the whole query is
+   two transforms and a march. */
+static float TerrainBodyLocalRaycast(const DynamicTerrainSystem *system,
+                                     TerrainBodyHandle handle,
+                                     const TerrainBody *body, Vector2 start,
+                                     Vector2 end)
+{
+    /* A fraction of a cell. A segment can cross the corner of a cell over a
+       chord far shorter than the cell is wide, and a whole-cell step walks
+       straight past it. */
+    const float step = 0.35f;
+    Vector2 localStart = TerrainBodyWorldToLocal(body, start.x, start.y);
+    Vector2 localEnd = TerrainBodyWorldToLocal(body, end.x, end.y);
+    float deltaX = localEnd.x - localStart.x;
+    float deltaY = localEnd.y - localStart.y;
+    float length = sqrtf(deltaX * deltaX + deltaY * deltaY);
+    float travelled;
+
+    if (length < 0.0001f || body->cellCount <= 0) {
+        return -1.0f;
+    }
+    /* Cheap reject on the occupied box, so a segment nowhere near this body
+       costs four comparisons rather than a march. The box is grown by one cell
+       because the endpoints are points, not the cells they fall in. */
+    if ((localStart.x < (float)body->minimumX - 1.0f &&
+         localEnd.x < (float)body->minimumX - 1.0f) ||
+        (localStart.x > (float)body->maximumX + 2.0f &&
+         localEnd.x > (float)body->maximumX + 2.0f) ||
+        (localStart.y < (float)body->minimumY - 1.0f &&
+         localEnd.y < (float)body->minimumY - 1.0f) ||
+        (localStart.y > (float)body->maximumY + 2.0f &&
+         localEnd.y > (float)body->maximumY + 2.0f)) {
+        return -1.0f;
+    }
+    deltaX /= length;
+    deltaY /= length;
+
+    for (travelled = 0.0f; travelled <= length; travelled += step) {
+        float sampleX = localStart.x + deltaX * travelled;
+        float sampleY = localStart.y + deltaY * travelled;
+        int cellX = (int)floorf(sampleX);
+        int cellY = (int)floorf(sampleY);
+
+        if (cellX < 0 || cellY < 0 || cellX >= body->width ||
+            cellY >= body->height) {
+            continue;
+        }
+        if (DynamicTerrainCellAt(system, handle, cellX, cellY) != MATERIAL_EMPTY) {
+            return travelled;
+        }
+    }
+    return -1.0f;
+}
+
+bool DynamicTerrainRaycast(const DynamicTerrainSystem *system, Vector2 start,
+                           Vector2 end, TerrainBodyHandle *hit, Vector2 *at)
+{
+    float deltaX = end.x - start.x;
+    float deltaY = end.y - start.y;
+    float length = sqrtf(deltaX * deltaX + deltaY * deltaY);
+    float nearest = -1.0f;
+    int slot;
+
+    if (system == NULL || hit == NULL || at == NULL || length < 0.0001f) {
+        return false;
+    }
+    /* Slot order decides nothing here — the nearest hit wins — but the scan is
+       still in slot order so that a tie resolves the same way every run. */
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *body = &system->bodies[slot];
+        TerrainBodyHandle handle;
+        float distance;
+
+        if (!body->active) {
+            continue;
+        }
+        handle = (TerrainBodyHandle){(uint16_t)slot, body->generation};
+        /* Local distance equals world distance: the transform is a rotation and
+           a translation, and neither changes lengths. */
+        distance = TerrainBodyLocalRaycast(system, handle, body, start, end);
+        if (distance < 0.0f || (nearest >= 0.0f && distance >= nearest)) {
+            continue;
+        }
+        nearest = distance;
+        *hit = handle;
+    }
+    if (nearest < 0.0f) {
+        return false;
+    }
+    *at = (Vector2){start.x + deltaX / length * nearest,
+                    start.y + deltaY / length * nearest};
+    return true;
+}
+
 bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
                             Vector2 *maximum)
 {

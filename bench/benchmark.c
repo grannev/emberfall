@@ -706,7 +706,7 @@ static void RunImpulseBenchmark(BenchContext *context, double *samples,
         }
 
         start = NowSeconds();
-        (void)TerrainImpulseApply(&impulses, &terrain, world);
+        (void)TerrainImpulseApply(&impulses, &terrain, NULL, world);
         samples[frame] = (NowSeconds() - start) * 1000.0;
         total += samples[frame];
 

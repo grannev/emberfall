@@ -50,6 +50,8 @@ bool GameInit(GameState *game, GameConfig config)
     }
     TerrainDetachInit(&game->detach);
     TerrainImpulseInit(&game->impulses);
+    TerrainDamageInit(&game->damage);
+    TerrainInteractionInit(&game->interaction);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -80,8 +82,10 @@ void GameReset(GameState *game, uint64_t seed)
     DynamicTerrainReset(&game->dynamicTerrain);
     TerrainDetachResetStats(&game->detach);
     /* A blast queued against a world that no longer exists must not land in the
-       new one. */
+       new one, and a hold cannot survive the body it was on. */
     TerrainImpulseInit(&game->impulses);
+    TerrainDamageInit(&game->damage);
+    TerrainInteractionInit(&game->interaction);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -204,7 +208,7 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            tick late. The queue empties here, so a blast lands exactly once
            however many fixed steps this frame runs. */
         (void)TerrainImpulseApply(&game->impulses, &game->dynamicTerrain,
-                                  &game->world);
+                                  &game->damage, &game->world);
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible
@@ -244,7 +248,8 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     GameActivatePlayerRegion(game);
     GamePublishPlayerFeedback(game, events);
 
-    AbilitiesUpdate(&game->abilities, &game->world, &game->impulses,
+    AbilitiesUpdate(&game->abilities, &game->world, &game->dynamicTerrain,
+                    &game->damage, &game->impulses,
                     &game->particles, events,
                     game->player.position, input->aimWorld, deltaTime,
                     input->ability);
@@ -254,6 +259,11 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     game->simulationAccumulator += deltaTime;
     GameAdvanceWorld(game, events);
     PlayerResolveWorldCollision(&game->player, &game->world);
+    /* Last, so the correction a body applies to the player is the final word on
+       where they are: nothing after this can push them back inside one. */
+    TerrainInteractionUpdate(&game->interaction, &game->player,
+                             &game->dynamicTerrain, input->aimWorld,
+                             input->grabHeld, deltaTime);
 }
 
 void GameUnload(GameState *game)

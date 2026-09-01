@@ -25,6 +25,7 @@
 #include "particles.h"
 #include "player.h"
 #include "rng.h"
+#include "terrain_damage.h"
 #include "terrain_impulse.h"
 #include "world.h"
 
@@ -66,6 +67,10 @@ typedef enum AbilityTrigger {
    by its mass. A hundred-cell block of rock weighs 260, so the explosion figure
    is roughly "a small block is thrown at a hundred cells a second, a piece ten
    times heavier at a tenth of that". */
+/* How much of a body an explosion eats. Smaller than the core radius it takes
+   out of the static world: a slab is already loose, and a blast that swallowed
+   it whole would leave nothing to throw. */
+#define ABILITY_EXPLOSION_BODY_CARVE 9.0f
 #define ABILITY_EXPLOSION_BODY_IMPULSE 26000.0f
 #define ABILITY_FORCE_BODY_IMPULSE 17000.0f
 
@@ -91,6 +96,10 @@ typedef struct AbilityState {
    every other ability has to be re-checked against. */
 typedef struct AbilityContext {
     World *world;
+    /* Detached terrain a power can act on. Both may be NULL in a caller that
+       has no bodies — a headless probe, a test of the world half alone. */
+    DynamicTerrainSystem *terrain;
+    TerrainDamageSystem *damage;
     /* Where a power describes the shove it wants to give detached terrain. It
        cannot apply one itself: the fragment a blast sets free does not exist
        until the connectivity check runs, which happens on the fixed step after
@@ -134,6 +143,7 @@ void AbilitiesInit(AbilitySystem *abilities, uint64_t seed);
 /* `requested` is one flag per ability, in AbilityId order: held for HELD
    abilities, the press edge for PRESSED ones. */
 void AbilitiesUpdate(AbilitySystem *abilities, World *world,
+                     DynamicTerrainSystem *terrain, TerrainDamageSystem *damage,
                      TerrainImpulseSystem *impulses, ParticleSystem *particles,
                      GameEventBuffer *events, Vector2 origin, Vector2 aim,
                      float deltaTime, const bool *requested);

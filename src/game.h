@@ -11,7 +11,9 @@
 #include "abilities.h"
 #include "dynamic_terrain.h"
 #include "terrain_detach.h"
+#include "terrain_damage.h"
 #include "terrain_impulse.h"
+#include "terrain_interaction.h"
 #include "world.h"
 
 typedef struct GameConfig {
@@ -44,6 +46,11 @@ typedef struct GameState {
     /* Blasts abilities want delivered to those bodies, held until the fixed
        step so that a fragment freed by a blast can be thrown by it. */
     TerrainImpulseSystem impulses;
+    /* Cutting into bodies, and splitting them when a cut goes through. */
+    TerrainDamageSystem damage;
+    /* Everything the player does to a body directly: standing on it, shoving
+       it, carrying it, throwing it. */
+    TerrainInteractionSystem interaction;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

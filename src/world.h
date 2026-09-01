@@ -244,6 +244,12 @@ void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius
    the cone's half angle; `reach` is how far the nearest cells are thrown. */
 void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                           float length, float spreadCosine, int reach);
+/* Where the beam first meets solid material, changing nothing. Split out of
+   WorldApplyLaser so a caller can find out what the beam would hit before
+   deciding whether it is the beam's real target: a detached body standing in
+   front of that wall has to stop the beam, and the wall behind it must not be
+   burned by a shot that never reached it. */
+LaserResult WorldBeamHit(const World *world, Vector2 start, Vector2 end);
 LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
                             float deltaTime);
 /* Thermal inverse of the laser: chills everything along the ray, freezing water

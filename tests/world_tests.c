@@ -24,7 +24,9 @@
 #include "dynamic_terrain.h"
 #include "terrain_extraction.h"
 #include "terrain_detach.h"
+#include "terrain_damage.h"
 #include "terrain_impulse.h"
+#include "terrain_interaction.h"
 #include "terrain_physics.h"
 #include "world_components.h"
 #include "world_render_data.h"
@@ -4889,7 +4891,7 @@ static void test_a_body_with_more_inertia_spins_less(void)
 static TerrainBlast ExplosionBlast(Vector2 origin, float momentum)
 {
     TerrainBlast blast = {TERRAIN_BLAST_RADIAL, origin, {0.0f, 0.0f},
-                          ABILITY_EXPLOSION_SHOCK_RADIUS, 0.0f, momentum};
+                          ABILITY_EXPLOSION_SHOCK_RADIUS, 0.0f, momentum, 0.0f};
 
     return blast;
 }
@@ -4898,7 +4900,7 @@ static TerrainBlast ForceBlast(Vector2 origin, Vector2 direction, float momentum
 {
     TerrainBlast blast = {TERRAIN_BLAST_CONE, origin, direction,
                           ABILITY_FORCE_LENGTH, ABILITY_FORCE_SPREAD_COSINE,
-                          momentum};
+                          momentum, 0.0f};
 
     return blast;
 }
@@ -4918,7 +4920,7 @@ static void test_an_explosion_throws_a_body_outward(void)
                                    ExplosionBlast((Vector2){50.0f, 60.0f},
                                                   ABILITY_EXPLOSION_BODY_IMPULSE)),
           "the blast was refused");
-    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, NULL) == 1,
           "the blast reached %d bodies",
           impulses.stats.bodyImpulseApplications);
     CHECK(impulses.blastCount == 0, "the queue was not drained");
@@ -4960,7 +4962,7 @@ static void test_a_body_outside_the_blast_radius_is_untouched(void)
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ExplosionBlast(origin,
                                                   ABILITY_EXPLOSION_BODY_IMPULSE));
-    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, NULL) == 1,
           "the blast reached the wrong number of bodies");
     CHECK(nearBody->velocity.x > 0.0f, "the near body was not thrown");
     CHECK(farBody->velocity.x == 0.0f && farBody->velocity.y == 0.0f &&
@@ -4986,7 +4988,7 @@ static void test_a_body_outside_the_blast_radius_is_untouched(void)
         (void)TerrainImpulseQueueBlast(&impulses,
                                        ExplosionBlast(origin,
                                                       ABILITY_EXPLOSION_BODY_IMPULSE));
-        (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+        (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
         CHECK(movingBody->velocity.x == 4.0f && movingBody->velocity.y == 0.0f &&
                   movingBody->angularVelocity == 0.25f,
               "an awake body outside the radius was disturbed: (%.3f, %.3f, %.3f)",
@@ -5014,7 +5016,7 @@ static void test_a_closer_body_is_thrown_harder(void)
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ExplosionBlast((Vector2){50.0f, 50.0f},
                                                   ABILITY_EXPLOSION_BODY_IMPULSE));
-    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
     CHECK(nearBody->velocity.x > farBody->velocity.x,
           "the near body reached %.2f and the far one %.2f",
           (double)nearBody->velocity.x, (double)farBody->velocity.x);
@@ -5042,7 +5044,7 @@ static void test_force_pushes_along_its_cone_and_spins_off_centre_bodies(void)
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ForceBlast(origin, direction,
                                               ABILITY_FORCE_BODY_IMPULSE));
-    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, NULL) == 1,
           "the cone reached %d bodies", impulses.stats.bodiesAffectedByForce);
     CHECK(aheadBody->velocity.x > 0.0f, "the body in front was not pushed");
     CHECK(asideBody->velocity.x == 0.0f && asideBody->velocity.y == 0.0f,
@@ -5060,7 +5062,7 @@ static void test_force_pushes_along_its_cone_and_spins_off_centre_bodies(void)
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ForceBlast(origin, direction,
                                               ABILITY_FORCE_BODY_IMPULSE));
-    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
     CHECK(fabsf(aheadBody->angularVelocity) > 0.001f,
           "an off-axis blow produced no rotation: %.5f rad/s",
           (double)aheadBody->angularVelocity);
@@ -5085,7 +5087,7 @@ static void test_force_is_stopped_by_terrain_in_the_way(void)
                                    ForceBlast((Vector2){40.0f, 60.0f},
                                               (Vector2){1.0f, 0.0f},
                                               ABILITY_FORCE_BODY_IMPULSE));
-    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 0,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, &world) == 0,
           "the blow reached through a wall");
     CHECK(impulses.stats.bodiesOccluded == 1, "the occlusion was not counted");
     CHECK(body->velocity.x == 0.0f, "the shielded body moved");
@@ -5096,7 +5098,7 @@ static void test_force_is_stopped_by_terrain_in_the_way(void)
                                    ForceBlast((Vector2){40.0f, 60.0f},
                                               (Vector2){1.0f, 0.0f},
                                               ABILITY_FORCE_BODY_IMPULSE));
-    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 1,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, &world) == 1,
           "the same blow without the wall did nothing");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
@@ -5132,7 +5134,7 @@ static void test_a_meaningful_impulse_wakes_a_sleeping_body(void)
        enough for the block sixty-four times its mass. */
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ExplosionBlast(origin, 600.0f));
-    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
     CHECK(smallBody->awake, "a meaningful impulse did not wake the small body");
     CHECK(!hugeBody->awake,
           "an impulse worth %.4f cells/s woke a huge sleeping body",
@@ -5146,7 +5148,7 @@ static void test_a_meaningful_impulse_wakes_a_sleeping_body(void)
         &impulses,
         ExplosionBlast(origin, hugeBody->mass * terrain.config.linearSleepSpeed *
                                    4.0f));
-    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
     CHECK(hugeBody->awake, "a real blast did not wake the huge body");
     DynamicTerrainUnload(&terrain);
 }
@@ -5169,7 +5171,7 @@ static void test_a_refused_blast_and_a_dead_body_are_safe(void)
     bad = ExplosionBlast((Vector2){10.0f, 10.0f}, 1000.0f);
     bad.origin.x = 0.0f / 0.0f;
     CHECK(!TerrainImpulseQueueBlast(&impulses, bad), "a NaN blast queued");
-    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 0,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, NULL) == 0,
           "a refused blast was applied anyway");
 
     /* A blast exactly on the body's centre of mass must not normalise a zero
@@ -5180,7 +5182,7 @@ static void test_a_refused_blast_and_a_dead_body_are_safe(void)
                                    ExplosionBlast(DynamicTerrainGetConst(
                                                       &terrain, handle)->position,
                                                   ABILITY_EXPLOSION_BODY_IMPULSE));
-    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, NULL);
     {
         const TerrainBody *body = DynamicTerrainGetConst(&terrain, handle);
 
@@ -5200,9 +5202,9 @@ static void test_a_refused_blast_and_a_dead_body_are_safe(void)
                                        ExplosionBlast((Vector2){30.0f, 30.0f},
                                                       1000.0f));
     }
-    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 0,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, NULL) == 0,
           "a blast found a body in an empty manager");
-    CHECK(TerrainImpulseApply(NULL, &terrain, NULL) == 0, "a NULL system applied");
+    CHECK(TerrainImpulseApply(NULL, &terrain, NULL, NULL) == 0, "a NULL system applied");
     DynamicTerrainUnload(&terrain);
 }
 
@@ -5226,7 +5228,7 @@ static void test_a_blast_never_changes_the_static_world(void)
                                    ForceBlast((Vector2){50.0f, 50.0f},
                                               (Vector2){1.0f, 0.0f},
                                               ABILITY_FORCE_BODY_IMPULSE));
-    (void)TerrainImpulseApply(&impulses, &terrain, &world);
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL, &world);
     CHECK(WorldDigest(&world) == before, "applying impulses changed the world");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
@@ -5259,8 +5261,8 @@ static void test_blast_results_are_deterministic(void)
         (void)TerrainImpulseQueueBlast(&impulsesB,
                                        ExplosionBlast(origin, 12000.0f));
     }
-    CHECK(TerrainImpulseApply(&impulsesA, &terrainA, NULL) ==
-              TerrainImpulseApply(&impulsesB, &terrainB, NULL),
+    CHECK(TerrainImpulseApply(&impulsesA, &terrainA, NULL, NULL) ==
+              TerrainImpulseApply(&impulsesB, &terrainB, NULL, NULL),
           "the same blasts reached a different number of bodies");
 
     for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
@@ -5304,7 +5306,7 @@ static void test_an_explosion_throws_the_fragment_it_just_freed(void)
     (void)TerrainImpulseQueueBlast(&impulses,
                                    ExplosionBlast((Vector2){60.5f, 75.5f},
                                                   ABILITY_EXPLOSION_BODY_IMPULSE));
-    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 1,
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL, &world) == 1,
           "the blast missed the fragment it had just freed");
 
     for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
@@ -5373,6 +5375,977 @@ static void test_the_explosion_ability_throws_terrain_by_itself(void)
     GameUnload(&game);
 }
 
+/* --- carving and fracture ------------------------------------------------ */
+
+static TerrainDamageSystem damage;
+
+/* Mirrors the overlap test the interaction layer uses, so a test can ask "is
+   the player inside this body" without reaching into that module's internals. */
+static bool PlayerOverlapsBody(const DynamicTerrainSystem *system,
+                               TerrainBodyHandle handle, Vector2 at, float radius)
+{
+    const TerrainBody *body = DynamicTerrainGetConst(system, handle);
+    Vector2 local;
+    int localY;
+
+    if (body == NULL) {
+        return false;
+    }
+    local = TerrainBodyWorldToLocal(body, at.x, at.y);
+    for (localY = 0; localY < body->height; ++localY) {
+        int localX;
+
+        for (localX = 0; localX < body->width; ++localX) {
+            float nearestX;
+            float nearestY;
+            float dx;
+            float dy;
+
+            if (DynamicTerrainCellAt(system, handle, localX, localY) ==
+                MATERIAL_EMPTY) {
+                continue;
+            }
+            nearestX = local.x < (float)localX ? (float)localX
+                       : (local.x > (float)localX + 1.0f ? (float)localX + 1.0f
+                                                         : local.x);
+            nearestY = local.y < (float)localY ? (float)localY
+                       : (local.y > (float)localY + 1.0f ? (float)localY + 1.0f
+                                                         : local.y);
+            dx = local.x - nearestX;
+            dy = local.y - nearestY;
+            if (dx * dx + dy * dy < radius * radius - 0.0001f) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static int LiveBodyCount(const DynamicTerrainSystem *system)
+{
+    int count = 0;
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (system->bodies[slot].active) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void test_carving_a_body_removes_cells_and_bumps_its_revision(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    uint32_t revision;
+    int before;
+    int removed;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 12, 12, (Vector2){60.0f, 60.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    before = body->cellCount;
+    revision = body->rasterRevision;
+
+    removed = TerrainDamageCarveCircle(&damage, &terrain, handle,
+                                       body->position, 3.0f);
+    CHECK(removed > 0, "the carve removed nothing");
+    CHECK(body->cellCount == before - removed,
+          "the body holds %d cells after losing %d of %d", body->cellCount,
+          removed, before);
+    CHECK(body->rasterRevision != revision,
+          "the raster changed without bumping its revision");
+    CHECK(damage.stats.cellsCarved == removed, "the carve was not counted");
+
+    /* A carve that lands on nothing must not pretend to have done anything. */
+    revision = body->rasterRevision;
+    CHECK(TerrainDamageCarveCircle(&damage, &terrain, handle,
+                                   (Vector2){600.0f, 600.0f}, 3.0f) == 0,
+          "a carve far from the body removed cells");
+    CHECK(body->rasterRevision == revision, "an empty carve bumped the revision");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The correction that makes carving usable: the centre of mass moves inside the
+   raster, so the body has to move the other way or every surviving cell would
+   be dragged across the world. */
+static void test_carving_updates_mass_without_moving_what_is_left(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 markBefore;
+    Vector2 markAfter;
+    Vector2 centreBefore;
+    Vector2 positionBefore;
+    float massBefore;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 14, 14, (Vector2){70.0f, 50.0f});
+    body = DynamicTerrainGet(&terrain, handle);
+    body->angle = 0.6f;
+    /* Spinning, so the centre of mass is not the only thing that moves: the
+       point it moves to was already travelling, and the body's velocity has to
+       become that point's velocity. */
+    body->angularVelocity = 2.0f;
+    body->velocity = (Vector2){0.0f, 0.0f};
+    massBefore = body->mass;
+    centreBefore = body->centerOfMass;
+    positionBefore = body->position;
+    /* A cell far from the bite, whose world position must not change. */
+    markBefore = TerrainBodyLocalToWorld(body, 0.5f, 0.5f);
+
+    CHECK(TerrainDamageCarveCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(body, 12.5f, 12.5f),
+                                   3.5f) > 0,
+          "the corner carve removed nothing");
+    CHECK(body->mass < massBefore, "mass did not fall after losing cells");
+    CHECK(fabsf(body->centerOfMass.x - centreBefore.x) > 0.05f ||
+              fabsf(body->centerOfMass.y - centreBefore.y) > 0.05f,
+          "the centre of mass did not move after an off-centre bite");
+
+    markAfter = TerrainBodyLocalToWorld(body, 0.5f, 0.5f);
+    CHECK(fabsf(markAfter.x - markBefore.x) < 0.01f &&
+              fabsf(markAfter.y - markBefore.y) < 0.01f,
+          "a surviving cell moved from (%.3f, %.3f) to (%.3f, %.3f)",
+          (double)markBefore.x, (double)markBefore.y, (double)markAfter.x,
+          (double)markAfter.y);
+    /* The body started at rest, so its velocity now has to be exactly the
+       velocity of the point its centre of mass moved to — both components. The
+       relation is between two things the test can see, not a copy of how the
+       correction is written. */
+    {
+        float shiftX = body->position.x - positionBefore.x;
+        float shiftY = body->position.y - positionBefore.y;
+
+        CHECK(fabsf(shiftX) > 0.001f || fabsf(shiftY) > 0.001f,
+              "the centre of mass did not move at all");
+        CHECK(fabsf(body->velocity.x - (-2.0f * shiftY)) < 0.001f,
+              "vx is %.4f, expected %.4f", (double)body->velocity.x,
+              (double)(-2.0f * shiftY));
+        CHECK(fabsf(body->velocity.y - (2.0f * shiftX)) < 0.001f,
+              "vy is %.4f, expected %.4f", (double)body->velocity.y,
+              (double)(2.0f * shiftX));
+    }
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_carved_away_entirely_is_freed(void)
+{
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 5, 5, (Vector2){40.0f, 40.0f});
+
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   DynamicTerrainGetConst(&terrain,
+                                                          handle)->position,
+                                   20.0f) == 25,
+          "the carve did not take the whole body");
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "an emptied body was not freed");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "the manager still holds %d bodies",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    CHECK(damage.stats.bodiesEmptied == 1, "the emptied body was not counted");
+    /* And every later call on the dead handle is a no-op rather than a crash. */
+    CHECK(TerrainDamageCarveCircle(&damage, &terrain, handle,
+                                   (Vector2){40.0f, 40.0f}, 3.0f) == 0,
+          "carving a freed body did something");
+    CHECK(TerrainDamageFracture(&damage, &terrain, handle) == 0,
+          "fracturing a freed body did something");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A cut across a slab leaves two pieces, and both stay exactly where they
+   were. */
+static void test_a_cut_through_a_slab_splits_it_in_two(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *original;
+    const TerrainBody *piece = NULL;
+    Vector2 leftMark;
+    Vector2 rightMark;
+    int slot;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 20, 8, (Vector2){80.0f, 50.0f});
+    original = DynamicTerrainGetConst(&terrain, handle);
+    leftMark = TerrainBodyLocalToWorld(original, 1.5f, 4.5f);
+    rightMark = TerrainBodyLocalToWorld(original, 18.5f, 4.5f);
+
+    /* Off centre on purpose: a cut down the middle leaves two halves of exactly
+       the same size, and then which one keeps the slot stops being a decision
+       anything could test. */
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(original, 7.0f, 4.0f),
+                                   5.0f) > 0,
+          "the cut removed nothing");
+    CHECK(LiveBodyCount(&terrain) == 2, "the slab became %d bodies",
+          LiveBodyCount(&terrain));
+    CHECK(damage.stats.fractureSplits == 1, "the split was not counted");
+    CHECK(damage.stats.fragmentsCreated == 1, "%d fragments were created",
+          damage.stats.fragmentsCreated);
+
+    /* The larger half kept the original slot, so the handle still names
+       something the caller would recognise. */
+    CHECK(original != NULL && original->active, "the original slot was released");
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active && &terrain.bodies[slot] != original) {
+            piece = &terrain.bodies[slot];
+        }
+    }
+    CHECK(piece != NULL, "no second body after the split");
+    CHECK(original->cellCount > piece->cellCount,
+          "the smaller half kept the slot: %d against %d", original->cellCount,
+          piece->cellCount);
+
+    /* Neither half moved. Local coordinates survive the split, so the same
+       raster cell has to land on the same world point. */
+    {
+        Vector2 leftNow = TerrainBodyLocalToWorld(original, 1.5f, 4.5f);
+
+        Vector2 rightNow = TerrainBodyLocalToWorld(piece, 18.5f, 4.5f);
+
+        CHECK(fabsf(leftNow.x - leftMark.x) < 0.01f &&
+                  fabsf(leftNow.y - leftMark.y) < 0.01f,
+              "the kept half moved to (%.3f, %.3f) from (%.3f, %.3f)",
+              (double)leftNow.x, (double)leftNow.y, (double)leftMark.x,
+              (double)leftMark.y);
+        CHECK(fabsf(rightNow.x - rightMark.x) < 0.01f &&
+                  fabsf(rightNow.y - rightMark.y) < 0.01f,
+              "the new half moved to (%.3f, %.3f) from (%.3f, %.3f)",
+              (double)rightNow.x, (double)rightNow.y, (double)rightMark.x,
+              (double)rightMark.y);
+    }
+    CHECK(piece->angle == original->angle, "the pieces disagree about rotation");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A piece leaving a spinning body carries the speed the point it left from
+   already had, or the halves would drift apart wrongly. */
+static void test_a_split_piece_inherits_the_motion_of_where_it_was(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *original;
+    const TerrainBody *piece = NULL;
+    int slot;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 20, 8, (Vector2){80.0f, 50.0f});
+    original = DynamicTerrainGet(&terrain, handle);
+    original->velocity = (Vector2){5.0f, -2.0f};
+    original->angularVelocity = 1.5f;
+
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(original, 10.0f, 4.0f),
+                                   5.0f) > 0,
+          "the cut removed nothing");
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active && &terrain.bodies[slot] != original) {
+            piece = &terrain.bodies[slot];
+        }
+    }
+    CHECK(piece != NULL, "no second body after the split");
+    CHECK(piece->angularVelocity == 1.5f, "the piece spins at %.3f, not 1.5",
+          (double)piece->angularVelocity);
+    /* The right-hand piece sat to the right of the centre of a body turning
+       clockwise, so it was already moving downward faster than the body as a
+       whole, and it has to leave that way. */
+    CHECK(piece->velocity.y > original->velocity.y,
+          "the piece left at %.3f but the remainder is at %.3f",
+          (double)piece->velocity.y, (double)original->velocity.y);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_fracture_is_deterministic(void)
+{
+    DynamicTerrainSystem first;
+    DynamicTerrainSystem second;
+    TerrainDamageSystem damageA;
+    TerrainDamageSystem damageB;
+    TerrainBodyHandle a;
+    TerrainBodyHandle b;
+    int slot;
+
+    CHECK(DynamicTerrainInit(&first) && DynamicTerrainInit(&second),
+          "dynamic terrain allocation failed");
+    TerrainDamageInit(&damageA);
+    TerrainDamageInit(&damageB);
+    a = MakeRockBlock(&first, 24, 10, (Vector2){70.0f, 44.0f});
+    b = MakeRockBlock(&second, 24, 10, (Vector2){70.0f, 44.0f});
+
+    (void)TerrainDamageApplyCircle(&damageA, &first, a,
+                                   TerrainBodyLocalToWorld(
+                                       DynamicTerrainGetConst(&first, a),
+                                       12.0f, 5.0f),
+                                   6.0f);
+    (void)TerrainDamageApplyCircle(&damageB, &second, b,
+                                   TerrainBodyLocalToWorld(
+                                       DynamicTerrainGetConst(&second, b),
+                                       12.0f, 5.0f),
+                                   6.0f);
+
+    CHECK(damageA.stats.fragmentsCreated == damageB.stats.fragmentsCreated,
+          "two identical cuts made %d and %d fragments",
+          damageA.stats.fragmentsCreated, damageB.stats.fragmentsCreated);
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *left = &first.bodies[slot];
+        const TerrainBody *right = &second.bodies[slot];
+
+        CHECK(left->active == right->active, "slot %d differs in occupancy",
+              slot);
+        if (!left->active) {
+            continue;
+        }
+        CHECK(left->cellCount == right->cellCount &&
+                  left->position.x == right->position.x &&
+                  left->position.y == right->position.y &&
+                  left->mass == right->mass,
+              "slot %d holds different bodies after the same cut", slot);
+    }
+    DynamicTerrainUnload(&first);
+    DynamicTerrainUnload(&second);
+}
+
+/* No slot for a piece is not a reason to lose terrain: it stays part of the
+   body it was already part of. */
+static void test_fracture_without_a_free_slot_keeps_the_body_whole(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    int before;
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 20, 8, (Vector2){80.0f, 50.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    for (index = 1; index < MAX_TERRAIN_BODIES; ++index) {
+        CHECK(DynamicTerrainGet(&terrain,
+                                DynamicTerrainAllocBody(&terrain, 2, 2)) != NULL,
+              "filling the manager failed at %d", index);
+    }
+    before = body->cellCount;
+
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(body, 10.0f, 4.0f),
+                                   5.0f) > 0,
+          "the cut removed nothing");
+    CHECK(damage.stats.fragmentsRefusedByBudget == 1,
+          "the refusal was not counted: %d",
+          damage.stats.fragmentsRefusedByBudget);
+    CHECK(damage.stats.fragmentsCreated == 0, "a fragment was created anyway");
+    CHECK(body->cellCount > 0 && body->cellCount < before,
+          "the body holds %d cells, was %d", body->cellCount, before);
+    CHECK(LiveBodyCount(&terrain) == MAX_TERRAIN_BODIES,
+          "the manager holds %d bodies", LiveBodyCount(&terrain));
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A cut can leave a chip that is not worth a body of its own. It is dropped,
+   not spawned: a slab cut in half should not also litter the world with a
+   dozen two-cell rocks, each holding a slot and a texture. */
+static void test_a_chip_too_small_to_be_a_body_is_dropped(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    int before;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = DynamicTerrainAllocBody(&terrain, 20, 10);
+    /* A slab with a two-cell nub hanging off it by a single cell of neck. */
+    FillBody(&terrain, handle, 0, 0, 15, 7, MATERIAL_ROCK, 20.0f);
+    FillBody(&terrain, handle, 16, 4, 18, 4, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){70.0f, 50.0f};
+    body = DynamicTerrainGetConst(&terrain, handle);
+    before = body->cellCount;
+    CHECK(before == 16 * 8 + 3, "the fixture holds %d cells", before);
+
+    /* Exactly the neck. */
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(body, 16.5f, 4.5f),
+                                   0.8f) == 1,
+          "the cut did not take exactly the neck");
+    CHECK(LiveBodyCount(&terrain) == 1, "a chip became a body: %d live",
+          LiveBodyCount(&terrain));
+    CHECK(damage.stats.fragmentsTooSmall == 1,
+          "the dropped chip was not counted: %d",
+          damage.stats.fragmentsTooSmall);
+    CHECK(damage.stats.fragmentsCreated == 0, "a fragment was created anyway");
+    /* And the chip is gone from the body it fell off, not left floating. */
+    CHECK(body->cellCount == 16 * 8, "the body holds %d cells, expected %d",
+          body->cellCount, 16 * 8);
+    CHECK(DynamicTerrainCellAt(&terrain, handle, 17, 4) == MATERIAL_EMPTY,
+          "the chip is still attached to the raster");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- player against bodies ----------------------------------------------- */
+
+static TerrainInteractionSystem interaction;
+
+static void test_the_player_cannot_stay_inside_a_body(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    handle = MakeRockBlock(&terrain, 14, 14, (Vector2){60.0f, 60.0f});
+    DynamicTerrainGet(&terrain, handle)->angle = 0.4f;
+
+    /* Just clipping the body's left edge, the way one frame of movement leaves
+       them. Placed through the transform rather than by eye, so the rotation is
+       part of what is being tested rather than something the fixture dodges. */
+    PlayerInit(&player, (Vector2){0.0f, 0.0f});
+    player.position = TerrainBodyLocalToWorld(
+        DynamicTerrainGetConst(&terrain, handle), -0.4f, 7.0f);
+    CHECK(PlayerOverlapsBody(&terrain, handle, player.position, player.radius),
+          "the fixture does not start overlapping");
+    player.velocity = (Vector2){12.0f, 0.0f};
+
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
+    CHECK(interaction.stats.contacts > 0, "the overlap was not detected");
+    CHECK(!PlayerOverlapsBody(&terrain, handle, player.position, player.radius),
+          "the player is still inside the body at (%.3f, %.3f)",
+          (double)player.position.x, (double)player.position.y);
+    /* Pushed away from the body, and slowed by hitting it. */
+    CHECK(player.velocity.x < 12.0f, "the player was not slowed: %.3f",
+          (double)player.velocity.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
+{
+    Player player;
+    TerrainBodyHandle small;
+    TerrainBodyHandle huge;
+    float smallSpeed;
+    float hugeSpeed;
+    float playerAfterSmall;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    small = MakeRockBlock(&terrain, 4, 4, (Vector2){60.0f, 60.0f});
+    PlayerInit(&player, (Vector2){60.0f - 2.0f - player.radius, 60.0f});
+    PlayerInit(&player, (Vector2){56.0f, 60.0f});
+    player.velocity = (Vector2){40.0f, 0.0f};
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
+    smallSpeed = DynamicTerrainGetConst(&terrain, small)->velocity.x;
+    playerAfterSmall = player.velocity.x;
+    CHECK(smallSpeed > 0.0f, "the small body was not pushed: %.3f",
+          (double)smallSpeed);
+
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    huge = MakeRockBlock(&terrain, 32, 32, (Vector2){60.0f, 60.0f});
+    PlayerInit(&player, (Vector2){44.0f, 60.0f});
+    player.velocity = (Vector2){40.0f, 0.0f};
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){200.0f, 200.0f}, false, KINEMATIC_STEP);
+    hugeSpeed = DynamicTerrainGetConst(&terrain, huge)->velocity.x;
+
+    CHECK(smallSpeed > hugeSpeed * 4.0f,
+          "the small body reached %.3f and the huge one %.3f",
+          (double)smallSpeed, (double)hugeSpeed);
+    /* And the player is stopped harder by the thing that would not move. */
+    CHECK(player.velocity.x < playerAfterSmall,
+          "the player left the huge body at %.3f and the small one at %.3f",
+          (double)player.velocity.x, (double)playerAfterSmall);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_grab_only_takes_a_body_within_reach(void)
+{
+    Player player;
+    TerrainBodyHandle near;
+    TerrainBodyHandle far;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    PlayerInit(&player, (Vector2){50.0f, 50.0f});
+    near = MakeRockBlock(&terrain, 5, 5, (Vector2){66.0f, 50.0f});
+    far = MakeRockBlock(&terrain, 5, 5,
+                        (Vector2){50.0f + interaction.config.grabDistance +
+                                      60.0f, 50.0f});
+
+    /* Aimed at the far one, which is out of reach. Nothing is taken — and in
+       particular not the near body, which is within arm's reach but is plainly
+       not what the player is pointing at. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             DynamicTerrainGetConst(&terrain, far)->position,
+                             true, KINEMATIC_STEP);
+    CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
+          "a body out of reach was grabbed");
+    CHECK(interaction.stats.grabs == 0, "an out-of-reach grab was counted");
+    CHECK(DynamicTerrainGetConst(&terrain, far)->velocity.x == 0.0f &&
+              DynamicTerrainGetConst(&terrain, near)->velocity.x == 0.0f,
+          "a refused grab moved something");
+
+    /* Released, then aimed at the near one. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){50.0f, 50.0f}, false, KINEMATIC_STEP);
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             DynamicTerrainGetConst(&terrain, near)->position,
+                             true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
+          "a body within reach was not grabbed");
+    CHECK(interaction.held.index == near.index &&
+              interaction.held.generation == near.generation,
+          "the hold landed on the wrong body");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The hold pulls; it never places. A body that teleported to the cursor would
+   pass through everything between here and there. */
+static void test_a_held_body_is_pulled_rather_than_placed(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    Vector2 start;
+    Vector2 aim = {80.0f, 50.0f};
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    PlayerInit(&player, (Vector2){50.0f, 50.0f});
+    handle = MakeRockBlock(&terrain, 5, 5, (Vector2){50.0f, 68.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    start = body->position;
+
+    /* Taken hold of by pointing at it, then dragged by pointing elsewhere —
+       which is how the control is meant to be used. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain, start, true,
+                             KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
+    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+                             KINEMATIC_STEP);
+    /* One step buys velocity, not arrival. */
+    CHECK(body->position.x == start.x && body->position.y == start.y,
+          "the body moved without being integrated — it was placed, not pulled");
+    CHECK(fabsf(body->velocity.x) > 0.0f || fabsf(body->velocity.y) > 0.0f,
+          "the hold applied no motion at all");
+
+    /* Given time and integration it does arrive, and it arrives moving. */
+    for (step = 0; step < 240; ++step) {
+        TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+                                 KINEMATIC_STEP);
+        DynamicTerrainIntegrateBody(&terrain, DynamicTerrainGet(&terrain, handle),
+                                    KINEMATIC_STEP);
+    }
+    CHECK(body->position.x > start.x + 5.0f,
+          "the held body only reached %.2f from %.2f", (double)body->position.x,
+          (double)start.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_releasing_throws_a_light_body_further_than_a_heavy_one(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    Vector2 aim = {64.0f, 50.0f};
+    float lightSpeed;
+    float heavySpeed;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    PlayerInit(&player, (Vector2){50.0f, 50.0f});
+    handle = MakeRockBlock(&terrain, 4, 4, (Vector2){64.0f, 50.0f});
+    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+                             KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
+    DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
+    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+                             KINEMATIC_STEP);
+    lightSpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
+    CHECK(interaction.stats.throws == 1, "the throw was not counted");
+    CHECK(lightSpeed > 0.0f, "the light body was not thrown: %.3f",
+          (double)lightSpeed);
+
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    handle = MakeRockBlock(&terrain, 16, 16, (Vector2){64.0f, 50.0f});
+    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, true,
+                             KINEMATIC_STEP);
+    DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
+    TerrainInteractionUpdate(&interaction, &player, &terrain, aim, false,
+                             KINEMATIC_STEP);
+    heavySpeed = DynamicTerrainGetConst(&terrain, handle)->velocity.x;
+
+    CHECK(lightSpeed > heavySpeed * 4.0f,
+          "the light body left at %.3f and the heavy one at %.3f",
+          (double)lightSpeed, (double)heavySpeed);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A hold cannot outlive the thing being held. */
+static void test_a_hold_ends_safely_when_the_body_is_destroyed(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+    PlayerInit(&player, (Vector2){50.0f, 50.0f});
+    handle = MakeRockBlock(&terrain, 5, 5, (Vector2){64.0f, 50.0f});
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
+
+    (void)TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   (Vector2){64.0f, 50.0f}, 20.0f);
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "the body survived being carved away");
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){64.0f, 50.0f}, true, KINEMATIC_STEP);
+    CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
+          "the hold survived the body");
+    CHECK(interaction.stats.lostHolds == 1, "the lost hold was not counted");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The whole chain the feature exists for, driven the way the game drives it. */
+static void test_an_explosion_carves_and_splits_a_moving_body(void)
+{
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    TerrainImpulseInit(&impulses);
+    handle = MakeRockBlock(&terrain, 24, 7, (Vector2){70.0f, 50.0f});
+    DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){3.0f, 0.0f};
+
+    (void)TerrainImpulseQueueBlast(&impulses, (TerrainBlast){
+        TERRAIN_BLAST_RADIAL, {70.0f, 50.0f}, {0.0f, 0.0f},
+        ABILITY_EXPLOSION_SHOCK_RADIUS, 0.0f, ABILITY_EXPLOSION_BODY_IMPULSE,
+        ABILITY_EXPLOSION_BODY_CARVE});
+    (void)TerrainImpulseApply(&impulses, &terrain, &damage, NULL);
+
+    CHECK(impulses.stats.bodiesCarved >= 1, "the blast carved nothing");
+    CHECK(LiveBodyCount(&terrain) == 2, "the blast left %d bodies",
+          LiveBodyCount(&terrain));
+    /* Both halves were thrown, not just the one that kept the slot. */
+    CHECK(impulses.stats.bodyImpulseApplications == 2,
+          "%d bodies were pushed", impulses.stats.bodyImpulseApplications);
+    {
+        int slot;
+
+        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+            const TerrainBody *body = &terrain.bodies[slot];
+
+            if (!body->active) {
+                continue;
+            }
+            CHECK(body->velocity.x == body->velocity.x &&
+                      body->velocity.y == body->velocity.y,
+                  "slot %d ended with a non-finite velocity", slot);
+        }
+    }
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A boosting player crosses ten cells in a frame. Testing only where they ended
+   up would let them cross a thin slab and never touch it. */
+static void test_a_fast_player_cannot_cross_a_thin_body(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    Vector2 wallAt = {80.0f, 60.0f};
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    /* Two cells thick and tall enough that the player cannot go round it. */
+    handle = DynamicTerrainAllocBody(&terrain, 2, 40);
+    FillBody(&terrain, handle, 0, 0, 1, 39, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = wallAt;
+
+    PlayerInit(&player, (Vector2){40.0f, 60.0f});
+    /* Established as the starting point, so the next update has a path to walk
+       rather than a first frame to take on trust. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
+    CHECK(player.position.x < wallAt.x, "the fixture starts on the wrong side");
+
+    /* A whole boost-speed frame in one go: from well left of the slab to well
+       right of it. */
+    for (step = 0; step < 4; ++step) {
+        player.position.x += 26.0f;
+        player.velocity = (Vector2){620.0f, 0.0f};
+        TerrainInteractionUpdate(&interaction, &player, &terrain,
+                                 (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
+    }
+    CHECK(interaction.stats.contacts > 0,
+          "the player crossed the slab without touching it");
+    CHECK(interaction.stats.sweptFrames > 0, "the movement was not swept");
+    CHECK(player.position.x < wallAt.x + 2.0f,
+          "the player ended at %.2f, on the far side of a slab at %.2f",
+          (double)player.position.x, (double)wallAt.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The beam burns what it reaches and nothing behind it. */
+static void test_the_laser_burns_only_the_first_thing_it_reaches(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    uint64_t before;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events;
+    bool requested[ABILITY_COUNT];
+    int index;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    AbilitiesInit(&abilities, 0x51u);
+    ParticlesInit(&particles, 0x52u);
+    GameEventsClear(&events);
+    for (index = 0; index < ABILITY_COUNT; ++index) {
+        requested[index] = false;
+    }
+    requested[ABILITY_LASER] = true;
+
+    /* player -> body -> wall. The wall must come through untouched.
+       The body is wide enough that the beam cannot bore all the way through it
+       in the frames below: once it does, reaching the wall is correct, and the
+       test would be measuring the wrong thing. */
+    FillRect(&world, 80, 40, 82, 80, MATERIAL_ROCK);
+    handle = MakeRockBlock(&terrain, 16, 16, (Vector2){50.0f, 60.0f});
+    before = WorldDigest(&world);
+    for (index = 0; index < 12; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles,
+                        &events, (Vector2){20.0f, 60.0f},
+                        (Vector2){120.0f, 60.0f}, KINEMATIC_STEP, requested);
+    }
+    CHECK(damage.stats.cellsCarved > 0, "the beam did not cut the body");
+    CHECK(WorldDigest(&world) == before,
+          "the wall behind the body was burned anyway");
+
+    /* player -> wall -> body. Now the body is the one that must be spared. */
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 6, 6, (Vector2){100.0f, 60.0f});
+    for (index = 0; index < 12; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles,
+                        &events, (Vector2){20.0f, 60.0f},
+                        (Vector2){120.0f, 60.0f}, KINEMATIC_STEP, requested);
+    }
+    CHECK(damage.stats.cellsCarved == 0,
+          "the beam cut a body standing behind a wall: %d cells",
+          damage.stats.cellsCarved);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->cellCount == 36,
+          "the shielded body lost cells");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A segment can clip the corner of a rotated cell over a chord far shorter than
+   the cell is wide. A whole-cell march steps straight over it. */
+static void test_the_body_raycast_finds_a_thin_rotated_body(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyHandle hit;
+    Vector2 at;
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 1, 24);
+    FillBody(&terrain, handle, 0, 0, 0, 23, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){60.0f, 60.0f};
+
+    /* Turned through a range of angles: at every one of them a beam straight
+       through the middle has to find the blade. */
+    for (index = 0; index < 16; ++index) {
+        DynamicTerrainGet(&terrain, handle)->angle =
+            (float)index / 16.0f * PI - PI * 0.5f;
+        CHECK(DynamicTerrainRaycast(&terrain, (Vector2){20.0f, 60.0f},
+                                    (Vector2){120.0f, 60.0f}, &hit, &at),
+              "the beam missed a blade at angle %.3f",
+              (double)DynamicTerrainGetConst(&terrain, handle)->angle);
+        CHECK(hit.index == handle.index && hit.generation == handle.generation,
+              "the beam hit the wrong body");
+        CHECK(fabsf(at.y - 60.0f) < 1.5f, "the hit is off the beam: %.3f",
+              (double)at.y);
+    }
+
+    /* And a beam that genuinely misses still reports a miss. */
+    CHECK(!DynamicTerrainRaycast(&terrain, (Vector2){20.0f, 5.0f},
+                                 (Vector2){120.0f, 5.0f}, &hit, &at),
+          "a beam nowhere near the body reported a hit");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The property the march's step size actually has to satisfy: it must never
+   step over a piece of material longer than the step itself.
+
+   One cell turned forty-five degrees is a diamond, and a beam crossing it off
+   centre passes through a chord much shorter than the cell is wide. Every
+   offset below leaves a chord of at least half a cell, which no march worth
+   the name may miss. */
+static void test_the_raycast_never_steps_over_material(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyHandle hit;
+    Vector2 at;
+    Vector2 centre = {60.0f, 60.0f};
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 1, 1);
+    FillBody(&terrain, handle, 0, 0, 0, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = centre;
+    DynamicTerrainGet(&terrain, handle)->angle = PI * 0.25f;
+
+    /* Swept across the diamond and, for each offset, across where the march
+       happens to start. Whether a coarse march lands inside a short chord is a
+       question of phase as much as of length, so a single start position can
+       flatter a step size that is really too big. */
+    for (index = 0; index <= 30; ++index) {
+        float offset = -0.45f + (float)index * 0.03f;
+        int phase;
+
+        for (phase = 0; phase < 8; ++phase) {
+            Vector2 from = {20.0f + (float)phase * 0.125f, centre.y + offset};
+
+            CHECK(DynamicTerrainRaycast(&terrain, from,
+                                        (Vector2){100.0f, centre.y + offset},
+                                        &hit, &at),
+                  "the march stepped over material at offset %.3f, phase %d",
+                  (double)offset, phase);
+        }
+    }
+    /* Well clear of the diamond, it correctly finds nothing. */
+    CHECK(!DynamicTerrainRaycast(&terrain, (Vector2){20.0f, centre.y + 1.2f},
+                                 (Vector2){100.0f, centre.y + 1.2f}, &hit, &at),
+          "the march found material outside the rotated cell");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The aim can cross a body's bounding box through a hole in it. A hold anchored
+   there would put the spring on nothing. */
+static void test_a_grab_never_lands_on_empty_raster(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    PlayerInit(&player, (Vector2){50.0f, 60.0f});
+    /* A ring: its bounding box is full, its middle is not. */
+    handle = DynamicTerrainAllocBody(&terrain, 16, 16);
+    FillBody(&terrain, handle, 0, 0, 15, 15, MATERIAL_ROCK, 20.0f);
+    FillBody(&terrain, handle, 5, 5, 10, 10, MATERIAL_EMPTY, 0.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){64.0f, 60.0f};
+
+    /* Aimed straight at the hole. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             DynamicTerrainGetConst(&terrain, handle)->position,
+                             true, KINEMATIC_STEP);
+    if (TerrainInteractionIsHolding(&interaction, &terrain)) {
+        int cellX = (int)floorf(interaction.holdLocalPoint.x);
+        int cellY = (int)floorf(interaction.holdLocalPoint.y);
+
+        CHECK(DynamicTerrainCellAt(&terrain, interaction.held, cellX, cellY) !=
+                  MATERIAL_EMPTY,
+              "the hold landed on an empty cell at (%d, %d)", cellX, cellY);
+    }
+    /* Aimed at the rim, it takes hold of the rim. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){64.0f, 60.0f}, false, KINEMATIC_STEP);
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             TerrainBodyLocalToWorld(
+                                 DynamicTerrainGetConst(&terrain, handle), 0.5f,
+                                 8.5f),
+                             true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
+          "the rim could not be grabbed");
+    CHECK(DynamicTerrainCellAt(&terrain, interaction.held,
+                               (int)floorf(interaction.holdLocalPoint.x),
+                               (int)floorf(interaction.holdLocalPoint.y)) !=
+              MATERIAL_EMPTY,
+          "the hold on the rim landed on an empty cell");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Cutting off the side being held must never leave the spring anchored to a
+   cell that has left the body. */
+static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    Vector2 heldLocal;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+    PlayerInit(&player, (Vector2){50.0f, 60.0f});
+    handle = MakeRockBlock(&terrain, 24, 8, (Vector2){62.0f, 60.0f});
+
+    /* Held by the far right end, which the cut below will separate. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             TerrainBodyLocalToWorld(
+                                 DynamicTerrainGetConst(&terrain, handle), 22.5f,
+                                 4.0f),
+                             true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
+    heldLocal = interaction.holdLocalPoint;
+    CHECK(heldLocal.x > 18.0f, "the hold is not on the right-hand end: %.2f",
+          (double)heldLocal.x);
+
+    /* A cut nearer the right, so the held end is the smaller piece: it breaks
+       away into a body of its own while the handle stays with the larger
+       remainder. That is the case where a hold has to follow its cell or end. */
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(
+                                       DynamicTerrainGetConst(&terrain, handle),
+                                       17.0f, 4.0f),
+                                   5.0f) > 0,
+          "the cut removed nothing");
+    CHECK(LiveBodyCount(&terrain) == 2, "the slab became %d bodies",
+          LiveBodyCount(&terrain));
+
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
+    if (TerrainInteractionIsHolding(&interaction, &terrain)) {
+        /* Followed the cell onto the piece that took it. */
+        CHECK(DynamicTerrainCellAt(&terrain, interaction.held,
+                                   (int)floorf(interaction.holdLocalPoint.x),
+                                   (int)floorf(interaction.holdLocalPoint.y)) !=
+                  MATERIAL_EMPTY,
+              "the hold survived on an empty cell");
+        CHECK(interaction.stats.transferredHolds == 1,
+              "the transfer was not counted");
+    } else {
+        CHECK(interaction.stats.lostHolds == 1,
+              "the hold ended without being counted");
+    }
+    /* Either way, one more update must be harmless. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
+    DynamicTerrainUnload(&terrain);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -5402,7 +6375,7 @@ static void test_a_one_shot_ability_respects_its_cooldown(void)
     /* Half the cooldown's worth of frames, all of them asking to fire. */
     for (step = 0; step < 30; ++step) {
         GameEventsClear(&events);
-        AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, NULL, &particles, &events,
                         (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                         cooldown * 0.5f, requested);
         if (AbilityStateAt(&abilities, ABILITY_FORCE)->triggered) {
@@ -5434,7 +6407,7 @@ static void test_a_held_ability_reports_one_start_per_hold(void)
         /* Held for the first six frames, released, then held again. */
         requested[ABILITY_LASER] = step < 6 || step >= 9;
         GameEventsClear(&events);
-        AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, NULL, &particles, &events,
                         (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                         1.0f / 60.0f, requested);
         if (AbilityStateAt(&abilities, ABILITY_LASER)->triggered) {
@@ -6307,7 +7280,7 @@ static void test_configured_force_power_hits_far_and_hard(void)
     ParticlesInit(&particles, 0xE6BEu);
 
     requested[ABILITY_FORCE] = true;
-    AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
+    AbilitiesUpdate(&abilities, &world, NULL, NULL, NULL, &particles, &events,
                     (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                     1.0f / 60.0f, requested);
     force = AbilityStateAt(&abilities, ABILITY_FORCE);
@@ -6860,6 +7833,27 @@ int main(void)
     RUN(test_blast_results_are_deterministic);
     RUN(test_an_explosion_throws_the_fragment_it_just_freed);
     RUN(test_the_explosion_ability_throws_terrain_by_itself);
+    RUN(test_carving_a_body_removes_cells_and_bumps_its_revision);
+    RUN(test_carving_updates_mass_without_moving_what_is_left);
+    RUN(test_a_body_carved_away_entirely_is_freed);
+    RUN(test_a_cut_through_a_slab_splits_it_in_two);
+    RUN(test_a_split_piece_inherits_the_motion_of_where_it_was);
+    RUN(test_fracture_is_deterministic);
+    RUN(test_fracture_without_a_free_slot_keeps_the_body_whole);
+    RUN(test_a_chip_too_small_to_be_a_body_is_dropped);
+    RUN(test_the_player_cannot_stay_inside_a_body);
+    RUN(test_a_small_body_is_shoved_more_easily_than_a_huge_one);
+    RUN(test_grab_only_takes_a_body_within_reach);
+    RUN(test_a_held_body_is_pulled_rather_than_placed);
+    RUN(test_releasing_throws_a_light_body_further_than_a_heavy_one);
+    RUN(test_a_hold_ends_safely_when_the_body_is_destroyed);
+    RUN(test_an_explosion_carves_and_splits_a_moving_body);
+    RUN(test_a_fast_player_cannot_cross_a_thin_body);
+    RUN(test_the_laser_burns_only_the_first_thing_it_reaches);
+    RUN(test_the_body_raycast_finds_a_thin_rotated_body);
+    RUN(test_the_raycast_never_steps_over_material);
+    RUN(test_a_grab_never_lands_on_empty_raster);
+    RUN(test_a_hold_follows_or_ends_when_its_side_is_cut_away);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

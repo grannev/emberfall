@@ -39,7 +39,7 @@ void TerrainImpulseResetStats(TerrainImpulseSystem *system)
         return;
     }
     {
-        TerrainImpulseStats empty = {0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainImpulseStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         system->stats = empty;
     }
@@ -203,8 +203,46 @@ static bool TerrainBlastHitsBody(TerrainImpulseSystem *system,
     return true;
 }
 
+/* Everything the blast eats, before anything it pushes. Splitting the two
+   passes is what lets a piece that this blast severed be thrown by it: a
+   fracture puts new bodies in whatever slots are free, including ones the
+   push pass has not reached yet and ones it already has. */
+static void TerrainBlastCarve(TerrainImpulseSystem *system,
+                              DynamicTerrainSystem *terrain,
+                              TerrainDamageSystem *damage,
+                              const TerrainBlast *blast)
+{
+    int slot;
+
+    if (damage == NULL || !(blast->carveRadius > 0.0f)) {
+        return;
+    }
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        TerrainBody *body = &terrain->bodies[slot];
+        TerrainBodyHandle handle;
+        Vector2 minimum;
+        Vector2 maximum;
+
+        if (!body->active || !TerrainBodyWorldBounds(body, &minimum, &maximum)) {
+            continue;
+        }
+        if (blast->origin.x + blast->carveRadius < minimum.x ||
+            blast->origin.x - blast->carveRadius > maximum.x ||
+            blast->origin.y + blast->carveRadius < minimum.y ||
+            blast->origin.y - blast->carveRadius > maximum.y) {
+            continue;
+        }
+        handle = (TerrainBodyHandle){(uint16_t)slot, body->generation};
+        if (TerrainDamageApplyCircle(damage, terrain, handle, blast->origin,
+                                     blast->carveRadius) > 0) {
+            ++system->stats.bodiesCarved;
+        }
+    }
+}
+
 int TerrainImpulseApply(TerrainImpulseSystem *system,
-                        DynamicTerrainSystem *terrain, const World *world)
+                        DynamicTerrainSystem *terrain,
+                        TerrainDamageSystem *damage, const World *world)
 {
     int applied = 0;
     int index;
@@ -220,6 +258,7 @@ int TerrainImpulseApply(TerrainImpulseSystem *system,
         int slot;
 
         ++system->stats.blastsApplied;
+        TerrainBlastCarve(system, terrain, damage, blast);
         for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
             if (!terrain->bodies[slot].active) {
                 continue;

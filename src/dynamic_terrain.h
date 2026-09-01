@@ -375,6 +375,19 @@ bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle hand
    what to draw or where a body has got to. Rotation is included, so the box is
    the axis-aligned bound of the rotated shape. Returns false for a dead or
    empty body. */
+/* The first occupied cell any live body puts in the way of the segment
+   start -> end, and where the segment met it. Returns false when the segment
+   passes every body by.
+
+   The march happens in each candidate body's own frame, so a rotated body is
+   walked as a plain axis-aligned raster; candidates are rejected first on their
+   occupied box, so a segment that misses a body costs a handful of
+   comparisons. The step is a fraction of a cell rather than a whole one: a
+   segment can clip the corner of a rotated cell over a chord much shorter than
+   the cell is wide, and a coarser walk steps straight over it. */
+bool DynamicTerrainRaycast(const DynamicTerrainSystem *system, Vector2 start,
+                           Vector2 end, TerrainBodyHandle *hit, Vector2 *at);
+
 bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
                             Vector2 *maximum);
 /* Sets both velocities and wakes the body. Non-finite values are refused. */
