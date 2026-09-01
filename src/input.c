@@ -73,6 +73,8 @@ AppInput InputPoll(const World *world, Camera2D camera)
 
         input.game.ability[binding->id] = AbilityRequested(binding);
     }
+    /* F, the one key near the movement hand that no power had taken. */
+    input.game.grabHeld = IsKeyDown(KEY_F);
     input.game.regeneratePressed = IsKeyPressed(KEY_R);
     input.toggleDebugPressed = IsKeyPressed(KEY_F1);
     return input;
