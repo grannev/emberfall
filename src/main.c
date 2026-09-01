@@ -114,7 +114,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     const AbilitySystem *abilities = &game->abilities;
     const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
     const int panelWidth = 520;
-    const int panelHeight = 222;
+    const int panelHeight = 240;
     float cooldown = explosion->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
@@ -159,14 +159,19 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         frameStats->offscreenPasses, frameStats->renderTargets,
                         frameStats->bloomSubmissionMilliseconds),
              24, 171, 14, (Color){205, 156, 234, 255});
+    DrawText(TextFormat("FX: %u ACTIVE | %u PEAK | %u DROPPED",
+                        (unsigned int)frameStats->activeFx,
+                        (unsigned int)frameStats->peakFx,
+                        (unsigned int)frameStats->droppedFx),
+             24, 189, 14, (Color){255, 188, 119, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
     DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 189, 14, (Color){186, 194, 205, 255});
+             24, 207, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 207, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 225, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 207, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 225, 14,
                  LIGHTGRAY);
     }
 }
@@ -422,6 +427,7 @@ int main(int argc, char **argv)
     bool smokeBloomResized = false;
     bool smokeBloomRestored = false;
     bool smokeTargetsSynchronized = true;
+    bool smokePresentationFxObserved = false;
     double smokeBloomSubmissionTotal = 0.0;
     double smokeBloomSubmissionMaximum = 0.0;
     int smokeBloomFrames = 0;
@@ -521,6 +527,7 @@ int main(int argc, char **argv)
         if (input.game.regeneratePressed) {
             cameraFocus = game.player.position;
             cameraShake = 0.0f;
+            RendererClearPresentation(&renderer);
         }
         {
             GameAudioState sounding = {0};
@@ -532,6 +539,7 @@ int main(int argc, char **argv)
             GameAudioUpdate(&audio, sounding, deltaTime);
         }
         PresentGameEvents(&events, &audio, &cameraShake);
+        RendererUpdatePresentation(&renderer, &events, deltaTime);
         if (smokeTest) {
             smokeReactionObserved = smokeReactionObserved ||
                                     EventsContain(&events,
@@ -602,6 +610,10 @@ int main(int argc, char **argv)
                                  (frameStats->bloomEnabled &&
                                   frameStats->offscreenPasses == 5u &&
                                   frameStats->renderTargets == 4u);
+            smokePresentationFxObserved = smokePresentationFxObserved ||
+                                          (frameStats->activeFx > 0u &&
+                                           frameStats->peakFx == 2u &&
+                                           frameStats->droppedFx == 0u);
             smokeBloomResized = smokeBloomResized ||
                                 (frameStats->bloomEnabled &&
                                  frameStats->bloomWidth == (WINDOW_WIDTH - 320) / 2 &&
@@ -654,19 +666,21 @@ int main(int argc, char **argv)
         printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
                "submit_avg=%.3fms submit_max=%.3fms "
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
-               "target_sync=%d\n",
+               "target_sync=%d fx_peak=%u fx_dropped=%u\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
                smokeBloomSubmissionMaximum, smokeResizeObserved,
                smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
-               smokeTargetsSynchronized);
+               smokeTargetsSynchronized, (unsigned int)frameStats->peakFx,
+               (unsigned int)frameStats->droppedFx);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
                       !smokeExplosionObserved || !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
                       !smokeBloomObserved || !smokeTargetsSynchronized ||
+                      !smokePresentationFxObserved ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
@@ -674,12 +688,13 @@ int main(int argc, char **argv)
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
                 "drill=%d fire_contained=%d resize=%d restored=%d "
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
-                "chunks=%d/%d\n",
+                "presentation_fx=%d chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
                 smokeBloomObserved, smokeBloomResized, smokeBloomRestored,
                 smokeTargetsSynchronized,
+                smokePresentationFxObserved,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;

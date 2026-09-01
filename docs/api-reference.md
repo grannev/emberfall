@@ -86,6 +86,10 @@ float WorldLightAt(const World *world, int x, int y);
 
 ```c
 bool RendererInit(Renderer *renderer, const GameState *game);
+void RendererUpdatePresentation(Renderer *renderer,
+                                const GameEventBuffer *events,
+                                float deltaTime);
+void RendererClearPresentation(Renderer *renderer);
 void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);
@@ -107,12 +111,38 @@ sharp fallback. HUD рисуется после composite.
 `WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
 world pages. `RendererStats` сообщает фактический размер scene target, активен
 ли bloom, его resolution, число offscreen passes/targets и CPU submission time
-emissive/filter passes. Это не GPU timer: на software renderer значение
-включает стоимость rasterization.
+emissive/filter passes, а также active/peak/dropped presentation FX. Это не GPU
+timer: на software renderer значение включает стоимость rasterization.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и
 render-texture passes и оставляет HUD вне будущего post-processing.
+
+### Presentation FX API
+
+```c
+void PresentationFxInit(PresentationFxSystem *system);
+void PresentationFxClear(PresentationFxSystem *system);
+bool PresentationFxSpawn(PresentationFxSystem *system,
+                         PresentationFxDescription description);
+uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
+                                     const GameEventBuffer *events);
+void PresentationFxUpdate(PresentationFxSystem *system, float deltaTime);
+```
+
+`RendererUpdatePresentation` сначала обновляет уже существующие instances, а
+затем один раз потребляет события кадра, поэтому новый flash впервые рисуется с
+нулевым age. `RendererClearPresentation` вызывается при regeneration/reset.
+
+Pool содержит 128 элементов и не выделяет память. При overflow новый instance
+заменяет самый близкий к expiration эффект с минимальным priority, только если
+его priority не выше incoming; иначе incoming отбрасывается. `dropped`
+учитывает отказы, invalid descriptions и заменённые instances.
+
+Доступные primitives: `FLASH`, `RING`, `GLOW`, `LINE`, `TRAIL`. Scene geometry
+рисуется резкой, а только descriptions с `emissive=true` повторяются в bloom
+mask. Модуль принимает `const GameEventBuffer *`, не входит в `GameState` и
+никогда не получает `World *`: visual FX не способны повлиять на simulation.
 
 Внутренний `WorldPrepareVisible` не является gameplay API. Он синхронно
 передаёт renderer-у scene и emissive staging только для видимых dirty chunks;

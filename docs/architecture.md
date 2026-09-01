@@ -178,6 +178,33 @@ terrain, а не entity на каждую клетку.
 `Particle.emission` задаёт только presentation contribution в bloom mask и
 сбрасывается при каждом reuse слота; на поведение частицы и мир оно не влияет.
 
+### `presentation_fx.c/.h` и `presentation_fx_renderer.c/.h`
+
+`PresentationFxSystem` — renderer-owned компактный массив из максимум 128
+короткоживущих world-space primitives: flash, expanding ring, glow core, line и
+trail segment. Он обновляет только `age`, удаляет истёкшие instances swap-remove
+и не делает allocation во время кадра.
+
+Поток данных однонаправленный:
+
+```text
+GameEvent -> PresentationFxConsumeEvents -> fixed array
+                                           |          |
+                                           v          v
+                                      scene pass  emissive pass
+```
+
+Сейчас explosion event создаёт flash + ring, а player impact — небольшой
+flash. Это proof интеграции, не staged explosion polish. При заполненной
+ёмкости incoming effect заменяет instance с наименьшим priority, ближайший к
+expiration; low-priority effect не может вытеснить high-priority. Каждая
+замена/отказ увеличивает `dropped`, а HUD показывает active/peak/dropped.
+
+**Visual `PresentationFx` никогда не читает и не меняет `World`.** Это отличает
+его от `PARTICLE_CONTACT_SETTLE` debris, который может осесть реальной cell.
+Система сейчас не использует randomness; любой будущий visual jitter обязан
+иметь отдельный presentation RNG и не касаться seeded gameplay streams.
+
 ### `renderer.c/.h` и renderer-модули
 
 `Renderer` — presentation owner, создаваемый в `main.c`. Он компонует:
@@ -193,8 +220,10 @@ terrain, а не entity на каждую клетку.
   counters. Резидентны только видимые страницы, поэтому размер мира больше не
   ограничен `GL_MAX_TEXTURE_SIZE`;
 - `player_renderer` — процедурную модель героя и speed/impact effects;
-- `ability_renderer` — beams, force cone, shockwave и прицел;
+- `ability_renderer` — непрерывные beams, force cone и прицел;
 - `particle_renderer` — чтение фиксированного particle pool.
+- `PresentationFxSystem` и его renderer — event-driven transient geometry в
+  sharp scene и, только для помеченных instances, в emissive target.
 
 `WorldPrepareVisible` — узкий внутренний CPU bridge: world за один проход
 готовит два stack-backed блока 32×32 (scene и explicit emissive mask) и
@@ -246,13 +275,15 @@ device не является фатальной.
 5. Выполнить необходимое число fixed ticks мира по 1/60 секунды; преобразовать
    world reactions в `GameEvents` и повторно разрешить player collision.
 6. Обновить held audio state и передать events audio/camera consumers.
-7. Обновить camera follow, затухание shake и player point light.
-8. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
+7. Состарить прежние `PresentationFx`, затем один раз преобразовать события
+   текущего кадра в новые instances; при reset очистить presentation pool.
+8. Обновить camera follow, затухание shake и player point light.
+9. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
    paged world layers, отрисовать sharp scene и выполнить emissive/downsample/
    horizontal-blur/vertical-blur passes.
-9. `RendererComposite` вывести sharp scene и аддитивно наложить blurred
+10. `RendererComposite` вывести sharp scene и аддитивно наложить blurred
    emissive в backbuffer с корректным Y-flip.
-10. Отрисовать debug HUD и controls hint напрямую поверх composite.
+11. Отрисовать debug HUD и controls hint напрямую поверх composite.
 
 ## Владение памятью
 
@@ -270,6 +301,7 @@ device не является фатальной.
 | scene/emissive staging 32×32 × 2 | stack внутри `WorldPrepareVisible` | возврат из вызова |
 | raster arena динамического terrain (1.25 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
 | particle pool | встроен в `ParticleSystem` | автоматически |
+| presentation FX pool (128 instances) | встроен в `Renderer` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
 `GameState` агрегирует CPU gameplay ownership; `GameInit`/`GameUnload`

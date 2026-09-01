@@ -13,6 +13,7 @@
 #include "materials.h"
 #include "particles.h"
 #include "player.h"
+#include "presentation_fx.h"
 #include "abilities.h"
 #include "world.h"
 #include "dynamic_terrain.h"
@@ -254,6 +255,166 @@ static void test_particle_emission_is_explicit_per_effect(void)
                   particles.particles[i].emission == 0.0f,
               "steam particle %d leaked into emissive", i);
     }
+}
+
+static PresentationFxDescription TestFxDescription(PresentationFxType type,
+                                                    PresentationFxPriority priority,
+                                                    float lifetime)
+{
+    return (PresentationFxDescription){
+        .type = type,
+        .priority = priority,
+        .start = {12.0f, 18.0f},
+        .end = {24.0f, 20.0f},
+        .color = {255, 180, 80, 255},
+        .startRadius = 1.0f,
+        .endRadius = 8.0f,
+        .width = 1.5f,
+        .intensity = 0.8f,
+        .lifetime = lifetime,
+        .emissive = true,
+    };
+}
+
+static void test_presentation_fx_spawn_update_and_expire(void)
+{
+    PresentationFxSystem fx;
+    int type;
+
+    PresentationFxInit(&fx);
+    for (type = 0; type < PRESENTATION_FX_TYPE_COUNT; ++type) {
+        CHECK(PresentationFxSpawn(
+                  &fx, TestFxDescription((PresentationFxType)type,
+                                         PRESENTATION_FX_PRIORITY_NORMAL,
+                                         0.20f)),
+              "primitive type %d did not spawn", type);
+    }
+    CHECK(fx.stats.active == (uint16_t)PRESENTATION_FX_TYPE_COUNT,
+          "active count is %u after spawning %d primitive types",
+          (unsigned int)fx.stats.active, PRESENTATION_FX_TYPE_COUNT);
+    CHECK(fx.stats.peak == fx.stats.active, "peak did not follow active count");
+
+    PresentationFxUpdate(&fx, 0.10f);
+    CHECK(fx.stats.active == (uint16_t)PRESENTATION_FX_TYPE_COUNT,
+          "FX expired before its lifetime");
+    PresentationFxUpdate(&fx, 0.10f);
+    CHECK(fx.stats.active == 0u, "expired FX remained active");
+    CHECK(fx.stats.peak == (uint16_t)PRESENTATION_FX_TYPE_COUNT,
+          "expiration incorrectly reset peak telemetry");
+}
+
+static void test_presentation_fx_rejects_invalid_lifetime_and_clears(void)
+{
+    PresentationFxSystem fx;
+    PresentationFxDescription description =
+        TestFxDescription(PRESENTATION_FX_FLASH,
+                          PRESENTATION_FX_PRIORITY_NORMAL, 0.0f);
+
+    PresentationFxInit(&fx);
+    CHECK(!PresentationFxSpawn(&fx, description),
+          "zero-lifetime FX was accepted");
+    description.lifetime = NAN;
+    CHECK(!PresentationFxSpawn(&fx, description),
+          "non-finite FX lifetime was accepted");
+    CHECK(fx.stats.active == 0u, "invalid FX changed active count");
+    CHECK(fx.stats.dropped == 2u,
+          "invalid FX did not increment dropped telemetry");
+
+    description.lifetime = 0.25f;
+    CHECK(PresentationFxSpawn(&fx, description), "valid FX did not spawn");
+    PresentationFxClear(&fx);
+    CHECK(fx.stats.active == 0u && fx.stats.peak == 0u &&
+              fx.stats.dropped == 0u,
+          "clear did not reset FX state and telemetry");
+}
+
+static void test_presentation_fx_capacity_has_bounded_priority_overflow(void)
+{
+    PresentationFxSystem fx;
+    PresentationFxDescription low =
+        TestFxDescription(PRESENTATION_FX_GLOW,
+                          PRESENTATION_FX_PRIORITY_LOW, 1.0f);
+    PresentationFxDescription high =
+        TestFxDescription(PRESENTATION_FX_RING,
+                          PRESENTATION_FX_PRIORITY_HIGH, 1.0f);
+    unsigned int index;
+    bool foundHigh = false;
+
+    PresentationFxInit(&fx);
+    for (index = 0u; index < PRESENTATION_FX_CAPACITY; ++index) {
+        CHECK(PresentationFxSpawn(&fx, low),
+              "low-priority FX %u/%u did not fit", index,
+              PRESENTATION_FX_CAPACITY);
+    }
+    CHECK(PresentationFxSpawn(&fx, high),
+          "high-priority FX did not replace a low-priority effect");
+    CHECK(fx.stats.active == PRESENTATION_FX_CAPACITY,
+          "overflow changed bounded active count to %u",
+          (unsigned int)fx.stats.active);
+    CHECK(fx.stats.peak == PRESENTATION_FX_CAPACITY,
+          "capacity was not recorded as peak");
+    CHECK(fx.stats.dropped == 1u,
+          "replacement did not count one dropped effect");
+    for (index = 0u; index < fx.stats.active; ++index) {
+        if (fx.effects[index].description.priority ==
+            PRESENTATION_FX_PRIORITY_HIGH) {
+            foundHigh = true;
+            break;
+        }
+    }
+    CHECK(foundHigh, "replacement policy lost the incoming high-priority FX");
+
+    PresentationFxClear(&fx);
+    for (index = 0u; index < PRESENTATION_FX_CAPACITY; ++index) {
+        CHECK(PresentationFxSpawn(&fx, high),
+              "high-priority FX %u/%u did not fit", index,
+              PRESENTATION_FX_CAPACITY);
+    }
+    CHECK(!PresentationFxSpawn(&fx, low),
+          "low-priority FX evicted a high-priority effect");
+    CHECK(fx.stats.active == PRESENTATION_FX_CAPACITY &&
+              fx.stats.dropped == 1u,
+          "rejected overflow corrupted capacity telemetry");
+}
+
+static void test_presentation_fx_events_create_visuals_without_mutating_events(void)
+{
+    PresentationFxSystem fx;
+    GameEventBuffer events = {0};
+    GameEventBuffer before;
+    uint16_t spawned;
+    uint16_t index;
+    int flashes = 0;
+    int rings = 0;
+
+    events.events[0] = (GameEvent){
+        .type = GAME_EVENT_EXPLOSION,
+        .position = {48.0f, 52.0f},
+        .radius = 42.0f,
+    };
+    events.events[1] = (GameEvent){
+        .type = GAME_EVENT_PLAYER_IMPACT,
+        .position = {30.0f, 22.0f},
+        .strength = 90.0f,
+    };
+    events.count = 2u;
+    before = events;
+
+    PresentationFxInit(&fx);
+    spawned = PresentationFxConsumeEvents(&fx, &events);
+    CHECK(spawned == 3u && fx.stats.active == 3u,
+          "two events created %u FX instead of three", (unsigned int)spawned);
+    for (index = 0u; index < fx.stats.active; ++index) {
+        if (fx.effects[index].description.type == PRESENTATION_FX_FLASH) {
+            ++flashes;
+        } else if (fx.effects[index].description.type == PRESENTATION_FX_RING) {
+            ++rings;
+        }
+    }
+    CHECK(flashes == 2 && rings == 1,
+          "event conversion created flashes=%d rings=%d", flashes, rings);
+    CHECK(memcmp(&events, &before, sizeof(events)) == 0,
+          "presentation event conversion mutated gameplay events");
 }
 
 static void test_a_refused_chunk_keeps_its_dirty_flag(void)
@@ -4415,6 +4576,10 @@ int main(void)
     RUN(test_a_refused_chunk_keeps_its_dirty_flag);
     RUN(test_emissive_render_data_selects_emitters_not_bright_terrain);
     RUN(test_particle_emission_is_explicit_per_effect);
+    RUN(test_presentation_fx_spawn_update_and_expire);
+    RUN(test_presentation_fx_rejects_invalid_lifetime_and_clears);
+    RUN(test_presentation_fx_capacity_has_bounded_priority_overflow);
+    RUN(test_presentation_fx_events_create_visuals_without_mutating_events);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_the_same_seed_always_generates_the_same_world);

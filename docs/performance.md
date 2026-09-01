@@ -558,3 +558,17 @@ controlled glow у explosion particles и отдельного lava/fire fixture
 targets не выделились, renderer сохраняет sharp scene path. Запуск из `/tmp`
 без `assets/shaders/` подтвердил fallback без crash; текущий asset lookup
 относителен к working directory и остаётся packaging-ограничением.
+
+## EF-FX-001 — bounded presentation FX
+
+Замер 2026-09-01: `sizeof(PresentationFx) == 56`, полный встроенный pool на 128
+instances вместе с telemetry занимает **7176 bytes (7.01 KiB)**. Heap
+allocation отсутствует; update и каждый draw pass ограничены 128 элементами, а
+event conversion — существующим лимитом 256 `GameEvent` на frame.
+
+`make bench` сохранил production world estimate **167.22 MiB** и те же
+structural workload counters во всех десяти scenarios: presentation manager не
+входит в `GameState` и headless simulation loop. Runtime HUD публикует
+active/peak/dropped FX; Xvfb smoke для одного explosion получил `fx_peak=2`,
+`fx_dropped=0`. Отдельного wall-clock speedup не заявляется: задача добавляет
+bounded presentation work, а headless benchmark не rasterizes его geometry.

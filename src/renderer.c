@@ -5,6 +5,7 @@
 #include "ability_renderer.h"
 #include "particle_renderer.h"
 #include "player_renderer.h"
+#include "presentation_fx_renderer.h"
 
 typedef struct BloomTuning {
     float intensity;
@@ -304,6 +305,7 @@ bool RendererInit(Renderer *renderer, const GameState *game)
         return false;
     }
     *renderer = (Renderer){0};
+    PresentationFxInit(&renderer->effects);
     (void)RendererLoadBloomShaders(renderer);
     if (!WorldRendererInit(&renderer->world, &game->world) ||
         !RendererEnsureTargets(renderer, GetScreenWidth(), GetScreenHeight())) {
@@ -313,10 +315,32 @@ bool RendererInit(Renderer *renderer, const GameState *game)
     return true;
 }
 
+void RendererUpdatePresentation(Renderer *renderer,
+                                const GameEventBuffer *events,
+                                float deltaTime)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    /* Existing instances age before this frame's events are consumed, so a
+       newly spawned flash is presented once at full intensity. */
+    PresentationFxUpdate(&renderer->effects, deltaTime);
+    (void)PresentationFxConsumeEvents(&renderer->effects, events);
+}
+
+void RendererClearPresentation(Renderer *renderer)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    PresentationFxClear(&renderer->effects);
+}
+
 void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                          Vector2 aimPosition, Rectangle visible)
 {
     bool bloomReady;
+    const PresentationFxStats *fxStats;
 
     if (renderer == NULL || game == NULL) {
         return;
@@ -329,6 +353,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
         return;
     }
     bloomReady = RendererBloomReady(renderer);
+    fxStats = PresentationFxGetStats(&renderer->effects);
     renderer->lastFrame = (RendererFrameStats){
         .renderTargets = bloomReady ? 4u : 2u,
         .offscreenPasses = bloomReady ? 5u : 1u,
@@ -336,6 +361,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
         .targetHeight = renderer->targetHeight,
         .bloomWidth = bloomReady ? renderer->bloomWidth : 0,
         .bloomHeight = bloomReady ? renderer->bloomHeight : 0,
+        .activeFx = fxStats->active,
+        .peakFx = fxStats->peak,
+        .droppedFx = fxStats->dropped,
         .bloomEnabled = bloomReady,
     };
 
@@ -348,6 +376,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition);
         AbilityRendererDraw(&game->abilities, aimPosition);
+        PresentationFxRendererDrawScene(&renderer->effects);
     EndMode2D();
     EndTextureMode();
 
@@ -361,6 +390,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
             AbilityRendererDrawEmissive(&game->abilities);
+            PresentationFxRendererDrawEmissive(&renderer->effects);
         EndMode2D();
         EndTextureMode();
 
