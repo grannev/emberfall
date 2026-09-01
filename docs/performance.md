@@ -614,3 +614,27 @@ Normal-frame CPU work структурно ограничено проходом
 обновляются in-place. Headless `make bench` не rasterizes raylib geometry,
 поэтому wall-clock speedup/overhead для GPU здесь не заявляется; benchmark
 нужен для подтверждения неизменности simulation workload counters.
+
+## EF-WLD-001 — biome generation v1
+
+Замер 2026-09-01 выполнен на production world 16384×864 одним `make bench` до
+изменения и одним после в том же worktree. Генератор остался eager и не изменил
+memory layout: CPU estimate **167.22 MiB**, measured RSS **166.84 MiB** после.
+
+| Startup operation | До | После |
+|---|---:|---:|
+| `WorldGenerate` | 306.569 ms | 259.762 ms |
+| regeneration | 335.892 ms | 256.341 ms |
+
+Это уменьшение времени, а не устранение паузы reset: все 14,1 млн cells всё ещё
+записываются. Выигрыш получен несмотря на четыре biome profiles и новые surface
+features, потому что cave/liquid descriptors теперь масштабируются по ширине, а
+strata hash вычисляется один раз на колонку. Дополнительная постоянная память и
+heap allocations отсутствуют.
+
+Wall-clock и workload counters десяти gameplay scenarios после смены terrain
+**не сравниваются** с прежними: benchmark arena стоит в другом biome и её края
+соседствуют с другим набором generated dynamics. Settled contract сохранился:
+0 active chunks, 0 processed cells. Архитектурный долг остаётся прежним —
+coordinate-seeded descriptors уже пригодны для chunk generation, но storage и
+lifecycle пока eager, поэтому следующий шаг нельзя выдавать за сделанный.

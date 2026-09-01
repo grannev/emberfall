@@ -56,6 +56,10 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   `GameInput` values must replay identically. Never call `GetRandomValue` from
   gameplay code — draw from the owning system's `Rng` (see `src/rng.h`).
   Presentation-only jitter may still use raylib's generator.
+- Biome order, terrain noise and feature descriptors are derived from seed plus
+  coordinates. Do not reintroduce one sequential generation stream whose draw
+  order makes adding a cave move every later lake; biome boundaries must keep
+  their blended, seam-free surface contract.
 - Preserve the original Emberfall character and gameplay. References are not a
   license to copy another game's sprite, UI, assets, levels, or lore.
 
@@ -212,7 +216,7 @@ coherent phase with an explanatory message.
   `WORLD_COMPONENT_DETACHED` may be acted on; every other status means leave it
   alone.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
-  `world_simulation.c`, `world_thermal.c`, `world_generation.c`,
+  `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
   `world_lighting.c`, `world_effects.c`, `world_render_data.c` and
   `world_components.c`.
   `world_internal.h`, `world_thermal.h` and `world_lighting.h` are private to

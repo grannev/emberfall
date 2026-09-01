@@ -924,6 +924,168 @@ static uint64_t WorldDigest(const World *world)
     return digest;
 }
 
+static int FirstSolidY(const World *world, int x)
+{
+    int y;
+
+    for (y = 0; y < world->height; ++y) {
+        if (WorldMaterialIsSolid(WorldGetCell(world, x, y))) return y;
+    }
+    return world->height;
+}
+
+static void test_biome_layout_is_seeded_complete_and_bounded(void)
+{
+    World first = {.width = 16384, .height = 864, .seed = 0x51EDu};
+    World second = {.width = 16384, .height = 864, .seed = 0x51EDu};
+    bool seen[WORLD_BIOME_COUNT] = {false};
+    int x;
+    int biome;
+
+    for (x = 0; x < first.width; x += 128) {
+        WorldBiome firstBiome = WorldBiomeAt(&first, x);
+        WorldBiome secondBiome = WorldBiomeAt(&second, x);
+
+        CHECK(firstBiome == secondBiome,
+              "same seed disagreed about biome at x=%d", x);
+        CHECK(firstBiome >= 0 && firstBiome < WORLD_BIOME_COUNT,
+              "column %d returned invalid biome %d", x, firstBiome);
+        seen[firstBiome] = true;
+    }
+    for (biome = 0; biome < WORLD_BIOME_COUNT; ++biome) {
+        CHECK(seen[biome], "production width contains no %s",
+              WorldBiomeName((WorldBiome)biome));
+        CHECK(strcmp(WorldBiomeName((WorldBiome)biome), "UNKNOWN") != 0,
+              "biome %d has no debug name", biome);
+    }
+    CHECK(WorldBiomeAt(&first, -100) == WorldBiomeAt(&first, 0),
+          "negative x did not clamp to the first biome");
+    CHECK(WorldBiomeAt(&first, first.width + 100) ==
+              WorldBiomeAt(&first, first.width - 1),
+          "past-end x did not clamp to the last biome");
+}
+
+static void test_generated_biomes_have_distinct_material_identity(void)
+{
+    World world;
+    int signatures[WORLD_BIOME_COUNT] = {0};
+    int x;
+
+    /* Six nominal regions are enough to include one full four-biome cycle,
+       while keeping this structural generation test far below production RAM. */
+    CHECK(WorldInit(&world, 8192, 288), "world allocation failed");
+    WorldGenerate(&world, 0xB10B1E5u);
+
+    for (x = 0; x < world.width; ++x) {
+        WorldBiome biome = WorldBiomeAt(&world, x);
+        int y;
+
+        for (y = 0; y < world.height; ++y) {
+            CellMaterial material = WorldGetCell(&world, x, y);
+
+            if ((biome == WORLD_BIOME_TEMPERATE && material == MATERIAL_DIRT) ||
+                (biome == WORLD_BIOME_DUNES && material == MATERIAL_SAND) ||
+                (biome == WORLD_BIOME_FROST && material == MATERIAL_ICE) ||
+                (biome == WORLD_BIOME_VOLCANIC && material == MATERIAL_LAVA)) {
+                ++signatures[biome];
+            }
+        }
+    }
+
+    CHECK(signatures[WORLD_BIOME_TEMPERATE] > 1000,
+          "temperate terrain has only %d dirt cells",
+          signatures[WORLD_BIOME_TEMPERATE]);
+    CHECK(signatures[WORLD_BIOME_DUNES] > 1000,
+          "dunes have only %d sand cells", signatures[WORLD_BIOME_DUNES]);
+    CHECK(signatures[WORLD_BIOME_FROST] > 300,
+          "frost shelf has only %d ice cells", signatures[WORLD_BIOME_FROST]);
+    CHECK(signatures[WORLD_BIOME_VOLCANIC] > 100,
+          "ember wastes have only %d lava cells",
+          signatures[WORLD_BIOME_VOLCANIC]);
+    WorldUnload(&world);
+}
+
+static void test_biome_boundaries_and_spawn_are_coherent(void)
+{
+    World world;
+    Vector2 spawn;
+    int boundary;
+    int checkedBoundaries = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 8192, 288), "world allocation failed");
+    WorldGenerate(&world, 0xB10B1E5u);
+
+    /* A biome boundary may change strata, but never creates the vertical wall
+       the old per-region surface profiles would have produced. Cave mouths and
+       authored landmarks can still make real cliffs away from boundaries. */
+    for (boundary = 1; boundary < world.width; ++boundary) {
+        if (WorldBiomeAt(&world, boundary - 1) !=
+            WorldBiomeAt(&world, boundary)) {
+            int leftY = FirstSolidY(&world, boundary - 1);
+            int rightY = FirstSolidY(&world, boundary);
+            int difference = leftY - rightY;
+
+            if (difference < 0) difference = -difference;
+            CHECK(difference <= 6,
+                  "biome seam at x=%d jumps %d cells (%d -> %d)", boundary,
+                  difference, leftY, rightY);
+            ++checkedBoundaries;
+        }
+    }
+    CHECK(checkedBoundaries >= 3,
+          "wide test world exposed only %d biome boundaries",
+          checkedBoundaries);
+
+    spawn = WorldPlayerSpawn(&world);
+    CHECK((int)spawn.x == world.width / 2,
+          "spawn moved away from the protected center plateau");
+    for (y = (int)spawn.y - 6; y <= (int)spawn.y + 6; ++y) {
+        for (x = (int)spawn.x - 6; x <= (int)spawn.x + 6; ++x) {
+            CHECK(!WorldMaterialIsSolid(WorldGetCell(&world, x, y)),
+                  "spawn clearance contains solid terrain at %d,%d", x, y);
+        }
+    }
+    CHECK(FirstSolidY(&world, (int)spawn.x) > (int)spawn.y &&
+              FirstSolidY(&world, (int)spawn.x) - (int)spawn.y <= 12,
+          "spawn has no nearby floor: player y=%d floor y=%d", (int)spawn.y,
+          FirstSolidY(&world, (int)spawn.x));
+    WorldUnload(&world);
+}
+
+static void test_every_biome_can_host_the_protected_spawn(void)
+{
+    World world;
+    bool checked[WORLD_BIOME_COUNT] = {false};
+    int checkedCount = 0;
+    uint64_t seed;
+
+    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    for (seed = 1u; seed <= 128u && checkedCount < WORLD_BIOME_COUNT; ++seed) {
+        WorldBiome biome;
+        Vector2 spawn;
+        int floorY;
+
+        WorldGenerate(&world, seed);
+        biome = WorldBiomeAt(&world, world.width / 2);
+        if (checked[biome]) continue;
+
+        spawn = WorldPlayerSpawn(&world);
+        floorY = FirstSolidY(&world, (int)spawn.x);
+        CHECK(floorY > (int)spawn.y && floorY - (int)spawn.y <= 12,
+              "%s seed 0x%llx spawned at y=%d with floor y=%d",
+              WorldBiomeName(biome), (unsigned long long)seed, (int)spawn.y,
+              floorY);
+        checked[biome] = true;
+        ++checkedCount;
+    }
+    CHECK(checkedCount == WORLD_BIOME_COUNT,
+          "seeded spawn cycle exposed only %d/%d biomes", checkedCount,
+          WORLD_BIOME_COUNT);
+    WorldUnload(&world);
+}
+
 static void test_the_same_seed_always_generates_the_same_world(void)
 {
     World first;
@@ -8124,6 +8286,10 @@ int main(void)
     RUN(test_transient_camera_never_changes_mouse_aim_transform);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
+    RUN(test_biome_layout_is_seeded_complete_and_bounded);
+    RUN(test_generated_biomes_have_distinct_material_identity);
+    RUN(test_biome_boundaries_and_spawn_are_coherent);
+    RUN(test_every_biome_can_host_the_protected_spawn);
     RUN(test_the_same_seed_always_generates_the_same_world);
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);

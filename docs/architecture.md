@@ -95,7 +95,8 @@ update. При переполнении новые события отбрасы
 | `world_storage.c` | Владение `Cell`-массивом, chunk-флаги active/dirty/light-dirty, wake-логика, публичные accessors, `WorldActivateRegion`. |
 | `world_simulation.c` | Правила движения за tick и фиксированный traversal: bottom-to-top, чередование горизонтального направления, `updatedTick`. |
 | `world_thermal.c` | Теплопередача, фазовые переходы, возгорание, реакция water/lava. |
-| `world_generation.c` | Генерация карты и `WorldPlayerSpawn`. |
+| `world_generation.c` | Lifecycle/reset генерации и `WorldPlayerSpawn`. |
+| `world_biomes.c` | Coordinate-seeded рельеф, биомные strata, пещеры, жидкости и surface landmarks. |
 | `world_lighting.c/.h` | Грубое двухканальное поле света и его solve. |
 | `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
 | `material_render.c/.h` | Общая CPU-конверсия material/temperature в scene+emissive pixels; static world и detached bodies не имеют двух расходящихся palette paths. |
