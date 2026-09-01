@@ -4896,6 +4896,135 @@ static void test_rubble_that_lies_still_long_enough_becomes_ground_again(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* The bug this was written for: welded rubble came out riddled with single-cell
+   holes. Rounding each of a body's cells into the world is not onto once the
+   body has turned — two cells land on one, and a third destination is claimed
+   by none — so the fix is to ask each world cell which body cell covers it, and
+   what proves the fix is that no interior cell is left empty. */
+/* A hold is a beam from the hands, not a tow rope: once the slab is further away
+   than the beam reaches — wedged in a cliff the player flew away from, or
+   dragged past the edge of what is on screen — it lets go. */
+static void test_a_hold_snaps_when_the_slab_is_out_of_reach(void)
+{
+    World world;
+    TerrainInteractionSystem interaction;
+    Player player;
+    TerrainDamageSystem damage;
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 aim;
+    int steps;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+    PlayerInit(&player, (Vector2){200.0f, 120.0f});
+
+    handle = BuildSleepingBlock(&terrain, (Vector2){240.0f, 120.0f}, 4);
+    body = DynamicTerrainGet(&terrain, handle);
+    CHECK(body != NULL, "the fixture body was not created");
+    aim = body->position;
+
+    /* Grabbed at arm's length, where the hold is perfectly ordinary. */
+    for (steps = 0; steps < 8; ++steps) {
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage, aim,
+                                 true, 1.0f / 60.0f);
+    }
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
+          "the fixture body was never picked up");
+
+    /* Now the player leaves. The slab is pinned where it is, so what grows is
+       the distance between them, and nothing else about the hold changes. */
+    for (steps = 0; steps < 240 &&
+                    TerrainInteractionIsHolding(&interaction, &terrain);
+         ++steps) {
+        body = DynamicTerrainGet(&terrain, handle);
+        if (body != NULL) {
+            body->position = (Vector2){240.0f, 120.0f};
+            body->velocity = (Vector2){0.0f, 0.0f};
+        }
+        player.position.x -= 4.0f;
+        TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
+                                 player.position, true, 1.0f / 60.0f);
+    }
+
+    CHECK(!TerrainInteractionIsHolding(&interaction, &terrain),
+          "the hold towed the slab %.0f cells away",
+          (double)(240.0f - player.position.x));
+    /* And it broke at the configured reach rather than at some other distance:
+       still held one step before, released once past it. */
+    CHECK(240.0f - player.position.x >= interaction.config.holdBreakDistance,
+          "the hold broke early, at %.0f cells",
+          (double)(240.0f - player.position.x));
+    CHECK(240.0f - player.position.x <=
+              interaction.config.holdBreakDistance + 8.0f,
+          "the hold broke late, at %.0f cells",
+          (double)(240.0f - player.position.x));
+    /* The body itself survives the break: letting go is not destroying. */
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "breaking the hold destroyed the slab");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_rotated_body_welds_without_holes(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 away = {-4000.0f, -4000.0f};
+    int holes = 0;
+    int welded;
+    int steps;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainWeldInit(&weld);
+
+    handle = BuildSleepingBlock(&terrain, (Vector2){60.0f, 48.0f}, 12);
+    body = DynamicTerrainGet(&terrain, handle);
+    CHECK(body != NULL, "the fixture body was not created");
+    /* An angle that is not a multiple of a quarter turn, and a position that is
+       not on a cell boundary: both are what break a forward blit. */
+    body->angle = 0.6f;
+    body->position = (Vector2){60.37f, 48.62f};
+
+    for (steps = 0; steps < 1200 &&
+                    DynamicTerrainGetConst(&terrain, handle) != NULL;
+         ++steps) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain, away, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "the rotated body never welded");
+
+    /* A rotated 12x12 covers about 144 cells however it is turned: area does
+       not change with angle, and a blit that loses cells shows up here. */
+    welded = weld.stats.cellsWelded;
+    CHECK(welded >= 138 && welded <= 150,
+          "a rotated 12x12 welded %d cells", welded);
+
+    for (y = 1; y < world.height - 1; ++y) {
+        for (x = 1; x < world.width - 1; ++x) {
+            if (WorldGetCell(&world, x, y) != MATERIAL_EMPTY) {
+                continue;
+            }
+            if (WorldGetCell(&world, x - 1, y) == MATERIAL_ROCK &&
+                WorldGetCell(&world, x + 1, y) == MATERIAL_ROCK &&
+                WorldGetCell(&world, x, y - 1) == MATERIAL_ROCK &&
+                WorldGetCell(&world, x, y + 1) == MATERIAL_ROCK) {
+                ++holes;
+            }
+        }
+    }
+    CHECK(holes == 0, "the welded shape has %d enclosed empty cells", holes);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_moving_body_is_never_welded(void)
 {
     World world;
@@ -9374,6 +9503,8 @@ int main(void)
     RUN(test_a_fragment_below_the_minimum_size_stays_static);
     RUN(test_a_fragment_above_the_maximum_size_stays_static);
     RUN(test_rubble_that_lies_still_long_enough_becomes_ground_again);
+    RUN(test_a_hold_snaps_when_the_slab_is_out_of_reach);
+    RUN(test_a_rotated_body_welds_without_holes);
     RUN(test_a_moving_body_is_never_welded);
     RUN(test_a_weld_never_overwrites_the_world_or_buries_the_player);
     RUN(test_a_fragment_one_cell_past_the_ceiling_stays_static);

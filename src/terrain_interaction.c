@@ -31,6 +31,8 @@ TerrainInteractionConfig TerrainInteractionDefaultConfig(void)
     config.grabDistance = 180.0f;
     config.grabAimTolerance = 34.0f;
     config.holdDistance = 170.0f;
+    /* Roughly the far edge of what is on screen at the usual zoom. */
+    config.holdBreakDistance = 340.0f;
     /* Strong enough to lift a slab of a few hundred cells against gravity, and
        capped so a boulder can still be too heavy to pick up: the cap divided by
        mass is the most the hold can accelerate anything, and once that falls
@@ -671,6 +673,16 @@ static void TerrainInteractionHold(TerrainInteractionSystem *system,
     grabWorld = TerrainBodyLocalToWorld(body, system->holdLocalPoint.x,
                                         system->holdLocalPoint.y);
     system->holdWorldPoint = grabWorld;
+
+    /* Out of reach: the body has been left behind, wedged, or dragged past what
+       the player can see. Released rather than towed. */
+    dx = grabWorld.x - playerAt.x;
+    dy = grabWorld.y - playerAt.y;
+    if (dx * dx + dy * dy > system->config.holdBreakDistance *
+                                system->config.holdBreakDistance) {
+        TerrainInteractionRelease(system, terrain, playerAt, aim);
+        return;
+    }
 
     /* The cursor *is* the target. Where the mouse is, the body goes — that is
        what makes this telekinesis rather than carrying something at arm's

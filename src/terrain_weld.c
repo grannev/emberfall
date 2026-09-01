@@ -51,38 +51,76 @@ static bool TerrainWeldTouchesPlayer(const TerrainBody *body, Vector2 playerAt,
     return dx * dx + dy * dy <= reach * reach;
 }
 
-/* Writes one body's occupied cells into the world and frees it. */
+/* Writes one body's occupied cells into the world and frees it.
+ *
+ * The mapping runs backwards, from the world into the body, and that is the
+ * whole of why it is correct. Walking the body's cells and rounding each one
+ * into the world — the obvious direction — is not onto: a rotated square of
+ * cells is not a square of cells, two source cells land on one destination and
+ * a third destination is named by none, so the welded rubble came out full of
+ * single-cell holes. Asking every world cell in the footprint which body cell
+ * covers it gives every destination exactly one answer, and the result is
+ * solid.
+ */
 static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                             DynamicTerrainSystem *terrain, int slot)
 {
     TerrainBody *body = &terrain->bodies[slot];
     TerrainBodyHandle handle;
-    int localY;
+    Vector2 corner[4];
+    float minimumX;
+    float minimumY;
+    float maximumX;
+    float maximumY;
+    int firstX;
+    int firstY;
+    int lastX;
+    int lastY;
+    int index;
+    int worldY;
 
     handle.index = (uint16_t)slot;
     handle.generation = body->generation;
 
-    for (localY = body->minimumY; localY <= body->maximumY; ++localY) {
-        int localX;
+    /* World-space bounds of the body's local bounding box, from its four
+       transformed corners. A circle of the bounding radius would also cover it
+       and would be several times the area for a long thin slab. */
+    corner[0] = TerrainBodyLocalToWorld(body, (float)body->minimumX,
+                                        (float)body->minimumY);
+    corner[1] = TerrainBodyLocalToWorld(body, (float)body->maximumX + 1.0f,
+                                        (float)body->minimumY);
+    corner[2] = TerrainBodyLocalToWorld(body, (float)body->minimumX,
+                                        (float)body->maximumY + 1.0f);
+    corner[3] = TerrainBodyLocalToWorld(body, (float)body->maximumX + 1.0f,
+                                        (float)body->maximumY + 1.0f);
+    minimumX = maximumX = corner[0].x;
+    minimumY = maximumY = corner[0].y;
+    for (index = 1; index < 4; ++index) {
+        if (corner[index].x < minimumX) minimumX = corner[index].x;
+        if (corner[index].x > maximumX) maximumX = corner[index].x;
+        if (corner[index].y < minimumY) minimumY = corner[index].y;
+        if (corner[index].y > maximumY) maximumY = corner[index].y;
+    }
+    firstX = (int)floorf(minimumX) - 1;
+    firstY = (int)floorf(minimumY) - 1;
+    lastX = (int)floorf(maximumX) + 1;
+    lastY = (int)floorf(maximumY) + 1;
+    if (firstX < 0) firstX = 0;
+    if (firstY < 0) firstY = 0;
+    if (lastX > world->width - 1) lastX = world->width - 1;
+    if (lastY > world->height - 1) lastY = world->height - 1;
 
-        for (localX = body->minimumX; localX <= body->maximumX; ++localX) {
+    for (worldY = firstY; worldY <= lastY; ++worldY) {
+        int worldX;
+
+        for (worldX = firstX; worldX <= lastX; ++worldX) {
+            Vector2 local = TerrainBodyWorldToLocal(body, (float)worldX + 0.5f,
+                                                    (float)worldY + 0.5f);
             CellMaterial material =
-                DynamicTerrainCellAt(terrain, handle, localX, localY);
-            Vector2 at;
-            int worldX;
-            int worldY;
+                DynamicTerrainCellAt(terrain, handle, (int)floorf(local.x),
+                                     (int)floorf(local.y));
 
             if (material == MATERIAL_EMPTY) {
-                continue;
-            }
-            /* Cell centres, which is what the transform is defined against. */
-            at = TerrainBodyLocalToWorld(body, (float)localX + 0.5f,
-                                         (float)localY + 0.5f);
-            worldX = (int)floorf(at.x);
-            worldY = (int)floorf(at.y);
-            if (worldX < 0 || worldY < 0 || worldX >= world->width ||
-                worldY >= world->height) {
-                ++system->stats.cellsRefused;
                 continue;
             }
             if (WorldGetCell(world, worldX, worldY) != MATERIAL_EMPTY) {

@@ -31,10 +31,12 @@
  *   player is inside its footprint — welding around them would bury them in
  *   solid rock in a single frame.
  *
- * A rotated body rasterises with gaps, because a rotated square of cells is not
- * a square of cells. That is accepted: the result reads as rubble bedded into
- * the ground, which is what it is, and a gap in scenery costs nothing. Callers
- * that need the shape preserved exactly should not be welding it.
+ * The blit runs backwards, from the world into the body. Walking the body's
+ * cells and rounding each into the world is the obvious direction and it is
+ * wrong: a rotated square of cells is not a square of cells, so two source
+ * cells land on one destination while a third destination is named by none, and
+ * the welded rubble comes out riddled with single-cell holes. Asking each world
+ * cell which body cell covers it gives every destination exactly one answer.
  */
 
 #include <stdbool.h>

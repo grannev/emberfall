@@ -54,6 +54,14 @@ typedef struct TerrainInteractionConfig {
        this is a leash rather than a fixed distance: point further away than
        this and the body goes as far as the leash allows, along the same line. */
     float holdDistance;
+    /* How far the grip may actually get from the player before the hold snaps.
+       The leash above says where the body is *pulled*; this says when pulling
+       stops working. A slab wedged in a cliff while the player flies away, or
+       one dragged past the edge of what is on screen, is no longer something a
+       beam from the hands reaches — so the beam breaks rather than towing a
+       rock the player can no longer see. Comfortably past `holdDistance`, so an
+       ordinary hold that is merely lagging behind the cursor is never cut. */
+    float holdBreakDistance;
     /* Spring pulling the grab point towards that target, and the damping that
        stops it oscillating. Both are forces in absolute units, so a heavier
        body follows more sluggishly — which is the point. */
