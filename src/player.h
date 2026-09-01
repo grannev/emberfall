@@ -141,6 +141,19 @@ float PlayerDrillRadius(const Player *player);
    bug the moment the player aims down. */
 Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim);
 
+/* Where the shoulders sit along the body axis, and how far a two-handed power
+   reaches past them. Here rather than in the renderer because the telekinetic
+   hold is drawn from the hands and cast from the hands: the moment those are
+   two different numbers, the beam leaves from a point where no hand is, which
+   is the bug the visor origin already had once. */
+#define PLAYER_SHOULDER_UP 3.2f
+#define PLAYER_TWO_HAND_REACH 4.6f
+
+/* World position of one hand of a two-handed reach toward `aim`. `trailing`
+   picks the far hand; the near one leads. Built in the same body frame as
+   PlayerBeamOrigin, so both rotate with the lean together. */
+Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing);
+
 /* The body axis: hips to head. Straight up when hovering, turning toward the
    direction of travel as the character leans, so at full boost it *is* the
    direction of travel.

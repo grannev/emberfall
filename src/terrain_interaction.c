@@ -387,6 +387,17 @@ static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
         if (!terrain->bodies[slot].active) {
             continue;
         }
+        /* What the player is holding does not collide with them. A telekinetic
+           hold steers a slab to wherever the cursor is, and the cursor spends
+           much of its time over the player: without this the power spends its
+           own grip shoving its owner across the map, and steering a slab past
+           yourself is impossible. It goes behind the player instead — the
+           renderer already draws bodies before the player, so a held slab
+           passes behind them, which is also what it looks like it should do. */
+        if (system->holding && system->held.index == (uint16_t)slot &&
+            system->held.generation == terrain->bodies[slot].generation) {
+            continue;
+        }
         if (TerrainInteractionResolve(system, player, terrain, damage, slot)) {
             touched = true;
         }

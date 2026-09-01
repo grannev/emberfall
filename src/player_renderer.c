@@ -140,7 +140,7 @@ static void DrawLimb(Vector2 from, Vector2 to, int thickness, Color color)
     }
 }
 
-#define SHOULDER_UP 3.2f
+#define SHOULDER_UP PLAYER_SHOULDER_UP
 
 /* Where the hands reach, in body-frame coordinates: x across the shoulders, y
    from the hips toward the head. Absolute rather than relative to some offset,
@@ -169,8 +169,10 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal, float lean
         return;
     case PLAYER_POSE_CHILL:
         /* Both palms out: a wide, two-handed gesture, so the cryo beam does not
-           look like the laser with a different colour. */
-        reach = 4.6f;
+           look like the laser with a different colour, and so the telekinetic
+           hold has two hands to leave from. PlayerHandOrigin builds the same
+           two points in world space for whatever is cast from them. */
+        reach = PLAYER_TWO_HAND_REACH;
         lead->x = aimLocal.x * reach + 1.1f;
         lead->y = SHOULDER_UP + aimLocal.y * reach - 0.6f;
         trail->x = aimLocal.x * (reach - 0.8f) - 0.8f;

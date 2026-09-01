@@ -190,6 +190,44 @@ Vector2 PlayerBodyUp(const Player *player)
 #define PLAYER_VISOR_ALONG_UP 6.0f
 #define PLAYER_VISOR_ALONG_SIDE 0.9f
 
+/* Both palms out, the way the two-handed poses are drawn: the hands sit at the
+   shoulders and reach toward the cursor, one a little ahead of the other. */
+Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing)
+{
+    Vector2 up;
+    Vector2 side;
+    Vector2 shoulder;
+    float dx;
+    float dy;
+    float length;
+    float reach = trailing ? PLAYER_TWO_HAND_REACH - 0.8f
+                           : PLAYER_TWO_HAND_REACH;
+    float across = trailing ? -0.8f : 1.1f;
+    float along = trailing ? PLAYER_SHOULDER_UP - 2.2f
+                           : PLAYER_SHOULDER_UP - 0.6f;
+
+    if (player == NULL) {
+        return aim;
+    }
+    up = PlayerBodyUp(player);
+    side = (Vector2){-up.y, up.x};
+
+    dx = aim.x - player->position.x;
+    dy = aim.y - player->position.y;
+    length = sqrtf(dx * dx + dy * dy);
+    if (length < 0.001f) {
+        dx = side.x;
+        dy = side.y;
+        length = 1.0f;
+    }
+    dx /= length;
+    dy /= length;
+
+    shoulder = (Vector2){player->position.x + up.x * along + side.x * across,
+                         player->position.y + up.y * along + side.y * across};
+    return (Vector2){shoulder.x + dx * reach, shoulder.y + dy * reach};
+}
+
 Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
 {
     Vector2 up;

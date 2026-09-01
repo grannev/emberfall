@@ -272,6 +272,12 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     PlayerResolveWorldCollision(&game->player, &game->world);
     /* Last, so the correction a body applies to the player is the final word on
        where they are: nothing after this can push them back inside one. */
+    /* Holding a slab is a two-handed gesture, and the hold is drawn from both
+       hands, so the arms have to be out there. Refreshed every frame the hold
+       lasts; the pose lapses on its own once it stops. */
+    if (TerrainInteractionIsHolding(&game->interaction, &game->dynamicTerrain)) {
+        PlayerSetPose(&game->player, PLAYER_POSE_CHILL, 0.12f);
+    }
     TerrainInteractionUpdate(&game->interaction, &game->player,
                              &game->dynamicTerrain, &game->damage,
                              input->aimWorld, input->grabHeld, deltaTime);
