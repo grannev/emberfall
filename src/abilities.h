@@ -25,6 +25,7 @@
 #include "particles.h"
 #include "player.h"
 #include "rng.h"
+#include "terrain_impulse.h"
 #include "world.h"
 
 typedef enum AbilityId {
@@ -58,6 +59,16 @@ typedef enum AbilityTrigger {
 #define ABILITY_EXPLOSION_SHOCK_RADIUS 42.0f
 #define ABILITY_EXPLOSION_KNOCKBACK 145.0f
 
+/* Impulse each power delivers to a terrain body standing at its centre, before
+   distance falloff, in mass-cells per second. There is no second coefficient
+   and no angular scale: spin comes from where the blow lands relative to the
+   centre of mass, and how far a body actually travels comes from dividing these
+   by its mass. A hundred-cell block of rock weighs 260, so the explosion figure
+   is roughly "a small block is thrown at a hundred cells a second, a piece ten
+   times heavier at a tenth of that". */
+#define ABILITY_EXPLOSION_BODY_IMPULSE 26000.0f
+#define ABILITY_FORCE_BODY_IMPULSE 17000.0f
+
 /* What the most recent activation did, in one shape for every ability, so the
    renderer and the event publisher never need a per-ability cast or a
    per-ability field on the system struct. */
@@ -80,6 +91,12 @@ typedef struct AbilityState {
    every other ability has to be re-checked against. */
 typedef struct AbilityContext {
     World *world;
+    /* Where a power describes the shove it wants to give detached terrain. It
+       cannot apply one itself: the fragment a blast sets free does not exist
+       until the connectivity check runs, which happens on the fixed step after
+       every ability has had its turn. May be NULL in a caller that has no
+       terrain bodies. */
+    TerrainImpulseSystem *impulses;
     ParticleSystem *particles;
     GameEventBuffer *events;
     Rng *rng;
@@ -117,9 +134,9 @@ void AbilitiesInit(AbilitySystem *abilities, uint64_t seed);
 /* `requested` is one flag per ability, in AbilityId order: held for HELD
    abilities, the press edge for PRESSED ones. */
 void AbilitiesUpdate(AbilitySystem *abilities, World *world,
-                     ParticleSystem *particles, GameEventBuffer *events,
-                     Vector2 origin, Vector2 aim, float deltaTime,
-                     const bool *requested);
+                     TerrainImpulseSystem *impulses, ParticleSystem *particles,
+                     GameEventBuffer *events, Vector2 origin, Vector2 aim,
+                     float deltaTime, const bool *requested);
 
 /* Rejects a table with a missing name or apply function, the same way
    MaterialsValidate rejects a malformed material. */

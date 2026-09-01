@@ -49,6 +49,7 @@ bool GameInit(GameState *game, GameConfig config)
         return false;
     }
     TerrainDetachInit(&game->detach);
+    TerrainImpulseInit(&game->impulses);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -78,6 +79,9 @@ void GameReset(GameState *game, uint64_t seed)
        already dropped the damage log for the same reason. */
     DynamicTerrainReset(&game->dynamicTerrain);
     TerrainDetachResetStats(&game->detach);
+    /* A blast queued against a world that no longer exists must not land in the
+       new one. */
+    TerrainImpulseInit(&game->impulses);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -194,6 +198,13 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            recorded, and a tick with no destruction in it does nothing at all. */
         TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
                              events);
+        /* After detachment and before integration. Both halves matter: a piece
+           the blast just cut free has to exist before it can be thrown, and it
+           has to be thrown before it is stepped, or the throw would arrive a
+           tick late. The queue empties here, so a blast lands exactly once
+           however many fixed steps this frame runs. */
+        (void)TerrainImpulseApply(&game->impulses, &game->dynamicTerrain,
+                                  &game->world);
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible
@@ -233,7 +244,8 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     GameActivatePlayerRegion(game);
     GamePublishPlayerFeedback(game, events);
 
-    AbilitiesUpdate(&game->abilities, &game->world, &game->particles, events,
+    AbilitiesUpdate(&game->abilities, &game->world, &game->impulses,
+                    &game->particles, events,
                     game->player.position, input->aimWorld, deltaTime,
                     input->ability);
     GameApplyAbilityFeedback(game, events);

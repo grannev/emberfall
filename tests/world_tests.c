@@ -20,6 +20,7 @@
 #include "dynamic_terrain.h"
 #include "terrain_extraction.h"
 #include "terrain_detach.h"
+#include "terrain_impulse.h"
 #include "terrain_physics.h"
 #include "world_components.h"
 #include "world_render_data.h"
@@ -4470,6 +4471,641 @@ static void test_the_game_loop_detaches_terrain_by_itself(void)
     GameUnload(&game);
 }
 
+/* --- ability impulses on terrain bodies ---------------------------------- */
+
+/* The physics here is the body's own: impulse divided by mass, torque from the
+   lever arm divided by inertia. What these tests hold is that abilities feed it
+   sensible numbers and that mass is never argued away. */
+
+static TerrainImpulseSystem impulses;
+
+/* A solid rock block whose mass and inertia come from the ordinary finalize
+   path, so nothing below is measured against a hand-made body. */
+static TerrainBodyHandle MakeRockBlock(DynamicTerrainSystem *system, int width,
+                                       int height, Vector2 position)
+{
+    TerrainBodyHandle handle = DynamicTerrainAllocBody(system, width, height);
+
+    FillBody(system, handle, 0, 0, width - 1, height - 1, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(system, handle);
+    DynamicTerrainGet(system, handle)->position = position;
+    return handle;
+}
+
+static void test_an_impulse_changes_velocity_by_impulse_over_mass(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    float mass;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeRockBlock(&terrain, 8, 8, (Vector2){50.0f, 50.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    mass = body->mass;
+    CHECK(mass > 0.0f, "a finalized rock block has no mass");
+
+    /* Straight through the centre of mass: all push, no spin. */
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){mass * 3.0f, 0.0f},
+                               body->position);
+    CHECK(fabsf(body->velocity.x - 3.0f) < 0.001f,
+          "impulse of 3*m gave %.4f cells/s instead of 3",
+          (double)body->velocity.x);
+    CHECK(fabsf(body->angularVelocity) < 0.0001f,
+          "an impulse through the centre of mass span the body at %.5f rad/s",
+          (double)body->angularVelocity);
+
+    /* Twice the impulse, twice the change. */
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){mass * 6.0f, 0.0f},
+                               body->position);
+    CHECK(fabsf(body->velocity.x - 9.0f) < 0.001f,
+          "doubling the impulse gave %.4f instead of 9",
+          (double)body->velocity.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_heavier_body_moves_less_under_the_same_impulse(void)
+{
+    TerrainBodyHandle light;
+    TerrainBodyHandle heavy;
+    const TerrainBody *lightBody;
+    const TerrainBody *heavyBody;
+    Vector2 impulse = {9000.0f, 0.0f};
+    float ratio;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    light = MakeRockBlock(&terrain, 4, 4, (Vector2){40.0f, 40.0f});
+    heavy = MakeRockBlock(&terrain, 16, 16, (Vector2){90.0f, 40.0f});
+    lightBody = DynamicTerrainGetConst(&terrain, light);
+    heavyBody = DynamicTerrainGetConst(&terrain, heavy);
+    /* Sixteen times the cells, so sixteen times the mass. */
+    CHECK(fabsf(heavyBody->mass / lightBody->mass - 16.0f) < 0.01f,
+          "the heavy block is %.2f times the light one",
+          (double)(heavyBody->mass / lightBody->mass));
+
+    DynamicTerrainApplyImpulse(&terrain, light, impulse, lightBody->position);
+    DynamicTerrainApplyImpulse(&terrain, heavy, impulse, heavyBody->position);
+    ratio = lightBody->velocity.x / heavyBody->velocity.x;
+    CHECK(fabsf(ratio - 16.0f) < 0.05f,
+          "the light block moved %.2f times as fast, expected 16", (double)ratio);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_an_off_centre_impulse_spins_the_body(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    float above;
+    float below;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeRockBlock(&terrain, 10, 10, (Vector2){60.0f, 60.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    /* Pushed sideways above the centre of mass. */
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){4000.0f, 0.0f},
+                               (Vector2){body->position.x,
+                                         body->position.y - 4.0f});
+    above = body->angularVelocity;
+    CHECK(fabsf(above) > 0.001f, "an off-centre push produced no rotation");
+
+    /* The mirror image below it must turn the other way, and by as much. */
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeRockBlock(&terrain, 10, 10, (Vector2){60.0f, 60.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+    DynamicTerrainApplyImpulse(&terrain, handle, (Vector2){4000.0f, 0.0f},
+                               (Vector2){body->position.x,
+                                         body->position.y + 4.0f});
+    below = body->angularVelocity;
+    CHECK(above * below < 0.0f,
+          "pushing above and below turned the body the same way: %.4f and %.4f",
+          (double)above, (double)below);
+    CHECK(fabsf(fabsf(above) - fabsf(below)) < 0.001f,
+          "mirrored pushes gave |%.4f| and |%.4f|", (double)above,
+          (double)below);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_with_more_inertia_spins_less(void)
+{
+    TerrainBodyHandle small;
+    TerrainBodyHandle large;
+    const TerrainBody *smallBody;
+    const TerrainBody *largeBody;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    small = MakeRockBlock(&terrain, 6, 6, (Vector2){40.0f, 40.0f});
+    large = MakeRockBlock(&terrain, 24, 24, (Vector2){100.0f, 40.0f});
+    smallBody = DynamicTerrainGetConst(&terrain, small);
+    largeBody = DynamicTerrainGetConst(&terrain, large);
+    CHECK(largeBody->inertia > smallBody->inertia * 100.0f,
+          "the large block's inertia is only %.1f times the small one's",
+          (double)(largeBody->inertia / smallBody->inertia));
+
+    /* Same impulse, same lever arm, so only inertia differs. */
+    DynamicTerrainApplyImpulse(&terrain, small, (Vector2){5000.0f, 0.0f},
+                               (Vector2){smallBody->position.x,
+                                         smallBody->position.y - 2.0f});
+    DynamicTerrainApplyImpulse(&terrain, large, (Vector2){5000.0f, 0.0f},
+                               (Vector2){largeBody->position.x,
+                                         largeBody->position.y - 2.0f});
+    CHECK(fabsf(smallBody->angularVelocity) >
+              fabsf(largeBody->angularVelocity) * 10.0f,
+          "the small block span at %.4f and the large one at %.4f",
+          (double)smallBody->angularVelocity,
+          (double)largeBody->angularVelocity);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* --- blasts -------------------------------------------------------------- */
+
+static TerrainBlast ExplosionBlast(Vector2 origin, float momentum)
+{
+    TerrainBlast blast = {TERRAIN_BLAST_RADIAL, origin, {0.0f, 0.0f},
+                          ABILITY_EXPLOSION_SHOCK_RADIUS, 0.0f, momentum};
+
+    return blast;
+}
+
+static TerrainBlast ForceBlast(Vector2 origin, Vector2 direction, float momentum)
+{
+    TerrainBlast blast = {TERRAIN_BLAST_CONE, origin, direction,
+                          ABILITY_FORCE_LENGTH, ABILITY_FORCE_SPREAD_COSINE,
+                          momentum};
+
+    return blast;
+}
+
+static void test_an_explosion_throws_a_body_outward(void)
+{
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    /* Up and to the right of the blast. */
+    handle = MakeRockBlock(&terrain, 6, 6, (Vector2){70.0f, 40.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    CHECK(TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast((Vector2){50.0f, 60.0f},
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE)),
+          "the blast was refused");
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+          "the blast reached %d bodies",
+          impulses.stats.bodyImpulseApplications);
+    CHECK(impulses.blastCount == 0, "the queue was not drained");
+
+    CHECK(body->velocity.x > 0.0f && body->velocity.y < 0.0f,
+          "the body was thrown to (%.2f, %.2f), expected up and right",
+          (double)body->velocity.x, (double)body->velocity.y);
+    CHECK(impulses.stats.bodiesAffectedByExplosion == 1,
+          "the explosion counter reads %d",
+          impulses.stats.bodiesAffectedByExplosion);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_outside_the_blast_radius_is_untouched(void)
+{
+    TerrainBodyHandle near;
+    TerrainBodyHandle far;
+    const TerrainBody *nearBody;
+    const TerrainBody *farBody;
+    Vector2 origin = {50.0f, 50.0f};
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    near = MakeRockBlock(&terrain, 5, 5, (Vector2){65.0f, 50.0f});
+    far = MakeRockBlock(&terrain, 5, 5,
+                        (Vector2){50.0f + ABILITY_EXPLOSION_SHOCK_RADIUS + 40.0f,
+                                  50.0f});
+    nearBody = DynamicTerrainGetConst(&terrain, near);
+    farBody = DynamicTerrainGetConst(&terrain, far);
+    /* Settled, so the blast's effect on it — none — is visible in its state and
+       not hidden behind the awake flag every new body starts with. */
+    for (index = 0; index < 64 && farBody->awake; ++index) {
+        DynamicTerrainSettleBody(&terrain, DynamicTerrainGet(&terrain, far),
+                                 KINEMATIC_STEP);
+    }
+    CHECK(!farBody->awake, "the far fixture would not settle");
+
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast(origin,
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE));
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+          "the blast reached the wrong number of bodies");
+    CHECK(nearBody->velocity.x > 0.0f, "the near body was not thrown");
+    CHECK(farBody->velocity.x == 0.0f && farBody->velocity.y == 0.0f &&
+              farBody->angularVelocity == 0.0f,
+          "a body outside the radius moved at (%.3f, %.3f)",
+          (double)farBody->velocity.x, (double)farBody->velocity.y);
+    CHECK(!farBody->awake, "a body outside the radius was woken");
+
+    /* And again with a body that is awake, so the radius is what refuses it
+       rather than the threshold that protects sleeping bodies. An awake body
+       outside the reach must come out with exactly the motion it went in
+       with — not slowed, and above all not pulled inward. */
+    {
+        TerrainBodyHandle moving = MakeRockBlock(&terrain, 5, 5,
+                                                 (Vector2){origin.x +
+                                                               ABILITY_EXPLOSION_SHOCK_RADIUS +
+                                                               60.0f,
+                                                           50.0f});
+        const TerrainBody *movingBody = DynamicTerrainGetConst(&terrain, moving);
+
+        DynamicTerrainSetVelocity(&terrain, moving, (Vector2){4.0f, 0.0f}, 0.25f);
+        CHECK(movingBody->awake, "the moving fixture is not awake");
+        (void)TerrainImpulseQueueBlast(&impulses,
+                                       ExplosionBlast(origin,
+                                                      ABILITY_EXPLOSION_BODY_IMPULSE));
+        (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+        CHECK(movingBody->velocity.x == 4.0f && movingBody->velocity.y == 0.0f &&
+                  movingBody->angularVelocity == 0.25f,
+              "an awake body outside the radius was disturbed: (%.3f, %.3f, %.3f)",
+              (double)movingBody->velocity.x, (double)movingBody->velocity.y,
+              (double)movingBody->angularVelocity);
+    }
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_closer_body_is_thrown_harder(void)
+{
+    TerrainBodyHandle near;
+    TerrainBodyHandle far;
+    const TerrainBody *nearBody;
+    const TerrainBody *farBody;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    /* Same size, same mass, different distance: falloff is the only variable. */
+    near = MakeRockBlock(&terrain, 5, 5, (Vector2){60.0f, 50.0f});
+    far = MakeRockBlock(&terrain, 5, 5, (Vector2){85.0f, 50.0f});
+    nearBody = DynamicTerrainGetConst(&terrain, near);
+    farBody = DynamicTerrainGetConst(&terrain, far);
+
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast((Vector2){50.0f, 50.0f},
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE));
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    CHECK(nearBody->velocity.x > farBody->velocity.x,
+          "the near body reached %.2f and the far one %.2f",
+          (double)nearBody->velocity.x, (double)farBody->velocity.x);
+    CHECK(farBody->velocity.x > 0.0f, "the far body was not thrown at all");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_force_pushes_along_its_cone_and_spins_off_centre_bodies(void)
+{
+    TerrainBodyHandle ahead;
+    TerrainBodyHandle aside;
+    const TerrainBody *aheadBody;
+    const TerrainBody *asideBody;
+    Vector2 origin = {40.0f, 60.0f};
+    Vector2 direction = {1.0f, 0.0f};
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    ahead = MakeRockBlock(&terrain, 6, 6, (Vector2){70.0f, 60.0f});
+    /* Behind the blast, so outside the cone however close it is. */
+    aside = MakeRockBlock(&terrain, 6, 6, (Vector2){14.0f, 60.0f});
+    aheadBody = DynamicTerrainGetConst(&terrain, ahead);
+    asideBody = DynamicTerrainGetConst(&terrain, aside);
+
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ForceBlast(origin, direction,
+                                              ABILITY_FORCE_BODY_IMPULSE));
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 1,
+          "the cone reached %d bodies", impulses.stats.bodiesAffectedByForce);
+    CHECK(aheadBody->velocity.x > 0.0f, "the body in front was not pushed");
+    CHECK(asideBody->velocity.x == 0.0f && asideBody->velocity.y == 0.0f,
+          "a body behind the cone moved at (%.3f, %.3f)",
+          (double)asideBody->velocity.x, (double)asideBody->velocity.y);
+    CHECK(impulses.stats.bodiesAffectedByForce == 1,
+          "the force counter reads %d", impulses.stats.bodiesAffectedByForce);
+
+    /* Off the cone's axis, so the blow lands away from the centre of mass. */
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    ahead = MakeRockBlock(&terrain, 6, 6, (Vector2){70.0f, 52.0f});
+    aheadBody = DynamicTerrainGetConst(&terrain, ahead);
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ForceBlast(origin, direction,
+                                              ABILITY_FORCE_BODY_IMPULSE));
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    CHECK(fabsf(aheadBody->angularVelocity) > 0.001f,
+          "an off-axis blow produced no rotation: %.5f rad/s",
+          (double)aheadBody->angularVelocity);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_force_is_stopped_by_terrain_in_the_way(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    handle = MakeRockBlock(&terrain, 6, 6, (Vector2){70.0f, 60.0f});
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    /* A wall between the blast and the body. */
+    FillRect(&world, 55, 40, 56, 80, MATERIAL_ROCK);
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ForceBlast((Vector2){40.0f, 60.0f},
+                                              (Vector2){1.0f, 0.0f},
+                                              ABILITY_FORCE_BODY_IMPULSE));
+    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 0,
+          "the blow reached through a wall");
+    CHECK(impulses.stats.bodiesOccluded == 1, "the occlusion was not counted");
+    CHECK(body->velocity.x == 0.0f, "the shielded body moved");
+
+    /* The same blow with the wall gone lands. */
+    FillRect(&world, 55, 40, 56, 80, MATERIAL_EMPTY);
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ForceBlast((Vector2){40.0f, 60.0f},
+                                              (Vector2){1.0f, 0.0f},
+                                              ABILITY_FORCE_BODY_IMPULSE));
+    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 1,
+          "the same blow without the wall did nothing");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Waking costs an awake slot and restarts the quiet spell, so it needs a
+   reason: an impulse too weak to push the body past the speed the sleep rule
+   calls "at rest" leaves it asleep. */
+static void test_a_meaningful_impulse_wakes_a_sleeping_body(void)
+{
+    TerrainBodyHandle small;
+    TerrainBodyHandle huge;
+    const TerrainBody *smallBody;
+    const TerrainBody *hugeBody;
+    Vector2 origin = {50.0f, 50.0f};
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    small = MakeRockBlock(&terrain, 5, 5, (Vector2){58.0f, 50.0f});
+    huge = MakeRockBlock(&terrain, 40, 40, (Vector2){58.0f, 50.0f});
+    smallBody = DynamicTerrainGetConst(&terrain, small);
+    hugeBody = DynamicTerrainGetConst(&terrain, huge);
+    for (step = 0; step < 64 && (smallBody->awake || hugeBody->awake); ++step) {
+        DynamicTerrainSettleBody(&terrain, DynamicTerrainGet(&terrain, small),
+                                 KINEMATIC_STEP);
+        DynamicTerrainSettleBody(&terrain, DynamicTerrainGet(&terrain, huge),
+                                 KINEMATIC_STEP);
+    }
+    CHECK(!smallBody->awake && !hugeBody->awake, "the fixtures would not settle");
+
+    /* Enough to move the small block well past the sleep speed and nowhere near
+       enough for the block sixty-four times its mass. */
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast(origin, 600.0f));
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    CHECK(smallBody->awake, "a meaningful impulse did not wake the small body");
+    CHECK(!hugeBody->awake,
+          "an impulse worth %.4f cells/s woke a huge sleeping body",
+          (double)(600.0f / hugeBody->mass));
+    CHECK(impulses.stats.bodiesLeftSleeping == 1,
+          "the refusal to wake was not counted: %d",
+          impulses.stats.bodiesLeftSleeping);
+
+    /* A blast worth the same speed to the huge block does wake it. */
+    (void)TerrainImpulseQueueBlast(
+        &impulses,
+        ExplosionBlast(origin, hugeBody->mass * terrain.config.linearSleepSpeed *
+                                   4.0f));
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    CHECK(hugeBody->awake, "a real blast did not wake the huge body");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_refused_blast_and_a_dead_body_are_safe(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBlast bad = ExplosionBlast((Vector2){10.0f, 10.0f}, 1000.0f);
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    handle = MakeRockBlock(&terrain, 4, 4, (Vector2){12.0f, 12.0f});
+
+    bad.radius = 0.0f;
+    CHECK(!TerrainImpulseQueueBlast(&impulses, bad), "a zero-radius blast queued");
+    bad = ExplosionBlast((Vector2){10.0f, 10.0f}, 1000.0f);
+    bad.momentum = -1.0f;
+    CHECK(!TerrainImpulseQueueBlast(&impulses, bad), "a negative blast queued");
+    bad = ExplosionBlast((Vector2){10.0f, 10.0f}, 1000.0f);
+    bad.origin.x = 0.0f / 0.0f;
+    CHECK(!TerrainImpulseQueueBlast(&impulses, bad), "a NaN blast queued");
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 0,
+          "a refused blast was applied anyway");
+
+    /* A blast exactly on the body's centre of mass must not normalise a zero
+       vector, and the body must come out with a finite transform. */
+    DynamicTerrainFreeBody(&terrain, handle);
+    handle = MakeRockBlock(&terrain, 4, 4, (Vector2){30.0f, 30.0f});
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast(DynamicTerrainGetConst(
+                                                      &terrain, handle)->position,
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE));
+    (void)TerrainImpulseApply(&impulses, &terrain, NULL);
+    {
+        const TerrainBody *body = DynamicTerrainGetConst(&terrain, handle);
+
+        CHECK(body->velocity.x == body->velocity.x &&
+                  body->velocity.y == body->velocity.y &&
+                  body->angularVelocity == body->angularVelocity,
+              "a point-blank blast produced a non-finite velocity");
+        CHECK(body->velocity.y < 0.0f,
+              "a point-blank blast did not use the deterministic fallback: "
+              "(%.3f, %.3f)", (double)body->velocity.x, (double)body->velocity.y);
+    }
+
+    /* Freed slots are skipped, and the queue survives an empty world. */
+    DynamicTerrainFreeBody(&terrain, handle);
+    for (index = 0; index < 3; ++index) {
+        (void)TerrainImpulseQueueBlast(&impulses,
+                                       ExplosionBlast((Vector2){30.0f, 30.0f},
+                                                      1000.0f));
+    }
+    CHECK(TerrainImpulseApply(&impulses, &terrain, NULL) == 0,
+          "a blast found a body in an empty manager");
+    CHECK(TerrainImpulseApply(NULL, &terrain, NULL) == 0, "a NULL system applied");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_blast_never_changes_the_static_world(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulses);
+    FillRect(&world, 0, 70, 127, 95, MATERIAL_ROCK);
+    FillRect(&world, 30, 40, 40, 50, MATERIAL_SAND);
+    (void)MakeRockBlock(&terrain, 6, 6, (Vector2){60.0f, 50.0f});
+    before = WorldDigest(&world);
+
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast((Vector2){50.0f, 50.0f},
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE));
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ForceBlast((Vector2){50.0f, 50.0f},
+                                              (Vector2){1.0f, 0.0f},
+                                              ABILITY_FORCE_BODY_IMPULSE));
+    (void)TerrainImpulseApply(&impulses, &terrain, &world);
+    CHECK(WorldDigest(&world) == before, "applying impulses changed the world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_blast_results_are_deterministic(void)
+{
+    DynamicTerrainSystem terrainA;
+    DynamicTerrainSystem terrainB;
+    TerrainImpulseSystem impulsesA;
+    TerrainImpulseSystem impulsesB;
+    int index;
+    int slot;
+
+    CHECK(DynamicTerrainInit(&terrainA) && DynamicTerrainInit(&terrainB),
+          "dynamic terrain allocation failed");
+    TerrainImpulseInit(&impulsesA);
+    TerrainImpulseInit(&impulsesB);
+    for (index = 0; index < 6; ++index) {
+        Vector2 at = {30.0f + (float)index * 17.0f, 40.0f + (float)index * 5.0f};
+
+        (void)MakeRockBlock(&terrainA, 4 + index, 4 + index, at);
+        (void)MakeRockBlock(&terrainB, 4 + index, 4 + index, at);
+    }
+    for (index = 0; index < 3; ++index) {
+        Vector2 origin = {40.0f + (float)index * 20.0f, 45.0f};
+
+        (void)TerrainImpulseQueueBlast(&impulsesA,
+                                       ExplosionBlast(origin, 12000.0f));
+        (void)TerrainImpulseQueueBlast(&impulsesB,
+                                       ExplosionBlast(origin, 12000.0f));
+    }
+    CHECK(TerrainImpulseApply(&impulsesA, &terrainA, NULL) ==
+              TerrainImpulseApply(&impulsesB, &terrainB, NULL),
+          "the same blasts reached a different number of bodies");
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *a = &terrainA.bodies[slot];
+        const TerrainBody *b = &terrainB.bodies[slot];
+
+        CHECK(a->active == b->active, "slot %d differs in occupancy", slot);
+        if (!a->active) {
+            continue;
+        }
+        CHECK(a->velocity.x == b->velocity.x && a->velocity.y == b->velocity.y &&
+                  a->angularVelocity == b->angularVelocity,
+              "slot %d ended at (%.6f, %.6f, %.6f) and (%.6f, %.6f, %.6f)", slot,
+              (double)a->velocity.x, (double)a->velocity.y,
+              (double)a->angularVelocity, (double)b->velocity.x,
+              (double)b->velocity.y, (double)b->angularVelocity);
+    }
+    DynamicTerrainUnload(&terrainA);
+    DynamicTerrainUnload(&terrainB);
+}
+
+/* The acceptance scenario, end to end: one explosion cuts a support, the
+   fragment becomes a body, and the same explosion throws it. */
+static void test_an_explosion_throws_the_fragment_it_just_freed(void)
+{
+    World world;
+    const TerrainBody *body = NULL;
+    int slot;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    TerrainImpulseInit(&impulses);
+    /* The block sits to one side of the pillar, so the blast lands off its
+       centre of mass and the throw carries a spin. */
+    (void)BuildPillarScene(&world, 46, 63, 64, 69, 60, 80);
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    /* Exactly the order the fixed step uses: detach, then the blast. */
+    CHECK(RunDetach(&world, &terrain) == 1, "the block did not come loose");
+    (void)TerrainImpulseQueueBlast(&impulses,
+                                   ExplosionBlast((Vector2){60.5f, 75.5f},
+                                                  ABILITY_EXPLOSION_BODY_IMPULSE));
+    CHECK(TerrainImpulseApply(&impulses, &terrain, &world) == 1,
+          "the blast missed the fragment it had just freed");
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active) {
+            body = &terrain.bodies[slot];
+        }
+    }
+    CHECK(body != NULL, "no body after the detach");
+    CHECK(body->velocity.y < 0.0f,
+          "the freed fragment was not thrown upward: %.3f",
+          (double)body->velocity.y);
+    CHECK(fabsf(body->angularVelocity) > 0.001f,
+          "an off-centre blast gave the fragment no spin: %.5f",
+          (double)body->angularVelocity);
+    CHECK(body->awake, "the thrown fragment is asleep");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The whole path, through GameUpdate: the explosion ability alone has to sever,
+   detach and throw. */
+static void test_the_explosion_ability_throws_terrain_by_itself(void)
+{
+    GameState game;
+    GameConfig config = GameDefaultConfig();
+    GameEventBuffer events;
+    GameInput input = {0};
+    int frame;
+    const TerrainBody *body = NULL;
+    int slot;
+
+    config.worldWidth = 256;
+    config.worldHeight = 128;
+    config.seed = 0xb1a57u;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, game.world.width - 1, game.world.height - 1,
+             MATERIAL_EMPTY);
+    /* The block stands well clear of the explosion's core radius: the point is
+       that the blast severs the pillar and throws what falls, not that it blows
+       the block apart. It is still inside the shockwave's reach. */
+    (void)BuildPillarScene(&game.world, 46, 63, 40, 50, 60, 110);
+    game.player.position = (Vector2){200.0f, 40.0f};
+
+    for (frame = 0; frame < 6; ++frame) {
+        memset(input.ability, 0, sizeof(input.ability));
+        input.ability[ABILITY_EXPLOSION] = frame == 0;
+        input.aimWorld = (Vector2){60.5f, 85.5f};
+        GameUpdate(&game, &input, config.fixedStep, &events);
+    }
+    CHECK(game.detach.stats.autoDetachSucceeded == 1,
+          "the ability detached %d fragments",
+          game.detach.stats.autoDetachSucceeded);
+    CHECK(game.impulses.stats.bodyImpulseApplications >= 1,
+          "no impulse reached the fragment: %d applications",
+          game.impulses.stats.bodyImpulseApplications);
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (game.dynamicTerrain.bodies[slot].active) {
+            body = &game.dynamicTerrain.bodies[slot];
+        }
+    }
+    CHECK(body != NULL, "the ability produced no body");
+    CHECK(body->velocity.x == body->velocity.x &&
+              body->velocity.y == body->velocity.y,
+          "the thrown body has a non-finite velocity");
+    GameUnload(&game);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -4499,7 +5135,7 @@ static void test_a_one_shot_ability_respects_its_cooldown(void)
     /* Half the cooldown's worth of frames, all of them asking to fire. */
     for (step = 0; step < 30; ++step) {
         GameEventsClear(&events);
-        AbilitiesUpdate(&abilities, &world, &particles, &events,
+        AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
                         (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                         cooldown * 0.5f, requested);
         if (AbilityStateAt(&abilities, ABILITY_FORCE)->triggered) {
@@ -4531,7 +5167,7 @@ static void test_a_held_ability_reports_one_start_per_hold(void)
         /* Held for the first six frames, released, then held again. */
         requested[ABILITY_LASER] = step < 6 || step >= 9;
         GameEventsClear(&events);
-        AbilitiesUpdate(&abilities, &world, &particles, &events,
+        AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
                         (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                         1.0f / 60.0f, requested);
         if (AbilityStateAt(&abilities, ABILITY_LASER)->triggered) {
@@ -5404,7 +6040,7 @@ static void test_configured_force_power_hits_far_and_hard(void)
     ParticlesInit(&particles, 0xE6BEu);
 
     requested[ABILITY_FORCE] = true;
-    AbilitiesUpdate(&abilities, &world, &particles, &events,
+    AbilitiesUpdate(&abilities, &world, NULL, &particles, &events,
                     (Vector2){20.0f, 35.0f}, (Vector2){150.0f, 35.0f},
                     1.0f / 60.0f, requested);
     force = AbilityStateAt(&abilities, ABILITY_FORCE);
@@ -5935,6 +6571,21 @@ int main(void)
     RUN(test_regenerating_the_world_drops_its_damage_log);
     RUN(test_repeated_destruction_stays_bounded);
     RUN(test_the_game_loop_detaches_terrain_by_itself);
+    RUN(test_an_impulse_changes_velocity_by_impulse_over_mass);
+    RUN(test_a_heavier_body_moves_less_under_the_same_impulse);
+    RUN(test_an_off_centre_impulse_spins_the_body);
+    RUN(test_a_body_with_more_inertia_spins_less);
+    RUN(test_an_explosion_throws_a_body_outward);
+    RUN(test_a_body_outside_the_blast_radius_is_untouched);
+    RUN(test_a_closer_body_is_thrown_harder);
+    RUN(test_force_pushes_along_its_cone_and_spins_off_centre_bodies);
+    RUN(test_force_is_stopped_by_terrain_in_the_way);
+    RUN(test_a_meaningful_impulse_wakes_a_sleeping_body);
+    RUN(test_a_refused_blast_and_a_dead_body_are_safe);
+    RUN(test_a_blast_never_changes_the_static_world);
+    RUN(test_blast_results_are_deterministic);
+    RUN(test_an_explosion_throws_the_fragment_it_just_freed);
+    RUN(test_the_explosion_ability_throws_terrain_by_itself);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

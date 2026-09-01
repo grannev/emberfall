@@ -303,6 +303,37 @@ bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
 (`allocationFailures`, `cellCapacityFailures`, `awakeBudgetRefusals`,
 `bodiesRemovedOutOfBounds`). Подробности — `docs/dynamic-terrain.md`.
 
+## Terrain impulse API
+
+```c
+void TerrainImpulseInit(TerrainImpulseSystem *system);
+void TerrainImpulseResetStats(TerrainImpulseSystem *system);
+/* Records a blast for the next fixed step. */
+bool TerrainImpulseQueueBlast(TerrainImpulseSystem *system, TerrainBlast blast);
+/* Applies every queued blast and empties the queue. */
+int TerrainImpulseApply(TerrainImpulseSystem *system,
+                        DynamicTerrainSystem *terrain, const World *world);
+```
+
+Объявлено в `terrain_impulse.h`. Вызывается из `GameAdvanceWorld` **после**
+`TerrainDetachProcess` и **до** `TerrainPhysicsUpdate`: плита, которую взрыв
+только что срезал с опоры, улетает от того же взрыва и делает это в том же
+тике.
+
+Своей физики модуль не имеет — импульс в точке превращает в скорости
+`DynamicTerrainApplyImpulse`:
+
+```text
+Δv = J / m            Δω = cross(worldPoint − centerOfMassWorld, J) / I
+```
+
+Крупные тела не отвергаются по размеру: сопротивление движению даёт масса и
+момент инерции. Порог пробуждения — `linearSleepSpeed`, то есть та же скорость,
+которую правило сна считает покоем. Тюнинг — два числа в `abilities.h`:
+`ABILITY_EXPLOSION_BODY_IMPULSE` и `ABILITY_FORCE_BODY_IMPULSE`.
+
+Подробности — `docs/dynamic-terrain.md`, раздел «Импульсы от способностей».
+
 ## Terrain detach API
 
 ```c

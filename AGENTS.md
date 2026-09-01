@@ -138,6 +138,14 @@ coherent phase with an explanatory message.
   loose fragment costs nothing; tearing a piece out of the main landmass is
   unrecoverable. It extracts through the ordinary atomic path and never copies
   or clears cells itself, so a refusal leaves the world byte-for-byte unchanged.
+- Abilities do not push terrain bodies directly: they describe a blast, and the
+  fixed step delivers it after detachment and before integration, so a fragment
+  a blast just cut free is thrown by that same blast. Queue drains on apply, so
+  a blast lands exactly once however many fixed steps a frame runs.
+- Large terrain bodies intentionally remain movable physical bodies. Their
+  resistance to being moved comes from mass and inertia and from nothing else;
+  never add a size check that refuses to push something for being big, and never
+  a coefficient that cancels mass out of the result.
 - A terrain body is destroyed only for leaving the world, never for being old,
   idle or off screen. Kill bounds are a world-safety region with its own margin;
   the camera has no say in what the simulation keeps. The player must be able to
