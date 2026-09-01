@@ -4664,6 +4664,145 @@ static void test_a_beam_that_burns_through_a_support_detaches_the_block(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* Distance from `at` to the first cell along `angle` that is still solid. The
+   shape of a crater, read the way a player reads it. */
+static int RimDistanceAlong(const World *world, Vector2 at, float angle,
+                            int limit)
+{
+    int step;
+
+    for (step = 0; step <= limit; ++step) {
+        int x = (int)(at.x + cosf(angle) * (float)step);
+        int y = (int)(at.y + sinf(angle) * (float)step);
+
+        if (x < 0 || y < 0 || x >= world->width || y >= world->height) {
+            return step;
+        }
+        if (WorldMaterialIsSolid(WorldGetCell(world, x, y))) return step;
+    }
+    return limit;
+}
+
+static void test_a_blast_tears_its_rim_and_breaks_the_rock_around_it(void)
+{
+    World world;
+    Vector2 at = {160.0f, 120.0f};
+    const int radius = 17;
+    int shortest = 1000;
+    int longest = 0;
+    int farBreaks = 0;
+    int scorched = 0;
+    int sample;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 320, 240), "world allocation failed");
+    FillRect(&world, 0, 0, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    /* No molten slag, so every reading below is about shape and heat rather
+       than about which cells happened to turn to lava. */
+    WorldApplyBlast(&world, at, radius, 0.0f, 12, 34);
+
+    /* The rim is torn, not drawn: the crater's edge is at a different distance
+       in different directions. A circle would report the same number every
+       time. */
+    for (sample = 0; sample < 24; ++sample) {
+        int distance = RimDistanceAlong(&world, at,
+                                        (float)sample / 24.0f * 2.0f * PI, 60);
+
+        if (distance < shortest) shortest = distance;
+        if (distance > longest) longest = distance;
+    }
+    CHECK(longest - shortest >= 2,
+          "the crater rim is a circle: %d..%d cells", shortest, longest);
+
+    /* And the blast reached past its own radius. Cracks are the whole point:
+       cells are missing well outside the crater, where a plain circle would
+       have left the rock untouched. */
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            float dx = (float)x + 0.5f - at.x;
+            float dy = (float)y + 0.5f - at.y;
+            float distance = sqrtf(dx * dx + dy * dy);
+
+            if (distance <= (float)radius * 1.35f) continue;
+            if (WorldGetCell(&world, x, y) == MATERIAL_EMPTY) ++farBreaks;
+            if (distance < (float)radius * 2.6f &&
+                WorldGetTemperature(&world, x, y) > 40.0f) {
+                ++scorched;
+            }
+        }
+    }
+    CHECK(farBreaks > 40,
+          "only %d cells broke outside the crater; the blast left no cracks",
+          farBreaks);
+    CHECK(scorched > 40,
+          "only %d cells around the crater were left hot", scorched);
+
+    /* And it is logged, so whatever it cut free can fall. */
+    CHECK(world.destructionCount > 0, "the blast recorded no destruction");
+    WorldUnload(&world);
+}
+
+static void test_a_beam_held_on_one_spot_detonates_and_a_swept_one_does_not(void)
+{
+    World world;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events;
+    bool requested[ABILITY_COUNT];
+    int index;
+    int step;
+    int held = 0;
+    int swept = 0;
+
+    for (index = 0; index < ABILITY_COUNT; ++index) requested[index] = false;
+    requested[ABILITY_LASER] = true;
+
+    /* Held on one spot. The beam bores in, and once the dwell is up the point
+       detonates: the crater is far wider than the beam's own radius. */
+    CHECK(WorldInit(&world, 320, 160), "world allocation failed");
+    AbilitiesInit(&abilities, 0x1A5E4u);
+    ParticlesInit(&particles, 0x1A5E4u);
+    GameEventsClear(&events);
+    FillRect(&world, 120, 0, world.width - 1, world.height - 1, MATERIAL_ROCK);
+
+    for (step = 0; step < 240; ++step) {
+        int event;
+
+        GameEventsClear(&events);
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, NULL, &particles,
+                        &events, (Vector2){40.0f, 80.0f},
+                        (Vector2){300.0f, 80.0f}, 1.0f / 60.0f, requested);
+        for (event = 0; event < events.count; ++event) {
+            if (events.events[event].type == GAME_EVENT_EXPLOSION) ++held;
+        }
+    }
+    CHECK(held > 0, "a beam held on rock for four seconds never detonated");
+    WorldUnload(&world);
+
+    /* Swept along the wall. The hit point moves further than the slack every
+       frame, so the charge never accumulates however long the beam is held. */
+    CHECK(WorldInit(&world, 320, 160), "world allocation failed");
+    AbilitiesInit(&abilities, 0x1A5E4u);
+    FillRect(&world, 280, 0, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    for (step = 0; step < 240; ++step) {
+        /* A cursor crossing the wall and back, at the speed a hand actually
+           moves one: several cells sideways every frame. */
+        float aimY = 80.0f + 40.0f * sinf((float)step * 0.35f);
+        int event;
+
+        GameEventsClear(&events);
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, NULL, &particles,
+                        &events, (Vector2){40.0f, 80.0f},
+                        (Vector2){300.0f, aimY}, 1.0f / 60.0f, requested);
+        for (event = 0; event < events.count; ++event) {
+            if (events.events[event].type == GAME_EVENT_EXPLOSION) ++swept;
+        }
+    }
+    CHECK(swept == 0, "a swept beam detonated %d times", swept);
+    WorldUnload(&world);
+}
+
 /* Damage alone is not a reason to detach anything. */
 static void test_damage_that_leaves_the_support_standing_detaches_nothing(void)
 {
@@ -9495,6 +9634,8 @@ int main(void)
     RUN(test_world_bounds_follow_the_body);
     RUN(test_reset_returns_every_budget);
     RUN(test_lifecycle_decisions_are_deterministic);
+    RUN(test_a_blast_tears_its_rim_and_breaks_the_rock_around_it);
+    RUN(test_a_beam_held_on_one_spot_detonates_and_a_swept_one_does_not);
     RUN(test_an_explosion_under_a_block_detaches_it);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);

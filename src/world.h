@@ -267,6 +267,21 @@ void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
                      int crackCount, int crackLength);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
+/* What an explosion leaves behind, as opposed to what it removes.
+ *
+ * A circle of deleted cells is a hole punched in a picture: the rim is smooth,
+ * nothing around it changed, and the rock the blast did not reach looks exactly
+ * as it did a moment before. This is the same event with the consequences left
+ * in — a crater whose rim is torn rather than drawn, a ring of rock left glowing
+ * around it, and branching fractures thrown out into the ground beyond, which
+ * carry the blast's reach much further than its radius and are what make the
+ * next shot land in rock that already remembers the last one.
+ *
+ * `rockToLavaChance` is the same molten-slag chance WorldDestroyCircle takes.
+ * Everything is bounded by `coreRadius` and `crackLength`, and the damage is
+ * logged the way every other destructive cut is, so what it cuts free falls. */
+void WorldApplyBlast(World *world, Vector2 at, int coreRadius,
+                     float rockToLavaChance, int crackCount, int crackLength);
 /* One heavy blow along a cone: throws dynamic cells a long way and scours a thin
    layer off the exposed face of anything solid. `spreadCosine` is the cosine of
    the cone's half angle; `reach` is how far the nearest cells are thrown. */

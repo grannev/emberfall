@@ -86,7 +86,7 @@ static bool WorldPunchCanDent(CellMaterial material)
    stops the moment it leaves solid ground, so a crack never crosses open air to
    reappear somewhere else. Returns the cells removed. */
 static int WorldCrackRay(World *world, Vector2 from, float angle, int length,
-                         int *minimumX, int *minimumY, int *maximumX,
+                         int lead, int *minimumX, int *minimumY, int *maximumX,
                          int *maximumY)
 {
     float stepX = cosf(angle);
@@ -106,8 +106,14 @@ static int WorldCrackRay(World *world, Vector2 from, float angle, int length,
         }
         if (!WorldPunchCanDent(WorldMaterialAt(world, x, y))) {
             /* A gap is allowed, a chasm is not: a crack that kept going through
-               open air would draw a line across the sky. */
-            if (++misses > 2) {
+               open air would draw a line across the sky.
+
+               Before the first bite the allowance is `lead` instead, because a
+               crack thrown out of a crater starts inside the hole the crater
+               just made and has to cross it to reach rock. Without that, every
+               fracture from a blast died two cells from its own centre and the
+               explosion was a plain circle after all. */
+            if (++misses > (removed == 0 ? lead : 2)) {
                 break;
             }
             continue;
@@ -133,6 +139,59 @@ static int WorldCrackRay(World *world, Vector2 from, float angle, int length,
     return removed;
 }
 
+/* A star of cracks with one level of branching.
+
+   A fracture in rock forks. A star that never forks reads as an asterisk drawn
+   on the ground, which is what the punch's cracks looked like on their own, and
+   forking is most of what separates the two. Everything random here is drawn
+   from the world's own stream, so a replay of the same seed and inputs cracks
+   the same rock the same way. */
+static bool WorldFractureStar(World *world, Vector2 at, float facing, float arc,
+                              int crackCount, int crackLength, int lead,
+                              int *minimumX, int *minimumY, int *maximumX,
+                              int *maximumY)
+{
+    bool cut = false;
+    int crack;
+
+    if (crackCount <= 0 || crackLength <= 0) {
+        return false;
+    }
+    for (crack = 0; crack < crackCount; ++crack) {
+        float spread = crackCount > 1
+                           ? ((float)crack / (float)(crackCount - 1)) - 0.5f
+                           : 0.0f;
+        float jitter = (float)RngRange(&world->rng, -18, 18) * 0.0175f;
+        float angle = facing + spread * arc + jitter;
+        /* Uneven lengths: rock does not fail the same distance in every
+           direction, and equal spokes are the other half of the asterisk. */
+        int length = crackLength - RngRange(&world->rng, 0, crackLength / 2);
+
+        if (length < 2) length = 2;
+        if (WorldCrackRay(world, at, angle, length, lead, minimumX, minimumY,
+                          maximumX, maximumY) > 0) {
+            cut = true;
+        }
+        if (length >= 8) {
+            float along = 0.35f +
+                          (float)RngRange(&world->rng, 0, 30) * 0.01f;
+            Vector2 fork = {at.x + cosf(angle) * (float)length * along,
+                            at.y + sinf(angle) * (float)length * along};
+            float side = RngRange(&world->rng, 0, 1) == 0 ? -1.0f : 1.0f;
+            float turn = 0.35f +
+                         (float)RngRange(&world->rng, 0, 40) * 0.01f;
+            int reach = (int)((float)length * (1.0f - along) * 0.8f);
+
+            if (reach >= 2 &&
+                WorldCrackRay(world, fork, angle + side * turn, reach, lead,
+                              minimumX, minimumY, maximumX, maximumY) > 0) {
+                cut = true;
+            }
+        }
+    }
+    return cut;
+}
+
 void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
                      int crackCount, int crackLength)
 {
@@ -144,7 +203,6 @@ void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
     int maximumY = centreY;
     float facing;
     bool cut = false;
-    int crack;
     int y;
 
     if (world == NULL || world->cells == NULL || radius <= 0) {
@@ -180,20 +238,11 @@ void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
         }
     }
 
-    /* Fractures out of the rim, spread around the face the blow struck. The
-       variation is drawn from the world's own stream, so a replay of the same
-       seed and inputs cracks the same rock the same way. */
-    for (crack = 0; crack < crackCount; ++crack) {
-        float spread = ((float)crack / (float)(crackCount > 1 ? crackCount - 1
-                                                             : 1)) -
-                       0.5f;
-        float jitter = (float)RngRange(&world->rng, -18, 18) * 0.0175f;
-        float angle = facing + spread * 2.6f + jitter;
-
-        if (WorldCrackRay(world, at, angle, crackLength, &minimumX, &minimumY,
-                          &maximumX, &maximumY) > 0) {
-            cut = true;
-        }
+    /* Fractures out of the rim, spread around the face the blow struck. */
+    if (WorldFractureStar(world, at, facing, 2.6f, crackCount, crackLength,
+                          radius + 2, &minimumX, &minimumY, &maximumX,
+                          &maximumY)) {
+        cut = true;
     }
 
     if (cut) {
@@ -429,6 +478,116 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                 }
             }
         }
+    }
+}
+
+void WorldApplyBlast(World *world, Vector2 at, int coreRadius,
+                     float rockToLavaChance, int crackCount, int crackLength)
+{
+    /* Rim radii around the circle, interpolated between. Twelve is enough for a
+       torn edge and few enough that the rim still reads as one crater; drawn
+       once per blast from the world's stream, so the same blast on the same
+       seed tears the same shape. */
+    enum { BLAST_RIM_SECTORS = 12 };
+    float rim[BLAST_RIM_SECTORS];
+    int centreX = (int)floorf(at.x);
+    int centreY = (int)floorf(at.y);
+    int minimumX = centreX;
+    int minimumY = centreY;
+    int maximumX = centreX;
+    int maximumY = centreY;
+    /* How far past the torn rim the rock is left hot. Not destruction: it is
+       what tells the player where the blast reached after the dust settles. */
+    const float scorch = 7.0f;
+    int chance = (int)(rockToLavaChance * 1000.0f);
+    float reach;
+    bool cut = false;
+    int sector;
+    int y;
+
+    if (world == NULL || world->cells == NULL || coreRadius <= 0) {
+        return;
+    }
+    for (sector = 0; sector < BLAST_RIM_SECTORS; ++sector) {
+        rim[sector] = (float)coreRadius *
+                      (0.82f + (float)RngRange(&world->rng, 0, 40) * 0.01f);
+    }
+    reach = (float)coreRadius * 1.22f + scorch;
+
+    for (y = centreY - (int)reach - 1; y <= centreY + (int)reach + 1; ++y) {
+        int x;
+
+        for (x = centreX - (int)reach - 1; x <= centreX + (int)reach + 1; ++x) {
+            float dx = (float)x + 0.5f - at.x;
+            float dy = (float)y + 0.5f - at.y;
+            float distance = sqrtf(dx * dx + dy * dy);
+            float turn;
+            float slot;
+            int low;
+            int high;
+            float blend;
+            float edge;
+            Cell *cell;
+
+            if (distance > reach || !WorldInBounds(world, x, y)) {
+                continue;
+            }
+            /* The rim radius for this direction, blended between neighbouring
+               sectors so the edge waves rather than steps. */
+            turn = atan2f(dy, dx);
+            slot = (turn + PI) / (2.0f * PI) * (float)BLAST_RIM_SECTORS;
+            low = ((int)floorf(slot)) % BLAST_RIM_SECTORS;
+            if (low < 0) low += BLAST_RIM_SECTORS;
+            high = (low + 1) % BLAST_RIM_SECTORS;
+            blend = slot - floorf(slot);
+            edge = rim[low] + (rim[high] - rim[low]) * blend;
+
+            if (distance <= edge) {
+                if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) {
+                    cut = true;
+                    if (x < minimumX) minimumX = x;
+                    if (x > maximumX) maximumX = x;
+                    if (y < minimumY) minimumY = y;
+                    if (y > maximumY) maximumY = y;
+                }
+                if (WorldMaterialAt(world, x, y) == MATERIAL_ROCK &&
+                    RngRange(&world->rng, 0, 999) < chance) {
+                    WorldSetCellRaw(world, x, y, MATERIAL_LAVA);
+                } else {
+                    WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+                }
+                continue;
+            }
+            if (distance > edge + scorch) {
+                continue;
+            }
+            /* Scorched, not destroyed. The heat falls off to nothing at the
+               outer edge, so the crater has a glowing lip that cools rather
+               than a second sharp ring. Rock melts at 720; the peak here is
+               well under that, so a blast leaves a mark and does not start a
+               lava field. */
+            cell = WorldCell(world, x, y);
+            if (cell->material == MATERIAL_EMPTY) {
+                continue;
+            }
+            cell->temperature += 380.0f * (1.0f - (distance - edge) / scorch);
+            WorldWakeCellAndNeighbors(world, x, y);
+            (void)WorldTryThermalTransition(world, x, y);
+        }
+    }
+
+    /* And the fractures, all the way round. These are what carry the blast past
+       its own radius: the rock beyond the crater is left broken rather than
+       untouched, so a second shot into the same face finds ground that already
+       gave way once. */
+    if (WorldFractureStar(world, at, 0.0f, 2.0f * PI, crackCount, crackLength,
+                          coreRadius + 4, &minimumX, &minimumY, &maximumX,
+                          &maximumY)) {
+        cut = true;
+    }
+
+    if (cut) {
+        WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);
     }
 }
 

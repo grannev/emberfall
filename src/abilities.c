@@ -126,6 +126,52 @@ static void AbilityApplyLaser(const AbilityContext *context, AbilityState *state
         .direction = context->direction,
         .material = result.material,
     });
+
+    /* Held on one spot, the beam stops being a cutting tool. Heat that the
+       material cannot carry away has to go somewhere, and after long enough it
+       goes outward: the point detonates. Sweeping the beam along a wall never
+       charges, because the hit point moves further than the slack every frame,
+       and that is the difference the player is meant to feel between cutting
+       and boring in. */
+    {
+        float deltaX = result.position.x - state->dwellPoint.x;
+        float deltaY = result.position.y - state->dwellPoint.y;
+        /* Across the beam: boring is along it, sweeping is not. */
+        float lateral = fabsf(deltaX * -context->direction.y +
+                              deltaY * context->direction.x);
+
+        state->dwellPoint = result.position;
+        if (lateral > ABILITY_LASER_DWELL_SLACK) {
+            state->dwellTime = 0.0f;
+            return;
+        }
+    }
+    state->dwellTime += context->deltaTime;
+    if (state->dwellTime < ABILITY_LASER_DWELL_TIME) {
+        return;
+    }
+    state->dwellTime = 0.0f;
+    WorldApplyBlast(context->world, result.position,
+                    ABILITY_LASER_BURST_RADIUS, 0.55f,
+                    ABILITY_LASER_BURST_CRACKS,
+                    ABILITY_LASER_BURST_CRACK_LENGTH);
+    WorldApplyShockwave(context->world, (int)result.position.x,
+                        (int)result.position.y, ABILITY_LASER_BURST_RADIUS,
+                        ABILITY_LASER_BURST_SHOCK);
+    (void)TerrainImpulseQueueBlast(context->impulses, (TerrainBlast){
+        .shape = TERRAIN_BLAST_RADIAL,
+        .origin = result.position,
+        .radius = (float)ABILITY_LASER_BURST_SHOCK,
+        .momentum = ABILITY_LASER_BURST_IMPULSE,
+        .carveRadius = (float)ABILITY_LASER_BURST_RADIUS * 0.5f,
+    });
+    ParticlesSpawnExplosion(context->particles, result.position);
+    (void)GameEventsPush(context->events, (GameEvent){
+        .type = GAME_EVENT_EXPLOSION,
+        .position = result.position,
+        .direction = context->direction,
+        .material = result.material,
+    });
 }
 
 static void AbilityApplyCryo(const AbilityContext *context, AbilityState *state)
@@ -222,8 +268,12 @@ static void AbilityApplyExplosion(const AbilityContext *context,
     int centerX = (int)context->aim.x;
     int centerY = (int)context->aim.y;
 
-    WorldDestroyCircle(context->world, centerX, centerY,
-                       ABILITY_EXPLOSION_CORE_RADIUS, 0.38f);
+    /* Not a circle of deleted cells: a torn crater with a glowing lip and
+       fractures thrown out well past its rim. The blast's felt size is the
+       cracks, not the radius. */
+    WorldApplyBlast(context->world, context->aim, ABILITY_EXPLOSION_CORE_RADIUS,
+                    0.38f, ABILITY_EXPLOSION_CRACKS,
+                    ABILITY_EXPLOSION_CRACK_LENGTH);
     WorldApplyShockwave(context->world, centerX, centerY,
                         ABILITY_EXPLOSION_CORE_RADIUS,
                         (int)ABILITY_EXPLOSION_SHOCK_RADIUS);

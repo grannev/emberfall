@@ -50,6 +50,25 @@ typedef enum AbilityTrigger {
    applied is a bug nobody sees until they look closely. */
 #define ABILITY_LASER_RANGE 280.0f
 #define ABILITY_LASER_RADIUS 2.25f
+/* Holding the beam on one spot builds toward a detonation. The beam is a
+   cutting tool, not a gun, and a tool held against rock long enough should do
+   something the rock cannot absorb: the heat has to go somewhere, and after
+   this long it goes outward.
+
+   What counts as "the same spot" is measured across the beam, not along it. A
+   beam boring into rock walks its own hit point deeper — three cells at a time,
+   every two thirds of a second — and that displacement is entirely along the
+   beam, so anchoring to a fixed point would call boring a sweep and the charge
+   would never complete. Sweeping is lateral. `ABILITY_LASER_DWELL_SLACK` is
+   therefore how far the hit point may move *sideways* in one frame and still
+   count as held. */
+#define ABILITY_LASER_DWELL_TIME 1.4f
+#define ABILITY_LASER_DWELL_SLACK 2.0f
+#define ABILITY_LASER_BURST_RADIUS 11
+#define ABILITY_LASER_BURST_CRACKS 9
+#define ABILITY_LASER_BURST_CRACK_LENGTH 26
+#define ABILITY_LASER_BURST_SHOCK 26
+#define ABILITY_LASER_BURST_IMPULSE 16000.0f
 #define ABILITY_CRYO_RANGE 190.0f
 #define ABILITY_CRYO_RADIUS 2.6f
 #define ABILITY_FORCE_LENGTH 84.0f
@@ -75,6 +94,11 @@ typedef enum AbilityTrigger {
 /* How far in front of the player the blow lands when it meets nothing solid. */
 #define ABILITY_FORCE_PUNCH_REACH 26.0f
 #define ABILITY_EXPLOSION_CORE_RADIUS 17
+/* Fractures thrown out of the crater, and how far each may run. Twelve rays
+   with one fork each reach much further than the crater itself, which is what
+   makes a blast feel like it broke the ground rather than removed part of it. */
+#define ABILITY_EXPLOSION_CRACKS 12
+#define ABILITY_EXPLOSION_CRACK_LENGTH 34
 #define ABILITY_EXPLOSION_SHOCK_RADIUS 42.0f
 #define ABILITY_EXPLOSION_KNOCKBACK 145.0f
 
@@ -111,6 +135,10 @@ typedef struct AbilityState {
     Vector2 endpoint;
     Vector2 direction;
     CellMaterial hitMaterial;
+    /* Where the beam has been resting and for how long. Presentation reads
+       `dwell` as a 0..1 charge toward the detonation. */
+    Vector2 dwellPoint;
+    float dwellTime;
 } AbilityState;
 
 /* Everything an ability's simulation may touch. Passing a context rather than
