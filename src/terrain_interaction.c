@@ -26,18 +26,20 @@ TerrainInteractionConfig TerrainInteractionDefaultConfig(void)
     config.contactRestitution = 0.05f;
     config.maxContactImpulse = 9000.0f;
 
-    config.grabDistance = 64.0f;
-    config.grabAimTolerance = 26.0f;
-    config.holdDistance = 22.0f;
+    /* Reach across a good part of the screen. The power is telekinesis: having
+       to stand next to a slab to lift it makes it a pair of hands instead. */
+    config.grabDistance = 180.0f;
+    config.grabAimTolerance = 34.0f;
+    config.holdDistance = 170.0f;
     /* Strong enough to lift a slab of a few hundred cells against gravity, and
        capped so a boulder can still be too heavy to pick up: the cap divided by
        mass is the most the hold can accelerate anything, and once that falls
        below gravity the body can only be dragged along the ground. That is the
        whole difficulty curve, and it comes out of mass rather than out of a
        rule about what may be carried. */
-    config.pullStrength = 12000.0f;
-    config.pullDamping = 1200.0f;
-    config.maxPullForce = 400000.0f;
+    config.pullStrength = 26000.0f;
+    config.pullDamping = 2400.0f;
+    config.maxPullForce = 900000.0f;
     config.throwImpulse = 14000.0f;
     return config;
 }
@@ -659,14 +661,19 @@ static void TerrainInteractionHold(TerrainInteractionSystem *system,
                                         system->holdLocalPoint.y);
     system->holdWorldPoint = grabWorld;
 
+    /* The cursor *is* the target. Where the mouse is, the body goes — that is
+       what makes this telekinesis rather than carrying something at arm's
+       length, and it is the whole feel of the power. The leash only bites when
+       the cursor is further out than the hold can reach, and then the body
+       still travels along the same line, just not all the way. */
     dx = aim.x - playerAt.x;
     dy = aim.y - playerAt.y;
     length = sqrtf(dx * dx + dy * dy);
-    if (length < 0.001f) {
-        target = (Vector2){playerAt.x, playerAt.y - system->config.holdDistance};
-    } else {
+    if (length > system->config.holdDistance && length > 0.001f) {
         target = (Vector2){playerAt.x + dx / length * system->config.holdDistance,
                            playerAt.y + dy / length * system->config.holdDistance};
+    } else {
+        target = aim;
     }
 
     pointVelocity = TerrainBodyPointVelocity(body, grabWorld);

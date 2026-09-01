@@ -49,7 +49,10 @@ typedef struct TerrainInteractionConfig {
        up into a precision task nobody asked for. Still bounded, so a body the
        player is clearly not looking at is not taken. */
     float grabAimTolerance;
-    /* How far in front of the player the held body is pulled towards. */
+    /* How far from the player the cursor may drag a held body. The hold pulls
+       the body to where the cursor is — telekinesis, not a carried plank — so
+       this is a leash rather than a fixed distance: point further away than
+       this and the body goes as far as the leash allows, along the same line. */
     float holdDistance;
     /* Spring pulling the grab point towards that target, and the damping that
        stops it oscillating. Both are forces in absolute units, so a heavier

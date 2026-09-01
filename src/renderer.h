@@ -34,6 +34,10 @@ typedef struct Renderer {
     WorldRenderer world;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;
+    /* Seconds of presentation, for effects that flicker or turn. Kept here
+       rather than read from the clock so that a run stepping at a fixed rate —
+       the smoke test — draws the same frame every time. */
+    float presentationTime;
     RenderTexture2D sceneTarget;
     RenderTexture2D emissiveTarget;
     RenderTexture2D bloomPingTarget;

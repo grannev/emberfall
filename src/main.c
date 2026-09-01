@@ -1554,6 +1554,11 @@ int main(int argc, char **argv)
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");
             }
+            /* Mid-hold, so the frame shows the telekinetic beam actually
+               reaching a slab rather than the aftermath of having moved it. */
+            if (smokeFrames == ACCEPT_GRAB + 30) {
+                TakeScreenshot("build/emberfall-grab.png");
+            }
             if (smokeFrames == ACCEPT_SHOT) {
                 TakeScreenshot("build/emberfall-gameplay.png");
             }

@@ -9,7 +9,8 @@ WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
 SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
 	src/renderer.c src/world_renderer.c src/presentation_fx.c src/camera_feedback.c \
-	src/presentation_fx_renderer.c src/terrain_body_render_data.c \
+	src/presentation_fx_renderer.c src/terrain_grab_renderer.c \
+	src/terrain_body_render_data.c \
 	src/terrain_body_renderer.c \
 	src/player.c src/player_renderer.c src/abilities.c src/ability_renderer.c \
 	src/dynamic_terrain.c src/terrain_extraction.c src/terrain_physics.c \
