@@ -306,6 +306,7 @@ bool RendererInit(Renderer *renderer, const GameState *game)
     }
     *renderer = (Renderer){0};
     PresentationFxInit(&renderer->effects);
+    TerrainBodyRendererInit(&renderer->terrainBodies);
     (void)RendererLoadBloomShaders(renderer);
     if (!WorldRendererInit(&renderer->world, &game->world) ||
         !RendererEnsureTargets(renderer, GetScreenWidth(), GetScreenHeight())) {
@@ -341,6 +342,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
 {
     bool bloomReady;
     const PresentationFxStats *fxStats;
+    const TerrainBodyRendererStats *terrainStats;
 
     if (renderer == NULL || game == NULL) {
         return;
@@ -371,6 +373,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
     ClearBackground((Color){2, 4, 9, 255});
     BeginMode2D(camera);
         WorldRendererDraw(&renderer->world, &game->world, visible);
+        TerrainBodyRendererDrawScene(&renderer->terrainBodies,
+                                     &game->dynamicTerrain, visible);
         DrawRectangleLines(0, 0, game->world.width, game->world.height,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
@@ -387,6 +391,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
         ClearBackground(BLANK);
         BeginMode2D(camera);
             WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
+            TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
+                                            &game->dynamicTerrain, visible);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
             AbilityRendererDrawEmissive(&game->abilities);
@@ -398,6 +404,14 @@ void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
         renderer->lastFrame.bloomSubmissionMilliseconds =
             (GetTime() - started) * 1000.0;
     }
+
+    terrainStats = TerrainBodyRendererStatistics(&renderer->terrainBodies);
+    renderer->lastFrame.cachedTerrainBodies = terrainStats->cachedBodies;
+    renderer->lastFrame.visibleTerrainBodies = terrainStats->visibleBodies;
+    renderer->lastFrame.terrainBodyDrawCalls = terrainStats->drawCalls;
+    renderer->lastFrame.terrainBodyTextureUpdates = terrainStats->textureUpdates;
+    renderer->lastFrame.terrainBodyTextureMemoryBytes =
+        terrainStats->textureMemoryBytes;
 }
 
 void RendererComposite(const Renderer *renderer)
@@ -439,6 +453,7 @@ void RendererUnload(Renderer *renderer)
     RendererUnloadTarget(&renderer->bloomPongTarget);
     RendererUnloadShader(&renderer->bloomDownsampleShader);
     RendererUnloadShader(&renderer->bloomBlurShader);
+    TerrainBodyRendererUnload(&renderer->terrainBodies);
     WorldRendererUnload(&renderer->world);
     *renderer = (Renderer){0};
 }

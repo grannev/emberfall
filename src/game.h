@@ -33,8 +33,9 @@ typedef struct GameState {
     ParticleSystem particles;
     /* Pieces of terrain that have stopped being part of the cellular world.
        Owned here because it is gameplay state with the same lifetime as the
-       world it was cut from. Nothing fills it yet: extraction arrives with
-       EF-DYN-003, and until then this is an empty, behaviour-neutral store. */
+       world it was cut from. Explicit extraction, fixed-step physics and
+       read-only presentation are separate consumers; automatic detach is not
+       connected to ordinary gameplay yet. */
     DynamicTerrainSystem dynamicTerrain;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the

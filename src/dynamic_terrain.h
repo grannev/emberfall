@@ -17,10 +17,9 @@
  * modelled individually. Anything that tempts a future change toward
  * one-entity-per-cell is a mistake in this file's terms.
  *
- * This subsystem is behaviour-neutral at present: nothing extracts a body from
- * the world, nothing moves, collides, draws or fractures one. It exists so that
- * the tasks which do those things have a stable place to stand. It never sees a
- * World and cannot modify one.
+ * Extraction and collision live in separate modules, while presentation reads
+ * this store through TerrainBodyRenderer. This subsystem itself still never
+ * sees a World, GPU resource or draw call and cannot modify either of them.
  */
 
 #include <math.h>
@@ -60,9 +59,9 @@
    of its cells on the surface. */
 #define MAX_TERRAIN_BODY_CELLS 4096
 
-/* Total raster storage, and therefore the whole subsystem's memory:
+/* Total material/temperature raster storage:
    32 x 8192 x (1 byte material + 4 bytes temperature) = 1.25 MiB, allocated
-   once and never resized. */
+   once and never resized. Collision also owns a fixed 0.50 MiB surface list. */
 #define MAX_TERRAIN_RASTER_CELLS (MAX_TERRAIN_BODIES * TERRAIN_BODY_RASTER_CAPACITY)
 
 /* ---- handles ------------------------------------------------------------
@@ -125,6 +124,12 @@ typedef struct TerrainBody {
     int height;
     /* Occupied slots, maintained by DynamicTerrainSetCell. */
     int cellCount;
+    /* Monotonic content version for read-only consumers such as the renderer.
+       Translation and rotation do not touch it; a material or temperature edit
+       does. Generation distinguishes slot reuse, revision distinguishes a
+       changed raster inside the same live body. Zero is skipped on wrap so a
+       zero-initialised cache can never look current by accident. */
+    uint32_t rasterRevision;
     /* Bounding box of the occupied cells in local coordinates, inclusive.
        Computed by DynamicTerrainFinalizeBody; meaningless while cellCount is
        zero. The raster may be larger than this: a body is allowed to keep slack

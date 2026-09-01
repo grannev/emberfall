@@ -15,11 +15,11 @@ data-oriented симуляцией; индивидуально моделиру�
 которые от неё оторвали. Всё, что подталкивает к «одна клетка — одна entity»,
 здесь ошибка по определению.
 
-**Подсистема сейчас behaviour-neutral.** Ничто не извлекает body из мира, ничто
-его не двигает, не сталкивает, не рисует и не дробит. `DynamicTerrainSystem`
+Текущая foundation уже умеет explicit atomic extraction, fixed-step движение,
+collision со статическим миром и presentation rendering. Автоматический detach
+в обычном gameplay пока не подключён: это EF-DYN-011. `DynamicTerrainSystem`
 никогда не получает `World` и физически не может его изменить — это не
-дисциплина, а сигнатура. Извлечение придёт с EF-DYN-003, движение — с
-EF-DYN-004, рендер — с EF-DYN-005.
+дисциплина, а сигнатура; extraction и collision остаются отдельными мостами.
 
 Почему так — [ADR 0009](adr/0009-terrain-body-storage.md).
 
@@ -28,15 +28,17 @@ EF-DYN-004, рендер — с EF-DYN-005.
 `GameState` владеет `DynamicTerrainSystem`: это gameplay state с тем же
 временем жизни, что и мир, из которого куски вырезаны.
 
-| Этап | Кто |
-|---|---|
-| `DynamicTerrainInit` | `GameInit` — одна аллокация raster arena |
-| `DynamicTerrainReset` | `GameReset` — новый мир не может хранить куски старого |
-| `DynamicTerrainAllocBody` / `FreeBody` | будущее extraction/despawn |
-| `DynamicTerrainUnload` | `GameUnload` |
+| Этап | Gameplay/CPU owner | Presentation/GPU owner |
+|---|---|---|
+| `DynamicTerrainInit` | `GameInit` — fixed-capacity raster/surface arenas | — |
+| `DynamicTerrainReset` | `GameReset` — новый мир не может хранить куски старого | textures release on the next renderer sync |
+| `DynamicTerrainAllocBody` / `FreeBody` | explicit extraction/despawn | textures create/release on the next renderer sync |
+| `DynamicTerrainUnload` | `GameUnload` | — |
+| texture cache body | — | `TerrainBodyRenderer`, лениво по live handle; final release in `RendererUnload` |
 
-Скрытого глобального состояния нет. В runtime `malloc`/`free` не вызываются:
-единственная аллокация происходит на init, как у `World`.
+Скрытого глобального состояния нет. CPU arenas выделяются только в
+`DynamicTerrainInit`; gameplay update не вызывает `malloc`/`free`. GPU
+texture создаётся один раз при появлении body и затем переиспользуется.
 
 ## Модель памяти и жёсткие лимиты
 
@@ -64,14 +66,16 @@ compile-time, и каждый обеспечивается **отказом в �
 Бюджет памяти:
 
 ```text
-32 тела × 84 B метаданных                     =     2 688 B
+32 тела × 100 B метаданных                    =     3 200 B
 262 144 слота × (1 B material + 4 B float)    = 1 310 720 B
+32 × 4096 surface slots × (2 B x + 2 B y)     =   524 288 B
                                                 ------------
-                                                  ~1.25 MiB
+                                                  ~1.75 MiB
 ```
 
-На фоне 167 MiB мира это не та величина, ради которой стоит писать хоть строчку
-аллокатора.
+`sizeof(TerrainBody) == 100` после добавления `rasterRevision`; surface arena
+появилась вместе с collision и хранит только граничные клетки. На фоне 167 MiB
+мира это не та величина, ради которой стоит писать хоть строчку аллокатора.
 
 ## Представление клеток
 
@@ -92,6 +96,11 @@ compile-time, и каждый обеспечивается **отказом в �
 | `updatedTick` | нет | guard «одно перемещение клетки за tick» клеточной симуляции. Тело двигается как единое целое, поклеточно оно не обновляется, так что поле бессмысленно; при возврате в мир его выставит обычный путь записи |
 | `effectStamp` | нет | по той же причине: он ограничен областью действия одного эффекта в мире, а тело в эти проходы не попадает |
 | `lifetime` | нет | им пользуются только FIRE, SMOKE и STEAM. Ни один из них не `solid`, а членство в component — это `WorldMaterialIsSolid`, поэтому материал, использующий `lifetime`, **не может** оказаться в теле |
+
+Каждая реальная запись material/temperature увеличивает `rasterRevision`;
+повторение того же значения не увеличивает. Translation/rotation revision не
+трогают. Renderer сочетает revision с generation handle: generation отличает
+новое тело в переиспользованном slot, revision — новый raster того же тела.
 
 Из того же правила следует, что тело сейчас состоит только из DIRT, ROCK, SAND
 и ICE: лава не solid и в component не попадает. Температура всё равно важна —
@@ -177,7 +186,69 @@ solid-материала, — но правило записано, чтобы �
 обязана оставаться в бюджете), `peakBodies` и `peakDynamicCells`. Пиковые
 значения переживают `Reset`: их ценность в том, чтó сессия успела потребовать.
 
-К HUD это пока не подключено — это отдельная presentation-задача.
+Gameplay-счётчики extraction/collision остаются в benchmark; HUD показывает
+renderer-side cache/draw/upload counters из следующего раздела.
+
+## Рендеринг TerrainBody
+
+`TerrainBodyRenderer` принадлежит общему `Renderer` и получает только
+`const DynamicTerrainSystem *`. Simulation structs не содержат `Texture2D`,
+shader или draw state; renderer никогда не вызывает `SetCell`, physics или
+другую gameplay mutation.
+
+Cache имеет ровно `MAX_TERRAIN_BODIES` (32) слота. Slot использует тот же
+simulation index, но доверяет ему только вместе с generation handle и
+`rasterRevision`:
+
+```text
+new generation       -> unload stale pair, create exact-size pair
+same generation/rev  -> reuse without walking raster
+same generation/new rev -> rebuild staging, UpdateTexture in place
+free/reset            -> unload pair on the same render frame
+```
+
+На body приходится две exact-size `R8G8B8A8` texture: sharp scene и explicit
+emissive mask. Empty slots внутри rectangular raster прозрачны. Обе используют
+`TEXTURE_FILTER_POINT` и `TEXTURE_WRAP_CLAMP`; resize окна не пересоздаёт их,
+поскольку resolution зависит только от body raster. Неудачная GPU allocation
+повторяется не чаще раза в 120 кадров, а не превращается в frame allocation
+loop.
+
+Цвет строит общая `MaterialRenderCell`, которой пользуются и static world
+pages. Variation привязана к `sourceX/sourceY`, поэтому рисунок материала не
+перепрыгивает при движении. Moving body пока не читает world lighting grid и
+получает стабильный neutral ambient multiplier; это намеренная approximation,
+сохраняющая одностороннюю зависимость. `MaterialInfo.emission` и heat уже
+формируют вторую texture, поэтому горячий rock, lava/fire внутри смешанного
+body и будущие emissive solids входят в тот же bloom, что static terrain.
+
+Draw использует simulation transform без повторного вывода:
+
+```text
+DrawTexturePro destination position = body.position
+DrawTexturePro origin               = body.centerOfMass
+rotation                            = body.angle * RAD2DEG
+```
+
+Это ровно `position + rotate(local - centerOfMass, angle)`. Camera culling
+строит AABB четырёх углов occupied local bounds через
+`TerrainBodyLocalToWorld`; offscreen body остаётся в simulation и cache, но не
+создаёт draw call.
+
+Границы памяти и работы:
+
+```text
+32 × 8192 texels × 4 B × 2 layers = 2.00 MiB worst-case GPU pixels
+8192 texels × 4 B × 2 staging     = 64 KiB persistent CPU staging
+
+new/dirty body: O(width * height), два uploads
+normal frame:   O(MAX_TERRAIN_BODIES) sync/culling + O(visible bodies) draws
+```
+
+HUD/`RendererFrameStats` показывают cached/visible bodies, draw calls, texture
+updates и оценку RGBA8 bytes. Автоматический smoke showcase штатно извлекает
+остров, показывает его движение/rotation/emission, затем освобождает handle и
+проверяет нулевой cache без ghost. Обычный gameplay этот showcase не запускает.
 
 ## Извлечение из мира
 
@@ -354,16 +425,17 @@ angle    += angularVelocity · dt        (нормализуется в (−π, 
 | `gravity` | 120.0 | cells/s², вниз (мировой Y растёт вниз); **ускорение**, поэтому от массы не зависит |
 | `linearDamping` | 0.15 | доля скорости, теряемая за секунду |
 | `angularDamping` | 0.40 | то же для вращения |
-| `maximumSpeed` | 900.0 | потолок, не тюнинг |
-| `maximumAngularSpeed` | 12.0 | rad/s |
+| `maximumSpeed` | 300.0 | потолок, выбранный против collision substep budget |
+| `maximumAngularSpeed` | 2.2 | rad/s, тот же anti-tunnelling budget |
 | `linearSleepSpeed` | 1.5 | cells/s |
 | `angularSleepSpeed` | 0.05 | rad/s |
 | `sleepDelay` | 0.5 | секунд тишины до засыпания |
 
 Значения стартовые, а не выверенные: `gravity` стоит между 18–30 cells/s²
-частиц-обломков и чем-то, что читается как плита породы. Перенастраивать это
-имеет смысл, когда EF-DYN-005 сделает тела видимыми, — и смысл собирать тюнинг в
-одном месте ровно в том, что тогда это одна правка.
+частиц-обломков и чем-то, что читается как плита породы. EF-DYN-005 сделал тела
+видимыми, но gameplay tuning намеренно не менялся в renderer-задаче; смысл
+собирать значения в одном месте в том, что будущий feel-pass остаётся одной
+явной правкой.
 
 Damping применяется как `exp(−k · dt)`, а не как множитель на вызов. Поэтому
 результат зависит от прошедшего времени, а не от того, сколько раз вызвали
@@ -371,8 +443,8 @@ update: десять шагов по 0.1 с дают то же, что сто п
 проверяет.
 
 Потолки скоростей — не тюнинг, а страховка: они не дают одному плохому импульсу
-превратиться в тело, пересекающее карту между двумя тиками, что заодно избавит
-будущий collision от задачи про туннелирование.
+превратиться в тело, пересекающее карту между двумя тиками. Их связь с уже
+существующим collision substep budget доказана ниже.
 
 ### Sleep и wake
 
@@ -394,9 +466,8 @@ update: десять шагов по 0.1 с дают то же, что сто п
 бы условию сна и задремало бы в воздухе. Значения по умолчанию соблюдают его на
 шаге 60 Гц (1.5 < 2.0), и это закреплено тестом.
 
-Пока столкновений нет, сон почти бездействует: тело удерживать нечем. Он
-начнёт работать с EF-DYN-006, когда у лежащего на земле тела гравитация
-компенсируется контактом.
+Статический collision компенсирует гравитацию у лежащего тела, поэтому после
+непрерывного тихого интервала оно действительно засыпает.
 
 ### Импульсы
 
@@ -428,10 +499,8 @@ frame time, ни wall clock, ни функции времени raylib здес�
 
 ### Чего пока нет
 
-Столкновений с миром, с игроком и между телами. Тело свободно улетает за
-границы мира — это чистая арифметика, ни одна клетка мира по позиции тела не
-читается и не пишется. Что с этим делать, решат EF-DYN-006/007 и задача про
-culling.
+Столкновений с игроком и между телами. Static-world collision описан следующим
+разделом; renderer culling только пропускает offscreen draw и не удаляет body.
 
 ## Столкновения со статическим миром
 
@@ -471,7 +540,7 @@ culling.
 клеток оказываются снаружи твёрдых клеток, то есть его контур перекрывает
 рельеф не более чем на половину клетки. При одной клетке на пиксель это не
 видно, а дешёвый вариант — одно чтение мира на поверхностную клетку против
-четырёх у квадратного. Если после EF-DYN-005 это всё-таки будет заметно,
+четырёх у квадратного. Если visual testing покажет заметное перекрытие,
 известное улучшение — проверять окрестность 2×2, которую может задевать клетка
 тела. Это решение о стоимости, а не недосмотр.
 

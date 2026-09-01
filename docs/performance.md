@@ -572,3 +572,29 @@ structural workload counters во всех десяти scenarios: presentation 
 active/peak/dropped FX; Xvfb smoke для одного explosion получил `fx_peak=2`,
 `fx_dropped=0`. Отдельного wall-clock speedup не заявляется: задача добавляет
 bounded presentation work, а headless benchmark не rasterizes его geometry.
+
+## EF-DYN-005 — TerrainBody renderer cache
+
+Замер 2026-09-01: `sizeof(TerrainBodyRenderer) == 67 480` B, из которых 64 KiB
+— постоянная scene/emissive staging pair максимального raster; один cache slot
+занимает 60 B. Cache фиксирован тем же `MAX_TERRAIN_BODIES == 32`, что и
+simulation, и в steady state не выполняет heap/GPU allocations.
+
+Worst-case texture pixels:
+
+```text
+32 bodies × 8192 texels × 2 RGBA8 layers = 2.00 MiB
+```
+
+Texture создаются exact-size, поэтому фактический smoke body 12×6 занял 576 B
+(HUD округляет до 0.6 KiB). Первый GL frame сделал ровно два uploads, следующие
+unchanged frames — ноль; scene+emissive дали два draw calls. После free cache в
+том же render frame сообщил 0 bodies и 0 bytes. Resize offscreen targets не
+пересоздавал body textures.
+
+Normal-frame CPU work структурно ограничено проходом по 32 slots дважды
+(scene/emissive culling) плюс draw видимых bodies. Raster обходится только при
+новом generation или изменении `rasterRevision`; в последнем случае textures
+обновляются in-place. Headless `make bench` не rasterizes raylib geometry,
+поэтому wall-clock speedup/overhead для GPU здесь не заявляется; benchmark
+нужен для подтверждения неизменности simulation workload counters.

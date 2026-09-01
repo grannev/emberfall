@@ -93,6 +93,7 @@ update. При переполнении новые события отбрасы
 | `world_generation.c` | Генерация карты и `WorldPlayerSpawn`. |
 | `world_lighting.c/.h` | Грубое двухканальное поле света и его solve. |
 | `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
+| `material_render.c/.h` | Общая CPU-конверсия material/temperature в scene+emissive pixels; static world и detached bodies не имеют двух расходящихся palette paths. |
 | `world_render_data.c` | Единственное место, превращающее `Cell` в `Color`; отдаёт renderer готовые прямоугольники пикселей. |
 | `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает, никем пока не вызывается. |
 
@@ -107,16 +108,18 @@ cross-module call в самый горячий цикл проекта; benchmar
 ### `dynamic_terrain.c/.h`
 
 Fixed-capacity хранилище кусков породы, переставших быть частью клеточного
-мира: `DynamicTerrainSystem` владеет `TerrainBody[32]` и одной raster arena на
-1.25 MiB, выделенной при init. `TerrainBody` — один крупный связный кусок
-terrain, а не entity на каждую клетку.
+мира: `DynamicTerrainSystem` владеет `TerrainBody[32]`, material/temperature
+raster arena на 1.25 MiB и surface-coordinate arena на 0.50 MiB, выделенными
+при init. `TerrainBody` — один крупный связный кусок terrain, а не entity на
+каждую клетку.
 
 Хранилище тел `World` не получает и изменить его не может. Столкновения живут
 в отдельном модуле `terrain_physics.c`, который **читает** мир через
 `const World *` — гарантия компилятора, а не обещание, — и вызывается на
-фиксированном шаге из `GameAdvanceWorld`. Тела пока не рисуются и не
-сталкиваются друг с другом, с игроком или с частицами. Владеет подсистемой
-`GameState`.
+фиксированном шаге из `GameAdvanceWorld`. Тела рисуются presentation-cache, но
+пока не сталкиваются друг с другом, с игроком или с частицами. Presentation читает
+систему через `const DynamicTerrainSystem *`; GPU-кэшем владеет отдельный
+`TerrainBodyRenderer`. Владеет gameplay-подсистемой `GameState`.
 
 ### `terrain_extraction.c/.h`
 
@@ -224,6 +227,9 @@ expiration; low-priority effect не может вытеснить high-priority
 - `particle_renderer` — чтение фиксированного particle pool.
 - `PresentationFxSystem` и его renderer — event-driven transient geometry в
   sharp scene и, только для помеченных instances, в emissive target.
+- `TerrainBodyRenderer` — фиксированный cache scene/emissive texture для 32
+  `TerrainBody`, generation/revision invalidation, COM rotation и camera
+  culling. Simulation не получает GPU state.
 
 `WorldPrepareVisible` — узкий внутренний CPU bridge: world за один проход
 готовит два stack-backed блока 32×32 (scene и explicit emissive mask) и
@@ -234,6 +240,16 @@ faces попадают в mask. Visitor
 резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
 GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
 full-world `Color` buffer удалён.
+
+`TerrainBodyRenderer` использует ту же `MaterialRenderCell`, что и world pages,
+но не получает `World`: moving body пока освещается постоянным neutral ambient,
+а material emission и heat формируют explicit emissive texture. Каждый cache
+slot соответствует simulation slot и проверяет и generation handle, и
+`rasterRevision`, поэтому reuse не показывает старую texture, а изменение
+материала/температуры делает два `UpdateTexture` без пересоздания GPU objects.
+Неизменившийся raster не обходится. Две exact-size RGBA8 texture создаются один
+раз при появлении body, используют `TEXTURE_FILTER_POINT` и освобождаются при
+free/reset либо `RendererUnload`; resize окна их не затрагивает.
 
 Четыре offscreen target принадлежат только `Renderer`. Full-resolution scene и
 emissive используют point filtering; half-resolution bloom targets — bilinear.
@@ -279,8 +295,9 @@ device не является фатальной.
    текущего кадра в новые instances; при reset очистить presentation pool.
 8. Обновить camera follow, затухание shake и player point light.
 9. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
-   paged world layers, отрисовать sharp scene и выполнить emissive/downsample/
-   horizontal-blur/vertical-blur passes.
+   paged world layers, синхронизировать generation/revision cache динамических
+   тел, отрисовать static и detached terrain в sharp scene и выполнить
+   emissive/downsample/horizontal-blur/vertical-blur passes.
 10. `RendererComposite` вывести sharp scene и аддитивно наложить blurred
    emissive в backbuffer с корректным Y-flip.
 11. Отрисовать debug HUD и controls hint напрямую поверх composite.
@@ -299,7 +316,10 @@ device не является фатальной.
 | bloom ping/pong `RenderTexture2D` | `RendererInit`, half-resolution, только при resize | `RendererUnload` |
 | bloom shaders | `RendererInit`, ошибка включает sharp fallback | `RendererUnload` |
 | scene/emissive staging 32×32 × 2 | stack внутри `WorldPrepareVisible` | возврат из вызова |
-| raster arena динамического terrain (1.25 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| material/temperature arena динамического terrain (1.25 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| surface-coordinate arena динамического terrain (0.50 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| scene/emissive texture динамических тел (до 2 MiB RGBA8) | лениво в `TerrainBodyRenderer`, один раз на generation | free/reset sync или `RendererUnload` |
+| staging динамических тел (64 KiB) | встроен в `TerrainBodyRenderer` | автоматически |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | presentation FX pool (128 instances) | встроен в `Renderer` | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
@@ -325,5 +345,9 @@ staging размером 8 KiB.
 - Камера показывает логическую область 320×180 и масштабирует её к окну.
 - Page textures и offscreen targets используют `TEXTURE_FILTER_POINT`, сохраняя
   nearest-neighbor вид; финальный render-texture composite выполняет Y-flip.
+- Terrain body texture имеет одну texel на локальную cell. `DrawTexturePro`
+  получает `position` как destination position, simulation `centerOfMass` как
+  origin и `angle` в градусах, что точно реализует
+  `position + rotate(local - centerOfMass, angle)` без второго transform.
 - `InputPoll` применяет `GetScreenToWorld2D`, округляет вниз и ограничивает
   результат границами мира.

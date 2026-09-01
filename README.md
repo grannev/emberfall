@@ -67,8 +67,9 @@ make profile
 
 Короткий автоматический smoke-test открывает игру на несколько кадров,
 проверяет реакцию water/lava, попадание лазера, взрыв, player collision,
-boost-бурение через rock, локализацию fire и засыпание chunks, затем сохраняет
-`build/emberfall-smoke.png`:
+boost-бурение через rock, локализацию fire, засыпание chunks и renderer
+извлечённого движущегося TerrainBody с освобождением texture cache, затем
+сохраняет `build/emberfall-smoke.png`:
 
 ```sh
 make run RUN_ARGS=--smoke-test
@@ -160,7 +161,9 @@ chunks видно в debug HUD.
   процедурная модель героя, способности/частицы и единственное владение world
   `Texture2D`; renderer-owned `PresentationFxSystem` превращает выбранные
   `GameEvent` в bounded transient visual primitives, которые никогда не меняют
-  мир; persistent full-world pixel buffer не используется
+  мир; `TerrainBodyRenderer` кэширует по две point-filtered texture для
+  отделённых кусков и вращает их вокруг simulation center of mass; persistent
+  full-world pixel buffer не используется
 - `src/audio.c` — процедурно синтезированные звуки лазера, взрыва, реакций,
   бура и переходов между ступенями без внешних audio-ассетов
 - `src/main.c` — composition root, окно, camera/HUD, renderer/audio consumers

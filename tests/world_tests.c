@@ -14,6 +14,7 @@
 #include "particles.h"
 #include "player.h"
 #include "presentation_fx.h"
+#include "terrain_body_render_data.h"
 #include "abilities.h"
 #include "world.h"
 #include "dynamic_terrain.h"
@@ -1263,6 +1264,149 @@ static void test_regenerating_the_world_drops_its_detached_pieces(void)
     CHECK(DynamicTerrainGet(&game.dynamicTerrain, handle) == NULL,
           "a handle survived the world it was cut from");
     GameUnload(&game);
+}
+
+static void test_terrain_render_key_tracks_raster_edits_only(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyRenderKey emptyKey;
+    TerrainBodyRenderKey populatedKey;
+    TerrainBodyRenderKey repeatedKey;
+    TerrainBodyRenderKey heatedKey;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 4, 4);
+    emptyKey = TerrainBodyRenderKeyAt(&terrain, handle.index);
+    CHECK(TerrainBodyRenderKeyIsLive(emptyKey),
+          "a live empty body produced a dead render key");
+
+    DynamicTerrainSetCell(&terrain, handle, 1, 1, MATERIAL_ROCK, 20.0f);
+    populatedKey = TerrainBodyRenderKeyAt(&terrain, handle.index);
+    CHECK(!TerrainBodyRenderKeyEquals(emptyKey, populatedKey),
+          "a material edit did not invalidate the render key");
+
+    DynamicTerrainSetCell(&terrain, handle, 1, 1, MATERIAL_ROCK, 20.0f);
+    repeatedKey = TerrainBodyRenderKeyAt(&terrain, handle.index);
+    CHECK(TerrainBodyRenderKeyEquals(populatedKey, repeatedKey),
+          "an identical write dirtied an unchanged body texture");
+
+    DynamicTerrainSetCell(&terrain, handle, 1, 1, MATERIAL_ROCK, 500.0f);
+    heatedKey = TerrainBodyRenderKeyAt(&terrain, handle.index);
+    CHECK(!TerrainBodyRenderKeyEquals(repeatedKey, heatedKey),
+          "a temperature edit did not invalidate the render key");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_terrain_render_bounds_follow_the_simulation_transform(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Rectangle bounds;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 2, 1);
+    FillBody(&terrain, handle, 0, 0, 1, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    body = DynamicTerrainGet(&terrain, handle);
+    body->position = (Vector2){10.0f, 20.0f};
+    body->angle = PI * 0.5f;
+
+    /* The two-cell bar has COM (1, 0.5). Rotated ninety degrees around that
+       exact point, its 2x1 local rectangle becomes a 1x2 world rectangle. */
+    bounds = TerrainBodyRenderWorldBounds(body);
+    CHECK(fabsf(bounds.x - 9.5f) < 0.001f &&
+              fabsf(bounds.y - 19.0f) < 0.001f &&
+              fabsf(bounds.width - 1.0f) < 0.001f &&
+              fabsf(bounds.height - 2.0f) < 0.001f,
+          "rotated render bounds are %.3f,%.3f %.3fx%.3f",
+          (double)bounds.x, (double)bounds.y, (double)bounds.width,
+          (double)bounds.height);
+    CHECK(TerrainBodyRenderIntersects(
+              body, (Rectangle){9.0f, 19.5f, 2.0f, 1.0f}),
+          "visible rotated body was culled");
+    CHECK(!TerrainBodyRenderIntersects(
+              body, (Rectangle){30.0f, 30.0f, 4.0f, 4.0f}),
+          "offscreen rotated body survived culling");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_terrain_render_key_rejects_free_reset_and_slot_reuse(void)
+{
+    TerrainBodyHandle stale;
+    TerrainBodyHandle fresh;
+    TerrainBodyRenderKey staleKey;
+    TerrainBodyRenderKey freshKey;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    stale = DynamicTerrainAllocBody(&terrain, 3, 3);
+    DynamicTerrainSetCell(&terrain, stale, 1, 1, MATERIAL_DIRT, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, stale);
+    staleKey = TerrainBodyRenderKeyAt(&terrain, stale.index);
+
+    DynamicTerrainFreeBody(&terrain, stale);
+    CHECK(!TerrainBodyRenderKeyIsLive(
+              TerrainBodyRenderKeyAt(&terrain, stale.index)),
+          "a freed body kept a live renderer cache key");
+
+    fresh = DynamicTerrainAllocBody(&terrain, 3, 3);
+    CHECK(fresh.index == stale.index,
+          "the cache reuse test did not reuse its simulation slot");
+    DynamicTerrainSetCell(&terrain, fresh, 1, 1, MATERIAL_ICE, -14.0f);
+    DynamicTerrainFinalizeBody(&terrain, fresh);
+    freshKey = TerrainBodyRenderKeyAt(&terrain, fresh.index);
+    CHECK(!TerrainBodyRenderKeyEquals(staleKey, freshKey),
+          "a reused simulation slot matched its stale texture identity");
+
+    DynamicTerrainReset(&terrain);
+    CHECK(!TerrainBodyRenderKeyIsLive(
+              TerrainBodyRenderKeyAt(&terrain, fresh.index)),
+          "reset left a renderer cache identity live");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_terrain_render_data_handles_empty_and_maximum_rasters(void)
+{
+    TerrainBodyHandle empty;
+    TerrainBodyHandle maximum;
+    const TerrainBody *body;
+    TerrainBodyRenderKey key;
+    Rectangle bounds;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    empty = DynamicTerrainAllocBody(&terrain, 8, 8);
+    DynamicTerrainFinalizeBody(&terrain, empty);
+    body = DynamicTerrainGetConst(&terrain, empty);
+    bounds = TerrainBodyRenderWorldBounds(body);
+    CHECK(!TerrainBodyRenderIsDrawable(body) && bounds.width == 0.0f &&
+              bounds.height == 0.0f,
+          "an empty body produced drawable render bounds");
+    CHECK(!TerrainBodyRenderIntersects(
+              body, (Rectangle){-10.0f, -10.0f, 20.0f, 20.0f}),
+          "an empty body passed camera culling");
+
+    maximum = DynamicTerrainAllocBody(&terrain, TERRAIN_BODY_MAX_SPAN,
+                                      TERRAIN_BODY_RASTER_CAPACITY /
+                                          TERRAIN_BODY_MAX_SPAN);
+    CHECK(DynamicTerrainGet(&terrain, maximum) != NULL,
+          "the largest legal raster was refused");
+    DynamicTerrainSetCell(&terrain, maximum, 0, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainSetCell(
+        &terrain, maximum, TERRAIN_BODY_MAX_SPAN - 1,
+        TERRAIN_BODY_RASTER_CAPACITY / TERRAIN_BODY_MAX_SPAN - 1,
+        MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, maximum);
+    body = DynamicTerrainGetConst(&terrain, maximum);
+    key = TerrainBodyRenderKeyAt(&terrain, maximum.index);
+    bounds = TerrainBodyRenderWorldBounds(body);
+    CHECK(TerrainBodyRenderIsDrawable(body) &&
+              key.width * key.height == TERRAIN_BODY_RASTER_CAPACITY,
+          "the maximum raster is not safely drawable");
+    CHECK(fabsf(bounds.width - (float)key.width) < 0.001f &&
+              fabsf(bounds.height - (float)key.height) < 0.001f,
+          "maximum raster bounds are %.1fx%.1f instead of %dx%d",
+          (double)bounds.width, (double)bounds.height,
+          key.width, key.height);
+    DynamicTerrainUnload(&terrain);
 }
 
 /* --- connected solid components ----------------------------------------- */
@@ -4604,6 +4748,10 @@ int main(void)
     RUN(test_inertia_grows_with_how_spread_out_a_body_is);
     RUN(test_the_body_manager_leaves_the_world_alone);
     RUN(test_regenerating_the_world_drops_its_detached_pieces);
+    RUN(test_terrain_render_key_tracks_raster_edits_only);
+    RUN(test_terrain_render_bounds_follow_the_simulation_transform);
+    RUN(test_terrain_render_key_rejects_free_reset_and_slot_reuse);
+    RUN(test_terrain_render_data_handles_empty_and_maximum_rasters);
     RUN(test_a_lone_island_is_reported_detached);
     RUN(test_two_islands_are_separate_components);
     RUN(test_a_liquid_gap_does_not_join_two_components);

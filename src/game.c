@@ -184,8 +184,8 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible
-           for collision to change a cell. No body exists yet, so this is a walk
-           of thirty-two empty slots. */
+           for collision to change a cell. The fixed body budget keeps this
+           bounded even once automatic extraction is connected. */
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
         for (reaction = 0; reaction < game->world.reactionCount; ++reaction) {

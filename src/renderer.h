@@ -8,6 +8,7 @@
 
 #include "game.h"
 #include "presentation_fx.h"
+#include "terrain_body_renderer.h"
 #include "world_renderer.h"
 
 typedef struct RendererFrameStats {
@@ -21,12 +22,18 @@ typedef struct RendererFrameStats {
     uint16_t activeFx;
     uint16_t peakFx;
     uint32_t droppedFx;
+    uint32_t cachedTerrainBodies;
+    uint32_t visibleTerrainBodies;
+    uint32_t terrainBodyDrawCalls;
+    uint32_t terrainBodyTextureUpdates;
+    uint64_t terrainBodyTextureMemoryBytes;
     bool bloomEnabled;
 } RendererFrameStats;
 
 typedef struct Renderer {
     WorldRenderer world;
     PresentationFxSystem effects;
+    TerrainBodyRenderer terrainBodies;
     RenderTexture2D sceneTarget;
     RenderTexture2D emissiveTarget;
     RenderTexture2D bloomPingTarget;
