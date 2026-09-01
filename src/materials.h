@@ -45,6 +45,11 @@ typedef struct MaterialInfo {
     MaterialPhase onCool;
     bool dynamic;
     bool solid;
+    /* Grows on the ground rather than being it. Solid — a canopy can be stood
+       on and a trunk can be cut — but never the answer to "where is the
+       surface here": a tree is not a cliff, and code that measures terrain has
+       to be able to say so. */
+    bool flora;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
        top of this, so a laser-blasted rock face lights its own crater. */
     float emission;
@@ -66,6 +71,12 @@ typedef struct MaterialInfo {
 } MaterialInfo;
 
 extern const MaterialInfo MATERIALS[MATERIAL_COUNT];
+
+static inline bool MaterialIsFlora(CellMaterial material)
+{
+    if (material < 0 || material >= MATERIAL_COUNT) return false;
+    return MATERIALS[material].flora;
+}
 
 /* Inline because the simulation asks for a material's properties several times
    per cell per tick; a call across a translation unit here is measurable. */

@@ -1085,12 +1085,19 @@ static void test_environment_state_never_changes_gameplay_world(void)
     WorldUnload(&world);
 }
 
+/* The first cell of *ground* in a column. Flora is skipped: a canopy is solid
+   and can be stood on, but it is not where the surface is, and a test about the
+   shape of the terrain must not be answered by a tree. */
 static int FirstSolidY(const World *world, int x)
 {
     int y;
 
     for (y = 0; y < world->height; ++y) {
-        if (WorldMaterialIsSolid(WorldGetCell(world, x, y))) return y;
+        CellMaterial material = WorldGetCell(world, x, y);
+
+        if (WorldMaterialIsSolid(material) && !MaterialIsFlora(material)) {
+            return y;
+        }
     }
     return world->height;
 }
@@ -1283,6 +1290,155 @@ static int BuriedColumn(const World *world, int depth)
         if (solid) return x;
     }
     return -1;
+}
+
+static void test_flora_grows_on_the_biome_it_belongs_to(void)
+{
+    World world;
+    int found[WORLD_BIOME_COUNT][MATERIAL_COUNT];
+    int rooted = 0;
+    int floating = 0;
+    int inSpawn = 0;
+    CellMaterial firstLoneMaterial = MATERIAL_EMPTY;
+    int firstLoneX = 0;
+    int firstLoneY = 0;
+    Vector2 spawn;
+    int biome;
+    int x;
+    int y;
+
+    memset(found, 0, sizeof(found));
+    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    WorldGenerate(&world, 0xF10A5u);
+    spawn = WorldPlayerSpawn(&world);
+
+    for (x = 0; x < world.width; ++x) {
+        WorldBiome at = WorldBiomeAt(&world, x);
+
+        for (y = 0; y < world.height; ++y) {
+            CellMaterial material = WorldGetCell(&world, x, y);
+
+            if (!MaterialIsFlora(material)) continue;
+            ++found[at][material];
+            if (fabsf((float)x - spawn.x) < 60.0f) ++inSpawn;
+            /* Nothing floats free. A branch reaches out over air and a cactus
+               reaches an arm sideways — both are what those things do — so the
+               invariant is not "something directly below" but "joined to the
+               rest of the tree". An isolated cell means a limb, or an eroded
+               leaf, was left somewhere nothing reaches. */
+            {
+                bool joined = false;
+                int offsetX;
+
+                for (offsetX = -1; offsetX <= 1 && !joined; ++offsetX) {
+                    int offsetY;
+
+                    for (offsetY = -1; offsetY <= 1; ++offsetY) {
+                        if (offsetX == 0 && offsetY == 0) continue;
+                        if (x + offsetX < 0 || x + offsetX >= world.width ||
+                            y + offsetY < 0 || y + offsetY >= world.height) {
+                            continue;
+                        }
+                        if (WorldGetCell(&world, x + offsetX, y + offsetY) !=
+                            MATERIAL_EMPTY) {
+                            joined = true;
+                            break;
+                        }
+                    }
+                }
+                if (!joined) ++floating;
+            }
+            /* And the trees are planted: wood standing on actual ground. */
+            if (material == MATERIAL_WOOD && y + 1 < world.height) {
+                CellMaterial below = WorldGetCell(&world, x, y + 1);
+
+                if (WorldMaterialIsSolid(below) && !MaterialIsFlora(below)) {
+                    ++rooted;
+                }
+            }
+        }
+    }
+
+    /* Each biome grows what belongs to it. */
+    CHECK(found[WORLD_BIOME_TEMPERATE][MATERIAL_GRASS] > 200,
+          "temperate ground has only %d cells of grass",
+          found[WORLD_BIOME_TEMPERATE][MATERIAL_GRASS]);
+    CHECK(found[WORLD_BIOME_TEMPERATE][MATERIAL_LEAF] > 200,
+          "temperate ground has only %d cells of canopy",
+          found[WORLD_BIOME_TEMPERATE][MATERIAL_LEAF]);
+    CHECK(found[WORLD_BIOME_DUNES][MATERIAL_CACTUS] > 40,
+          "the dunes hold only %d cells of cactus",
+          found[WORLD_BIOME_DUNES][MATERIAL_CACTUS]);
+    CHECK(found[WORLD_BIOME_FROST][MATERIAL_LEAF] > 200,
+          "the frost shelf holds only %d cells of pine",
+          found[WORLD_BIOME_FROST][MATERIAL_LEAF]);
+    CHECK(found[WORLD_BIOME_VOLCANIC][MATERIAL_WOOD] > 40,
+          "the ember wastes hold only %d dead trunks",
+          found[WORLD_BIOME_VOLCANIC][MATERIAL_WOOD]);
+
+    /* And essentially nowhere else. Not zero: a tree rooted on one side of a
+       boundary leans its canopy over it, and a cactus reaches an arm three
+       columns sideways, which is correct — a boundary is a place the world
+       becomes something else, not a wall. What must not happen is a species
+       being *grown* by the wrong biome, and that shows up as a share of the
+       owner's own count rather than as a single stray cell. */
+    for (biome = 0; biome < WORLD_BIOME_COUNT; ++biome) {
+        if (biome != WORLD_BIOME_DUNES) {
+            CHECK(found[biome][MATERIAL_CACTUS] * 20 <
+                      found[WORLD_BIOME_DUNES][MATERIAL_CACTUS],
+                  "%s holds %d cells of cactus against the dunes' %d",
+                  WorldBiomeName((WorldBiome)biome),
+                  found[biome][MATERIAL_CACTUS],
+                  found[WORLD_BIOME_DUNES][MATERIAL_CACTUS]);
+        }
+        if (biome != WORLD_BIOME_TEMPERATE) {
+            /* Grass is one column wide and cannot overhang at all. */
+            CHECK(found[biome][MATERIAL_GRASS] == 0,
+                  "%s grew %d cells of grass",
+                  WorldBiomeName((WorldBiome)biome),
+                  found[biome][MATERIAL_GRASS]);
+        }
+    }
+    CHECK(found[WORLD_BIOME_VOLCANIC][MATERIAL_LEAF] * 20 <
+              found[WORLD_BIOME_TEMPERATE][MATERIAL_LEAF],
+          "the ember wastes hold %d live leaves against the temperate %d",
+          found[WORLD_BIOME_VOLCANIC][MATERIAL_LEAF],
+          found[WORLD_BIOME_TEMPERATE][MATERIAL_LEAF]);
+
+    CHECK(rooted > 60, "only %d trunks are planted in the ground", rooted);
+    CHECK(floating == 0, "%d flora cells are joined to nothing", floating);
+    CHECK(inSpawn == 0, "%d flora cells grew inside the spawn clearance",
+          inSpawn);
+    WorldUnload(&world);
+}
+
+/* Flora is solid, and every measurement of "where is the ground" has to be able
+   to say that a tree is not a cliff. */
+static void test_flora_is_solid_but_is_never_the_ground(void)
+{
+    CHECK(WorldMaterialIsSolid(MATERIAL_WOOD) &&
+              WorldMaterialIsSolid(MATERIAL_LEAF) &&
+              WorldMaterialIsSolid(MATERIAL_GRASS) &&
+              WorldMaterialIsSolid(MATERIAL_CACTUS),
+          "flora is not solid and so cannot be stood on or cut");
+    CHECK(MaterialIsFlora(MATERIAL_WOOD) && MaterialIsFlora(MATERIAL_LEAF) &&
+              MaterialIsFlora(MATERIAL_GRASS) &&
+              MaterialIsFlora(MATERIAL_CACTUS),
+          "a flora material is not marked as flora");
+    CHECK(!MaterialIsFlora(MATERIAL_DIRT) && !MaterialIsFlora(MATERIAL_ROCK) &&
+              !MaterialIsFlora(MATERIAL_SAND) &&
+              !MaterialIsFlora(MATERIAL_ICE) &&
+              !MaterialIsFlora(MATERIAL_EMPTY),
+          "ground is marked as flora");
+    /* Light, so a felled trunk tumbles rather than drops like the rock it grew
+       out of, and burnable, so a forest beside a lava seam is a hazard. */
+    CHECK(MaterialAt(MATERIAL_WOOD)->density <
+              MaterialAt(MATERIAL_ROCK)->density,
+          "wood is not lighter than rock");
+    CHECK(MaterialAt(MATERIAL_LEAF)->onHeat.enabled &&
+              MaterialAt(MATERIAL_LEAF)->onHeat.threshold <
+                  MaterialAt(MATERIAL_WOOD)->onHeat.threshold,
+          "foliage does not catch before the trunk it hangs on");
 }
 
 static void test_the_day_turns_and_takes_the_sky_with_it(void)
@@ -9667,6 +9823,8 @@ int main(void)
     RUN(test_generated_biomes_have_distinct_material_identity);
     RUN(test_biome_boundaries_and_spawn_are_coherent);
     RUN(test_every_biome_can_host_the_protected_spawn);
+    RUN(test_flora_grows_on_the_biome_it_belongs_to);
+    RUN(test_flora_is_solid_but_is_never_the_ground);
     RUN(test_the_day_turns_and_takes_the_sky_with_it);
     RUN(test_the_backdrop_crosses_between_biomes_without_snapping);
     RUN(test_a_forced_backdrop_outranks_the_ground);

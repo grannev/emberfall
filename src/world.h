@@ -27,6 +27,15 @@ typedef enum CellMaterial {
     MATERIAL_FIRE,
     MATERIAL_ASH,
     MATERIAL_ICE,
+    /* Flora. Static solids that grow on a surface rather than fall onto it:
+       they hold their shape like rock, weigh almost nothing, and burn. Four
+       rather than one because what grows on a surface is most of what tells the
+       player which biome they are standing in — a dune with a pine on it is not
+       a dune. */
+    MATERIAL_WOOD,
+    MATERIAL_LEAF,
+    MATERIAL_GRASS,
+    MATERIAL_CACTUS,
     MATERIAL_COUNT
 } CellMaterial;
 

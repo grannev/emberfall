@@ -125,6 +125,62 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .chillRate = 260.0f,
         .density = 0.92f,
     },
+    [MATERIAL_WOOD] = {
+        .flora = true,
+        .name = "WOOD", .color = {104, 72, 44, 255},
+        .variationR = 6, .variationG = 4, .variationB = 3,
+        .initialTemperature = 18.0f,
+        .selfHeatTarget = 18.0f, .selfHeatRate = 0.02f,
+        /* Burns rather than melts, and at a temperature a laser reaches quickly
+           and a lava flow reaches on contact. A forest beside a volcanic seam
+           is supposed to be a hazard. */
+        .onHeat = {true, MATERIAL_FIRE, 240.0f},
+        .solid = true,
+        .laserHeatRate = 900.0f,
+        .chillRate = 120.0f,
+        /* Light enough that a torn-off branch tumbles rather than drops, and
+           far lighter than the rock it grows on. */
+        .density = 0.55f,
+    },
+    [MATERIAL_LEAF] = {
+        .flora = true,
+        .name = "LEAF", .color = {74, 132, 66, 245},
+        .variationR = 5, .variationG = 9, .variationB = 4,
+        .initialTemperature = 16.0f,
+        .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
+        /* Foliage goes first: it catches at well under what the trunk needs. */
+        .onHeat = {true, MATERIAL_FIRE, 150.0f},
+        .solid = true,
+        .laserHeatRate = 1100.0f,
+        .chillRate = 150.0f,
+        .density = 0.22f,
+    },
+    [MATERIAL_GRASS] = {
+        .flora = true,
+        .name = "GRASS", .color = {96, 148, 68, 240},
+        .variationR = 6, .variationG = 10, .variationB = 5,
+        .initialTemperature = 16.0f,
+        .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
+        .onHeat = {true, MATERIAL_FIRE, 130.0f},
+        .solid = true,
+        .laserHeatRate = 1200.0f,
+        .chillRate = 160.0f,
+        .density = 0.18f,
+    },
+    [MATERIAL_CACTUS] = {
+        .flora = true,
+        .name = "CACTUS", .color = {68, 124, 82, 250},
+        .variationR = 4, .variationG = 8, .variationB = 5,
+        .initialTemperature = 26.0f,
+        .selfHeatTarget = 26.0f, .selfHeatRate = 0.02f,
+        /* Full of water, so it takes far more heat than wood before it gives
+           up, which is the whole point of the thing in a desert. */
+        .onHeat = {true, MATERIAL_STEAM, 420.0f},
+        .solid = true,
+        .laserHeatRate = 700.0f,
+        .chillRate = 200.0f,
+        .density = 0.68f,
+    },
     [MATERIAL_ASH] = {
         .name = "ASH", .color = {112, 108, 104, 255},
         .variationR = 2, .variationG = 2, .variationB = 2,
