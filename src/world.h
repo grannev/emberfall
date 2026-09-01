@@ -252,6 +252,19 @@ void WorldClearDestruction(World *world);
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius);
+/* The dent a heavy blow leaves, plus the fractures running out of it.
+ *
+ * A crater rather than a hole: the bowl is wider than it is deep, so the impact
+ * reads as something enormous having struck a surface rather than as a shot
+ * having been fired into it. The cracks are short deterministic rays through
+ * whatever is still solid — no stress model, no propagation, just the shape a
+ * player recognises as "that hit hard".
+ *
+ * `direction` is the way the blow was travelling; cracks favour it and the
+ * surface either side of it. Everything is bounded by the radius and the crack
+ * length, and the damage is logged the way every other destructive cut is. */
+void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
+                     int crackCount, int crackLength);
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
                          int outerRadius);
 /* One heavy blow along a cone: throws dynamic cells a long way and scours a thin

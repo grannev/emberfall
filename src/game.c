@@ -251,8 +251,8 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     AbilitiesUpdate(&game->abilities, &game->world, &game->dynamicTerrain,
                     &game->damage, &game->impulses,
                     &game->particles, events,
-                    game->player.position, input->aimWorld, deltaTime,
-                    input->ability);
+                    PlayerBeamOrigin(&game->player, input->aimWorld),
+                    input->aimWorld, deltaTime, input->ability);
     GameApplyAbilityFeedback(game, events);
 
     ParticlesUpdate(&game->particles, &game->world, deltaTime);
@@ -262,8 +262,8 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     /* Last, so the correction a body applies to the player is the final word on
        where they are: nothing after this can push them back inside one. */
     TerrainInteractionUpdate(&game->interaction, &game->player,
-                             &game->dynamicTerrain, input->aimWorld,
-                             input->grabHeld, deltaTime);
+                             &game->dynamicTerrain, &game->damage,
+                             input->aimWorld, input->grabHeld, deltaTime);
 }
 
 void GameUnload(GameState *game)

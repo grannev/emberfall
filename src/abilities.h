@@ -55,7 +55,25 @@ typedef enum AbilityTrigger {
 #define ABILITY_FORCE_LENGTH 84.0f
 #define ABILITY_FORCE_SPREAD_COSINE 0.78f
 #define ABILITY_FORCE_REACH 54
-#define ABILITY_FORCE_RECOIL 132.0f
+/* The blow does not shove the one who threw it. A punch that knocks the player
+   backwards reads as recoil from a gun rather than as a strike landing, and it
+   takes the player out of position at the exact moment they wanted to be
+   there. The force is meant to be felt in what it does to the world — the
+   crater, the fractures, the debris and the camera — not in being pushed away
+   from it. */
+#define ABILITY_FORCE_RECOIL 0.0f
+/* What the blow is worth to the camera and the effects. Kept separate from the
+   recoil so that "how hard it looks" and "how far it moves the player" are two
+   decisions rather than one number doing both jobs. */
+#define ABILITY_FORCE_IMPACT_STRENGTH 320.0f
+/* The dent the blow leaves, and the fractures out of it. A punch that made a
+   neat little hole would read as a gunshot; what it should read as is something
+   very heavy landing. */
+#define ABILITY_FORCE_CRATER_RADIUS 14
+#define ABILITY_FORCE_CRACK_COUNT 5
+#define ABILITY_FORCE_CRACK_LENGTH 22
+/* How far in front of the player the blow lands when it meets nothing solid. */
+#define ABILITY_FORCE_PUNCH_REACH 26.0f
 #define ABILITY_EXPLOSION_CORE_RADIUS 17
 #define ABILITY_EXPLOSION_SHOCK_RADIUS 42.0f
 #define ABILITY_EXPLOSION_KNOCKBACK 145.0f
@@ -72,7 +90,11 @@ typedef enum AbilityTrigger {
    it whole would leave nothing to throw. */
 #define ABILITY_EXPLOSION_BODY_CARVE 9.0f
 #define ABILITY_EXPLOSION_BODY_IMPULSE 26000.0f
-#define ABILITY_FORCE_BODY_IMPULSE 17000.0f
+#define ABILITY_FORCE_BODY_IMPULSE 42000.0f
+/* Cells the blow takes out of a body it lands on. Smaller than the crater it
+   leaves in the ground: a slab is already loose, and a punch that swallowed it
+   would leave nothing to send flying. */
+#define ABILITY_FORCE_BODY_CARVE 6.0f
 
 /* What the most recent activation did, in one shape for every ability, so the
    renderer and the event publisher never need a per-ability cast or a

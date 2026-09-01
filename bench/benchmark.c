@@ -14,6 +14,7 @@
 #include "player.h"
 #include "world.h"
 #include "abilities.h"
+#include "game.h"
 #include "terrain_detach.h"
 #include "terrain_impulse.h"
 #include "terrain_physics.h"
@@ -732,6 +733,162 @@ static void RunImpulseBenchmark(BenchContext *context, double *samples,
     DynamicTerrainUnload(&terrain);
 }
 
+/* Sustained destructive traversal, driven through the real GameUpdate so the
+   number means what a player would feel rather than what one subsystem costs in
+   isolation. Open cave, then dense rock, then a slab on a support that comes
+   loose and has to be flown through.
+
+   This is the scenario the FPS complaint is about, and the one any claim of
+   having made it faster has to be measured against. */
+#define TRAVERSAL_ALTITUDE 150
+#define TRAVERSAL_LENGTH 3600
+
+static void RunTraversalBenchmark(double *samples, int ticks)
+{
+    GameState game;
+    GameConfig config = GameDefaultConfig();
+    GameEventBuffer events;
+    GameInput input;
+    double total = 0.0;
+    double worst = 0.0;
+    uint64_t drilled = 0;
+    uint64_t dirty = 0;
+    uint64_t cells = 0;
+    int centre;
+    int tick;
+    int worstTick = 0;
+    int worstChunks = 0;
+    int worstCells = 0;
+    float minimumSpeed = 1.0e9f;
+    int x;
+    int y;
+
+    config.seed = 0x7a7e5u;
+    if (!GameInit(&game, config)) {
+        printf("traversal            allocation failed\n");
+        return;
+    }
+    centre = game.world.width / 2;
+
+    /* Open sky to build speed in, then a wall of rock to spend it on. */
+    for (y = TRAVERSAL_ALTITUDE - 90; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
+        for (x = centre - 80; x <= centre + 600; ++x) {
+            WorldSetCell(&game.world, x, y, MATERIAL_EMPTY);
+        }
+    }
+    for (y = TRAVERSAL_ALTITUDE - 90; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
+        for (x = centre + 600; x <= centre + TRAVERSAL_LENGTH; ++x) {
+            WorldSetCell(&game.world, x, y, MATERIAL_ROCK);
+        }
+    }
+    /* A slab on a thin support, right in the flight path, so detachment and a
+       live terrain body are part of what is being measured. */
+    /* Small enough to pass the automatic-detach size policy: a slab too big to
+       be worth a body would simply be refused, and the scenario would measure
+       nothing about detachment at all. */
+    for (y = TRAVERSAL_ALTITUDE - 40; y <= TRAVERSAL_ALTITUDE - 29; ++y) {
+        for (x = centre + 320; x <= centre + 360; ++x) {
+            WorldSetCell(&game.world, x, y, MATERIAL_ROCK);
+        }
+    }
+    for (y = TRAVERSAL_ALTITUDE - 28; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
+        WorldSetCell(&game.world, centre + 340, y, MATERIAL_ROCK);
+    }
+
+    /* A slab placed straight in the flight path as a body, not left to chance.
+       The scenario has to measure drilling through detached terrain, and
+       engineering a detachment that happens to end up in front of the player is
+       a lot of fixture for a fact the extraction API can state directly. */
+    {
+        TerrainBodyHandle slab = DynamicTerrainAllocBody(&game.dynamicTerrain,
+                                                         26, 34);
+        int cx;
+        int cy;
+
+        for (cy = 0; cy < 34; ++cy) {
+            for (cx = 0; cx < 26; ++cx) {
+                DynamicTerrainSetCell(&game.dynamicTerrain, slab, cx, cy,
+                                      MATERIAL_ROCK, 20.0f);
+            }
+        }
+        DynamicTerrainFinalizeBody(&game.dynamicTerrain, slab);
+        DynamicTerrainGet(&game.dynamicTerrain, slab)->position =
+            (Vector2){(float)(centre + 480), (float)TRAVERSAL_ALTITUDE};
+        /* Settled, or gravity carries it out of the flight path long before the
+           player gets there and the scenario quietly stops measuring the thing
+           it was built to measure. */
+        for (cy = 0; cy < 64 &&
+                     DynamicTerrainGetConst(&game.dynamicTerrain, slab)->awake;
+             ++cy) {
+            DynamicTerrainSettleBody(&game.dynamicTerrain,
+                                     DynamicTerrainGet(&game.dynamicTerrain,
+                                                       slab),
+                                     1.0f / 60.0f);
+        }
+    }
+
+    game.player.position = (Vector2){(float)(centre - 60),
+                                     (float)TRAVERSAL_ALTITUDE};
+    game.player.velocity = (Vector2){0.0f, 0.0f};
+    memset(&input, 0, sizeof(input));
+    input.move = (Vector2){1.0f, 0.0f};
+    input.boostHeld = true;
+
+    for (tick = 0; tick < ticks; ++tick) {
+        double start;
+
+        input.aimWorld = (Vector2){game.player.position.x + 60.0f,
+                                   game.player.position.y};
+        start = NowSeconds();
+        GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+        samples[tick] = (NowSeconds() - start) * 1000.0;
+        total += samples[tick];
+        /* The first few ticks are the scene settling after it was built, not
+           anything a player would ever experience. Measuring the spike there
+           would hide the one that matters. */
+        if (tick >= 5 && samples[tick] > worst) {
+            worst = samples[tick];
+            worstTick = tick;
+            worstChunks = (int)game.world.lastTickStats.processedChunks;
+            worstCells = (int)game.world.lastTickStats.processedCells;
+        }
+        if (tick >= 60) {
+            /* Once the rock has been reached. The speed at the final tick says
+               only where the player happened to be standing; the lowest speed
+               after entering the ground says what the ground cost them. */
+            float now = sqrtf(game.player.velocity.x * game.player.velocity.x +
+                              game.player.velocity.y * game.player.velocity.y);
+
+            if (now < minimumSpeed) {
+                minimumSpeed = now;
+            }
+        }
+        drilled += (uint64_t)game.player.drilledCells;
+        dirty += game.world.lastTickStats.processedChunks;
+        cells += game.world.lastTickStats.processedCells;
+    }
+
+    printf("traversal            avg=%7.3f ms  p50=%7.3f  p95=%7.3f  "
+           "worst=%7.3f  speed=%5.0f floor=%5.0f travel=%6.0f drilled=%7llu cells/tick=%8llu "
+           "chunks/tick=%5llu  detach=%3d carved=%4d split=%3d bodies=%2d "
+           "bodyDrill=%5d fx=%3u  worst@%3d(%5d chunks %7d cells)\n",
+           total / (double)ticks, Percentile(samples, ticks, 0.50),
+           Percentile(samples, ticks, 0.95), worst,
+           (double)sqrtf(game.player.velocity.x * game.player.velocity.x +
+                         game.player.velocity.y * game.player.velocity.y),
+           (double)minimumSpeed,
+           (double)(game.player.position.x - (float)(centre - 60)),
+           (unsigned long long)drilled,
+           (unsigned long long)(cells / (uint64_t)ticks),
+           (unsigned long long)(dirty / (uint64_t)ticks),
+           game.detach.stats.autoDetachSucceeded, game.damage.stats.cellsCarved,
+           game.damage.stats.fractureSplits,
+           DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies,
+           game.interaction.stats.bodyCellsDrilled,
+           (unsigned int)events.count, worstTick, worstChunks, worstCells);
+    GameUnload(&game);
+}
+
 static void PrintMemory(const World *world)
 {
     size_t cellCount = (size_t)world->width * (size_t)world->height;
@@ -875,6 +1032,7 @@ int main(int argc, char **argv)
             RunImpulseBenchmark(&context, samples, impulseScenarios[impulseIndex]);
         }
     }
+    RunTraversalBenchmark(samples, ticks);
 
     printf("final_peak_rss=%.2f MiB\n", (double)PeakRssBytes() / 1048576.0);
     WorldUnload(&world);

@@ -40,6 +40,36 @@ static float MaterialHeatAmount(const MaterialInfo *info, float temperature)
                        0.0f, 1.0f));
 }
 
+/* The other half of the same idea: a cell driven well below ambient reads as
+   frosted. Without it the cryo beam is invisible on anything that is not water
+   — it really is chilling the rock, and the player simply cannot tell. */
+static float MaterialChillAmount(const MaterialInfo *info, float temperature)
+{
+    if (temperature > 0.0f || !info->solid) {
+        return 0.0f;
+    }
+    /* Full frost by −120, which a held beam reaches in about half a second. */
+    return sqrtf(Clamp(-temperature / 120.0f, 0.0f, 1.0f));
+}
+
+static Color MaterialFrostTint(Color base, const MaterialInfo *info,
+                               float temperature)
+{
+    float chill = MaterialChillAmount(info, temperature);
+
+    if (chill <= 0.0f) {
+        return base;
+    }
+    /* Toward pale blue-white, and never toward glowing: cold is a colour, not a
+       light source, so nothing here touches the emissive plane. */
+    base.r = (unsigned char)((float)base.r +
+                             (196.0f - (float)base.r) * chill * 0.72f);
+    base.g = (unsigned char)((float)base.g +
+                             (226.0f - (float)base.g) * chill * 0.80f);
+    base.b = (unsigned char)((float)base.b + (255.0f - (float)base.b) * chill);
+    return base;
+}
+
 static Color MaterialHeatTint(Color base, const MaterialInfo *info,
                               float temperature)
 {
@@ -74,6 +104,7 @@ MaterialRenderSample MaterialRenderCell(CellMaterial material,
     color.g = ChannelWithVariation(color.g, info->variationG, variation);
     color.b = ChannelWithVariation(color.b, info->variationB, variation);
     color = MaterialHeatTint(color, info, temperature);
+    color = MaterialFrostTint(color, info, temperature);
 
     /* An emitter lights itself. This retains the old world-page behaviour and
        prevents lava from becoming darker in its own emissive centre. */

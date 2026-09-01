@@ -6,6 +6,7 @@
 #include "particle_renderer.h"
 #include "player_renderer.h"
 #include "presentation_fx_renderer.h"
+#include "terrain_grab_renderer.h"
 
 typedef struct BloomTuning {
     float intensity;
@@ -326,6 +327,9 @@ void RendererUpdatePresentation(Renderer *renderer,
     if (renderer == NULL) {
         return;
     }
+    if (deltaTime > 0.0f) {
+        renderer->presentationTime += deltaTime;
+    }
     /* Existing instances age before this frame's events are consumed, so a
        newly spawned flash is presented once at full intensity. */
     EnvironmentRendererUpdate(&renderer->environment, deltaTime);
@@ -397,6 +401,10 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition);
         AbilityRendererDraw(&game->abilities);
+        /* After the player, so the beam of force reads as leaving the hand
+           rather than passing behind the character. */
+        TerrainGrabRendererDrawScene(&game->interaction, &game->dynamicTerrain,
+                                     &game->player, renderer->presentationTime);
         PresentationFxRendererDrawScene(&renderer->effects);
     EndMode2D();
     /* The reticle uses exactly the stable transform that converted the mouse
@@ -423,6 +431,10 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
             AbilityRendererDrawEmissive(&game->abilities);
+            TerrainGrabRendererDrawEmissive(&game->interaction,
+                                            &game->dynamicTerrain,
+                                            &game->player,
+                                            renderer->presentationTime);
             PresentationFxRendererDrawEmissive(&renderer->effects);
         EndMode2D();
         EndTextureMode();

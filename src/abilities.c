@@ -152,9 +152,26 @@ static void AbilityApplyCryo(const AbilityContext *context, AbilityState *state)
 
 static void AbilityApplyForce(const AbilityContext *context, AbilityState *state)
 {
+    /* Where the blow lands: the first solid thing along the aim, or a point out
+       in front when there is nothing. Finding it first is what lets the crater
+       be cut into the surface that was actually struck rather than into
+       whatever happens to be under the cursor. */
+    LaserResult contact = WorldBeamHit(context->world, context->origin,
+                                       (Vector2){context->origin.x +
+                                                     context->direction.x *
+                                                         ABILITY_FORCE_PUNCH_REACH,
+                                                 context->origin.y +
+                                                     context->direction.y *
+                                                         ABILITY_FORCE_PUNCH_REACH});
+
     WorldApplyForceBlast(context->world, context->origin, context->direction,
                          ABILITY_FORCE_LENGTH, ABILITY_FORCE_SPREAD_COSINE,
                          ABILITY_FORCE_REACH);
+    if (contact.hit) {
+        WorldApplyPunch(context->world, contact.position, context->direction,
+                        ABILITY_FORCE_CRATER_RADIUS, ABILITY_FORCE_CRACK_COUNT,
+                        ABILITY_FORCE_CRACK_LENGTH);
+    }
     /* The same cone, the same reach, the same refusal to reach round a corner:
        a detached slab standing in the blow is not a different kind of thing
        from the loose cells beside it. */
@@ -165,9 +182,21 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
         .radius = ABILITY_FORCE_LENGTH,
         .spreadCosine = ABILITY_FORCE_SPREAD_COSINE,
         .momentum = ABILITY_FORCE_BODY_IMPULSE,
+        .carveRadius = ABILITY_FORCE_BODY_CARVE,
     });
     ParticlesSpawnForceBlast(context->particles, context->origin,
                              context->direction);
+    if (contact.hit) {
+        /* Rubble thrown back out of the crater. The blow has to leave something
+           in the air, or all the player sees of a hit that heavy is cells
+           quietly ceasing to exist. */
+        Vector2 back = {-context->direction.x, -context->direction.y};
+
+        ParticlesSpawnImpact(context->particles, contact.position, back,
+                             contact.material);
+        ParticlesSpawnDrillDebris(context->particles, contact.position,
+                                  context->direction, contact.material);
+    }
     state->origin = context->origin;
     state->direction = context->direction;
     state->endpoint = (Vector2){
@@ -175,13 +204,15 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
         context->origin.y + context->direction.y * ABILITY_FORCE_LENGTH};
     (void)GameEventsPush(context->events, (GameEvent){
         .type = GAME_EVENT_FORCE,
-        .position = context->origin,
+        /* Reported where it landed, not where it was thrown from, so the camera
+           and the effects answer to the impact rather than to the fist. */
+        .position = contact.hit ? contact.position : context->origin,
         .direction = context->direction,
-        .strength = ABILITY_FORCE_RECOIL,
+        .strength = ABILITY_FORCE_IMPACT_STRENGTH,
         .radius = ABILITY_FORCE_LENGTH,
-        /* A blow that hard has to move the one who threw it. */
-        .playerImpulse = {-context->direction.x * ABILITY_FORCE_RECOIL,
-                          -context->direction.y * ABILITY_FORCE_RECOIL},
+        .material = contact.material,
+        /* Deliberately none: see ABILITY_FORCE_RECOIL. */
+        .playerImpulse = {0.0f, 0.0f},
     });
 }
 

@@ -101,10 +101,10 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     const World *world = &game->world;
     const Player *player = &game->player;
     const AbilitySystem *abilities = &game->abilities;
-    const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
+    const AbilityState *punch = AbilityStateAt(abilities, ABILITY_FORCE);
     const int panelWidth = 620;
     const int panelHeight = 304;
-    float cooldown = explosion->cooldown;
+    float cooldown = punch->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
     CellMaterial cursorMaterial = WorldGetCell(world, (int)cursorCell.x, (int)cursorCell.y);
@@ -124,9 +124,13 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         WorldCountDynamicCells(world),
                         world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
-    DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
-                        InputAbilityBinding(abilities->lastUsed)),
-             24, 91, 18, (Color){255, 126, 86, 255});
+    {
+        const char *binding = InputAbilityBinding(abilities->lastUsed);
+
+        DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
+                            binding != NULL ? binding : "—"),
+                 24, 91, 18, (Color){255, 126, 86, 255});
+    }
     DrawText(TextFormat("CURSOR: %d, %d  %s  %.0fC", (int)cursorCell.x,
                         (int)cursorCell.y, WorldMaterialName(cursorMaterial),
                         WorldGetTemperature(world, (int)cursorCell.x, (int)cursorCell.y)),
@@ -207,10 +211,9 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                                                     (int)player->position.x))),
              24, 279, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 297, 14, LIME);
+        DrawText("PUNCH: READY", 24, 297, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 297, 14,
-                 LIGHTGRAY);
+        DrawText(TextFormat("PUNCH: %.2fs", cooldown), 24, 297, 14, LIGHTGRAY);
     }
 }
 
@@ -226,11 +229,18 @@ static void DrawControlsHint(void)
     int y;
 
     for (id = 0; id < ABILITY_COUNT; ++id) {
-        hint = TextFormat("%s  |  %s %s", hint,
-                          InputAbilityBinding((AbilityId)id),
+        const char *binding = InputAbilityBinding((AbilityId)id);
+
+        /* An ability with no control is not one of the player's, and listing it
+           would promise something the buttons cannot deliver. */
+        if (binding == NULL) {
+            continue;
+        }
+        hint = TextFormat("%s  |  %s %s", hint, binding,
                           AbilityDefinitionAt((AbilityId)id)->name);
     }
-    hint = TextFormat("%s  |  F grab terrain  |  R regenerate  |  F1 HUD", hint);
+    hint = TextFormat("%s  |  RMB grab terrain  |  R regenerate  |  F1 HUD",
+                      hint);
     width = MeasureText(hint, fontSize);
     x = (GetScreenWidth() - width) / 2;
     y = GetScreenHeight() - 34;
@@ -1617,6 +1627,13 @@ int main(int argc, char **argv)
         EndDrawing();
 
         if (smokeTest) {
+            /* Mid-beam, so the frame shows where a beam actually leaves the
+               character. It left the chest for a long time and nobody could
+               tell from the reference screenshot, which is taken after the
+               beam has stopped. */
+            if (smokeFrames == 6) {
+                TakeScreenshot("build/emberfall-beam.png");
+            }
             if (smokeFrames == 9) {
                 TakeScreenshot("build/emberfall-smoke-ember.png");
             } else if (smokeFrames == 10) {
@@ -1626,6 +1643,11 @@ int main(int argc, char **argv)
             }
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");
+            }
+            /* Mid-hold, so the frame shows the telekinetic beam actually
+               reaching a slab rather than the aftermath of having moved it. */
+            if (smokeFrames == ACCEPT_GRAB + 30) {
+                TakeScreenshot("build/emberfall-grab.png");
             }
             if (smokeFrames == ACCEPT_SHOT) {
                 TakeScreenshot("build/emberfall-gameplay.png");
