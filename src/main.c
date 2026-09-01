@@ -180,12 +180,14 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
        terrain always turns into — did anything get checked, and did anything
        come loose. */
     DrawText(TextFormat("TERRAIN: %d LIVE %d AWAKE | DETACH %d CHECKS %d FREED "
-                        "%d CELLS",
+                        "%d CELLS | BLAST %d BOOM %d FORCE",
                         DynamicTerrainStatistics(&game->dynamicTerrain)->activeBodies,
                         DynamicTerrainStatistics(&game->dynamicTerrain)->awakeBodies,
                         game->detach.stats.detachChecks,
                         game->detach.stats.autoDetachSucceeded,
-                        game->detach.stats.autoDetachCells),
+                        game->detach.stats.autoDetachCells,
+                        game->impulses.stats.bodiesAffectedByExplosion,
+                        game->impulses.stats.bodiesAffectedByForce),
              24, 225, 14, (Color){139, 218, 201, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
@@ -410,29 +412,38 @@ static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
     return extracted.body;
 }
 
-/* The acceptance shape for automatic detachment, built where the screenshot
-   can see it:
+/* The acceptance shape for automatic detachment and for ability impulses, built
+   where the screenshot can see it:
 
-       ########   block
-          #       pillar
-       ########   ground
+       ####   ##########    two blocks, one small and one large
+        #          #        two thin pillars
+       ##################   ground
 
-   Nothing about this scene is special-cased downstream. A blast takes the
-   pillar out through the ordinary world API, the world logs the damage the way
-   it logs any destructive cut, and the fixed step does the rest. Returns the
-   cell the blast should be centred on. */
+   One blast between the pillars severs both. Nothing downstream is special-
+   cased: the world logs the damage the way it logs any destructive cut, the
+   fixed step detaches what came loose, and the same blast throws it. The two
+   blocks differ only in size, so what the run shows is mass doing its job —
+   the heavy one barely moves while the light one is flung.
+
+   Returns the cell the blast should be centred on. */
+#define SMOKE_SMALL_BLOCK_HALF 4
+#define SMOKE_LARGE_BLOCK_HALF 10
+#define SMOKE_BLOCK_HEIGHT_SMALL 5
+#define SMOKE_BLOCK_HEIGHT_LARGE 12
+#define SMOKE_PILLAR_DROP 27
+
 static Vector2 SetupSmokeDetachScene(World *world, Vector2 aim)
 {
     int originX = (int)aim.x + 44;
-    int originY = (int)aim.y - 26;
-    int pillarX = originX + 9;
-    int blockBottom = originY + 6;
-    int groundTop = originY + 26;
+    int blockBottom = (int)aim.y - 20;
+    int smallPillarX = originX + SMOKE_SMALL_BLOCK_HALF;
+    int largePillarX = originX + 24;
+    int groundTop = blockBottom + SMOKE_PILLAR_DROP;
     int x;
     int y;
 
-    for (y = originY - 10; y < groundTop; ++y) {
-        for (x = originX - 8; x <= originX + 26; ++x) {
+    for (y = blockBottom - SMOKE_BLOCK_HEIGHT_LARGE - 8; y < groundTop; ++y) {
+        for (x = originX - 10; x <= originX + 40; ++x) {
             WorldSetCell(world, x, y, MATERIAL_EMPTY);
         }
     }
@@ -442,23 +453,50 @@ static Vector2 SetupSmokeDetachScene(World *world, Vector2 aim)
        would be right to take it — which is a fine result but a confusing
        screenshot. */
     for (y = groundTop; y <= groundTop + 8; ++y) {
-        for (x = originX - 16; x <= originX + 34; ++x) {
+        for (x = originX - 22; x <= originX + 52; ++x) {
             WorldSetCell(world, x, y, MATERIAL_ROCK);
         }
     }
     for (y = blockBottom + 1; y < groundTop; ++y) {
-        WorldSetCell(world, pillarX, y, MATERIAL_ROCK);
+        WorldSetCell(world, smallPillarX, y, MATERIAL_ROCK);
+        WorldSetCell(world, largePillarX, y, MATERIAL_ROCK);
     }
-    for (y = originY; y <= blockBottom; ++y) {
-        for (x = originX; x <= originX + 18; ++x) {
-            /* Two materials, so the body that appears is visibly the block that
-               was standing there and not a grey rectangle. */
-            WorldSetCell(world, x, y, x < originX + 9 ? MATERIAL_ROCK
-                                                      : MATERIAL_DIRT);
+    for (y = blockBottom - SMOKE_BLOCK_HEIGHT_SMALL + 1; y <= blockBottom; ++y) {
+        for (x = smallPillarX - SMOKE_SMALL_BLOCK_HALF;
+             x <= smallPillarX + SMOKE_SMALL_BLOCK_HALF; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
         }
     }
-    return (Vector2){(float)pillarX,
-                     (float)((blockBottom + groundTop) / 2)};
+    for (y = blockBottom - SMOKE_BLOCK_HEIGHT_LARGE + 1; y <= blockBottom; ++y) {
+        for (x = largePillarX - SMOKE_LARGE_BLOCK_HALF;
+             x <= largePillarX + SMOKE_LARGE_BLOCK_HALF; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
+        }
+    }
+    return (Vector2){(float)((smallPillarX + largePillarX) / 2),
+                     (float)(blockBottom + 14)};
+}
+
+/* The largest live body, which in the showcase is unambiguously the heavy
+   block. Picking "the first body over some size" would sometimes pick the
+   renderer's own showcase island instead, and then the force blow would be
+   aimed at wherever that had flown off to. */
+static const TerrainBody *SmokeHeaviestBody(const DynamicTerrainSystem *terrain)
+{
+    const TerrainBody *heaviest = NULL;
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *body = &terrain->bodies[slot];
+
+        if (!body->active) {
+            continue;
+        }
+        if (heaviest == NULL || body->cellCount > heaviest->cellCount) {
+            heaviest = body;
+        }
+    }
+    return heaviest;
 }
 
 static bool RunSmokeFireContainmentProbe(void)
@@ -615,6 +653,18 @@ int main(int argc, char **argv)
     Vector2 smokeDetachBlast = {0.0f, 0.0f};
     bool smokeAutoDetachObserved = false;
     bool smokeAutoDetachEvent = false;
+    /* The impulse half of the acceptance run: the blast has to throw what it
+       freed, the light block has to outrun the heavy one, and a force blow has
+       to move a body that is already lying there. */
+    float smokeLightSpeed = 0.0f;
+    float smokeHeavySpeed = 0.0f;
+    float smokeThrownSpin = 0.0f;
+    float smokeForceSpeedBefore = -1.0f;
+    float smokeForceSpeedAfter = -1.0f;
+    float smokeForceStartX = 0.0f;
+    float smokeForceShiftX = 0.0f;
+    bool smokeMassMattered = false;
+    bool smokeForceMovedBody = false;
     uint32_t smokeTerrainTextureUpdates = 0u;
     uint32_t smokeTerrainMaximumDrawCalls = 0u;
     uint64_t smokeTerrainMaximumTextureBytes = 0u;
@@ -698,7 +748,12 @@ int main(int argc, char **argv)
     camera.zoom = CameraZoomForWindow(cameraViewScale);
 
     while (!WindowShouldClose()) {
-        float deltaTime = fminf(GetFrameTime(), 0.05f);
+        /* The smoke run steps at exactly one fixed tick per frame. Real frame
+           time makes the number of simulation ticks a frame runs depend on how
+           busy the machine is, which turns every assertion about where a body
+           got to into a coin flip — and the reference screenshot with it. */
+        float deltaTime = smokeTest ? game.config.fixedStep
+                                    : fminf(GetFrameTime(), 0.05f);
         AppInput input = InputPoll(&game.world, camera);
         Vector2 desiredCamera;
         Vector2 cursorCell = input.cursorCell;
@@ -742,7 +797,35 @@ int main(int argc, char **argv)
         if (smokeTest && smokeFrames == 2) {
             smokeDetachBlast = SetupSmokeDetachScene(&game.world, smokeAim);
             WorldDestroyCircle(&game.world, (int)smokeDetachBlast.x,
-                               (int)smokeDetachBlast.y, 5, 0.0f);
+                               (int)smokeDetachBlast.y, 12, 0.0f);
+            /* Exactly what AbilityApplyExplosion queues. The blast is described
+               here and delivered by the fixed step after detachment, so what it
+               throws includes the two blocks it is about to set free. */
+            (void)TerrainImpulseQueueBlast(&game.impulses, (TerrainBlast){
+                .shape = TERRAIN_BLAST_RADIAL,
+                .origin = smokeDetachBlast,
+                .radius = ABILITY_EXPLOSION_SHOCK_RADIUS,
+                .momentum = ABILITY_EXPLOSION_BODY_IMPULSE,
+            });
+        }
+        /* A body that has been lying still for a few frames, shoved by the same
+           cone the force power uses. */
+        if (smokeTest && smokeFrames == 8) {
+            const TerrainBody *resting = SmokeHeaviestBody(&game.dynamicTerrain);
+
+            if (resting != NULL) {
+                smokeForceSpeedBefore = Vector2Length(resting->velocity);
+                smokeForceStartX = resting->position.x;
+                (void)TerrainImpulseQueueBlast(&game.impulses, (TerrainBlast){
+                    .shape = TERRAIN_BLAST_CONE,
+                    .origin = (Vector2){resting->position.x - 24.0f,
+                                        resting->position.y - 4.0f},
+                    .direction = {1.0f, 0.0f},
+                    .radius = ABILITY_FORCE_LENGTH,
+                    .spreadCosine = ABILITY_FORCE_SPREAD_COSINE,
+                    .momentum = ABILITY_FORCE_BODY_IMPULSE,
+                });
+            }
         }
 
         if (input.toggleDebugPressed) {
@@ -781,6 +864,46 @@ int main(int argc, char **argv)
                                    EventsContain(&events,
                                                  GAME_EVENT_TERRAIN_DETACHED);
             smokeAutoDetachObserved = game.detach.stats.autoDetachSucceeded > 0;
+            /* The frame the blast lands: the two freed blocks are moving and
+               nothing has slowed them yet. */
+            if (smokeFrames == 3) {
+                int slot;
+
+                for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+                    const TerrainBody *thrown = &game.dynamicTerrain.bodies[slot];
+                    float speed;
+
+                    if (!thrown->active || thrown->cellCount < 20) {
+                        continue;
+                    }
+                    speed = Vector2Length(thrown->velocity);
+                    if (thrown->cellCount < 100) {
+                        smokeLightSpeed = speed;
+                    } else {
+                        smokeHeavySpeed = speed;
+                    }
+                    if (fabsf(thrown->angularVelocity) > fabsf(smokeThrownSpin)) {
+                        smokeThrownSpin = thrown->angularVelocity;
+                    }
+                }
+                smokeMassMattered = smokeLightSpeed > smokeHeavySpeed * 1.5f &&
+                                    smokeHeavySpeed > 0.0f;
+            }
+            /* Sampled on the frame the blow lands, not the one after: a body
+               lying on the ground is being rubbed by friction every tick, and a
+               shove read a frame late is a shove already half spent. */
+            if (smokeFrames >= 8 && smokeForceSpeedBefore >= 0.0f) {
+                const TerrainBody *shoved = SmokeHeaviestBody(&game.dynamicTerrain);
+
+                if (shoved != NULL) {
+                    if (smokeFrames == 8) {
+                        smokeForceSpeedAfter = Vector2Length(shoved->velocity);
+                    }
+                    smokeForceShiftX = shoved->position.x - smokeForceStartX;
+                    smokeForceMovedBody = smokeForceMovedBody ||
+                                          smokeForceShiftX > 1.0f;
+                }
+            }
             smokeReactionObserved = smokeReactionObserved ||
                                     EventsContain(&events,
                                                   GAME_EVENT_MATERIAL_REACTION);
@@ -946,7 +1069,10 @@ int main(int argc, char **argv)
                "body_draws=%u body_updates=%u body_kib=%.1f "
                "body_collision=%d body_released=%d "
                "auto_detach=%d auto_detach_event=%d detach_checks=%d "
-               "detach_cells=%d detach_rejects=a%d/u%d/s%d/l%d/b%d\n",
+               "detach_cells=%d detach_rejects=a%d/u%d/s%d/l%d/b%d "
+               "light=%.1f heavy=%.1f spin=%.3f mass_matters=%d "
+               "force_before=%.1f force_after=%.1f force_shift=%.2f "
+               "force_hits=%d force_moved=%d impulses=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -965,7 +1091,13 @@ int main(int argc, char **argv)
                game.detach.stats.autoDetachRejectedUnknown,
                game.detach.stats.autoDetachRejectedTooSmall,
                game.detach.stats.autoDetachRejectedTooLarge,
-               game.detach.stats.autoDetachRejectedBudget);
+               game.detach.stats.autoDetachRejectedBudget,
+               (double)smokeLightSpeed, (double)smokeHeavySpeed,
+               (double)smokeThrownSpin, smokeMassMattered,
+               (double)smokeForceSpeedBefore, (double)smokeForceSpeedAfter,
+               (double)smokeForceShiftX,
+               game.impulses.stats.bodiesAffectedByForce, smokeForceMovedBody,
+               game.impulses.stats.bodyImpulseApplications);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -979,6 +1111,8 @@ int main(int argc, char **argv)
                       !smokeTerrainCollisionObserved ||
                       !smokeTerrainCacheReleased ||
                       !smokeAutoDetachObserved || !smokeAutoDetachEvent ||
+                      !smokeMassMattered || !smokeForceMovedBody ||
+                      fabsf(smokeThrownSpin) <= 0.0f ||
                       /* Two uploads — scene and emissive — for each body that
                          ever existed, and not one more: a body whose raster
                          never changes must not be re-uploaded per frame. */
@@ -994,7 +1128,8 @@ int main(int argc, char **argv)
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
                 "rotated=%d collision=%d released=%d auto_detach=%d "
-                "auto_detach_event=%d updates=%u chunks=%d/%d\n",
+                "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
+                "updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
@@ -1005,7 +1140,8 @@ int main(int argc, char **argv)
                 smokeTerrainRendered, smokeTerrainMoved,
                 smokeTerrainRotated, smokeTerrainCollisionObserved,
                 smokeTerrainCacheReleased, smokeAutoDetachObserved,
-                smokeAutoDetachEvent,
+                smokeAutoDetachEvent, smokeMassMattered, smokeForceMovedBody,
+                (double)smokeThrownSpin,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);

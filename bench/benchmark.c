@@ -13,7 +13,9 @@
 
 #include "player.h"
 #include "world.h"
+#include "abilities.h"
 #include "terrain_detach.h"
+#include "terrain_impulse.h"
 #include "terrain_physics.h"
 #include "world_lighting.h"
 
@@ -628,6 +630,108 @@ static void RunDetachBenchmark(BenchContext *context, double *samples,
     DynamicTerrainUnload(&terrain);
 }
 
+/* Blast delivery. The first row is the claim that matters: a tick in which no
+   power fired must cost nothing, because most ticks are that tick. The others
+   bound the cost when one does — a flat pass over a hard budget of 32 bodies,
+   plus, for the cone, one coarse line-of-sight march per body it reaches. */
+typedef struct {
+    const char *name;
+    bool fire;
+    TerrainBlastShape shape;
+} ImpulseBenchScenario;
+
+static void RunImpulseBenchmark(BenchContext *context, double *samples,
+                                ImpulseBenchScenario scenario)
+{
+    DynamicTerrainSystem terrain;
+    TerrainImpulseSystem impulses;
+    World *world = context->world;
+    Vector2 origin;
+    double total = 0.0;
+    int index;
+    int frame;
+
+    if (!DynamicTerrainInit(&terrain)) {
+        printf("impulse              allocation failed\n");
+        return;
+    }
+    TerrainImpulseInit(&impulses);
+    PrepareScenario(context);
+    origin = (Vector2){(float)context->centerX, (float)DETACH_BENCH_GROUND};
+
+    /* Open ground around the blast. The generated world is solid here, and a
+       cone blast fired from inside rock is occluded before it starts — a
+       correct answer, and a row that measures nothing. */
+    FillRectangle(world, context->centerX - 140, DETACH_BENCH_GROUND - 120,
+                  context->centerX + 140, DETACH_BENCH_GROUND, MATERIAL_EMPTY);
+
+    /* A full manager, spread across the blast's reach so some bodies are hit
+       hard, some faintly and some not at all. */
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        TerrainBodyHandle handle = DynamicTerrainAllocBody(&terrain, 12, 12);
+        TerrainBody *body;
+        int y;
+
+        for (y = 0; y < 12; ++y) {
+            int x;
+
+            for (x = 0; x < 12; ++x) {
+                DynamicTerrainSetCell(&terrain, handle, x, y, MATERIAL_ROCK, 20.0f);
+            }
+        }
+        DynamicTerrainFinalizeBody(&terrain, handle);
+        body = DynamicTerrainGet(&terrain, handle);
+        if (body == NULL) {
+            break;
+        }
+        body->position = (Vector2){origin.x - 60.0f + (float)index * 4.0f,
+                                   origin.y - 40.0f};
+    }
+
+    for (frame = 0; frame < context->ticks; ++frame) {
+        double start;
+
+        if (scenario.fire) {
+            TerrainBlast blast;
+
+            blast.shape = scenario.shape;
+            blast.origin = origin;
+            blast.direction = (Vector2){0.0f, -1.0f};
+            blast.radius = scenario.shape == TERRAIN_BLAST_CONE
+                               ? ABILITY_FORCE_LENGTH
+                               : ABILITY_EXPLOSION_SHOCK_RADIUS;
+            blast.spreadCosine = ABILITY_FORCE_SPREAD_COSINE;
+            blast.momentum = ABILITY_EXPLOSION_BODY_IMPULSE;
+            (void)TerrainImpulseQueueBlast(&impulses, blast);
+        }
+
+        start = NowSeconds();
+        (void)TerrainImpulseApply(&impulses, &terrain, world);
+        samples[frame] = (NowSeconds() - start) * 1000.0;
+        total += samples[frame];
+
+        /* Velocities are cleared outside the clock so every frame starts from
+           the same state and the row measures delivery, not accumulation. */
+        for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+            terrain.bodies[index].velocity = (Vector2){0.0f, 0.0f};
+            terrain.bodies[index].angularVelocity = 0.0f;
+        }
+    }
+
+    printf("impulse %-19s avg=%7.4f ms  p50=%7.4f  p95=%7.4f  "
+           "blasts=%5d applied=%7d explosion=%7d force=%7d occluded=%6d "
+           "asleep=%5d\n",
+           scenario.name, total / (double)context->ticks,
+           Percentile(samples, context->ticks, 0.50),
+           Percentile(samples, context->ticks, 0.95),
+           impulses.stats.blastsApplied,
+           impulses.stats.bodyImpulseApplications,
+           impulses.stats.bodiesAffectedByExplosion,
+           impulses.stats.bodiesAffectedByForce,
+           impulses.stats.bodiesOccluded, impulses.stats.bodiesLeftSleeping);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void PrintMemory(const World *world)
 {
     size_t cellCount = (size_t)world->width * (size_t)world->height;
@@ -755,6 +859,20 @@ int main(int argc, char **argv)
              detachIndex < sizeof(detachScenarios) / sizeof(detachScenarios[0]);
              ++detachIndex) {
             RunDetachBenchmark(&context, samples, detachScenarios[detachIndex]);
+        }
+    }
+    {
+        static const ImpulseBenchScenario impulseScenarios[] = {
+            {"no blast",  false, TERRAIN_BLAST_RADIAL},
+            {"explosion", true,  TERRAIN_BLAST_RADIAL},
+            {"force cone", true, TERRAIN_BLAST_CONE},
+        };
+        size_t impulseIndex;
+
+        for (impulseIndex = 0u;
+             impulseIndex < sizeof(impulseScenarios) / sizeof(impulseScenarios[0]);
+             ++impulseIndex) {
+            RunImpulseBenchmark(&context, samples, impulseScenarios[impulseIndex]);
         }
     }
 

@@ -111,6 +111,17 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
     WorldApplyForceBlast(context->world, context->origin, context->direction,
                          ABILITY_FORCE_LENGTH, ABILITY_FORCE_SPREAD_COSINE,
                          ABILITY_FORCE_REACH);
+    /* The same cone, the same reach, the same refusal to reach round a corner:
+       a detached slab standing in the blow is not a different kind of thing
+       from the loose cells beside it. */
+    (void)TerrainImpulseQueueBlast(context->impulses, (TerrainBlast){
+        .shape = TERRAIN_BLAST_CONE,
+        .origin = context->origin,
+        .direction = context->direction,
+        .radius = ABILITY_FORCE_LENGTH,
+        .spreadCosine = ABILITY_FORCE_SPREAD_COSINE,
+        .momentum = ABILITY_FORCE_BODY_IMPULSE,
+    });
     ParticlesSpawnForceBlast(context->particles, context->origin,
                              context->direction);
     state->origin = context->origin;
@@ -141,6 +152,17 @@ static void AbilityApplyExplosion(const AbilityContext *context,
     WorldApplyShockwave(context->world, centerX, centerY,
                         ABILITY_EXPLOSION_CORE_RADIUS,
                         (int)ABILITY_EXPLOSION_SHOCK_RADIUS);
+    /* Queued rather than applied: the piece this blast is about to cut free
+       does not exist yet. The fixed step runs the connectivity check first and
+       then delivers this, so the slab the explosion just severed is thrown by
+       the very explosion that severed it. Reach matches the shockwave's, so a
+       body is pushed exactly as far out as loose sand would be. */
+    (void)TerrainImpulseQueueBlast(context->impulses, (TerrainBlast){
+        .shape = TERRAIN_BLAST_RADIAL,
+        .origin = context->aim,
+        .radius = ABILITY_EXPLOSION_SHOCK_RADIUS,
+        .momentum = ABILITY_EXPLOSION_BODY_IMPULSE,
+    });
     ParticlesSpawnExplosion(context->particles, context->aim);
     state->origin = context->aim;
     state->endpoint = context->aim;
@@ -252,9 +274,9 @@ void AbilitiesInit(AbilitySystem *abilities, uint64_t seed)
 }
 
 void AbilitiesUpdate(AbilitySystem *abilities, World *world,
-                     ParticleSystem *particles, GameEventBuffer *events,
-                     Vector2 origin, Vector2 aim, float deltaTime,
-                     const bool *requested)
+                     TerrainImpulseSystem *impulses, ParticleSystem *particles,
+                     GameEventBuffer *events, Vector2 origin, Vector2 aim,
+                     float deltaTime, const bool *requested)
 {
     AbilityContext context;
     Vector2 direction = {aim.x - origin.x, aim.y - origin.y};
@@ -274,6 +296,7 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
     }
 
     context.world = world;
+    context.impulses = impulses;
     context.particles = particles;
     context.events = events;
     context.rng = &abilities->rng;
