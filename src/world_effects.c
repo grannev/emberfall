@@ -444,14 +444,12 @@ LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radi
     return result;
 }
 
-LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
-                            float deltaTime)
+LaserResult WorldBeamHit(const World *world, Vector2 start, Vector2 end)
 {
     Vector2 delta = {end.x - start.x, end.y - start.y};
     float length = sqrtf(delta.x * delta.x + delta.y * delta.y);
     int steps = (int)ceilf(length / 0.65f);
     int step;
-    uint16_t stamp;
     LaserResult result = {end, MATERIAL_EMPTY, false};
 
     if (world == NULL || world->cells == NULL || length < 0.001f) {
@@ -477,8 +475,16 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
             break;
         }
     }
+    return result;
+}
 
-    if (!result.hit) {
+LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radius,
+                            float deltaTime)
+{
+    LaserResult result = WorldBeamHit(world, start, end);
+    uint16_t stamp;
+
+    if (world == NULL || world->cells == NULL || !result.hit) {
         return result;
     }
 

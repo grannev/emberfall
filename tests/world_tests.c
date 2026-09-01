@@ -6058,6 +6058,294 @@ static void test_an_explosion_carves_and_splits_a_moving_body(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* A boosting player crosses ten cells in a frame. Testing only where they ended
+   up would let them cross a thin slab and never touch it. */
+static void test_a_fast_player_cannot_cross_a_thin_body(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    Vector2 wallAt = {80.0f, 60.0f};
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    /* Two cells thick and tall enough that the player cannot go round it. */
+    handle = DynamicTerrainAllocBody(&terrain, 2, 40);
+    FillBody(&terrain, handle, 0, 0, 1, 39, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = wallAt;
+
+    PlayerInit(&player, (Vector2){40.0f, 60.0f});
+    /* Established as the starting point, so the next update has a path to walk
+       rather than a first frame to take on trust. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
+    CHECK(player.position.x < wallAt.x, "the fixture starts on the wrong side");
+
+    /* A whole boost-speed frame in one go: from well left of the slab to well
+       right of it. */
+    for (step = 0; step < 4; ++step) {
+        player.position.x += 26.0f;
+        player.velocity = (Vector2){620.0f, 0.0f};
+        TerrainInteractionUpdate(&interaction, &player, &terrain,
+                                 (Vector2){0.0f, 0.0f}, false, KINEMATIC_STEP);
+    }
+    CHECK(interaction.stats.contacts > 0,
+          "the player crossed the slab without touching it");
+    CHECK(interaction.stats.sweptFrames > 0, "the movement was not swept");
+    CHECK(player.position.x < wallAt.x + 2.0f,
+          "the player ended at %.2f, on the far side of a slab at %.2f",
+          (double)player.position.x, (double)wallAt.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The beam burns what it reaches and nothing behind it. */
+static void test_the_laser_burns_only_the_first_thing_it_reaches(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    uint64_t before;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events;
+    bool requested[ABILITY_COUNT];
+    int index;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    AbilitiesInit(&abilities, 0x51u);
+    ParticlesInit(&particles, 0x52u);
+    GameEventsClear(&events);
+    for (index = 0; index < ABILITY_COUNT; ++index) {
+        requested[index] = false;
+    }
+    requested[ABILITY_LASER] = true;
+
+    /* player -> body -> wall. The wall must come through untouched.
+       The body is wide enough that the beam cannot bore all the way through it
+       in the frames below: once it does, reaching the wall is correct, and the
+       test would be measuring the wrong thing. */
+    FillRect(&world, 80, 40, 82, 80, MATERIAL_ROCK);
+    handle = MakeRockBlock(&terrain, 16, 16, (Vector2){50.0f, 60.0f});
+    before = WorldDigest(&world);
+    for (index = 0; index < 12; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles,
+                        &events, (Vector2){20.0f, 60.0f},
+                        (Vector2){120.0f, 60.0f}, KINEMATIC_STEP, requested);
+    }
+    CHECK(damage.stats.cellsCarved > 0, "the beam did not cut the body");
+    CHECK(WorldDigest(&world) == before,
+          "the wall behind the body was burned anyway");
+
+    /* player -> wall -> body. Now the body is the one that must be spared. */
+    DynamicTerrainUnload(&terrain);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeRockBlock(&terrain, 6, 6, (Vector2){100.0f, 60.0f});
+    for (index = 0; index < 12; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles,
+                        &events, (Vector2){20.0f, 60.0f},
+                        (Vector2){120.0f, 60.0f}, KINEMATIC_STEP, requested);
+    }
+    CHECK(damage.stats.cellsCarved == 0,
+          "the beam cut a body standing behind a wall: %d cells",
+          damage.stats.cellsCarved);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->cellCount == 36,
+          "the shielded body lost cells");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A segment can clip the corner of a rotated cell over a chord far shorter than
+   the cell is wide. A whole-cell march steps straight over it. */
+static void test_the_body_raycast_finds_a_thin_rotated_body(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyHandle hit;
+    Vector2 at;
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 1, 24);
+    FillBody(&terrain, handle, 0, 0, 0, 23, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){60.0f, 60.0f};
+
+    /* Turned through a range of angles: at every one of them a beam straight
+       through the middle has to find the blade. */
+    for (index = 0; index < 16; ++index) {
+        DynamicTerrainGet(&terrain, handle)->angle =
+            (float)index / 16.0f * PI - PI * 0.5f;
+        CHECK(DynamicTerrainRaycast(&terrain, (Vector2){20.0f, 60.0f},
+                                    (Vector2){120.0f, 60.0f}, &hit, &at),
+              "the beam missed a blade at angle %.3f",
+              (double)DynamicTerrainGetConst(&terrain, handle)->angle);
+        CHECK(hit.index == handle.index && hit.generation == handle.generation,
+              "the beam hit the wrong body");
+        CHECK(fabsf(at.y - 60.0f) < 1.5f, "the hit is off the beam: %.3f",
+              (double)at.y);
+    }
+
+    /* And a beam that genuinely misses still reports a miss. */
+    CHECK(!DynamicTerrainRaycast(&terrain, (Vector2){20.0f, 5.0f},
+                                 (Vector2){120.0f, 5.0f}, &hit, &at),
+          "a beam nowhere near the body reported a hit");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The property the march's step size actually has to satisfy: it must never
+   step over a piece of material longer than the step itself.
+
+   One cell turned forty-five degrees is a diamond, and a beam crossing it off
+   centre passes through a chord much shorter than the cell is wide. Every
+   offset below leaves a chord of at least half a cell, which no march worth
+   the name may miss. */
+static void test_the_raycast_never_steps_over_material(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBodyHandle hit;
+    Vector2 at;
+    Vector2 centre = {60.0f, 60.0f};
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = DynamicTerrainAllocBody(&terrain, 1, 1);
+    FillBody(&terrain, handle, 0, 0, 0, 0, MATERIAL_ROCK, 20.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = centre;
+    DynamicTerrainGet(&terrain, handle)->angle = PI * 0.25f;
+
+    /* Swept across the diamond and, for each offset, across where the march
+       happens to start. Whether a coarse march lands inside a short chord is a
+       question of phase as much as of length, so a single start position can
+       flatter a step size that is really too big. */
+    for (index = 0; index <= 30; ++index) {
+        float offset = -0.45f + (float)index * 0.03f;
+        int phase;
+
+        for (phase = 0; phase < 8; ++phase) {
+            Vector2 from = {20.0f + (float)phase * 0.125f, centre.y + offset};
+
+            CHECK(DynamicTerrainRaycast(&terrain, from,
+                                        (Vector2){100.0f, centre.y + offset},
+                                        &hit, &at),
+                  "the march stepped over material at offset %.3f, phase %d",
+                  (double)offset, phase);
+        }
+    }
+    /* Well clear of the diamond, it correctly finds nothing. */
+    CHECK(!DynamicTerrainRaycast(&terrain, (Vector2){20.0f, centre.y + 1.2f},
+                                 (Vector2){100.0f, centre.y + 1.2f}, &hit, &at),
+          "the march found material outside the rotated cell");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The aim can cross a body's bounding box through a hole in it. A hold anchored
+   there would put the spring on nothing. */
+static void test_a_grab_never_lands_on_empty_raster(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    PlayerInit(&player, (Vector2){50.0f, 60.0f});
+    /* A ring: its bounding box is full, its middle is not. */
+    handle = DynamicTerrainAllocBody(&terrain, 16, 16);
+    FillBody(&terrain, handle, 0, 0, 15, 15, MATERIAL_ROCK, 20.0f);
+    FillBody(&terrain, handle, 5, 5, 10, 10, MATERIAL_EMPTY, 0.0f);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    DynamicTerrainGet(&terrain, handle)->position = (Vector2){64.0f, 60.0f};
+
+    /* Aimed straight at the hole. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             DynamicTerrainGetConst(&terrain, handle)->position,
+                             true, KINEMATIC_STEP);
+    if (TerrainInteractionIsHolding(&interaction, &terrain)) {
+        int cellX = (int)floorf(interaction.holdLocalPoint.x);
+        int cellY = (int)floorf(interaction.holdLocalPoint.y);
+
+        CHECK(DynamicTerrainCellAt(&terrain, interaction.held, cellX, cellY) !=
+                  MATERIAL_EMPTY,
+              "the hold landed on an empty cell at (%d, %d)", cellX, cellY);
+    }
+    /* Aimed at the rim, it takes hold of the rim. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){64.0f, 60.0f}, false, KINEMATIC_STEP);
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             TerrainBodyLocalToWorld(
+                                 DynamicTerrainGetConst(&terrain, handle), 0.5f,
+                                 8.5f),
+                             true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain),
+          "the rim could not be grabbed");
+    CHECK(DynamicTerrainCellAt(&terrain, interaction.held,
+                               (int)floorf(interaction.holdLocalPoint.x),
+                               (int)floorf(interaction.holdLocalPoint.y)) !=
+              MATERIAL_EMPTY,
+          "the hold on the rim landed on an empty cell");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Cutting off the side being held must never leave the spring anchored to a
+   cell that has left the body. */
+static void test_a_hold_follows_or_ends_when_its_side_is_cut_away(void)
+{
+    Player player;
+    TerrainBodyHandle handle;
+    Vector2 heldLocal;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    TerrainDamageInit(&damage);
+    PlayerInit(&player, (Vector2){50.0f, 60.0f});
+    handle = MakeRockBlock(&terrain, 24, 8, (Vector2){62.0f, 60.0f});
+
+    /* Held by the far right end, which the cut below will separate. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             TerrainBodyLocalToWorld(
+                                 DynamicTerrainGetConst(&terrain, handle), 22.5f,
+                                 4.0f),
+                             true, KINEMATIC_STEP);
+    CHECK(TerrainInteractionIsHolding(&interaction, &terrain), "no hold started");
+    heldLocal = interaction.holdLocalPoint;
+    CHECK(heldLocal.x > 18.0f, "the hold is not on the right-hand end: %.2f",
+          (double)heldLocal.x);
+
+    /* A cut nearer the right, so the held end is the smaller piece: it breaks
+       away into a body of its own while the handle stays with the larger
+       remainder. That is the case where a hold has to follow its cell or end. */
+    CHECK(TerrainDamageApplyCircle(&damage, &terrain, handle,
+                                   TerrainBodyLocalToWorld(
+                                       DynamicTerrainGetConst(&terrain, handle),
+                                       17.0f, 4.0f),
+                                   5.0f) > 0,
+          "the cut removed nothing");
+    CHECK(LiveBodyCount(&terrain) == 2, "the slab became %d bodies",
+          LiveBodyCount(&terrain));
+
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
+    if (TerrainInteractionIsHolding(&interaction, &terrain)) {
+        /* Followed the cell onto the piece that took it. */
+        CHECK(DynamicTerrainCellAt(&terrain, interaction.held,
+                                   (int)floorf(interaction.holdLocalPoint.x),
+                                   (int)floorf(interaction.holdLocalPoint.y)) !=
+                  MATERIAL_EMPTY,
+              "the hold survived on an empty cell");
+        CHECK(interaction.stats.transferredHolds == 1,
+              "the transfer was not counted");
+    } else {
+        CHECK(interaction.stats.lostHolds == 1,
+              "the hold ended without being counted");
+    }
+    /* Either way, one more update must be harmless. */
+    TerrainInteractionUpdate(&interaction, &player, &terrain,
+                             (Vector2){62.0f, 60.0f}, true, KINEMATIC_STEP);
+    DynamicTerrainUnload(&terrain);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -7560,6 +7848,12 @@ int main(void)
     RUN(test_releasing_throws_a_light_body_further_than_a_heavy_one);
     RUN(test_a_hold_ends_safely_when_the_body_is_destroyed);
     RUN(test_an_explosion_carves_and_splits_a_moving_body);
+    RUN(test_a_fast_player_cannot_cross_a_thin_body);
+    RUN(test_the_laser_burns_only_the_first_thing_it_reaches);
+    RUN(test_the_body_raycast_finds_a_thin_rotated_body);
+    RUN(test_the_raycast_never_steps_over_material);
+    RUN(test_a_grab_never_lands_on_empty_raster);
+    RUN(test_a_hold_follows_or_ends_when_its_side_is_cut_away);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

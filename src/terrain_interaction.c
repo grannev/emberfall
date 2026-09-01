@@ -51,6 +51,8 @@ void TerrainInteractionInit(TerrainInteractionSystem *system)
     system->hovered = TerrainBodyInvalidHandle();
     system->holdLocalPoint = (Vector2){0.0f, 0.0f};
     system->holdWorldPoint = (Vector2){0.0f, 0.0f};
+    system->previousPosition = (Vector2){0.0f, 0.0f};
+    system->hasPreviousPosition = false;
     system->holding = false;
     TerrainInteractionResetStats(system);
 }
@@ -61,7 +63,7 @@ void TerrainInteractionResetStats(TerrainInteractionSystem *system)
         return;
     }
     {
-        TerrainInteractionStats empty = {0, 0, 0, 0, 0, 0};
+        TerrainInteractionStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         system->stats = empty;
     }
@@ -265,6 +267,140 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     return true;
 }
 
+/* Snaps the aim onto an occupied cell of `body`, searching outward from where
+   it landed. Returns false when there is no material within reach of the aim,
+   which is the honest answer for a body whose bounding box the aim crossed
+   through a hole. */
+static bool TerrainInteractionGrabPoint(const DynamicTerrainSystem *terrain,
+                                        TerrainBodyHandle handle,
+                                        const TerrainBody *body, Vector2 aim,
+                                        Vector2 *localPoint)
+{
+    /* Four cells: enough to forgive a cursor on the rim of a rock, small enough
+       that it can never wander to the far side of one. */
+    const int reach = 4;
+    Vector2 local = TerrainBodyWorldToLocal(body, aim.x, aim.y);
+    int aimX = (int)floorf(local.x);
+    int aimY = (int)floorf(local.y);
+    float best = 0.0f;
+    bool found = false;
+    int offsetY;
+
+    for (offsetY = -reach; offsetY <= reach; ++offsetY) {
+        int offsetX;
+
+        for (offsetX = -reach; offsetX <= reach; ++offsetX) {
+            int cellX = aimX + offsetX;
+            int cellY = aimY + offsetY;
+            float centreX;
+            float centreY;
+            float distance;
+
+            if (cellX < 0 || cellY < 0 || cellX >= body->width ||
+                cellY >= body->height) {
+                continue;
+            }
+            if (DynamicTerrainCellAt(terrain, handle, cellX, cellY) ==
+                MATERIAL_EMPTY) {
+                continue;
+            }
+            centreX = (float)cellX + 0.5f;
+            centreY = (float)cellY + 0.5f;
+            distance = (centreX - local.x) * (centreX - local.x) +
+                       (centreY - local.y) * (centreY - local.y);
+            if (found && distance >= best) {
+                continue;
+            }
+            found = true;
+            best = distance;
+            *localPoint = (Vector2){centreX, centreY};
+        }
+    }
+    return found;
+}
+
+/* One pass of every live body against the player where they now stand. Returns
+   true when anything touched. */
+static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
+                                         Player *player,
+                                         DynamicTerrainSystem *terrain)
+{
+    bool touched = false;
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (!terrain->bodies[slot].active) {
+            continue;
+        }
+        if (TerrainInteractionResolve(system, player, terrain, slot)) {
+            touched = true;
+        }
+    }
+    return touched;
+}
+
+/* Walks the player along the path they took this frame instead of only asking
+   where they ended up.
+
+   A boosting player crosses ten cells in a frame. A slab three cells thick that
+   happens to lie between where they were and where they are would never appear
+   in a test of the final position, and they would pass through it without ever
+   touching it. Splitting the movement into steps no longer than half the
+   player's own radius means consecutive probes overlap, so nothing thin can lie
+   between two of them.
+
+   The first step that touches something is where the player stops: the
+   remainder of the movement is exactly what the collision was there to
+   prevent. */
+static void TerrainInteractionSweep(TerrainInteractionSystem *system,
+                                    Player *player,
+                                    DynamicTerrainSystem *terrain)
+{
+    Vector2 target = player->position;
+    float deltaX;
+    float deltaY;
+    float distance;
+    int substeps;
+    int substep;
+
+    if (!system->hasPreviousPosition) {
+        (void)TerrainInteractionResolveAll(system, player, terrain);
+        system->previousPosition = player->position;
+        system->hasPreviousPosition = true;
+        return;
+    }
+    deltaX = target.x - system->previousPosition.x;
+    deltaY = target.y - system->previousPosition.y;
+    distance = sqrtf(deltaX * deltaX + deltaY * deltaY);
+
+    substeps = 1;
+    if (distance > player->radius * 0.5f) {
+        substeps = (int)ceilf(distance / (player->radius * 0.5f));
+        if (substeps > TERRAIN_INTERACTION_MAX_SUBSTEPS) {
+            substeps = TERRAIN_INTERACTION_MAX_SUBSTEPS;
+        }
+        ++system->stats.sweptFrames;
+        if (substeps > system->stats.maximumSubsteps) {
+            system->stats.maximumSubsteps = substeps;
+        }
+    }
+
+    for (substep = 1; substep <= substeps; ++substep) {
+        float amount = (float)substep / (float)substeps;
+
+        player->position = (Vector2){
+            system->previousPosition.x + deltaX * amount,
+            system->previousPosition.y + deltaY * amount};
+        if (TerrainInteractionResolveAll(system, player, terrain)) {
+            /* Stopped here. The resolve has already moved them clear and taken
+               its share of the momentum; carrying on to the end of the path
+               would undo both. */
+            break;
+        }
+    }
+    system->previousPosition = player->position;
+}
+
 /* Nearest live body to the aim point, within reach of the player. Slot order
    breaks ties, so the same standing position always offers the same rock. */
 static TerrainBodyHandle TerrainInteractionPick(const DynamicTerrainSystem *terrain,
@@ -312,17 +448,17 @@ static TerrainBodyHandle TerrainInteractionPick(const DynamicTerrainSystem *terr
         }
         bestDistance = toAim;
         best = (TerrainBodyHandle){(uint16_t)slot, body->generation};
-        if (localPoint != NULL) {
-            /* Where the aim lands on the body, clamped into the cells it
-               actually occupies so the hold is never on empty raster. */
-            Vector2 local = TerrainBodyWorldToLocal(body, aim.x, aim.y);
-
-            localPoint->x = TerrainInteractionClamp(local.x,
-                                                    (float)body->minimumX,
-                                                    (float)body->maximumX + 1.0f);
-            localPoint->y = TerrainInteractionClamp(local.y,
-                                                    (float)body->minimumY,
-                                                    (float)body->maximumY + 1.0f);
+        if (localPoint != NULL &&
+            !TerrainInteractionGrabPoint(terrain,
+                                         (TerrainBodyHandle){(uint16_t)slot,
+                                                             body->generation},
+                                         body, aim, localPoint)) {
+            /* The aim landed on a hole in the raster and there was no material
+               near enough to mean it. A bounding box is not a shape: holding a
+               body by a gap in it would put the spring on nothing. */
+            best = TerrainBodyInvalidHandle();
+            bestDistance = 0.0f;
+            continue;
         }
     }
     return best;
@@ -368,6 +504,71 @@ static void TerrainInteractionRelease(TerrainInteractionSystem *system,
     }
 }
 
+static bool TerrainInteractionHoldStillHasCell(const DynamicTerrainSystem *terrain,
+                                              TerrainBodyHandle handle,
+                                              Vector2 localPoint)
+{
+    const TerrainBody *body = DynamicTerrainGetConst(terrain, handle);
+    int cellX = (int)floorf(localPoint.x);
+    int cellY = (int)floorf(localPoint.y);
+
+    if (body == NULL || cellX < 0 || cellY < 0 || cellX >= body->width ||
+        cellY >= body->height) {
+        return false;
+    }
+    return DynamicTerrainCellAt(terrain, handle, cellX, cellY) != MATERIAL_EMPTY;
+}
+
+/* Follows the held cell onto whichever body now owns it.
+
+   A fracture copies each piece into a raster of the same size at the same local
+   coordinates and leaves it exactly where it already was, so the cell being
+   held is still at the same local point and still at the same world point — on
+   a different body. Matching on both is enough to find it, and cheap enough to
+   do with a pass over the slots. No mapping is recorded anywhere: this is a
+   search over 32 candidates, run once, at the moment a hold would otherwise
+   have to be dropped. */
+static bool TerrainInteractionTransferHold(TerrainInteractionSystem *system,
+                                           DynamicTerrainSystem *terrain)
+{
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *body = &terrain->bodies[slot];
+        TerrainBodyHandle handle;
+        Vector2 where;
+
+        if (!body->active) {
+            continue;
+        }
+        handle = (TerrainBodyHandle){(uint16_t)slot, body->generation};
+        if (handle.index == system->held.index &&
+            handle.generation == system->held.generation) {
+            continue;
+        }
+        if (!TerrainInteractionHoldStillHasCell(terrain, handle,
+                                                system->holdLocalPoint)) {
+            continue;
+        }
+        where = TerrainBodyLocalToWorld(body, system->holdLocalPoint.x,
+                                        system->holdLocalPoint.y);
+        /* Half a cell: a piece that has just broken away has not moved yet, so
+           anything further off is a different rock that merely happens to have
+           material at the same raster coordinate. */
+        if ((where.x - system->holdWorldPoint.x) *
+                    (where.x - system->holdWorldPoint.x) +
+                (where.y - system->holdWorldPoint.y) *
+                    (where.y - system->holdWorldPoint.y) >
+            0.25f) {
+            continue;
+        }
+        system->held = handle;
+        ++system->stats.transferredHolds;
+        return true;
+    }
+    return false;
+}
+
 static void TerrainInteractionHold(TerrainInteractionSystem *system,
                                    DynamicTerrainSystem *terrain,
                                    Vector2 playerAt, Vector2 aim,
@@ -383,14 +584,19 @@ static void TerrainInteractionHold(TerrainInteractionSystem *system,
     float length;
     float magnitude;
 
-    if (body == NULL) {
-        /* Carved away, or fractured into something this handle no longer
-           names. Generation handles make that a clean answer rather than a
-           dangling pointer. */
-        system->holding = false;
-        system->held = TerrainBodyInvalidHandle();
-        ++system->stats.lostHolds;
-        return;
+    if (body == NULL || !TerrainInteractionHoldStillHasCell(terrain,
+                                                             system->held,
+                                                             system->holdLocalPoint)) {
+        /* The cell being held is gone: carved away, or carried off by a piece
+           that broke away and left this handle naming the remainder. A spring
+           anchored to empty raster would drag the body by nothing. */
+        if (!TerrainInteractionTransferHold(system, terrain)) {
+            system->holding = false;
+            system->held = TerrainBodyInvalidHandle();
+            ++system->stats.lostHolds;
+            return;
+        }
+        body = DynamicTerrainGet(terrain, system->held);
     }
 
     grabWorld = TerrainBodyLocalToWorld(body, system->holdLocalPoint.x,
@@ -433,7 +639,6 @@ void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
                               bool grabHeld, float deltaTime)
 {
     Vector2 localPoint = {0.0f, 0.0f};
-    int slot;
 
     if (system == NULL || player == NULL || terrain == NULL ||
         !(deltaTime > 0.0f)) {
@@ -442,12 +647,7 @@ void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
 
     /* Contact first: the hold should pull against a body that is already where
        the player will find it this frame. */
-    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
-        if (!terrain->bodies[slot].active) {
-            continue;
-        }
-        (void)TerrainInteractionResolve(system, player, terrain, slot);
-    }
+    TerrainInteractionSweep(system, player, terrain);
 
     system->hovered = TerrainInteractionPick(terrain, &system->config,
                                              player->position, aimWorld,

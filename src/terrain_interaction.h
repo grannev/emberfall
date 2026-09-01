@@ -58,6 +58,13 @@ typedef struct TerrainInteractionConfig {
 typedef struct TerrainInteractionStats {
     int contacts;
     int pushImpulses;
+    /* Frames whose movement was long enough to need breaking up, and the most
+       pieces any one of them needed. */
+    int sweptFrames;
+    int maximumSubsteps;
+    /* Holds that followed their cell onto the fragment it broke away with,
+       rather than ending because the cell left the body. */
+    int transferredHolds;
     int grabs;
     int releases;
     int throws;
@@ -80,9 +87,22 @@ typedef struct TerrainInteractionSystem {
        they are holding anything. Read-only for presentation; the simulation
        never draws. */
     TerrainBodyHandle hovered;
-    /* Where the held body's grab point currently is, for the same reason. */
+    /* Where the held body's grab point currently is, for the same reason — and
+       the value a hold transferred across a fracture is matched against. */
     Vector2 holdWorldPoint;
+    /* Where the player was when this ran last. The difference is the path they
+       took, and the path is what has to be tested: checking only where they
+       ended up lets a boosting player cross a thin slab between two frames and
+       never touch it. */
+    Vector2 previousPosition;
+    bool hasPreviousPosition;
 } TerrainInteractionSystem;
+
+/* Most substeps one frame of player movement is broken into. The step is a
+   fraction of the player's own radius, so consecutive probes overlap and
+   nothing can slip between them; the cap is what keeps a teleport — a respawn,
+   a regenerated world — from turning into an unbounded walk. */
+#define TERRAIN_INTERACTION_MAX_SUBSTEPS 32
 
 TerrainInteractionConfig TerrainInteractionDefaultConfig(void);
 void TerrainInteractionInit(TerrainInteractionSystem *system);

@@ -59,95 +59,52 @@ static Vector2 RadialImpulse(Vector2 target, Vector2 center, float radius,
     return (Vector2){away.x * force * strength, away.y * force * strength};
 }
 
-/* The first terrain body the beam meets, and where it met it. Bodies are not in
-   the world's cells, so the world's own beam march cannot see them; this walks
-   the same line and asks the bodies directly.
-
-   The step is a whole cell rather than the world march's finer one: a body cell
-   is a cell, and sampling twice per cell would only buy a sub-cell hit point
-   that the carve radius immediately swallows. */
-static bool BeamFirstBody(const DynamicTerrainSystem *terrain, Vector2 start,
-                          Vector2 end, float limit, TerrainBodyHandle *hit,
-                          Vector2 *at)
+static float BeamDistance(Vector2 from, Vector2 to)
 {
-    float deltaX = end.x - start.x;
-    float deltaY = end.y - start.y;
-    float length = sqrtf(deltaX * deltaX + deltaY * deltaY);
-    float travelled;
+    float dx = to.x - from.x;
+    float dy = to.y - from.y;
 
-    if (terrain == NULL || length < 0.001f) {
-        return false;
-    }
-    deltaX /= length;
-    deltaY /= length;
-    if (limit > 0.0f && limit < length) {
-        length = limit;
-    }
-    for (travelled = 0.0f; travelled <= length; travelled += 1.0f) {
-        Vector2 point = {start.x + deltaX * travelled,
-                         start.y + deltaY * travelled};
-        int slot;
-
-        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
-            const TerrainBody *body = &terrain->bodies[slot];
-            TerrainBodyHandle handle;
-            Vector2 local;
-
-            if (!body->active) {
-                continue;
-            }
-            handle = (TerrainBodyHandle){(uint16_t)slot, body->generation};
-            local = TerrainBodyWorldToLocal(body, point.x, point.y);
-            if (local.x < 0.0f || local.y < 0.0f ||
-                (int)local.x >= body->width || (int)local.y >= body->height) {
-                continue;
-            }
-            if (DynamicTerrainCellAt(terrain, handle, (int)local.x,
-                                     (int)local.y) == MATERIAL_EMPTY) {
-                continue;
-            }
-            *hit = handle;
-            *at = point;
-            return true;
-        }
-    }
-    return false;
+    return sqrtf(dx * dx + dy * dy);
 }
 
 static void AbilityApplyLaser(const AbilityContext *context, AbilityState *state)
 {
     Vector2 reach = BeamEndAtWorldEdge(context->world, context->origin,
                                        context->direction, ABILITY_LASER_RANGE);
-    LaserResult result = WorldApplyLaser(context->world, context->origin, reach,
-                                         ABILITY_LASER_RADIUS, context->deltaTime);
+    /* Which of the two the beam actually reaches is decided before either of
+       them is touched. Burning the wall first and only then noticing that a
+       slab stood in front of it damages terrain the shot never arrived at, and
+       no amount of later correction puts those cells back. */
+    LaserResult result = WorldBeamHit(context->world, context->origin, reach);
     TerrainBodyHandle cutBody;
     Vector2 cutAt;
+    bool bodyFirst = false;
 
-    /* A body standing in front of the terrain the beam would otherwise reach is
-       what it burns through, and cutting one is how the player splits a slab
-       they are carrying. The world hit bounds the search, so the beam cannot
-       reach a body behind a wall. */
-    if (context->terrain != NULL && context->damage != NULL) {
-        float limit = result.hit
-                          ? sqrtf((result.position.x - context->origin.x) *
-                                      (result.position.x - context->origin.x) +
-                                  (result.position.y - context->origin.y) *
-                                      (result.position.y - context->origin.y))
-                          : 0.0f;
+    if (context->terrain != NULL && context->damage != NULL &&
+        DynamicTerrainRaycast(context->terrain, context->origin, reach, &cutBody,
+                              &cutAt)) {
+        bodyFirst = !result.hit ||
+                    BeamDistance(context->origin, cutAt) <
+                        BeamDistance(context->origin, result.position);
+    }
 
-        if (BeamFirstBody(context->terrain, context->origin, reach, limit,
-                          &cutBody, &cutAt)) {
-            /* Rate-limited: the beam is held, and a bite on every frame would
-               evaporate a slab in well under a second. */
-            if (TerrainDamageBeamReady(context->damage, context->deltaTime)) {
-                (void)TerrainDamageApplyCircle(context->damage, context->terrain,
-                                               cutBody, cutAt,
-                                               context->damage->config.beamCutRadius);
-            }
-            result.position = cutAt;
-            result.material = MATERIAL_ROCK;
-            result.hit = true;
+    if (bodyFirst) {
+        /* Rate-limited: the beam is held, and a bite on every frame would
+           evaporate a slab in well under a second. The world is left alone
+           entirely — the beam stopped here. */
+        if (TerrainDamageBeamReady(context->damage, context->deltaTime)) {
+            (void)TerrainDamageApplyCircle(context->damage, context->terrain,
+                                           cutBody, cutAt,
+                                           context->damage->config.beamCutRadius);
         }
+        result.position = cutAt;
+        result.material = MATERIAL_ROCK;
+        result.hit = true;
+    } else {
+        /* The wall is what the beam reached, so it is the only thing that takes
+           heat. A body behind it is shielded exactly as loose cells are. */
+        result = WorldApplyLaser(context->world, context->origin, reach,
+                                 ABILITY_LASER_RADIUS, context->deltaTime);
     }
 
     state->origin = context->origin;

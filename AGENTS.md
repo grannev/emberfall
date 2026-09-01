@@ -155,7 +155,13 @@ coherent phase with an explanatory message.
   force divided by its mass falls under gravity, not a rule about size.
 - The player is what gets corrected out of an overlap with a body, never the
   body. Pushing a slab aside to make room teleports terrain the player may be
-  standing on.
+  standing on. Collision against bodies tests the path the player took, not only
+  where they ended up: at boost speed a frame covers ten cells, and a test of
+  the final position lets them cross a thin slab without ever touching it.
+- A power that both finds a target and changes it must decide what it reached
+  before it changes anything. The laser asks the world and the bodies where the
+  nearest blocker is, and only then burns it; burning first and checking after
+  damages terrain the shot never arrived at, and nothing puts those cells back.
 - A terrain body's raster can lose cells, and losing them moves its centre of
   mass. Every path that edits a raster must correct `position` and `velocity`
   for that shift, or the surviving cells are dragged across the world. Editing a
