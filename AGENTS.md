@@ -103,6 +103,11 @@ coherent phase with an explanatory message.
   targets fall back to the sharp scene. Resources are reused in steady state
   and recreated only on resize. HUD remains a backbuffer overlay; gameplay must
   not gain render-target or shader dependencies.
+- `EnvironmentRenderer` is renderer-owned presentation state. Its 47 bounded
+  procedural descriptors and palette are derived from the world seed without
+  consuming gameplay RNG; it draws into the existing scene/emissive passes and
+  must never read or mutate `GameState`/`World`. Empty world pixels deliberately
+  retain a depth-dependent translucent tint so the background can show through.
 - Each resident world page has scene and emissive textures. One 8 KiB stack
   staging pair builds both from a dirty chunk; `MaterialInfo.emission` and hot
   solids enter bloom, ordinary bright terrain does not. Particle emission is

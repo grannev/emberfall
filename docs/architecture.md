@@ -301,6 +301,9 @@ simulation digest.
 - `bloomPingTarget`/`bloomPongTarget` — half-resolution ping-pong targets для
   threshold/downsample и separable blur;
 - два GLSL fragment shader из `assets/shaders/`;
+- `EnvironmentRenderer` — seed-derived фиксированные descriptors sky details,
+  far peaks, ruined structures, near spires и haze. Он рисует фон прямо в уже
+  существующие scene/emissive targets и не имеет доступа к `GameState`/`World`;
 - `WorldRenderer` — единственный владелец GPU-состояния мира: кэш страниц
   256×256 cells, по scene и emissive texture на слот, dirty uploads и renderer
   counters. Резидентны только видимые страницы, поэтому размер мира больше не
@@ -322,7 +325,17 @@ faces попадают в mask. Visitor
 возвращает `bool`: chunk, который renderer не смог разместить (его страница не
 резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
 GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
-full-world `Color` buffer удалён.
+full-world `Color` buffer удалён. Pixels `MATERIAL_EMPTY` сохраняют прежний
+depth tint, но с alpha 150..220 по глубине: environment виден через воздух, а
+глубокие cave не становятся плоско яркими.
+
+`EnvironmentRenderer` принадлежит `Renderer` и синхронизирует только числовой
+world seed. Одинаковый seed даёт одинаковые descriptors и palette; CLI/debug
+override меняет только presentation. Background рисуется в screen space до
+world pages: target/zoom камеры дают parallax, а transient rotation не вращает
+сам полноэкранный фон и потому не открывает пустые углы. Три редких energy
+columns и окна повторяются в explicit emissive target; brightness extraction и
+новый pass не добавляются. Подробнее — [представление мира](world-presentation.md).
 
 `TerrainBodyRenderer` использует ту же `MaterialRenderCell`, что и world pages,
 но не получает `World`: moving body пока освещается постоянным neutral ambient,
@@ -383,9 +396,10 @@ device не является фатальной.
    из stable aim camera отдельную presentation camera и обновить player point
    light. Reticle рисуется через stable camera, world-space scene — через
    presentation camera.
-9. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
-   paged world layers, синхронизировать generation/revision cache динамических
-   тел, отрисовать static и detached terrain в sharp scene и выполнить
+9. `RendererRenderScene` при необходимости пересоздать targets, синхронизировать
+   environment seed, нарисовать procedural background, обновить обе paged world
+   layers, синхронизировать generation/revision cache динамических тел,
+   отрисовать static и detached terrain в sharp scene и выполнить
    emissive/downsample/horizontal-blur/vertical-blur passes.
 10. `RendererComposite` вывести sharp scene и аддитивно наложить blurred
    emissive в backbuffer с корректным Y-flip.
@@ -411,6 +425,7 @@ device не является фатальной.
 | staging динамических тел (64 KiB) | встроен в `TerrainBodyRenderer` | автоматически |
 | particle pool | встроен в `ParticleSystem` | автоматически |
 | presentation FX pool (128 instances) | встроен в `Renderer` | автоматически |
+| environment descriptors (47 × 20 B + state/stats) | встроены в `Renderer`, regenerated только при смене seed | автоматически |
 | sounds | `GameAudioInit` | `GameAudioUnload` |
 
 `GameState` агрегирует CPU gameplay ownership; `GameInit`/`GameUnload`
@@ -434,6 +449,8 @@ staging размером 8 KiB.
 - Камера показывает логическую область 320×180 и масштабирует её к окну.
 - Page textures и offscreen targets используют `TEXTURE_FILTER_POINT`, сохраняя
   nearest-neighbor вид; финальный render-texture composite выполняет Y-flip.
+- Environment geometry остаётся screen-space и всегда перекрывает target с
+  overscan; world-camera target и zoom влияют только на bounded parallax.
 - Terrain body texture имеет одну texel на локальную cell. `DrawTexturePro`
   получает `position` как destination position, simulation `centerOfMass` как
   origin и `angle` в градусах, что точно реализует

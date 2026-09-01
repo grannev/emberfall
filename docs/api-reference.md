@@ -85,12 +85,16 @@ float WorldLightAt(const World *world, int x, int y);
 ### Renderer API
 
 ```c
-bool RendererInit(Renderer *renderer, const GameState *game);
+bool RendererInit(Renderer *renderer, const GameState *game,
+                  EnvironmentPalette environmentPalette);
 void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime);
 void RendererClearPresentation(Renderer *renderer);
-void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
+bool RendererSetEnvironmentPalette(Renderer *renderer,
+                                   EnvironmentPalette palette);
+void RendererRenderScene(Renderer *renderer, GameState *game,
+                         Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer);
@@ -108,12 +112,20 @@ half-resolution downsample и separable horizontal/vertical blur. Scene не
 raylib render texture. Ошибка shader/half-resolution target оставляет рабочий
 sharp fallback. HUD рисуется после composite.
 
+Встроенный `EnvironmentRenderer` принимает только seed и presentation camera,
+рисует procedural sky/parallax/haze до world pages и небольшую explicit
+emissive contribution в существующем pass. `environmentPalette == AUTO`
+выбирает preset из seed; `RendererSetEnvironmentPalette` позволяет временный
+presentation-only override. Он не читает и не меняет `GameState`.
+
 `WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
 world pages. `RendererStats` сообщает фактический размер scene target, активен
 ли bloom, его resolution, число offscreen passes/targets и CPU submission time
 emissive/filter passes, active/peak/dropped presentation FX, а также
 cached/visible TerrainBody, body draw calls, texture updates и RGBA8 bytes. Это
 не GPU timer: на software renderer значение включает стоимость rasterization.
+Environment telemetry отдельно сообщает palette, view validity и число scene /
+emissive primitive submissions.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и
