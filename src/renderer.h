@@ -7,6 +7,7 @@
 #include <raylib.h>
 
 #include "game.h"
+#include "presentation_fx.h"
 #include "world_renderer.h"
 
 typedef struct RendererFrameStats {
@@ -17,11 +18,15 @@ typedef struct RendererFrameStats {
     int targetHeight;
     int bloomWidth;
     int bloomHeight;
+    uint16_t activeFx;
+    uint16_t peakFx;
+    uint32_t droppedFx;
     bool bloomEnabled;
 } RendererFrameStats;
 
 typedef struct Renderer {
     WorldRenderer world;
+    PresentationFxSystem effects;
     RenderTexture2D sceneTarget;
     RenderTexture2D emissiveTarget;
     RenderTexture2D bloomPingTarget;
@@ -46,6 +51,10 @@ typedef struct Renderer {
 } Renderer;
 
 bool RendererInit(Renderer *renderer, const GameState *game);
+void RendererUpdatePresentation(Renderer *renderer,
+                                const GameEventBuffer *events,
+                                float deltaTime);
+void RendererClearPresentation(Renderer *renderer);
 void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);

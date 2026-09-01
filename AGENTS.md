@@ -101,6 +101,12 @@ coherent phase with an explanatory message.
   solids enter bloom, ordinary bright terrain does not. Particle emission is
   explicit presentation metadata and must be reset whenever a pool slot is
   reused.
+- `Renderer` also owns the fixed-capacity `PresentationFxSystem`: selected
+  `GameEvent` values spawn short-lived world-space primitives, which update and
+  draw in scene/emissive passes but can never read or mutate `World`. The pool
+  is compact, bounded at 128 instances and replaces the lowest-priority effect
+  nearest expiration on overflow; do not turn it into another particle engine
+  or move it into `GameState`.
 - Abilities are a registry: `ABILITIES` in `abilities.c` holds what every power
   shares, one `apply` function holds what a power does, `input.c` owns the key
   bindings, and feedback leaves through `GameEvent` — knockback included, via

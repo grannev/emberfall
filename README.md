@@ -158,7 +158,9 @@ chunks видно в debug HUD.
 - `src/particles.c` — фиксированный пул частиц без allocation во время кадра
 - `src/renderer.c` и `*_renderer.c` — presentation composition,
   процедурная модель героя, способности/частицы и единственное владение world
-  `Texture2D`; persistent full-world pixel buffer не используется
+  `Texture2D`; renderer-owned `PresentationFxSystem` превращает выбранные
+  `GameEvent` в bounded transient visual primitives, которые никогда не меняют
+  мир; persistent full-world pixel buffer не используется
 - `src/audio.c` — процедурно синтезированные звуки лазера, взрыва, реакций,
   бура и переходов между ступенями без внешних audio-ассетов
 - `src/main.c` — composition root, окно, camera/HUD, renderer/audio consumers

@@ -145,6 +145,21 @@ Particles рисуются целыми cells через `DrawRectangle`, а н�
 округляется до cell grid, а `size` задаёт сторону квадрата. Так частицы остаются
 на той же пиксельной сетке, что и world texture с моделью игрока.
 
+## Transient presentation FX
+
+Отдельный renderer-owned `PresentationFxSystem` хранит до 128 коротких flash,
+ring, glow, line и trail primitives. Gameplay не вызывает его напрямую:
+`GAME_EVENT_EXPLOSION` преобразуется presentation layer в простой flash + ring,
+а `GAME_EVENT_PLAYER_IMPACT` — в короткий impact flash. Существующее explosion
+ring удалено из `AbilityRenderer`, поэтому один и тот же event не рисуется
+дважды.
+
+Эффект может иметь emissive contribution, но это лишь второй draw того же
+presentation instance в bloom mask. Он не повторяет explosion/world logic.
+`PresentationFx` не получает `World *`, не создаёт gameplay particles и
+**никогда не изменяет cells**. В отличие от него, debris-частицы ниже могут
+осесть в пустую cell и потому остаются частью gameplay-owned `ParticleSystem`.
+
 ## Контакт частиц с миром
 
 `ParticlesUpdate` принимает мир, потому что частицы, пролетающие сквозь породу,
