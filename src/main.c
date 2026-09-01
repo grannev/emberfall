@@ -538,6 +538,12 @@ typedef struct SmokeAcceptance {
     bool threw;
     bool carved;
     bool split;
+    /* Presentation observed while the gameplay phase was running. The two
+       features were built on separate branches, so "they both work" is not the
+       same claim as "they work at the same time", and only the second is worth
+       asserting. */
+    bool fxDuringPlay;
+    bool cameraFeedbackDuringPlay;
     float pushSpeed;
     float dragDistance;
     float throwSpeed;
@@ -674,15 +680,14 @@ static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
         return;
     }
     if (frame == ACCEPT_CUT) {
-        /* A blast right in the middle of the slab: it takes a bite out and the
-           bite cuts the slab in half. */
-        (void)TerrainImpulseQueueBlast(&game->impulses, (TerrainBlast){
-            .shape = TERRAIN_BLAST_RADIAL,
-            .origin = body->position,
-            .radius = ABILITY_EXPLOSION_SHOCK_RADIUS,
-            .momentum = ABILITY_EXPLOSION_BODY_IMPULSE,
-            .carveRadius = 5.0f,
-        });
+        /* The real power, aimed at the middle of the slab — not a blast queued
+           straight into the terrain system. Going through the ability is the
+           point: it publishes the event that drives the staged FX, the audio
+           and the camera kick, and a run that skipped it would prove the
+           gameplay works while saying nothing about whether it works *with*
+           the presentation built beside it. */
+        input->ability[ABILITY_EXPLOSION] = true;
+        input->aimWorld = body->position;
         return;
     }
     if (frame > ACCEPT_CUT) {
@@ -865,8 +870,8 @@ int main(int argc, char **argv)
     /* The gameplay acceptance run's progress. Zeroed at setup rather than here
        so the whole struct is cleared in one place. */
     SmokeAcceptance acceptance = {{0.0f, 0.0f}, {0.0f, 0.0f}, false, false,
-                                  false, false, false, false, false, 0.0f, 0.0f,
-                                  0.0f, 0, {0.0f, 0.0f}};
+                                  false, false, false, false, false, false,
+                                  false, 0.0f, 0.0f, 0.0f, 0, {0.0f, 0.0f}};
     uint32_t smokeTerrainTextureUpdates = 0u;
     /* Bodies the render phase alone detached, so the upload count can be
        checked against what that phase produced rather than against everything
@@ -1170,6 +1175,16 @@ int main(int argc, char **argv)
                 .viewHeight = VIEW_HEIGHT,
             },
             deltaTime);
+        if (smokeTest && smokeFrames >= ACCEPT_CUT) {
+            /* The camera answering to what the gameplay phase is doing, on the
+               frames where a body is being blown apart. */
+            acceptance.cameraFeedbackDuringPlay =
+                acceptance.cameraFeedbackDuringPlay ||
+                fabsf(cameraOutput.impulseOffset.x) > 0.01f ||
+                fabsf(cameraOutput.impulseOffset.y) > 0.01f ||
+                fabsf(cameraOutput.rotationDegrees) > 0.01f ||
+                fabsf(cameraOutput.zoomKick) > 0.0001f;
+        }
         /* Widening belongs to the stable camera used on the next input frame.
            The immediate kick is applied only to the presentation copy below,
            so transient feedback never changes mouse-to-world conversion. */
@@ -1224,6 +1239,13 @@ int main(int argc, char **argv)
                                  (frameStats->bloomEnabled &&
                                   frameStats->offscreenPasses == 5u &&
                                   frameStats->renderTargets == 4u);
+            if (smokeFrames >= ACCEPT_CUT) {
+                /* Staged FX still spawning while the gameplay phase blows a
+                   body apart: the two features are running at once, not merely
+                   both present. */
+                acceptance.fxDuringPlay = acceptance.fxDuringPlay ||
+                                          frameStats->activeFx > 0u;
+            }
             smokePresentationFxObserved = smokePresentationFxObserved ||
                                           (frameStats->activeFx > 0u &&
                                            frameStats->peakFx >= 22u &&
@@ -1335,7 +1357,7 @@ int main(int argc, char **argv)
                "force_hits=%d force_moved=%d impulses=%d "
                "play_detached=%d play_pushed=%d(%.1f) play_grabbed=%d "
                "play_dragged=%d(%.1f) play_threw=%d(%.1f) play_carved=%d "
-               "play_split=%d play_fragments=%d\n",
+               "play_split=%d play_fragments=%d play_fx=%d play_camera=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -1365,7 +1387,8 @@ int main(int argc, char **argv)
                acceptance.grabbed, acceptance.dragged,
                (double)acceptance.dragDistance, acceptance.threw,
                (double)acceptance.throwSpeed, acceptance.carved, acceptance.split,
-               acceptance.fragments);
+               acceptance.fragments, acceptance.fxDuringPlay,
+               acceptance.cameraFeedbackDuringPlay);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -1386,6 +1409,8 @@ int main(int argc, char **argv)
                       !acceptance.grabbed || !acceptance.dragged ||
                       !acceptance.threw || !acceptance.carved ||
                       !acceptance.split || acceptance.fragments < 2 ||
+                      !acceptance.fxDuringPlay ||
+                      !acceptance.cameraFeedbackDuringPlay ||
                       fabsf(smokeThrownSpin) <= 0.0f ||
                       /* Two uploads — scene and emissive — for each body that
                          ever existed, and not one more: a body whose raster
@@ -1403,7 +1428,7 @@ int main(int argc, char **argv)
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
                 "rotated=%d collision=%d released=%d auto_detach=%d "
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
-                "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d "
+                "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
                 "updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved,
                 smokeExplosionObserved, smokeForceObserved,
@@ -1421,6 +1446,7 @@ int main(int argc, char **argv)
                 (double)smokeThrownSpin, acceptance.detached, acceptance.pushed,
                 acceptance.grabbed, acceptance.dragged, acceptance.threw,
                 acceptance.carved, acceptance.split, acceptance.fragments,
+                acceptance.fxDuringPlay, acceptance.cameraFeedbackDuringPlay,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
