@@ -146,7 +146,7 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     CHECK(WorldInit(&world, 64, 64), "world allocation failed");
     WorldGenerate(&world, 0xE6BEu);
 
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 4, "first preparation visited %d/4 chunks",
           probe.regions);
     CHECK(probe.pixels == 64u * 64u,
@@ -154,12 +154,12 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
           (unsigned long long)probe.pixels);
 
     probe = (RenderProbe){0};
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 0,
           "settled renderer rebuilt %d unchanged chunks", probe.regions);
 
     WorldSetCell(&world, 10, 10, MATERIAL_EMPTY);
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 1,
           "one local edit rebuilt %d chunks instead of one", probe.regions);
     WorldUnload(&world);
@@ -193,7 +193,7 @@ static void test_empty_world_render_data_preserves_background_depth(void)
     EmptyRenderProbe probe = {0};
 
     CHECK(WorldInit(&world, 32, 32), "world allocation failed");
-    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f}, 0,
+    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f},
                         CaptureEmptyRenderData, &probe);
     CHECK(probe.sawTranslucentAir,
           "empty world pixels still fully hide the environment background");
@@ -259,7 +259,7 @@ static void test_emissive_render_data_selects_emitters_not_bright_terrain(void)
     WorldSetCell(&world, 5, 4, MATERIAL_FIRE);
     WorldSetCell(&world, 6, 4, MATERIAL_SAND);
 
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureMaterialEmission, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureMaterialEmission, &probe);
     CHECK(probe.lavaEmits, "lava produced no emissive render data");
     CHECK(probe.fireEmits, "fire produced no emissive render data");
     CHECK(probe.sandStaysDark,
@@ -738,16 +738,16 @@ static void test_a_refused_chunk_keeps_its_dirty_flag(void)
     CHECK(WorldInit(&world, 64, 64), "world allocation failed");
     WorldGenerate(&world, 0xE6BEu);
 
-    WorldPrepareVisible(&world, wholeWorld, 0, RefuseRenderChunk, &refused);
+    WorldPrepareVisible(&world, wholeWorld, RefuseRenderChunk, &refused);
     CHECK(refused == 4, "first preparation offered %d/4 chunks", refused);
 
     /* Nothing was accepted, so the same four chunks must still be owed. */
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 4,
           "a refused chunk was forgotten: %d/4 offered again", probe.regions);
 
     probe = (RenderProbe){0};
-    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 0,
           "an accepted chunk was rebuilt again: %d chunks", probe.regions);
     WorldUnload(&world);
@@ -1283,6 +1283,135 @@ static int BuriedColumn(const World *world, int depth)
         if (solid) return x;
     }
     return -1;
+}
+
+static void test_the_day_turns_and_takes_the_sky_with_it(void)
+{
+    World world;
+    int column;
+    int surface;
+    float noon;
+    float midnight;
+    float phase;
+    float previous;
+
+    /* The curve first: a full day, sampled, must peak once, trough once, and
+       never leave 0..1. A day that goes negative or above one would be a light
+       field that clamps rather than a sky that turns. */
+    previous = GameDaylightAt(0.0f);
+    for (phase = 0.0f; phase <= 1.0f; phase += 1.0f / 64.0f) {
+        float value = GameDaylightAt(phase);
+
+        CHECK(value >= 0.0f && value <= 1.0f,
+              "daylight at phase %.3f is %.3f", (double)phase, (double)value);
+        previous = value;
+    }
+    (void)previous;
+    CHECK(GameDaylightAt(0.25f) > 0.9f, "noon is only %.3f",
+          (double)GameDaylightAt(0.25f));
+    CHECK(GameDaylightAt(0.75f) < 0.15f, "midnight is %.3f",
+          (double)GameDaylightAt(0.75f));
+    /* And it is a circle: one full turn returns to where it started, so a
+       session that runs for days never drifts. */
+    CHECK(fabsf(GameDaylightAt(0.3f) - GameDaylightAt(1.3f)) < 0.0001f,
+          "the day does not wrap");
+
+    /* Then the effect: the open surface is bright at noon and dark at midnight,
+       while sealed ground is dark at both, because night takes away only what
+       the sun was giving. */
+    CHECK(WorldInit(&world, 1024, 288), "world allocation failed");
+    WorldGenerate(&world, 0x50144Bu);
+    column = BuriedColumn(&world, 120);
+    CHECK(column >= 0, "no column had 120 cells of unbroken ground under it");
+    surface = FirstSolidY(&world, column);
+
+    WorldSetDaylight(&world, GameDaylightAt(0.25f));
+    WorldUpdateLighting(&world, (Rectangle){0.0f, 0.0f, (float)world.width,
+                                           (float)world.height});
+    noon = SkyLightAt(&world, column, surface);
+
+    WorldSetDaylight(&world, GameDaylightAt(0.75f));
+    WorldUpdateLighting(&world, (Rectangle){0.0f, 0.0f, (float)world.width,
+                                           (float)world.height});
+    midnight = SkyLightAt(&world, column, surface);
+
+    CHECK(noon > 0.7f, "the surface at noon sits at %.3f", (double)noon);
+    CHECK(midnight < 0.2f, "the surface at midnight sits at %.3f",
+          (double)midnight);
+    CHECK(SkyLightAt(&world, column, surface + 100) < 0.05f,
+          "sealed ground got brighter when the sun went down");
+    WorldUnload(&world);
+}
+
+static void test_the_backdrop_crosses_between_biomes_without_snapping(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentPaletteDefinition first;
+    EnvironmentPaletteDefinition middle;
+    EnvironmentPaletteDefinition last;
+    int step;
+
+    /* Left on AUTO: a forced palette is a session-wide decision and would
+       refuse the biome crossings this is about. */
+    EnvironmentRendererInit(&environment, 0xB10B1E5u,
+                            ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererSetDaylight(&environment, 1.0f);
+    EnvironmentRendererFadeTo(&environment,
+                              ENVIRONMENT_PALETTE_GLACIER_SHELF);
+    for (step = 0; step < 300; ++step) {
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    }
+    first = EnvironmentRendererResolvedPalette(&environment);
+    CHECK(first.skyBottom.r ==
+              EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_GLACIER_SHELF)
+                  ->skyBottom.r,
+          "the backdrop never settled on the glacier");
+
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_EMBER_WASTE);
+    /* Halfway across, the sky is neither of them. A backdrop that switched
+       would already be showing the destination. */
+    for (step = 0; step < 36; ++step) {
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    }
+    middle = EnvironmentRendererResolvedPalette(&environment);
+    CHECK(middle.skyBottom.r != first.skyBottom.r,
+          "the backdrop had not started crossing");
+    CHECK(middle.skyBottom.r !=
+              EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_EMBER_WASTE)
+                  ->skyBottom.r,
+          "the backdrop snapped straight to the new biome");
+
+    for (step = 0; step < 300; ++step) {
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    }
+    last = EnvironmentRendererResolvedPalette(&environment);
+    CHECK(last.skyBottom.r ==
+              EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_EMBER_WASTE)
+                  ->skyBottom.r,
+          "the crossing never finished");
+
+    /* And night darkens it without changing which place it is. */
+    EnvironmentRendererSetDaylight(&environment, 0.0f);
+    middle = EnvironmentRendererResolvedPalette(&environment);
+    CHECK(middle.skyBottom.r < last.skyBottom.r &&
+              middle.horizon.r < last.horizon.r,
+          "midnight did not darken the backdrop");
+    CHECK(middle.accent.r > last.accent.r / 2,
+          "the night sky lost the lights in it");
+}
+
+static void test_a_forced_backdrop_outranks_the_ground(void)
+{
+    EnvironmentRenderer environment;
+
+    /* A palette named on the command line is a decision about the session, and
+       walking into another biome must not quietly undo it. */
+    EnvironmentRendererInit(&environment, 0xB10B1E5u,
+                            ENVIRONMENT_PALETTE_ABYSSAL_BLUE);
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_AMBER_DUNES);
+    CHECK(EnvironmentRendererStatistics(&environment)->palette ==
+              ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
+          "a biome overrode the palette the session was started with");
 }
 
 static void test_daylight_dies_a_short_way_into_solid_ground(void)
@@ -9538,6 +9667,9 @@ int main(void)
     RUN(test_generated_biomes_have_distinct_material_identity);
     RUN(test_biome_boundaries_and_spawn_are_coherent);
     RUN(test_every_biome_can_host_the_protected_spawn);
+    RUN(test_the_day_turns_and_takes_the_sky_with_it);
+    RUN(test_the_backdrop_crosses_between_biomes_without_snapping);
+    RUN(test_a_forced_backdrop_outranks_the_ground);
     RUN(test_daylight_dies_a_short_way_into_solid_ground);
     RUN(test_a_carried_light_is_what_makes_the_dark_passable);
     RUN(test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it);

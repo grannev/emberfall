@@ -1,3 +1,4 @@
+#include <math.h>
 #include "game.h"
 
 #include <stddef.h>
@@ -25,6 +26,22 @@ GameConfig GameDefaultConfig(void)
         .activeRadiusX = DEFAULT_ACTIVE_RADIUS_X,
         .activeRadiusY = DEFAULT_ACTIVE_RADIUS_Y,
     };
+}
+
+float GameDaylightAt(float dayPhase)
+{
+    /* Wrapped rather than clamped: the phase is a position on a circle, and a
+       caller that has let it run past one is asking about the next day. */
+    float phase = dayPhase - floorf(dayPhase);
+    /* A cosine peaking at 0.25 and troughing at 0.75, then pushed toward its
+       ends so that noon and midnight are flat and the transitions are quick. */
+    float wave = 0.5f - 0.5f * cosf((phase + 0.25f) * 2.0f * PI);
+    float shaped = wave * wave * (3.0f - 2.0f * wave);
+
+    /* Never quite black. A moonless world where the surface is as dark as
+       sealed rock is one where flying at night is indistinguishable from flying
+       inside a mountain, and the player has no horizon to steer by. */
+    return 0.06f + 0.94f * shaped;
 }
 
 bool GameInit(GameState *game, GameConfig config)
@@ -216,6 +233,12 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible
            for collision to change a cell. */
+        /* The sky moves on the fixed step, like everything else the world
+           agrees on, so the same seed and the same inputs see the same
+           midnight. */
+        game->dayPhase += game->config.fixedStep / GAME_DAY_SECONDS;
+        if (game->dayPhase >= 1.0f) game->dayPhase -= floorf(game->dayPhase);
+        WorldSetDaylight(&game->world, GameDaylightAt(game->dayPhase));
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
         /* After integration, so a body that settled on this very step starts

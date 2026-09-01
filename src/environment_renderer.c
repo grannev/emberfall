@@ -44,6 +44,30 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .haze = {100, 120, 85, 255},
         .accent = {188, 225, 103, 255},
     },
+    [ENVIRONMENT_PALETTE_AMBER_DUNES] = {
+        .name = "AMBER DUNES",
+        .cliName = "dunes",
+        .skyTop = {18, 20, 40, 255},
+        .skyBottom = {126, 96, 54, 255},
+        .horizon = {206, 158, 82, 255},
+        .farSilhouette = {84, 66, 46, 255},
+        .midSilhouette = {52, 41, 32, 255},
+        .nearSilhouette = {22, 20, 22, 255},
+        .haze = {172, 138, 88, 255},
+        .accent = {255, 196, 96, 255},
+    },
+    [ENVIRONMENT_PALETTE_GLACIER_SHELF] = {
+        .name = "GLACIER SHELF",
+        .cliName = "glacier",
+        .skyTop = {10, 18, 38, 255},
+        .skyBottom = {70, 106, 134, 255},
+        .horizon = {148, 186, 208, 255},
+        .farSilhouette = {58, 78, 96, 255},
+        .midSilhouette = {34, 50, 66, 255},
+        .nearSilhouette = {14, 24, 36, 255},
+        .haze = {126, 160, 184, 255},
+        .accent = {186, 233, 255, 255},
+    },
 };
 
 static float EnvironmentClamp(float value, float minimum, float maximum)
@@ -51,6 +75,113 @@ static float EnvironmentClamp(float value, float minimum, float maximum)
     if (value < minimum) return minimum;
     if (value > maximum) return maximum;
     return value;
+}
+
+/* Seconds a backdrop takes to cross to another. Slow enough that the change is
+   something the player notices having happened rather than something they see
+   happen, which is how a horizon behaves. */
+#define ENVIRONMENT_FADE_SECONDS 2.5f
+
+static unsigned char EnvironmentMixChannel(unsigned char from, unsigned char to,
+                                           float amount, float night)
+{
+    float mixed = (float)from + ((float)to - (float)from) * amount;
+
+    /* Night is a scale toward black with a little blue left in it, rather than
+       a separate set of colours: the same horizon at midnight has to read as
+       the same place, only unlit. */
+    return (unsigned char)EnvironmentClamp(mixed * night, 0.0f, 255.0f);
+}
+
+static Color EnvironmentMixColor(Color from, Color to, float amount,
+                                 float daylight)
+{
+    float lit = 0.14f + 0.86f * daylight;
+    Color mixed;
+
+    mixed.r = EnvironmentMixChannel(from.r, to.r, amount, lit);
+    mixed.g = EnvironmentMixChannel(from.g, to.g, amount, lit * 1.02f);
+    mixed.b = EnvironmentMixChannel(from.b, to.b, amount,
+                                    lit + (1.0f - daylight) * 0.10f);
+    mixed.a = (unsigned char)((float)from.a +
+                              ((float)to.a - (float)from.a) * amount);
+    return mixed;
+}
+
+EnvironmentPaletteDefinition EnvironmentRendererResolvedPalette(
+    const EnvironmentRenderer *renderer)
+{
+    const EnvironmentPaletteDefinition *from;
+    const EnvironmentPaletteDefinition *to;
+    EnvironmentPaletteDefinition resolved;
+    float amount;
+    float daylight;
+
+    to = EnvironmentPaletteDefinitionAt(renderer != NULL ? renderer->palette
+                                                         : ENVIRONMENT_PALETTE_AUTO);
+    if (to == NULL) {
+        to = &PALETTES[0];
+    }
+    from = renderer != NULL ? EnvironmentPaletteDefinitionAt(renderer->fadeFrom)
+                            : NULL;
+    if (from == NULL) {
+        from = to;
+    }
+    amount = renderer != NULL ? EnvironmentClamp(renderer->fade, 0.0f, 1.0f)
+                              : 1.0f;
+    daylight = renderer != NULL ? EnvironmentClamp(renderer->daylight, 0.0f, 1.0f)
+                                : 1.0f;
+
+    resolved = *to;
+    resolved.skyTop = EnvironmentMixColor(from->skyTop, to->skyTop, amount, daylight);
+    resolved.skyBottom =
+        EnvironmentMixColor(from->skyBottom, to->skyBottom, amount, daylight);
+    resolved.horizon =
+        EnvironmentMixColor(from->horizon, to->horizon, amount, daylight);
+    resolved.farSilhouette =
+        EnvironmentMixColor(from->farSilhouette, to->farSilhouette, amount, daylight);
+    resolved.midSilhouette =
+        EnvironmentMixColor(from->midSilhouette, to->midSilhouette, amount, daylight);
+    resolved.nearSilhouette =
+        EnvironmentMixColor(from->nearSilhouette, to->nearSilhouette, amount,
+                            daylight);
+    resolved.haze = EnvironmentMixColor(from->haze, to->haze, amount, daylight);
+    /* The accent keeps its brightness through the night. It is what the stars,
+       the far lights and the emissive pass are made of, and a night sky with no
+       points of light in it is a black rectangle. */
+    resolved.accent = EnvironmentMixColor(from->accent, to->accent, amount,
+                                          0.55f + 0.45f * daylight);
+    return resolved;
+}
+
+void EnvironmentRendererFadeTo(EnvironmentRenderer *renderer,
+                               EnvironmentPalette palette)
+{
+    if (renderer == NULL || palette < 0 ||
+        palette >= ENVIRONMENT_PALETTE_COUNT || renderer->palette == palette) {
+        return;
+    }
+    /* A palette named on the command line is a decision about the whole
+       session and outranks the ground the player happens to be standing on. */
+    if (renderer->forcedPalette != ENVIRONMENT_PALETTE_AUTO) {
+        return;
+    }
+    /* Starting from where the crossing has got to, not from the palette it
+       began at: crossing a boundary back and forth must never snap. */
+    renderer->fadeFrom = renderer->fade >= 1.0f ? renderer->palette
+                                                : renderer->fadeFrom;
+    renderer->palette = palette;
+    renderer->fade = 0.0f;
+    renderer->stats.palette = palette;
+}
+
+void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
+                                    float daylight)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    renderer->daylight = EnvironmentClamp(daylight, 0.0f, 1.0f);
 }
 
 static int EnvironmentMaxInt(int first, int second)
@@ -270,6 +401,9 @@ void EnvironmentRendererInit(EnvironmentRenderer *renderer, uint64_t seed,
                             : renderer->forcedPalette;
     EnvironmentGenerateFeatures(renderer, seed);
     renderer->stats.palette = renderer->palette;
+    renderer->fadeFrom = renderer->palette;
+    renderer->fade = 1.0f;
+    renderer->daylight = 1.0f;
     renderer->stats.viewValid = true;
 }
 
@@ -306,6 +440,10 @@ void EnvironmentRendererUpdate(EnvironmentRenderer *renderer, float deltaTime)
         return;
     }
     renderer->time = fmodf(renderer->time + fminf(deltaTime, 0.1f), 4096.0f);
+    if (renderer->fade < 1.0f) {
+        renderer->fade += fminf(deltaTime, 0.1f) / ENVIRONMENT_FADE_SECONDS;
+        if (renderer->fade > 1.0f) renderer->fade = 1.0f;
+    }
 }
 
 Rectangle EnvironmentRendererOverscanBounds(int width, int height)
@@ -536,6 +674,7 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
                                   Camera2D camera, int width, int height)
 {
     const EnvironmentPaletteDefinition *palette;
+    EnvironmentPaletteDefinition resolved;
 
     if (renderer == NULL) {
         return;
@@ -547,7 +686,10 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
     renderer->stats.viewValid =
         EnvironmentRendererViewIsValid(camera, width, height) &&
         EnvironmentRendererStateIsValid(renderer);
-    palette = EnvironmentPaletteDefinitionAt(renderer->palette);
+    resolved = EnvironmentRendererResolvedPalette(renderer);
+    palette = EnvironmentPaletteDefinitionAt(renderer->palette) != NULL
+                  ? &resolved
+                  : NULL;
     if (!renderer->stats.viewValid || palette == NULL) {
         return;
     }

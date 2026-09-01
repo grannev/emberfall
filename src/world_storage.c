@@ -151,6 +151,10 @@ bool WorldInit(World *world, int width, int height)
     }
 
     memset(world, 0, sizeof(*world));
+    /* Full daylight until a caller says otherwise. A world that has never been
+       told the time of day is a world at noon, not a world at midnight: every
+       headless test builds one and expects to be able to see it. */
+    world->daylight = 1.0f;
     world->width = width;
     world->height = height;
     world->chunkColumns = (width + WORLD_CHUNK_SIZE - 1) / WORLD_CHUNK_SIZE;

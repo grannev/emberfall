@@ -107,7 +107,7 @@ static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
             if (open && world->lightOpacity[index] > 0.35f) {
                 open = false;
             }
-            world->lightSky[index] = open ? 1.0f : 0.0f;
+            world->lightSky[index] = open ? world->daylight : 0.0f;
         }
     }
 }
@@ -383,7 +383,10 @@ void WorldUpdateLighting(World *world, Rectangle visible)
         bool windowMoved = firstColumn != world->solvedFirstColumn ||
                            lastColumn != world->solvedLastColumn;
 
-        if (!sourceMoved && !terrainSettled && !windowMoved &&
+        bool dayChanged = fabsf(world->daylight - world->solvedDaylight) >
+                          1.0f / WORLD_LIGHT_STEPS;
+
+        if (!sourceMoved && !terrainSettled && !windowMoved && !dayChanged &&
             world->lightSolved) {
             return;
         }
@@ -393,10 +396,20 @@ void WorldUpdateLighting(World *world, Rectangle visible)
         world->solvedPointLight = world->pointLight;
         world->solvedPointLightStrength = world->pointLightStrength;
         world->solvedTick = world->tick;
+        world->solvedDaylight = world->daylight;
         world->solvedFirstColumn = firstColumn;
         world->solvedLastColumn = lastColumn;
         world->lightSolved = true;
     }
+}
+
+void WorldSetDaylight(World *world, float daylight)
+{
+    if (world == NULL) {
+        return;
+    }
+    world->daylight = daylight < 0.0f ? 0.0f : (daylight > 1.0f ? 1.0f
+                                                                : daylight);
 }
 
 void WorldSetPointLight(World *world, Vector2 position, float radius, float strength)

@@ -30,29 +30,6 @@
    one page. */
 #define WORLD_RENDER_PAGE_SIZE 256
 
-/* Chunks rebuilt in one frame.
- *
- * Keeping the world on screen cost nearly nine milliseconds a frame on average
- * at full flight speed, and up to thirty-six on the worst frame — which at
- * sixty frames a second is most of the budget, and is the whole of the drop the
- * flight suffers at its top stage. It is not that the flight is slow; it is
- * that the world arrives in lumps. A page scrolling into view marks all
- * sixty-four of its chunks dirty at once, the light solve marks more every time
- * its window moves, and a chunk is a thousand cells of pixel conversion with a
- * bilinear light sample each.
- *
- * Rationing the rebuild halves the average and takes a third off the worst
- * frame. A hundred and twenty-eight is two full pages, so a page arriving never
- * waits, and the ration bites only on a burst — several pages at once after a
- * resize, a teleport or a regenerate — where it spreads the work over the next
- * frame or two instead of dropping one.
- *
- * The obvious companion, claiming pages before the camera reaches them, was
- * tried and measured several times *worse*: the light solve and its relight
- * marking follow the same rectangle, and widening it cost far more than the
- * earlier arrival saved. */
-#define WORLD_RENDER_UPLOAD_BUDGET 128
-
 _Static_assert(WORLD_RENDER_PAGE_SIZE % WORLD_CHUNK_SIZE == 0,
                "a render page must be a whole number of simulation chunks");
 
@@ -63,12 +40,6 @@ typedef struct WorldRendererStats {
     uint32_t residentPages;
     uint32_t visiblePages;
     uint32_t pageBinds;
-    /* One when this frame spent its whole rebuild budget and therefore left
-       work behind, zero when it did not. Steady flight should report zero; a
-       burst — a page column scrolling in, a blast, a resize — reports a few
-       frames of one and then zero again. A value stuck at one means the budget
-       is below what the session generates. */
-    uint32_t budgetSpent;
     double preparationMilliseconds;
 } WorldRendererStats;
 

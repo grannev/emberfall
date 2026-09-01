@@ -193,11 +193,21 @@ typedef struct World {
     float *lightShownEmber;
     float *lightEmission;
     float *lightOpacity;
+    /* How much daylight the sky is giving, 0 at midnight and 1 at noon. Sky
+       light is seeded per column from the top, so scaling the seed is the whole
+       of night: a column open to the sky simply receives less, the two sweeps
+       carry less into every overhang, and the ground the sun was reaching goes
+       as dark as the ground it never reached. Nothing else in the simulation
+       reads it — night changes what can be seen, not what happens. */
+    float daylight;
     /* One movable light the caller owns, so the player can carry their own glow
        into a tunnel that has no other source. */
     Vector2 pointLight;
     float pointLightRadius;
     float pointLightStrength;
+    /* Daylight the last solve used, so a sky that is still brightening or
+       dimming re-solves and a sky that has settled does not. */
+    float solvedDaylight;
     /* State of the light the last solve was run for, so a still scene can skip
        the solve entirely. */
     Vector2 solvedPointLight;
@@ -229,6 +239,9 @@ void WorldUpdate(World *world);
 /* Position of the caller-owned light, applied on the next draw. A strength of
    zero disables it. */
 void WorldSetPointLight(World *world, Vector2 position, float radius, float strength);
+/* Sets how much daylight the sky gives, clamped to 0..1. Applied on the next
+   solve, like the point light. */
+void WorldSetDaylight(World *world, float daylight);
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);

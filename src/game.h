@@ -17,6 +17,18 @@
 #include "terrain_interaction.h"
 #include "world.h"
 
+/* Seconds in one full day. Long enough that a day is a stretch of play rather
+   than a flicker, short enough that a session sees both a noon and a midnight.
+   Emberfall is a game about carrying a light into the dark, and a night that
+   never comes would waste that. */
+#define GAME_DAY_SECONDS 420.0f
+
+/* Daylight at a given phase, 0..1. Dawn at 0, noon at 0.25, dusk at 0.5,
+   midnight at 0.75. The curve holds near full through the middle of the day and
+   near zero through the middle of the night, and moves quickly between: a long
+   even twilight reads as a bug in the lighting rather than as an evening. */
+float GameDaylightAt(float dayPhase);
+
 typedef struct GameConfig {
     int worldWidth;
     int worldHeight;
@@ -59,6 +71,10 @@ typedef struct GameState {
        — including every regeneration — reproducible from GameConfig.seed. */
     uint64_t worldSeed;
     Rng seedSequence;
+    /* Where the day has got to, 0..1 for one full cycle starting at dawn.
+       Advanced on the fixed step, so the sky moves at the rate the simulation
+       runs and not at the rate the machine draws. */
+    float dayPhase;
     float simulationAccumulator;
     int activatedPlayerChunkX;
     int activatedPlayerChunkY;

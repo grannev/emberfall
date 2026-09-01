@@ -142,13 +142,12 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (unsigned int)events->dropped),
              24, 135, 14, (Color){150, 205, 178, 255});
     DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u"
-                        " | %s",
+,
                         renderStats->textureUploads,
                         (double)renderStats->uploadedBytes / 1024.0,
                         renderStats->preparationMilliseconds,
                         renderStats->visiblePages, renderStats->residentPages,
-                        renderStats->pageBinds,
-                        renderStats->budgetSpent != 0u ? "CATCHING UP" : "CURRENT"),
+                        renderStats->pageBinds),
              24, 153, 14, (Color){166, 183, 223, 255});
     DrawText(TextFormat("POST: %s %dx%d | %u PASSES %u TARGETS | %.2f ms",
                         frameStats->bloomEnabled ? "BLOOM" : "SHARP",
@@ -200,11 +199,16 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         game->damage.stats.cellsCarved,
                         game->damage.stats.fractureSplits),
              24, 243, 14, (Color){228, 208, 140, 255});
-    DrawText(TextFormat("ENV: %s | %u+%u DRAWS",
+    DrawText(TextFormat("ENV: %s | %u+%u DRAWS | %02d:%02d %s",
                         environmentPalette != NULL ? environmentPalette->name
                                                    : "INVALID",
                         (unsigned int)frameStats->environmentSceneDrawCalls,
-                        (unsigned int)frameStats->environmentEmissiveDrawCalls),
+                        (unsigned int)frameStats->environmentEmissiveDrawCalls,
+                        /* Dawn is midnight plus six, so phase zero reads 06:00
+                           and the clock agrees with the sky. */
+                        ((int)(game->dayPhase * 24.0f) + 6) % 24,
+                        (int)(game->dayPhase * 1440.0f) % 60,
+                        GameDaylightAt(game->dayPhase) > 0.5f ? "DAY" : "NIGHT"),
              24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
@@ -1335,6 +1339,26 @@ int main(int argc, char **argv)
             } else if (smokeFrames == 11) {
                 (void)RendererSetEnvironmentPalette(
                     &renderer, ENVIRONMENT_PALETTE_VERDIGRIS_STORM);
+            } else if (smokeFrames == 12) {
+                (void)RendererSetEnvironmentPalette(
+                    &renderer, ENVIRONMENT_PALETTE_AMBER_DUNES);
+            } else if (smokeFrames == 13) {
+                (void)RendererSetEnvironmentPalette(
+                    &renderer, ENVIRONMENT_PALETTE_GLACIER_SHELF);
+            } else if (smokeFrames == 14) {
+                /* Back to AUTO, so the rest of the run is driven by the ground
+                   the player is over, which is what a session actually does. */
+                (void)RendererSetEnvironmentPalette(&renderer,
+                                                    ENVIRONMENT_PALETTE_AUTO);
+            }
+            /* A day lasts seven minutes and the run lasts ten seconds, so
+               midnight has to be asked for. Held over two frames — one for the
+               light to be re-solved with it, one to photograph — and then given
+               back, so nothing after this sees a night that never happened. */
+            if (smokeFrames == 15 || smokeFrames == 16) {
+                game.dayPhase = 0.75f;
+            } else if (smokeFrames == 17) {
+                game.dayPhase = 0.25f;
             }
         }
 
@@ -1660,6 +1684,13 @@ int main(int argc, char **argv)
                 TakeScreenshot("build/emberfall-smoke-abyss.png");
             } else if (smokeFrames == 11) {
                 TakeScreenshot("build/emberfall-smoke-storm.png");
+            } else if (smokeFrames == 12) {
+                TakeScreenshot("build/emberfall-smoke-dunes.png");
+            } else if (smokeFrames == 13) {
+                TakeScreenshot("build/emberfall-smoke-glacier.png");
+            }
+            if (smokeFrames == 16) {
+                TakeScreenshot("build/emberfall-night.png");
             }
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");

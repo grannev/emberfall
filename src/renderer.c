@@ -320,6 +320,22 @@ bool RendererInit(Renderer *renderer, const GameState *game,
     return true;
 }
 
+/* Which backdrop belongs to which ground. Not a property of either module —
+   the world does not know what it looks like from a distance, and the
+   environment does not know what biome is — so the mapping lives in the one
+   place that sees both. */
+static EnvironmentPalette RendererPaletteForBiome(WorldBiome biome)
+{
+    switch (biome) {
+        case WORLD_BIOME_TEMPERATE: return ENVIRONMENT_PALETTE_VERDIGRIS_STORM;
+        case WORLD_BIOME_DUNES: return ENVIRONMENT_PALETTE_AMBER_DUNES;
+        case WORLD_BIOME_FROST: return ENVIRONMENT_PALETTE_GLACIER_SHELF;
+        case WORLD_BIOME_VOLCANIC: return ENVIRONMENT_PALETTE_EMBER_WASTE;
+        case WORLD_BIOME_COUNT: break;
+    }
+    return ENVIRONMENT_PALETTE_ABYSSAL_BLUE;
+}
+
 void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime)
@@ -386,6 +402,17 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         .droppedFx = fxStats->dropped,
         .bloomEnabled = bloomReady,
     };
+
+    /* The backdrop belongs to the biome the player is standing in and to the
+       time of day, and this is the only place that can see all three. The
+       environment module still never receives a World: it is told which
+       backdrop and how much daylight, not where to look them up. */
+    EnvironmentRendererFadeTo(
+        &renderer->environment,
+        RendererPaletteForBiome(WorldBiomeAt(&game->world,
+                                             (int)game->player.position.x)));
+    EnvironmentRendererSetDaylight(&renderer->environment,
+                                   GameDaylightAt(game->dayPhase));
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
