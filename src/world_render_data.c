@@ -9,111 +9,38 @@
  */
 #include "world_render_data.h"
 
-#include <math.h>
 #include <stddef.h>
 
 #include <raymath.h>
 
+#include "material_render.h"
 #include "world_internal.h"
 #include "world_lighting.h"
-
-static unsigned char ChannelWithVariation(unsigned char base, signed char spread,
-                                         int variation)
-{
-    int value = (int)base + variation * (int)spread / 2;
-
-    return (unsigned char)Clamp((float)value, 0.0f, 255.0f);
-}
-
-/* Solid cells glow toward ember as they approach their own phase threshold, so
-   a laser preheating rock and a freshly drilled tunnel wall are both readable. */
-static float MaterialHeatAmount(const MaterialInfo *info, float temperature)
-{
-    if (temperature < 60.0f || !info->solid || !info->onHeat.enabled ||
-        info->onHeat.threshold <= 60.0f) {
-        return 0.0f;
-    }
-
-    /* Square root keeps the low end readable: rock melts at 720, so a linear
-       ramp would hide every temperature a drill or a short laser burst leaves. */
-    return sqrtf(Clamp((temperature - 60.0f) /
-                           (info->onHeat.threshold - 60.0f),
-                       0.0f, 1.0f));
-}
-
-static Color MaterialHeatTint(Color base, const MaterialInfo *info,
-                              float temperature)
-{
-    float heat = MaterialHeatAmount(info, temperature);
-
-    base.r = (unsigned char)((float)base.r + (245.0f - (float)base.r) * heat);
-    base.g = (unsigned char)((float)base.g + (96.0f - (float)base.g) * heat * 0.8f);
-    base.b = (unsigned char)((float)base.b * (1.0f - heat * 0.75f));
-    return base;
-}
-
-/* The mask is explicit material data, not a brightness extraction from the
-   finished scene. Bright sand therefore stays sharp while lava, fire and hot
-   solid faces contribute controlled colour to bloom. */
-static Color MaterialEmissivePixel(const Cell *cell, Color scenePixel)
-{
-    const MaterialInfo *info = MaterialAt(cell->material);
-    float strength = info->emission;
-    float heat = MaterialHeatAmount(info, cell->temperature) * 0.72f;
-
-    if (heat > strength) {
-        strength = heat;
-    }
-    if (strength <= 0.001f) {
-        return BLANK;
-    }
-    scenePixel.r = (unsigned char)((float)scenePixel.r * strength);
-    scenePixel.g = (unsigned char)((float)scenePixel.g * strength);
-    scenePixel.b = (unsigned char)((float)scenePixel.b * strength);
-    scenePixel.a = 255u;
-    return scenePixel;
-}
 
 /* Takes the light level rather than sampling it: this runs for every cell of
    every dirty chunk, and doing the bilinear lookup here — with its floor and its
    clamps — cost more than the rest of drawing put together. The caller walks a
    chunk in order and can hoist all of that out of the loop. */
-static Color MaterialPixel(const World *world, const Cell *cell, int x, int y,
-                           float red, float green, float blue)
+static MaterialRenderSample MaterialPixel(const World *world, const Cell *cell,
+                                          int x, int y, float red, float green,
+                                          float blue)
 {
-    const MaterialInfo *info = MaterialAt(cell->material);
-    Color color = info->color;
-    int variation;
+    MaterialRenderSample sample;
 
     if (cell->material == MATERIAL_EMPTY) {
         /* Empty space is a depth gradient rather than a flat colour. */
         unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
+        Color color = (Color){5, glow, (unsigned char)(18 + glow), 255};
 
-        color = (Color){5, glow, (unsigned char)(18 + glow), 255};
-    } else {
-        variation = (int)(CoordinateHash(x, y) % 13u) - 6;
-        color.r = ChannelWithVariation(color.r, info->variationR, variation);
-        color.g = ChannelWithVariation(color.g, info->variationG, variation);
-        color.b = ChannelWithVariation(color.b, info->variationB, variation);
-        color = MaterialHeatTint(color, info, cell->temperature);
-
-        /* An emitter lights itself; dimming lava by its own falloff would make
-           the middle of a lake darker than its shore. */
-        if (info->emission >= 0.999f) {
-            return color;
-        }
+        color.r = (unsigned char)(red * (float)color.r);
+        color.g = (unsigned char)(green * (float)color.g);
+        color.b = (unsigned char)(blue * (float)color.b);
+        sample.scene = color;
+        sample.emissive = BLANK;
+        return sample;
     }
-
-    /* Alpha carries material translucency and has nothing to do with light.
-       Only the warm channel can exceed the original value, so a single ceiling
-       test per channel is enough and no libm clamp is needed. */
-    red *= (float)color.r;
-    green *= (float)color.g;
-    blue *= (float)color.b;
-    color.r = (unsigned char)(red > 255.0f ? 255.0f : red);
-    color.g = (unsigned char)(green > 255.0f ? 255.0f : green);
-    color.b = (unsigned char)(blue > 255.0f ? 255.0f : blue);
-    return color;
+    return MaterialRenderCell((CellMaterial)cell->material, cell->temperature,
+                              x, y, red, green, blue);
 }
 
 void WorldMarkRegionDirty(World *world, Rectangle region)
@@ -264,17 +191,17 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     WorldLightTint(topSky + (bottomSky - topSky) * rowBlend,
                                    topEmber + (bottomEmber - topEmber) * rowBlend,
                                    &red, &green, &blue);
-                    Color pixel = MaterialPixel(world, WorldCellConst(world, x, y),
-                                                x, y, red, green, blue);
+                    MaterialRenderSample sample =
+                        MaterialPixel(world, WorldCellConst(world, x, y),
+                                      x, y, red, green, blue);
 
                     size_t pixelIndex =
                         (size_t)(y - minimumY) *
                             (size_t)(maximumX - minimumX) +
                         (size_t)(x - minimumX);
 
-                    uploadPixels[pixelIndex] = pixel;
-                    emissivePixels[pixelIndex] =
-                        MaterialEmissivePixel(WorldCellConst(world, x, y), pixel);
+                    uploadPixels[pixelIndex] = sample.scene;
+                    emissivePixels[pixelIndex] = sample.emissive;
                 }
             }
             /* At 16384 cells wide, uploading one full-width band for a local

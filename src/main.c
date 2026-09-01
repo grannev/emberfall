@@ -11,6 +11,8 @@
 #include "game.h"
 #include "input.h"
 #include "renderer.h"
+#include "terrain_extraction.h"
+#include "world_components.h"
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
@@ -113,8 +115,8 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     const Player *player = &game->player;
     const AbilitySystem *abilities = &game->abilities;
     const AbilityState *explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
-    const int panelWidth = 520;
-    const int panelHeight = 240;
+    const int panelWidth = 620;
+    const int panelHeight = 258;
     float cooldown = explosion->cooldown;
     float playerSpeed = sqrtf(player->velocity.x * player->velocity.x +
                               player->velocity.y * player->velocity.y);
@@ -164,14 +166,22 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (unsigned int)frameStats->peakFx,
                         (unsigned int)frameStats->droppedFx),
              24, 189, 14, (Color){255, 188, 119, 255});
+    DrawText(TextFormat("BODIES: %u VISIBLE / %u CACHED | %u DRAWS %u UP | %.1f KiB",
+                        frameStats->visibleTerrainBodies,
+                        frameStats->cachedTerrainBodies,
+                        frameStats->terrainBodyDrawCalls,
+                        frameStats->terrainBodyTextureUpdates,
+                        (double)frameStats->terrainBodyTextureMemoryBytes /
+                            1024.0),
+             24, 207, 14, (Color){139, 218, 201, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
     DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 207, 14, (Color){186, 194, 205, 255});
+             24, 225, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 225, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 243, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 225, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 243, 14,
                  LIGHTGRAY);
     }
 }
@@ -288,6 +298,102 @@ static void SetupSmokeTarget(World *world, Vector2 aim)
         }
     }
     WorldSetCell(world, centerX + 31, centerY + 10, MATERIAL_FIRE);
+}
+
+/* The normal game intentionally has no automatic detach until EF-DYN-011.
+   Smoke still needs visual proof, so this showcase builds a small isolated
+   island, extracts it through the production atomic API and gives the body a
+   visible transform. Nothing on this path runs outside --smoke-test. */
+static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
+                                               bool *worldCellsCleared)
+{
+    WorldComponentWorkspace workspace;
+    TerrainExtractResult extracted;
+    WorldComponentResult component;
+    TerrainBodyHandle invalid = TerrainBodyInvalidHandle();
+    TerrainBody *body;
+    int originX = (int)aim.x - 70;
+    int originY = (int)aim.y - 52;
+    int localY;
+    int index;
+
+    *worldCellsCleared = false;
+    for (localY = -2; localY <= 7; ++localY) {
+        int localX;
+
+        for (localX = -2; localX <= 13; ++localX) {
+            WorldSetCell(&game->world, originX + localX, originY + localY,
+                         MATERIAL_EMPTY);
+        }
+    }
+    for (localY = 0; localY < 6; ++localY) {
+        int localX;
+
+        for (localX = 0; localX < 12; ++localX) {
+            CellMaterial material;
+
+            /* Cut the four corners and one interior pixel so rotation exposes
+               the transparent raster rather than a plain rectangle. */
+            if ((localY == 0 || localY == 5) &&
+                (localX == 0 || localX == 11)) {
+                continue;
+            }
+            if (localX == 5 && localY == 2) {
+                continue;
+            }
+            material = localX < 4 ? MATERIAL_DIRT
+                                  : (localX < 9 ? MATERIAL_ROCK : MATERIAL_ICE);
+            WorldSetCell(&game->world, originX + localX, originY + localY,
+                         material);
+            if (material == MATERIAL_ROCK &&
+                (localY == 2 || localY == 3)) {
+                WorldSetTemperature(&game->world, originX + localX,
+                                    originY + localY, 540.0f);
+            }
+        }
+    }
+
+    component = WorldFindComponent(
+        &game->world, &workspace,
+        (Rectangle){(float)(originX - 1), (float)(originY - 1), 14.0f, 8.0f},
+        originX + 2, originY, WORLD_COMPONENT_MAX_CELLS);
+    if (component.status != WORLD_COMPONENT_DETACHED) {
+        return invalid;
+    }
+    extracted = TerrainExtractComponent(&game->world, &game->dynamicTerrain,
+                                        &workspace, component);
+    if (extracted.status != TERRAIN_EXTRACT_OK) {
+        return invalid;
+    }
+
+    *worldCellsCleared = true;
+    for (index = 0; index < component.cellCount; ++index) {
+        if (WorldGetCell(&game->world, (int)workspace.cellX[index],
+                        (int)workspace.cellY[index]) != MATERIAL_EMPTY) {
+            *worldCellsCleared = false;
+            break;
+        }
+    }
+
+    body = DynamicTerrainGet(&game->dynamicTerrain, extracted.body);
+    if (body == NULL) {
+        return invalid;
+    }
+    /* Collision is already part of the production fixed step. A short shelf
+       below the extracted island makes the renderer showcase exercise that
+       shared transform at contact instead of only showing free flight. It is
+       placed after extraction and outside the detector region, so it cannot
+       become part of the detached component. */
+    for (index = -6; index <= 17; ++index) {
+        WorldSetCell(&game->world, originX + index, originY + 10,
+                     MATERIAL_ROCK);
+        WorldSetCell(&game->world, originX + index, originY + 11,
+                     MATERIAL_ROCK);
+    }
+    body->angle = 0.18f;
+    DynamicTerrainSetVelocity(&game->dynamicTerrain, extracted.body,
+                              (Vector2){26.0f, 78.0f}, 1.8f);
+    return extracted.body;
 }
 
 static bool RunSmokeFireContainmentProbe(void)
@@ -428,6 +534,19 @@ int main(int argc, char **argv)
     bool smokeBloomRestored = false;
     bool smokeTargetsSynchronized = true;
     bool smokePresentationFxObserved = false;
+    TerrainBodyHandle smokeTerrainBody = TerrainBodyInvalidHandle();
+    Vector2 smokeTerrainStartPosition = {0.0f, 0.0f};
+    float smokeTerrainStartAngle = 0.0f;
+    bool smokeTerrainExtracted = false;
+    bool smokeTerrainWorldCleared = false;
+    bool smokeTerrainRendered = false;
+    bool smokeTerrainMoved = false;
+    bool smokeTerrainRotated = false;
+    bool smokeTerrainCollisionObserved = false;
+    bool smokeTerrainCacheReleased = false;
+    uint32_t smokeTerrainTextureUpdates = 0u;
+    uint32_t smokeTerrainMaximumDrawCalls = 0u;
+    uint64_t smokeTerrainMaximumTextureBytes = 0u;
     double smokeBloomSubmissionTotal = 0.0;
     double smokeBloomSubmissionMaximum = 0.0;
     int smokeBloomFrames = 0;
@@ -486,6 +605,18 @@ int main(int argc, char **argv)
         smokeAim = (Vector2){game.player.position.x + 14.0f,
                              game.player.position.y + 40.0f};
         SetupSmokeTarget(&game.world, smokeAim);
+        smokeTerrainBody = SetupSmokeTerrainBody(
+            &game, smokeAim, &smokeTerrainWorldCleared);
+        {
+            const TerrainBody *body = DynamicTerrainGetConst(
+                &game.dynamicTerrain, smokeTerrainBody);
+
+            if (body != NULL) {
+                smokeTerrainExtracted = true;
+                smokeTerrainStartPosition = body->position;
+                smokeTerrainStartAngle = body->angle;
+            }
+        }
     }
     cameraFocus = game.player.position;
     camera.target = cameraFocus;
@@ -507,6 +638,12 @@ int main(int argc, char **argv)
             SetWindowSize(WINDOW_WIDTH - 320, WINDOW_HEIGHT - 180);
         } else if (smokeTest && smokeFrames == 7) {
             SetWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+        }
+        /* The screenshot at frame ten contains the moving body. Free it on the
+           final frame so the same GL smoke run also proves that the generation-
+           keyed cache releases its textures and draws no ghost. */
+        if (smokeTest && smokeFrames == 11) {
+            DynamicTerrainFreeBody(&game.dynamicTerrain, smokeTerrainBody);
         }
 
         if (input.toggleDebugPressed) {
@@ -614,6 +751,42 @@ int main(int argc, char **argv)
                                           (frameStats->activeFx > 0u &&
                                            frameStats->peakFx == 2u &&
                                            frameStats->droppedFx == 0u);
+            smokeTerrainTextureUpdates +=
+                frameStats->terrainBodyTextureUpdates;
+            if (frameStats->terrainBodyDrawCalls >
+                smokeTerrainMaximumDrawCalls) {
+                smokeTerrainMaximumDrawCalls =
+                    frameStats->terrainBodyDrawCalls;
+            }
+            if (frameStats->terrainBodyTextureMemoryBytes >
+                smokeTerrainMaximumTextureBytes) {
+                smokeTerrainMaximumTextureBytes =
+                    frameStats->terrainBodyTextureMemoryBytes;
+            }
+            smokeTerrainRendered = smokeTerrainRendered ||
+                                   (frameStats->visibleTerrainBodies == 1u &&
+                                    frameStats->cachedTerrainBodies == 1u &&
+                                    frameStats->terrainBodyDrawCalls >= 2u);
+            smokeTerrainCollisionObserved = smokeTerrainCollisionObserved ||
+                game.dynamicTerrain.stats.collisionContacts > 0;
+            {
+                const TerrainBody *body = DynamicTerrainGetConst(
+                    &game.dynamicTerrain, smokeTerrainBody);
+
+                if (body != NULL) {
+                    smokeTerrainMoved = smokeTerrainMoved ||
+                        Vector2Distance(body->position,
+                                        smokeTerrainStartPosition) > 0.05f;
+                    smokeTerrainRotated = smokeTerrainRotated ||
+                        fabsf(body->angle - smokeTerrainStartAngle) > 0.01f;
+                }
+            }
+            if (smokeFrames == 11) {
+                smokeTerrainCacheReleased =
+                    frameStats->cachedTerrainBodies == 0u &&
+                    frameStats->visibleTerrainBodies == 0u &&
+                    frameStats->terrainBodyTextureMemoryBytes == 0u;
+            }
             smokeBloomResized = smokeBloomResized ||
                                 (frameStats->bloomEnabled &&
                                  frameStats->bloomWidth == (WINDOW_WIDTH - 320) / 2 &&
@@ -666,14 +839,20 @@ int main(int argc, char **argv)
         printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
                "submit_avg=%.3fms submit_max=%.3fms "
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
-               "target_sync=%d fx_peak=%u fx_dropped=%u\n",
+               "target_sync=%d fx_peak=%u fx_dropped=%u "
+               "body_draws=%u body_updates=%u body_kib=%.1f "
+               "body_collision=%d body_released=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
                smokeBloomSubmissionMaximum, smokeResizeObserved,
                smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
                smokeTargetsSynchronized, (unsigned int)frameStats->peakFx,
-               (unsigned int)frameStats->droppedFx);
+               (unsigned int)frameStats->droppedFx,
+               smokeTerrainMaximumDrawCalls, smokeTerrainTextureUpdates,
+               (double)smokeTerrainMaximumTextureBytes / 1024.0,
+               smokeTerrainCollisionObserved,
+               smokeTerrainCacheReleased);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -681,6 +860,12 @@ int main(int argc, char **argv)
                       !smokeDrillObserved || !smokeFireContained ||
                       !smokeBloomObserved || !smokeTargetsSynchronized ||
                       !smokePresentationFxObserved ||
+                      !smokeTerrainExtracted || !smokeTerrainWorldCleared ||
+                      !smokeTerrainRendered || !smokeTerrainMoved ||
+                      !smokeTerrainRotated ||
+                      !smokeTerrainCollisionObserved ||
+                      !smokeTerrainCacheReleased ||
+                      smokeTerrainTextureUpdates != 2u ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
@@ -688,13 +873,19 @@ int main(int argc, char **argv)
                 "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
                 "drill=%d fire_contained=%d resize=%d restored=%d "
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
-                "presentation_fx=%d chunks=%d/%d\n",
+                "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
+                "rotated=%d collision=%d released=%d updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
                 smokeBloomObserved, smokeBloomResized, smokeBloomRestored,
                 smokeTargetsSynchronized,
                 smokePresentationFxObserved,
+                smokeTerrainExtracted, smokeTerrainWorldCleared,
+                smokeTerrainRendered, smokeTerrainMoved,
+                smokeTerrainRotated, smokeTerrainCollisionObserved,
+                smokeTerrainCacheReleased,
+                smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;

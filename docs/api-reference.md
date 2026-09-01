@@ -111,8 +111,9 @@ sharp fallback. HUD рисуется после composite.
 `WorldRendererStats` публикует dirty regions, uploads/bytes и время подготовки
 world pages. `RendererStats` сообщает фактический размер scene target, активен
 ли bloom, его resolution, число offscreen passes/targets и CPU submission time
-emissive/filter passes, а также active/peak/dropped presentation FX. Это не GPU
-timer: на software renderer значение включает стоимость rasterization.
+emissive/filter passes, active/peak/dropped presentation FX, а также
+cached/visible TerrainBody, body draw calls, texture updates и RGBA8 bytes. Это
+не GPU timer: на software renderer значение включает стоимость rasterization.
 
 `RendererRenderScene` вызывается до `BeginDrawing`; `RendererComposite` — между
 `BeginDrawing` и `EndDrawing`. Это не допускает вложения backbuffer и
@@ -314,10 +315,38 @@ bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
 - Handle с поколением: обращение к освобождённому телу даёт `NULL`, запись
   через устаревший handle — no-op.
 - `SetCell` поддерживает `cellCount`; `FinalizeBody` пересчитывает bounds,
-  массу, центр масс и момент инерции.
+  массу, центр масс и момент инерции. Реальная material/temperature mutation
+  также увеличивает `TerrainBody.rasterRevision`; transform её не меняет.
 - Единицы массы относительные (плотность материала × площадь клетки).
 
 Модель, лимиты и бюджет памяти — [dynamic-terrain.md](dynamic-terrain.md).
+
+## Terrain body presentation API
+
+```c
+void TerrainBodyRendererInit(TerrainBodyRenderer *renderer);
+void TerrainBodyRendererDrawScene(TerrainBodyRenderer *renderer,
+                                  const DynamicTerrainSystem *terrain,
+                                  Rectangle visible);
+void TerrainBodyRendererDrawEmissive(TerrainBodyRenderer *renderer,
+                                     const DynamicTerrainSystem *terrain,
+                                     Rectangle visible);
+const TerrainBodyRendererStats *TerrainBodyRendererStatistics(
+    const TerrainBodyRenderer *renderer);
+void TerrainBodyRendererUnload(TerrainBodyRenderer *renderer);
+```
+
+Это renderer-internal lifecycle, который композитит общий `Renderer`.
+`DynamicTerrainSystem` передаётся как `const`; texture/cache принадлежат только
+presentation. Cache slot использует существующий generation handle плюс
+`rasterRevision`, поэтому free/reset/reuse не могут показать texture старого
+body. Scene/emissive RGBA8 pair создаётся один раз на generation, обновляется
+двумя `UpdateTexture` только при изменении raster и не зависит от window resize.
+
+Headless `terrain_body_render_data.h` отдельно предоставляет render key,
+world-space bounds и camera intersection helpers. Bounds проходят через
+`TerrainBodyLocalToWorld`, не выводят rotation convention повторно и безопасно
+возвращают пустой rectangle для empty/invalid body.
 
 ## Terrain extraction API
 

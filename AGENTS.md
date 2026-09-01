@@ -131,6 +131,13 @@ coherent phase with an explanatory message.
   one transform: no integration step may walk a body's raster. The transform
   lives in `TerrainBodyLocalToWorld`/`TerrainBodyWorldToLocal` — read it there
   rather than re-deriving it, since rotation is about the centre of mass.
+- `TerrainBodyRenderer` is the only GPU owner for detached terrain. Its 32
+  fixed cache slots key scene/emissive RGBA8 textures by the existing
+  generation handle plus `rasterRevision`; unchanged bodies cost only a bounded
+  slot scan and visible draw, while raster edits upload in place. It reads
+  `DynamicTerrainSystem` through const pointers and must never write gameplay
+  state. Point filtering and `centerOfMass` as the `DrawTexturePro` origin are
+  non-negotiable transform invariants.
 - Extraction (`terrain_extraction.h`) moves a proven-detached component out of
   the world atomically: everything that can fail runs before the first cell is
   cleared, so a failure leaves the world byte-for-byte unchanged and no body

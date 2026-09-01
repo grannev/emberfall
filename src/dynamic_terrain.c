@@ -34,8 +34,7 @@
 
 /* Starting values, not settled ones. Gravity sits between the 18-30 cells/s^2
    that particle debris uses and something that reads as a slab of rock rather
-   than grit; it will want retuning once EF-DYN-005 makes bodies visible, and
-   the point of gathering it here is that retuning is then one edit.
+   than grit. Keeping it here means later visual playtesting changes one value.
 
    linearSleepSpeed is deliberately under gravity * (1/60) = 2.0, so a body in
    free fall can never satisfy the sleep condition. Until collision exists there
@@ -274,6 +273,8 @@ void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handl
 {
     TerrainBody *body;
     size_t index;
+    uint8_t storedMaterial;
+    float storedTemperature;
     bool wasOccupied;
     bool isOccupied;
 
@@ -284,8 +285,19 @@ void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handl
         return;
     }
     body = &system->bodies[handle.index];
-    wasOccupied = system->material[index] != (uint8_t)MATERIAL_EMPTY;
+    storedMaterial = system->material[index];
+    storedTemperature = system->temperature[index];
+    wasOccupied = storedMaterial != (uint8_t)MATERIAL_EMPTY;
     isOccupied = material != MATERIAL_EMPTY;
+
+    /* Repeating the same write is not a dirty edit. Empty cells canonicalise
+       temperature to zero, so an ignored temperature on empty also stays
+       revision-neutral. */
+    if (storedMaterial == (uint8_t)material &&
+        ((!isOccupied && storedTemperature == 0.0f) ||
+         (isOccupied && storedTemperature == temperature))) {
+        return;
+    }
 
     system->material[index] = (uint8_t)material;
     system->temperature[index] = isOccupied ? temperature : 0.0f;
@@ -293,6 +305,10 @@ void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handl
         ++body->cellCount;
     } else if (!isOccupied && wasOccupied) {
         --body->cellCount;
+    }
+    ++body->rasterRevision;
+    if (body->rasterRevision == 0u) {
+        ++body->rasterRevision;
     }
 }
 
