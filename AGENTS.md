@@ -121,6 +121,15 @@ coherent phase with an explanatory message.
   `World`. Bodies are addressed by generation handles, so a reference held
   across a free resolves to NULL instead of to whatever took the slot. See
   `docs/dynamic-terrain.md`.
+- Every terrain-body budget refuses rather than evicts, and every refusal is
+  counted. Nothing is ever thrown away to make room: choosing a victim would
+  need a gameplay policy that does not exist, and an old body is not less
+  valuable than a new one. The awake budget throttles motion, not existence — a
+  body created past it is born asleep rather than refused.
+- A terrain body is destroyed only for leaving the world, never for being old,
+  idle or off screen. Kill bounds are a world-safety region with its own margin;
+  the camera has no say in what the simulation keeps. The player must be able to
+  come back and find the rubble where they left it.
 - Terrain-body collision reads the world through a `const World *` and never
   writes it; the world knows nothing about bodies, and no TerrainBody logic
   belongs in the cellular material simulation. Every cost is a compile-time

@@ -418,9 +418,24 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
 /* Dynamic terrain has its own cost curve — bodies, not cells — so it is
    measured on its own rather than folded into a cellular scenario. Bodies are
    dropped onto the generated surface so they collide against real terrain
-   rather than a flat test floor. */
+   rather than a flat test floor.
+
+   The scenarios exist to answer the two questions the budgets are set from:
+   what does a full world of moving rubble cost, and how much of that cost does
+   sleeping take away. The sleeping rows carry exactly the same bodies as the
+   awake ones — same count, same size, same place — so the difference between
+   the two rows is the sleep check and nothing else. */
+typedef struct {
+    const char *name;
+    int bodyCount;
+    int bodyWidth;
+    int bodyHeight;
+    bool asleep;   /* settle every body before the first tick */
+    int awakeBudget; /* 0 keeps the shipped default */
+} TerrainBenchScenario;
+
 static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
-                                       int bodyCount)
+                                       TerrainBenchScenario scenario)
 {
     DynamicTerrainSystem terrain;
     World *world = context->world;
@@ -432,17 +447,22 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
         printf("dynamic terrain      allocation failed\n");
         return;
     }
+    if (scenario.awakeBudget > 0) {
+        terrain.config.maxAwakeBodies = scenario.awakeBudget;
+    }
     PrepareScenario(context);
 
-    for (index = 0; index < bodyCount; ++index) {
-        TerrainBodyHandle handle = DynamicTerrainAllocBody(&terrain, 16, 12);
+    for (index = 0; index < scenario.bodyCount; ++index) {
+        TerrainBodyHandle handle = DynamicTerrainAllocBody(&terrain,
+                                                           scenario.bodyWidth,
+                                                           scenario.bodyHeight);
         TerrainBody *body;
         int y;
 
-        for (y = 0; y < 12; ++y) {
+        for (y = 0; y < scenario.bodyHeight; ++y) {
             int x;
 
-            for (x = 0; x < 16; ++x) {
+            for (x = 0; x < scenario.bodyWidth; ++x) {
                 DynamicTerrainSetCell(&terrain, handle, x, y, MATERIAL_ROCK, 20.0f);
             }
         }
@@ -453,8 +473,22 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
         }
         body->position = (Vector2){(float)(context->centerX - 200 + index * 26),
                                    120.0f};
-        body->velocity = (Vector2){12.0f, 0.0f};
-        body->angularVelocity = 0.6f;
+        if (scenario.asleep) {
+            /* Settled in place, holding a slot and its cells but asking for no
+               work. This is the state most rubble spends its life in. The quiet
+               spell is fed in ordinary frame steps because the module refuses a
+               step larger than a frame; the body has no velocity, so nothing
+               resets the timer and the loop always terminates well inside its
+               bound. */
+            int quiet;
+
+            for (quiet = 0; quiet < 64 && body->awake; ++quiet) {
+                DynamicTerrainSettleBody(&terrain, body, 1.0f / 60.0f);
+            }
+        } else {
+            body->velocity = (Vector2){12.0f, 0.0f};
+            body->angularVelocity = 0.6f;
+        }
     }
 
     for (frame = 0; frame < context->ticks; ++frame) {
@@ -465,13 +499,14 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
         total += samples[frame];
     }
 
-    printf("dynamic terrain %2d   avg=%7.3f ms  p50=%7.3f  p95=%7.3f  "
-           "awake=%3d sleeping=%3d  contacts/tick=%5d substeps/tick=%4d "
-           "max_contacts=%3d\n",
-           bodyCount, total / (double)context->ticks,
+    printf("terrain %-18s avg=%7.3f ms  p50=%7.3f  p95=%7.3f  "
+           "awake=%3d sleeping=%3d cells=%6d  contacts/tick=%5d "
+           "substeps/tick=%4d max_contacts=%3d\n",
+           scenario.name, total / (double)context->ticks,
            Percentile(samples, context->ticks, 0.50),
            Percentile(samples, context->ticks, 0.95),
            terrain.stats.awakeBodies, terrain.stats.sleepingBodies,
+           terrain.stats.dynamicCellsUsed,
            terrain.stats.collisionContacts, terrain.stats.collisionSubsteps,
            terrain.stats.maxContactsObserved);
     DynamicTerrainUnload(&terrain);
@@ -567,10 +602,28 @@ int main(int argc, char **argv)
         RunScenario(&context, &scenarios[scenarioIndex], samples);
     }
     RunLightingBenchmark(&context, samples);
-    RunDynamicTerrainBenchmark(&context, samples, 1);
-    RunDynamicTerrainBenchmark(&context, samples, 8);
-    RunDynamicTerrainBenchmark(&context, samples, 16);
-    RunDynamicTerrainBenchmark(&context, samples, MAX_TERRAIN_BODIES);
+    {
+        /* 32 bodies of 64x32 is 65536 occupied cells: the shipped cell budget
+           exactly, and the worst case the budgets are meant to bound. */
+        static const TerrainBenchScenario terrainScenarios[] = {
+            {"idle",              0,                  16, 12, false, MAX_TERRAIN_BODIES},
+            {"1 awake",           1,                  16, 12, false, MAX_TERRAIN_BODIES},
+            {"16 awake",          16,                 16, 12, false, MAX_TERRAIN_BODIES},
+            {"32 awake",          MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES},
+            {"32 sleeping",       MAX_TERRAIN_BODIES, 16, 12, true,  MAX_TERRAIN_BODIES},
+            {"32 shipped budget", MAX_TERRAIN_BODIES, 16, 12, false, 0},
+            {"cells at budget",   MAX_TERRAIN_BODIES, 64, 32, false, MAX_TERRAIN_BODIES},
+            {"cells asleep",      MAX_TERRAIN_BODIES, 64, 32, true,  MAX_TERRAIN_BODIES},
+        };
+        size_t terrainIndex;
+
+        for (terrainIndex = 0u;
+             terrainIndex < sizeof(terrainScenarios) / sizeof(terrainScenarios[0]);
+             ++terrainIndex) {
+            RunDynamicTerrainBenchmark(&context, samples,
+                                       terrainScenarios[terrainIndex]);
+        }
+    }
 
     printf("final_peak_rss=%.2f MiB\n", (double)PeakRssBytes() / 1048576.0);
     WorldUnload(&world);

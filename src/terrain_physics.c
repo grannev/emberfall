@@ -2,8 +2,12 @@
  * bounds; this file records the shape of the solution and why each piece is the
  * cheap one rather than the general one.
  *
- * Broad phase is the body's world-space bounding box, clipped to the map. Narrow
- * phase walks only the body's surface cells — an interior cell is walled in by
+ * There is no broad phase, and there is nothing for one to do. A broad phase
+ * exists to avoid testing pairs that cannot touch, but the world is a grid and
+ * asking it about a cell is O(1): there is no list of candidate obstacles to
+ * cut down. What bounds the cost is the surface list, not a spatial reject.
+ *
+ * Narrow phase walks only the body's surface cells — an interior cell is walled in by
  * its own body and can never make first contact — transforms each to world
  * space and asks the world one question about one cell. There is no polygon
  * clipping, no SAT and no general solver, because a rotating raster against a
@@ -73,6 +77,29 @@ bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
               config->maximumAngularSpeed * boundingRadius) * deltaTime;
     return travel <= TERRAIN_COLLISION_SUBSTEP_DISTANCE *
                          (float)TERRAIN_MAX_SUBSTEPS;
+}
+
+/* True when every corner of the body's world box lies outside the map by more
+   than the configured margin. Whole-body, not any-corner: a body straddling the
+   border is still in play. */
+static bool TerrainBodyIsLost(const TerrainBody *body, const World *world,
+                              const DynamicTerrainConfig *config)
+{
+    Vector2 minimum;
+    Vector2 maximum;
+
+    if (!TerrainBodyWorldBounds(body, &minimum, &maximum)) {
+        return false;
+    }
+    if (!TerrainFiniteSample(minimum) || !TerrainFiniteSample(maximum)) {
+        /* A transform that has gone non-finite cannot be reasoned about and
+           will never recover, so the body is lost in the way that matters. */
+        return true;
+    }
+    return maximum.x < -config->killBoundsMargin ||
+           maximum.y < -config->killBoundsMargin ||
+           minimum.x > (float)world->width + config->killBoundsMargin ||
+           minimum.y > (float)world->height + config->killBoundsMargin;
 }
 
 static bool TerrainWorldCellIsSolid(const World *world, int x, int y)
@@ -371,8 +398,6 @@ void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
         world = NULL;
     }
 
-    system->stats.awakeBodies = 0;
-    system->stats.sleepingBodies = 0;
     system->stats.collisionBodies = 0;
     system->stats.collisionContacts = 0;
     system->stats.collisionSubsteps = 0;
@@ -386,8 +411,18 @@ void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
         if (!body->active) {
             continue;
         }
+        /* A body that has left the map can never touch anything again, so it
+           would fall for ever, never satisfy the sleep condition, and hold an
+           awake slot nothing could reclaim. Destroying it is a world-safety
+           decision and deliberately nothing to do with the camera: a body that
+           has merely scrolled off screen is left exactly where it is. */
+        if (world != NULL && TerrainBodyIsLost(body, world, &system->config)) {
+            DynamicTerrainFreeBody(system, (TerrainBodyHandle){
+                (uint16_t)slot, body->generation});
+            ++system->stats.bodiesRemovedOutOfBounds;
+            continue;
+        }
         if (!body->awake) {
-            ++system->stats.sleepingBodies;
             continue;
         }
 
@@ -417,10 +452,8 @@ void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
            quiet time a body accumulates means the same thing however fast it
            happened to be moving. */
         DynamicTerrainSettleBody(system, body, deltaTime);
-        if (body->awake) {
-            ++system->stats.awakeBodies;
-        } else {
-            ++system->stats.sleepingBodies;
-        }
     }
+    /* Derived from the invariant, not counted by this loop, so they are equally
+       correct for a caller that never calls update. */
+    (void)DynamicTerrainStatistics(system);
 }

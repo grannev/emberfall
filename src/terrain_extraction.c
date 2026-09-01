@@ -43,6 +43,12 @@ static TerrainExtractResult ExtractFailure(DynamicTerrainSystem *terrain,
     result.cellCount = 0;
     if (terrain != NULL) {
         ++terrain->stats.extractionsFailed;
+        /* Counted here rather than at each refusal site so that every way of
+           running out of cell room — the fixed per-body limits and the shared
+           budget alike — reports through one counter. */
+        if (status == TERRAIN_EXTRACT_CELL_CAPACITY) {
+            ++terrain->stats.cellCapacityFailures;
+        }
     }
     return result;
 }
@@ -90,6 +96,15 @@ TerrainExtractResult TerrainExtractComponent(World *world,
     if (component.cellCount > MAX_TERRAIN_BODY_CELLS ||
         width > TERRAIN_BODY_MAX_SPAN || height > TERRAIN_BODY_MAX_SPAN ||
         width * height > TERRAIN_BODY_RASTER_CAPACITY) {
+        return ExtractFailure(terrain, TERRAIN_EXTRACT_CELL_CAPACITY);
+    }
+    /* The shared budget, asked the same way and in the same place. A body that
+       fits on its own can still be one body too many: what bounds collision
+       work — and, later, drawing — is the total number of occupied cells, not
+       any single body's size. Refusing here keeps the refusal free: the world
+       is untouched and no slot has been taken. */
+    if (terrain->stats.dynamicCellsUsed + component.cellCount >
+        terrain->config.maxDynamicCells) {
         return ExtractFailure(terrain, TERRAIN_EXTRACT_CELL_CAPACITY);
     }
 
