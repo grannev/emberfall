@@ -46,11 +46,13 @@ static inline void ComponentMarkVisited(WorldComponentWorkspace *workspace,
     workspace->visited[index >> 5] |= 1u << (index & 31);
 }
 
-static WorldComponentResult ComponentFailure(WorldComponentStatus status)
+static WorldComponentResult ComponentFailure(WorldComponentStatus status,
+                                             int exploredCells)
 {
     WorldComponentResult result = {0};
 
     result.status = status;
+    result.exploredCells = exploredCells;
     return result;
 }
 
@@ -69,13 +71,13 @@ WorldComponentResult WorldFindComponent(const World *world,
     int head;
 
     if (world == NULL || world->cells == NULL || workspace == NULL) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
     if (maximumCells > WORLD_COMPONENT_MAX_CELLS) {
         maximumCells = WORLD_COMPONENT_MAX_CELLS;
     }
     if (maximumCells <= 0) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
     /* The region is given in cells, like WorldActivateRegion. */
@@ -91,7 +93,7 @@ WorldComponentResult WorldFindComponent(const World *world,
        edge, purely because the world happened to trim it. */
     if (lastX - firstX + 1 > WORLD_COMPONENT_MAX_SPAN ||
         lastY - firstY + 1 > WORLD_COMPONENT_MAX_SPAN) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
     /* Clipping to the world costs no meaning: everything past the edge reads
@@ -101,17 +103,17 @@ WorldComponentResult WorldFindComponent(const World *world,
     if (lastX > world->width - 1) lastX = world->width - 1;
     if (lastY > world->height - 1) lastY = world->height - 1;
     if (firstX > lastX || firstY > lastY) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
     regionWidth = lastX - firstX + 1;
     regionHeight = lastY - firstY + 1;
 
     if (seedX < firstX || seedX > lastX || seedY < firstY || seedY > lastY) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
     if (!WorldMaterialIsSolid(WorldMaterialAt(world, seedX, seedY))) {
-        return ComponentFailure(WORLD_COMPONENT_INVALID);
+        return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
     /* Only the prefix this region uses is cleared, so the cost is the region's
@@ -150,7 +152,7 @@ WorldComponentResult WorldFindComponent(const World *world,
                which is what makes the map's border an unbreakable wall — so a
                component touching it is attached, and proven so. */
             if (!WorldInBounds(world, neighbourX, neighbourY)) {
-                return ComponentFailure(WORLD_COMPONENT_ANCHORED);
+                return ComponentFailure(WORLD_COMPONENT_ANCHORED, result.cellCount);
             }
 
             if (!WorldMaterialIsSolid(WorldMaterialAt(world, neighbourX,
@@ -165,7 +167,7 @@ WorldComponentResult WorldFindComponent(const World *world,
                whether anything solid is actually there. */
             if (neighbourX < firstX || neighbourX > lastX ||
                 neighbourY < firstY || neighbourY > lastY) {
-                return ComponentFailure(WORLD_COMPONENT_UNKNOWN);
+                return ComponentFailure(WORLD_COMPONENT_UNKNOWN, result.cellCount);
             }
 
             localIndex = ComponentLocalIndex(neighbourX - firstX,
@@ -174,7 +176,7 @@ WorldComponentResult WorldFindComponent(const World *world,
                 continue;
             }
             if (result.cellCount >= maximumCells) {
-                return ComponentFailure(WORLD_COMPONENT_TOO_LARGE);
+                return ComponentFailure(WORLD_COMPONENT_TOO_LARGE, result.cellCount);
             }
             ComponentMarkVisited(workspace, localIndex);
             workspace->cellX[result.cellCount] = (int32_t)neighbourX;
@@ -189,5 +191,6 @@ WorldComponentResult WorldFindComponent(const World *world,
     }
 
     result.status = WORLD_COMPONENT_DETACHED;
+    result.exploredCells = result.cellCount;
     return result;
 }

@@ -112,6 +112,11 @@ void WorldGenerate(World *world, uint64_t seed)
     }
     world->tick = 0;
     world->effectSerial = 0;
+    /* Damage recorded against the world that just ceased to exist. Carrying it
+       across would send the next detach check to coordinates that now describe
+       completely different terrain. */
+    world->destructionCount = 0;
+    world->destructionDropped = 0;
 
     /* Layout is expressed as fractions of the world, but feature sizes stay
        absolute: a larger world gets more caves and pockets of the same scale,

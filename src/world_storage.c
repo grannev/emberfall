@@ -402,3 +402,98 @@ void WorldSetCell(World *world, int x, int y, CellMaterial material)
     }
     WorldSetCellRaw(world, x, y, material);
 }
+
+/* Two regions are merged when their one-cell-expanded boxes meet. The extra
+   cell matters: cuts that only touch corner to corner still describe one piece
+   of damage, and treating them as two would run the detach check twice over
+   almost the same ground. */
+static bool WorldDestructionRegionsMeet(const WorldDestructionRegion *a,
+                                        const WorldDestructionRegion *b)
+{
+    int unionWidth;
+    int unionHeight;
+
+    if (a->minimumX > b->maximumX + 1 || b->minimumX > a->maximumX + 1 ||
+        a->minimumY > b->maximumY + 1 || b->minimumY > a->maximumY + 1) {
+        return false;
+    }
+    /* Touching is not enough on its own: a merge that outgrows the span limit
+       produces a box no search window can cover, which would lose both cuts
+       instead of keeping two entries that each work. */
+    unionWidth = (a->maximumX > b->maximumX ? a->maximumX : b->maximumX) -
+                 (a->minimumX < b->minimumX ? a->minimumX : b->minimumX) + 1;
+    unionHeight = (a->maximumY > b->maximumY ? a->maximumY : b->maximumY) -
+                  (a->minimumY < b->minimumY ? a->minimumY : b->minimumY) + 1;
+    return unionWidth <= WORLD_DESTRUCTION_MAX_SPAN &&
+           unionHeight <= WORLD_DESTRUCTION_MAX_SPAN;
+}
+
+static void WorldDestructionAbsorb(WorldDestructionRegion *into,
+                                   const WorldDestructionRegion *from)
+{
+    if (from->minimumX < into->minimumX) into->minimumX = from->minimumX;
+    if (from->minimumY < into->minimumY) into->minimumY = from->minimumY;
+    if (from->maximumX > into->maximumX) into->maximumX = from->maximumX;
+    if (from->maximumY > into->maximumY) into->maximumY = from->maximumY;
+}
+
+void WorldRecordDestruction(World *world, int minimumX, int minimumY,
+                            int maximumX, int maximumY)
+{
+    WorldDestructionRegion region;
+    int index;
+
+    if (world == NULL || world->cells == NULL || maximumX < minimumX ||
+        maximumY < minimumY) {
+        return;
+    }
+    /* Clipped to the world here rather than at every call site. Everything past
+       the edge reads as immovable rock, so a region reaching outside describes
+       damage that cannot exist. */
+    region.minimumX = minimumX < 0 ? 0 : minimumX;
+    region.minimumY = minimumY < 0 ? 0 : minimumY;
+    region.maximumX = maximumX > world->width - 1 ? world->width - 1 : maximumX;
+    region.maximumY = maximumY > world->height - 1 ? world->height - 1 : maximumY;
+    if (region.minimumX > region.maximumX || region.minimumY > region.maximumY) {
+        return;
+    }
+
+    /* Absorb into the first entry this touches, then keep absorbing: growing an
+       entry can bring it into contact with later ones, and leaving those
+       separate would search almost the same cells twice. */
+    for (index = 0; index < world->destructionCount; ++index) {
+        WorldDestructionRegion *existing = &world->destruction[index];
+        int other;
+
+        if (!WorldDestructionRegionsMeet(existing, &region)) {
+            continue;
+        }
+        WorldDestructionAbsorb(existing, &region);
+        for (other = world->destructionCount - 1; other > index; --other) {
+            if (!WorldDestructionRegionsMeet(existing, &world->destruction[other])) {
+                continue;
+            }
+            WorldDestructionAbsorb(existing, &world->destruction[other]);
+            world->destruction[other] = world->destruction[world->destructionCount - 1];
+            --world->destructionCount;
+        }
+        return;
+    }
+
+    if (world->destructionCount >= MAX_WORLD_DESTRUCTION_REGIONS) {
+        /* Refusing to look, not losing a mutation: the cells are already gone
+           and the world is correct. Some terrain that could have come loose
+           simply stays static until the next destructive event near it. */
+        ++world->destructionDropped;
+        return;
+    }
+    world->destruction[world->destructionCount++] = region;
+}
+
+void WorldClearDestruction(World *world)
+{
+    if (world == NULL) {
+        return;
+    }
+    world->destructionCount = 0;
+}

@@ -10,6 +10,7 @@
 #include "player.h"
 #include "abilities.h"
 #include "dynamic_terrain.h"
+#include "terrain_detach.h"
 #include "world.h"
 
 typedef struct GameConfig {
@@ -34,9 +35,11 @@ typedef struct GameState {
     /* Pieces of terrain that have stopped being part of the cellular world.
        Owned here because it is gameplay state with the same lifetime as the
        world it was cut from. Explicit extraction, fixed-step physics and
-       read-only presentation are separate consumers; automatic detach is not
-       connected to ordinary gameplay yet. */
+       read-only presentation are separate consumers. */
     DynamicTerrainSystem dynamicTerrain;
+    /* Turns destructive damage into bodies. Owned beside the terrain it feeds
+       and run on the fixed step, after the world has finished its own tick. */
+    TerrainDetachSystem detach;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

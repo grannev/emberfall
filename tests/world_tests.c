@@ -19,6 +19,7 @@
 #include "world.h"
 #include "dynamic_terrain.h"
 #include "terrain_extraction.h"
+#include "terrain_detach.h"
 #include "terrain_physics.h"
 #include "world_components.h"
 #include "world_render_data.h"
@@ -2185,19 +2186,19 @@ static void test_a_malformed_component_changes_nothing(void)
     FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
     before = WorldDigest(&world);
 
-    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 0, 0, 0, 0, 0};
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 0, 0, 0, 0, 0, 0};
     CheckExtractionRefused(
         &world, &terrain,
         TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
         TERRAIN_EXTRACT_INVALID, before, 0, "extracting an empty component");
 
-    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 39, 35};
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 39, 35, 4};
     CheckExtractionRefused(
         &world, &terrain,
         TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
         TERRAIN_EXTRACT_INVALID, before, 0, "extracting inverted bounds");
 
-    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 200, 35};
+    component = (WorldComponentResult){WORLD_COMPONENT_DETACHED, 4, 40, 30, 200, 35, 4};
     CheckExtractionRefused(
         &world, &terrain,
         TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
@@ -3791,6 +3792,684 @@ static void test_lifecycle_decisions_are_deterministic(void)
     DynamicTerrainUnload(&systemB);
 }
 
+/* --- automatic detachment ------------------------------------------------ */
+
+/* The whole point of this layer is what it does *not* do: it never goes looking
+   for loose terrain. Checks run only where a destructive operation just removed
+   structural material, so every test below either causes damage or proves that
+   the absence of damage causes no work. */
+
+static TerrainDetachSystem detach;
+
+/* The showcase shape, and the one the manual acceptance run uses:
+
+       ########   block
+          #       pillar
+       ########   ground
+
+   Returns the number of cells in the block. */
+static int BuildPillarScene(World *world, int blockLeft, int blockRight,
+                            int blockTop, int blockBottom, int pillarX,
+                            int groundTop)
+{
+    FillRect(world, 0, groundTop, world->width - 1, world->height - 1,
+             MATERIAL_ROCK);
+    FillRect(world, pillarX, blockBottom + 1, pillarX, groundTop - 1,
+             MATERIAL_ROCK);
+    FillRect(world, blockLeft, blockTop, blockRight, blockBottom, MATERIAL_ROCK);
+    return (blockRight - blockLeft + 1) * (blockBottom - blockTop + 1);
+}
+
+static int RunDetach(World *world, DynamicTerrainSystem *bodies)
+{
+    return TerrainDetachProcess(&detach, world, bodies, NULL);
+}
+
+static void test_an_explosion_under_a_block_detaches_it(void)
+{
+    World world;
+    int blockCells;
+    int solidBefore;
+    int solidAfter;
+    const TerrainBody *body = NULL;
+    int slot;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    blockCells = BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+    solidBefore = CountMaterial(&world, MATERIAL_ROCK);
+
+    /* Nothing has happened yet, so nothing may be checked. */
+    CHECK(RunDetach(&world, &terrain) == 0, "a quiet world produced a body");
+    CHECK(detach.stats.detachChecks == 0,
+          "the detector ran without any destruction: %d checks",
+          detach.stats.detachChecks);
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    CHECK(world.destructionCount == 1, "the blast logged %d regions",
+          world.destructionCount);
+
+    CHECK(RunDetach(&world, &terrain) == 1, "the block did not come loose");
+    CHECK(detach.stats.autoDetachSucceeded == 1, "extraction was not counted");
+    CHECK(world.destructionCount == 0, "the damage log was not drained");
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active) {
+            body = &terrain.bodies[slot];
+        }
+    }
+    CHECK(body != NULL, "no live body after a successful detach");
+    /* The block plus whatever of the pillar stayed attached to it. */
+    CHECK(body->cellCount >= blockCells,
+          "the body holds %d cells, the block alone had %d", body->cellCount,
+          blockCells);
+    CHECK(body->cellCount <= blockCells + 4,
+          "the body swallowed more than the block and its stub: %d",
+          body->cellCount);
+
+    /* Every cell the body holds left the static world, and no other cell did.
+       Solid cells now = before - blast - body. */
+    solidAfter = CountMaterial(&world, MATERIAL_ROCK);
+    CHECK(solidAfter == solidBefore - detach.stats.autoDetachCells -
+                            (solidBefore - solidAfter -
+                             detach.stats.autoDetachCells),
+          "cell bookkeeping is inconsistent");
+    {
+        int x;
+        int y;
+        int survivors = 0;
+
+        for (y = 64; y <= 69; ++y) {
+            for (x = 52; x <= 69; ++x) {
+                if (WorldGetCell(&world, x, y) != MATERIAL_EMPTY) {
+                    ++survivors;
+                }
+            }
+        }
+        CHECK(survivors == 0, "%d block cells were left in the static world",
+              survivors);
+    }
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Damage alone is not a reason to detach anything. */
+static void test_damage_that_leaves_the_support_standing_detaches_nothing(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+
+    /* A bite out of the block's far corner. The pillar is untouched. */
+    WorldDestroyCircle(&world, 53, 65, 3, 0.0f);
+    before = WorldDigest(&world);
+
+    CHECK(RunDetach(&world, &terrain) == 0, "an anchored block was torn out");
+    CHECK(detach.stats.detachChecks > 0, "the blast was not checked at all");
+    CHECK(detach.stats.autoDetachRejectedAnchored > 0,
+          "the block was not recognised as anchored");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "a body appeared from anchored terrain");
+    CHECK(WorldDigest(&world) == before, "a refusal changed the world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_drilling_through_a_support_detaches_the_section_above(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+
+    /* A cut the width of the drill, straight through the pillar. */
+    CHECK(WorldDrillCircle(&world, 60, 75, 2) > 0, "the drill cut nothing");
+    CHECK(world.destructionCount == 1, "the drill logged %d regions",
+          world.destructionCount);
+    CHECK(RunDetach(&world, &terrain) == 1, "the cut section did not come loose");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 1,
+          "the drill produced %d bodies",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A fragment the search window cannot contain is not a fragment as far as this
+   layer is concerned. It reads as UNKNOWN and stays exactly where it is. */
+static void test_a_fragment_that_escapes_the_search_window_stays_static(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    FillRect(&world, 0, 180, 399, 199, MATERIAL_ROCK);
+    /* A beam three times wider than the window, on one pillar. */
+    FillRect(&world, 10, 100, 380, 101, MATERIAL_ROCK);
+    FillRect(&world, 200, 102, 200, 179, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&world, 200, 140, 5, 0.0f);
+    before = WorldDigest(&world);
+
+    CHECK(RunDetach(&world, &terrain) == 0,
+          "a beam wider than the search window was extracted");
+    CHECK(detach.stats.autoDetachRejectedUnknown > 0,
+          "the escaping component was not reported unknown");
+    CHECK(WorldDigest(&world) == before, "the world changed anyway");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_fragment_below_the_minimum_size_stays_static(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    /* A two-by-two chip on a pillar: four cells, below the threshold. */
+    (void)BuildPillarScene(&world, 60, 61, 68, 69, 60, 80);
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 0, "a four-cell chip became a body");
+    CHECK(detach.stats.autoDetachRejectedTooSmall > 0,
+          "the chip was not rejected for its size");
+    CHECK(WorldGetCell(&world, 60, 68) == MATERIAL_ROCK,
+          "the chip was removed from the world anyway");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_fragment_above_the_maximum_size_stays_static(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    /* 45x30 is 1350 cells, comfortably past the default ceiling of 1024. */
+    (void)BuildPillarScene(&world, 20, 64, 30, 59, 60, 80);
+
+    WorldDestroyCircle(&world, 60, 70, 4, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 0, "an oversized slab became a body");
+    CHECK(detach.stats.autoDetachRejectedTooLarge > 0,
+          "the slab was not rejected for its size");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) > 1300,
+          "the slab left the static world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* One cell past the ceiling. The detector proves this one detached — it is
+   allowed one cell more than policy accepts — so the refusal below is this
+   module's decision and not the detector's. */
+static void test_a_fragment_one_cell_past_the_ceiling_stays_static(void)
+{
+    World world;
+    int blockCells;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    /* 10x10 block plus the one-cell pillar stub the blast leaves attached. */
+    blockCells = BuildPillarScene(&world, 55, 64, 60, 69, 60, 80);
+    CHECK(blockCells == 100, "the fixture holds %d cells", blockCells);
+    detach.config.maximumBodyCells = blockCells;
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 0,
+          "a fragment one cell over the ceiling was extracted");
+    CHECK(detach.stats.autoDetachRejectedTooLarge > 0,
+          "the fragment was not refused for its size");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) >= blockCells,
+          "the fragment left the static world");
+
+    /* One cell of headroom is all it takes. The same area is pointed at again
+       through the ordinary logging API rather than by cutting more terrain, so
+       nothing about the fragment changes between the two attempts. */
+    CHECK(RunDetach(&world, &terrain) == 0, "the drained log ran again");
+    detach.config.maximumBodyCells = blockCells + 1;
+    WorldRecordDestruction(&world, 59, 70, 61, 79);
+    CHECK(RunDetach(&world, &terrain) == 1,
+          "the same fragment was refused with room to spare");
+    CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed == blockCells + 1,
+          "the body holds %d cells, expected %d",
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed, blockCells + 1);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Every budget of EF-DYN-010 applies here, and a refusal leaves terrain
+   standing rather than deleting it. */
+static void test_a_full_body_manager_leaves_the_fragment_static(void)
+{
+    World world;
+    uint64_t before;
+    int index;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        CHECK(DynamicTerrainGet(&terrain, DynamicTerrainAllocBody(&terrain, 2, 2)) !=
+                  NULL, "filling the manager failed at %d", index);
+    }
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    before = WorldDigest(&world);
+    CHECK(RunDetach(&world, &terrain) == 0, "extraction succeeded with no slots");
+    CHECK(detach.stats.autoDetachRejectedBudget > 0,
+          "the budget refusal was not counted");
+    CHECK(WorldDigest(&world) == before,
+          "a budget refusal changed the static world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_full_cell_budget_leaves_the_world_unchanged(void)
+{
+    World world;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+    terrain.config.maxDynamicCells = 4;
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    before = WorldDigest(&world);
+    CHECK(RunDetach(&world, &terrain) == 0, "extraction ignored the cell budget");
+    CHECK(detach.stats.autoDetachRejectedBudget > 0,
+          "the cell budget refusal was not counted");
+    CHECK(WorldDigest(&world) == before, "a refused extraction changed the world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* One blast, two independent islands. */
+static void test_one_blast_can_detach_two_islands(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    FillRect(&world, 0, 80, 127, 95, MATERIAL_ROCK);
+    /* Two blocks on two pillars, both inside one blast. */
+    FillRect(&world, 44, 64, 55, 69, MATERIAL_ROCK);
+    FillRect(&world, 50, 70, 50, 79, MATERIAL_ROCK);
+    FillRect(&world, 72, 64, 83, 69, MATERIAL_ROCK);
+    FillRect(&world, 77, 70, 77, 79, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&world, 63, 75, 16, 0.0f);
+    CHECK(world.destructionCount == 1, "the blast logged %d regions",
+          world.destructionCount);
+    CHECK(RunDetach(&world, &terrain) == 2, "one blast produced %d bodies",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 2,
+          "two islands became %d bodies",
+          DynamicTerrainStatistics(&terrain)->activeBodies);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Chunks are a simulation schedule, not a structural boundary. A fragment
+   straddling one must behave exactly like any other. */
+static void test_a_fragment_across_a_chunk_boundary_still_detaches(void)
+{
+    World world;
+    int boundary = WORLD_CHUNK_SIZE * 2;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, boundary - 9, boundary + 8, 64, 69, boundary,
+                           80);
+    CHECK(boundary % WORLD_CHUNK_SIZE == 0, "the fixture is not on a boundary");
+
+    WorldDestroyCircle(&world, boundary, 75, 4, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 1,
+          "a fragment across a chunk boundary was not detached");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Ordinary simulation must never reach the detector. A world full of falling
+   sand is exactly the case a full-world scan would make unplayable. */
+static void test_ordinary_simulation_never_runs_the_detector(void)
+{
+    World world;
+    int step;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    FillRect(&world, 0, 80, 127, 95, MATERIAL_ROCK);
+    FillRect(&world, 20, 20, 100, 40, MATERIAL_SAND);
+    FillRect(&world, 20, 45, 100, 55, MATERIAL_WATER);
+
+    for (step = 0; step < 120; ++step) {
+        WorldUpdate(&world);
+        CHECK(world.destructionCount == 0,
+              "ordinary simulation logged destruction at step %d", step);
+        (void)RunDetach(&world, &terrain);
+    }
+    CHECK(detach.stats.detachChecks == 0,
+          "the detector ran %d times without a destructive event",
+          detach.stats.detachChecks);
+    CHECK(detach.stats.regionsProcessed == 0, "a region was processed anyway");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "settling material produced a body");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The bound the whole design exists for: a check costs at most one cell more
+   than the largest body policy accepts, whatever the world is made of. Damage
+   cut into the middle of a solid landmass is the case that would be a
+   fourteen-million-cell flood fill without it. */
+static void test_a_check_never_explores_past_its_cell_limit(void)
+{
+    World world;
+    int perCheck;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    /* Solid from side to side and top to bottom: every seed belongs to one mass
+       far larger than any search may explore. */
+    FillRect(&world, 0, 0, 399, 199, MATERIAL_ROCK);
+    detach.config.maximumBodyCells = 64;
+
+    WorldDestroyCircle(&world, 200, 100, 6, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 0, "solid rock produced a body");
+    CHECK(detach.stats.detachChecks > 0, "nothing was checked");
+
+    perCheck = detach.stats.detachCellsExplored / detach.stats.detachChecks;
+    CHECK(perCheck <= detach.config.maximumBodyCells + 1,
+          "a check explored %d cells on average, the limit is %d", perCheck,
+          detach.config.maximumBodyCells + 1);
+    CHECK(detach.stats.detachChecks <= detach.config.maxCandidatesPerRegion,
+          "%d checks ran, the cap is %d", detach.stats.detachChecks,
+          detach.config.maxCandidatesPerRegion);
+    /* And the whole call, not just one check, stays inside the product of the
+       two caps — the claim the module's header makes. */
+    CHECK(detach.stats.detachCellsExplored <=
+              detach.config.maxCandidatesPerRegion *
+                  (detach.config.maximumBodyCells + 1),
+          "one call explored %d cells, the bound is %d",
+          detach.stats.detachCellsExplored,
+          detach.config.maxCandidatesPerRegion *
+              (detach.config.maximumBodyCells + 1));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Same world, same damage, same result — including which body got which slot. */
+static void test_automatic_detachment_is_deterministic(void)
+{
+    World first;
+    World second;
+    DynamicTerrainSystem terrainA;
+    DynamicTerrainSystem terrainB;
+    TerrainDetachSystem detachA;
+    TerrainDetachSystem detachB;
+    int slot;
+
+    CHECK(WorldInit(&first, 128, 96) && WorldInit(&second, 128, 96),
+          "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrainA) && DynamicTerrainInit(&terrainB),
+          "dynamic terrain allocation failed");
+    TerrainDetachInit(&detachA);
+    TerrainDetachInit(&detachB);
+    FillRect(&first, 0, 80, 127, 95, MATERIAL_ROCK);
+    FillRect(&first, 44, 64, 55, 69, MATERIAL_ROCK);
+    FillRect(&first, 50, 70, 50, 79, MATERIAL_ROCK);
+    FillRect(&first, 72, 64, 83, 69, MATERIAL_ROCK);
+    FillRect(&first, 77, 70, 77, 79, MATERIAL_ROCK);
+    FillRect(&second, 0, 80, 127, 95, MATERIAL_ROCK);
+    FillRect(&second, 44, 64, 55, 69, MATERIAL_ROCK);
+    FillRect(&second, 50, 70, 50, 79, MATERIAL_ROCK);
+    FillRect(&second, 72, 64, 83, 69, MATERIAL_ROCK);
+    FillRect(&second, 77, 70, 77, 79, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&first, 63, 75, 16, 0.0f);
+    WorldDestroyCircle(&second, 63, 75, 16, 0.0f);
+    CHECK(TerrainDetachProcess(&detachA, &first, &terrainA, NULL) ==
+              TerrainDetachProcess(&detachB, &second, &terrainB, NULL),
+          "the same damage produced a different number of bodies");
+    CHECK(WorldDigest(&first) == WorldDigest(&second),
+          "the same damage left two different worlds");
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *a = &terrainA.bodies[slot];
+        const TerrainBody *b = &terrainB.bodies[slot];
+
+        CHECK(a->active == b->active, "slot %d differs in occupancy", slot);
+        if (!a->active) {
+            continue;
+        }
+        CHECK(a->generation == b->generation && a->cellCount == b->cellCount &&
+                  a->position.x == b->position.x &&
+                  a->position.y == b->position.y,
+              "slot %d holds a different body", slot);
+    }
+    CHECK(detachA.stats.detachChecks == detachB.stats.detachChecks &&
+              detachA.stats.autoDetachSucceeded == detachB.stats.autoDetachSucceeded,
+          "the two runs made different decisions");
+    WorldUnload(&first);
+    WorldUnload(&second);
+    DynamicTerrainUnload(&terrainA);
+    DynamicTerrainUnload(&terrainB);
+}
+
+/* A component is extracted once, and what it took is exactly what left. */
+static void test_detachment_conserves_every_cell_it_moves(void)
+{
+    World world;
+    int solidBefore;
+    int solidAfter;
+    int blastCells;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    (void)BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+    solidBefore = CountMaterial(&world, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&world, 60, 75, 4, 0.0f);
+    blastCells = solidBefore - CountMaterial(&world, MATERIAL_ROCK);
+    CHECK(blastCells > 0, "the blast removed nothing");
+
+    CHECK(RunDetach(&world, &terrain) == 1, "nothing came loose");
+    solidAfter = CountMaterial(&world, MATERIAL_ROCK);
+    CHECK(solidBefore - blastCells - solidAfter == detach.stats.autoDetachCells,
+          "the world lost %d cells but the body reports %d",
+          solidBefore - blastCells - solidAfter, detach.stats.autoDetachCells);
+    CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed ==
+              detach.stats.autoDetachCells,
+          "the body holds %d cells, extraction reported %d",
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed,
+          detach.stats.autoDetachCells);
+
+    /* Running again with no new damage must do nothing at all. */
+    CHECK(RunDetach(&world, &terrain) == 0, "a second pass extracted again");
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 1,
+          "a duplicate body appeared");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Aggregation is what keeps a drill that cuts many cells a tick from asking for
+   many searches. */
+static void test_overlapping_damage_aggregates_into_one_region(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    FillRect(&world, 0, 40, 127, 95, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&world, 60, 60, 3, 0.0f);
+    WorldDestroyCircle(&world, 63, 60, 3, 0.0f);
+    WorldDestroyCircle(&world, 66, 60, 3, 0.0f);
+    CHECK(world.destructionCount == 1, "three overlapping cuts logged %d regions",
+          world.destructionCount);
+
+    /* Far enough apart to stay separate. */
+    WorldDestroyCircle(&world, 10, 60, 3, 0.0f);
+    CHECK(world.destructionCount == 2, "a distant cut merged: %d regions",
+          world.destructionCount);
+
+    /* A cut in open air severs nothing and must not ask for a search. */
+    WorldDestroyCircle(&world, 60, 10, 5, 0.0f);
+    CHECK(world.destructionCount == 2,
+          "a blast in open air logged damage: %d regions",
+          world.destructionCount);
+    WorldUnload(&world);
+}
+
+/* Aggregation has a ceiling. Two cuts that touch but together span more than a
+   search window can cover must stay two entries: merging them would produce a
+   box nothing ever looks at, losing both instead of keeping two that work. */
+static void test_touching_damage_too_wide_to_merge_stays_separate(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    FillRect(&world, 0, 40, 399, 199, MATERIAL_ROCK);
+
+    WorldDestroyCircle(&world, 100, 100, 35, 0.0f);
+    CHECK(world.destructionCount == 1, "the first cut logged %d regions",
+          world.destructionCount);
+    /* Adjacent to the first, so the boxes touch; together they span 142 cells,
+       past WORLD_DESTRUCTION_MAX_SPAN. */
+    WorldDestroyCircle(&world, 171, 100, 35, 0.0f);
+    CHECK(world.destructionCount == 2,
+          "two cuts spanning %d cells were merged into %d region(s)",
+          142, world.destructionCount);
+    CHECK(world.destruction[0].maximumX - world.destruction[0].minimumX + 1 <=
+              WORLD_DESTRUCTION_MAX_SPAN,
+          "an entry outgrew the aggregation limit: %d cells",
+          world.destruction[0].maximumX - world.destruction[0].minimumX + 1);
+    WorldUnload(&world);
+}
+
+/* Damage recorded against a world that no longer exists would send the next
+   check to coordinates now describing completely different terrain. */
+static void test_regenerating_the_world_drops_its_damage_log(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    FillRect(&world, 0, 40, 127, 95, MATERIAL_ROCK);
+    WorldDestroyCircle(&world, 60, 60, 5, 0.0f);
+    CHECK(world.destructionCount == 1, "the cut was not logged");
+
+    WorldGenerate(&world, 0x11223344u);
+    CHECK(world.destructionCount == 0,
+          "a regenerated world kept %d damage regions",
+          world.destructionCount);
+    CHECK(world.destructionDropped == 0, "the overflow counter survived");
+    WorldUnload(&world);
+}
+
+/* Repeated destruction, the way a player with a cooldown actually produces it.
+   Nothing here may grow without bound: not the damage log, not the work per
+   tick, not the bodies. */
+static void test_repeated_destruction_stays_bounded(void)
+{
+    World world;
+    int round;
+    int worstChecksPerCall = 0;
+
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    FillRect(&world, 0, 0, 399, 199, MATERIAL_ROCK);
+
+    for (round = 0; round < 40; ++round) {
+        int before = detach.stats.detachChecks;
+        int x = 40 + (round * 37) % 320;
+        int y = 40 + (round * 53) % 120;
+
+        WorldDestroyCircle(&world, x, y, 9, 0.0f);
+        CHECK(world.destructionCount <= MAX_WORLD_DESTRUCTION_REGIONS,
+              "the damage log holds %d regions", world.destructionCount);
+        (void)RunDetach(&world, &terrain);
+        CHECK(world.destructionCount == 0, "round %d left the log full", round);
+        if (detach.stats.detachChecks - before > worstChecksPerCall) {
+            worstChecksPerCall = detach.stats.detachChecks - before;
+        }
+        WorldUpdate(&world);
+    }
+    CHECK(worstChecksPerCall <= MAX_WORLD_DESTRUCTION_REGIONS *
+                                    detach.config.maxCandidatesPerRegion,
+          "one call ran %d checks, the bound is %d", worstChecksPerCall,
+          MAX_WORLD_DESTRUCTION_REGIONS * detach.config.maxCandidatesPerRegion);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies <= MAX_TERRAIN_BODIES,
+          "the body manager overflowed");
+    CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed <=
+              terrain.config.maxDynamicCells,
+          "the cell budget was exceeded: %d",
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The full path, through GameUpdate rather than around it. */
+static void test_the_game_loop_detaches_terrain_by_itself(void)
+{
+    GameState game;
+    GameConfig config = GameDefaultConfig();
+    GameEventBuffer events;
+    GameInput input = {0};
+    int frame;
+    bool sawEvent = false;
+
+    config.worldWidth = 256;
+    config.worldHeight = 128;
+    config.seed = 0x5eedu;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    /* The generated world would leave the block joined to the hillside behind
+       it, so the scene is built in cleared ground. */
+    FillRect(&game.world, 0, 0, game.world.width - 1, game.world.height - 1,
+             MATERIAL_EMPTY);
+    (void)BuildPillarScene(&game.world, 52, 69, 64, 69, 60, 80);
+    /* Well away from the scene: a player resolving a collision inside the block
+       would be a second author of the world state under test. */
+    game.player.position = (Vector2){200.0f, 40.0f};
+
+    WorldDestroyCircle(&game.world, 60, 75, 4, 0.0f);
+    for (frame = 0; frame < 8; ++frame) {
+        int index;
+
+        GameUpdate(&game, &input, config.fixedStep, &events);
+        for (index = 0; index < (int)events.count; ++index) {
+            if (events.events[index].type == GAME_EVENT_TERRAIN_DETACHED) {
+                sawEvent = true;
+            }
+        }
+    }
+    CHECK(game.detach.stats.autoDetachSucceeded == 1,
+          "the game loop detached %d fragments",
+          game.detach.stats.autoDetachSucceeded);
+    CHECK(sawEvent, "no GAME_EVENT_TERRAIN_DETACHED reached presentation");
+    CHECK(DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies == 1,
+          "the game loop holds %d bodies",
+          DynamicTerrainStatistics(&game.dynamicTerrain)->activeBodies);
+    GameUnload(&game);
+}
+
 /* --- abilities ----------------------------------------------------------- */
 
 static void test_ability_table_passes_its_own_validation(void)
@@ -5236,6 +5915,26 @@ int main(void)
     RUN(test_world_bounds_follow_the_body);
     RUN(test_reset_returns_every_budget);
     RUN(test_lifecycle_decisions_are_deterministic);
+    RUN(test_an_explosion_under_a_block_detaches_it);
+    RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
+    RUN(test_drilling_through_a_support_detaches_the_section_above);
+    RUN(test_a_fragment_that_escapes_the_search_window_stays_static);
+    RUN(test_a_fragment_below_the_minimum_size_stays_static);
+    RUN(test_a_fragment_above_the_maximum_size_stays_static);
+    RUN(test_a_fragment_one_cell_past_the_ceiling_stays_static);
+    RUN(test_a_full_body_manager_leaves_the_fragment_static);
+    RUN(test_a_full_cell_budget_leaves_the_world_unchanged);
+    RUN(test_one_blast_can_detach_two_islands);
+    RUN(test_a_fragment_across_a_chunk_boundary_still_detaches);
+    RUN(test_ordinary_simulation_never_runs_the_detector);
+    RUN(test_a_check_never_explores_past_its_cell_limit);
+    RUN(test_automatic_detachment_is_deterministic);
+    RUN(test_detachment_conserves_every_cell_it_moves);
+    RUN(test_overlapping_damage_aggregates_into_one_region);
+    RUN(test_touching_damage_too_wide_to_merge_stays_separate);
+    RUN(test_regenerating_the_world_drops_its_damage_log);
+    RUN(test_repeated_destruction_stays_bounded);
+    RUN(test_the_game_loop_detaches_terrain_by_itself);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);
