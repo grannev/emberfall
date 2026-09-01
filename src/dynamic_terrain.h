@@ -64,6 +64,15 @@
    once and never resized. Collision also owns a fixed 0.50 MiB surface list. */
 #define MAX_TERRAIN_RASTER_CELLS (MAX_TERRAIN_BODIES * TERRAIN_BODY_RASTER_CAPACITY)
 
+/* Occupied cells across every live body. This is the budget that bounds *work*
+   rather than memory: the raster arena above is allocated once whatever
+   happens, but every occupied cell is a cell collision may test and a cell the
+   renderer will eventually draw, so a long series of explosions must not be
+   able to accumulate them without limit. Half the theoretical maximum
+   (32 x 4096) buys either sixteen of the largest bodies the detector can hand
+   over or thirty-two ordinary ones. */
+#define MAX_TERRAIN_DYNAMIC_CELLS 65536
+
 /* ---- handles ------------------------------------------------------------
  *
  * Slots are reused, so a raw index would eventually name a different body than
@@ -204,17 +213,52 @@ typedef struct DynamicTerrainConfig {
        enough that a slab lands and stays landed. */
     float restitution;
     float friction;
+
+    /* ---- lifecycle budgets ---------------------------------------------
+     *
+     * Bodies are cheap while asleep and linear in cost while awake, so what has
+     * to be bounded is how many are awake and how much of them there is — not
+     * how long they have existed. Nothing here evicts a body for being old: a
+     * player who blows a hole in a hillside and comes back an hour later should
+     * find the rubble where they left it.
+     */
+
+    /* Bodies integrating and colliding at once. Collision measured 0.103 ms for
+       thirty-two awake bodies, so this is not yet where the frame goes; the
+       budget exists because EF-DYN-011 will create bodies in bursts and because
+       drawing them has not been measured at all. Keeping it below
+       MAX_TERRAIN_BODIES is what makes the mechanism testable now rather than
+       after it is needed. */
+    int maxAwakeBodies;
+    /* Occupied cells across all bodies, clamped to MAX_TERRAIN_DYNAMIC_CELLS. */
+    int maxDynamicCells;
+    /* How far outside the world a body may go before it is destroyed. A body
+       that has left the map can never touch anything again, so it would stay
+       awake for ever under gravity and hold an awake slot no one can reclaim.
+       This is a world-safety bound and has nothing to do with the camera: a
+       body that merely scrolls off screen is left exactly where it is. */
+    float killBoundsMargin;
 } DynamicTerrainConfig;
 
 DynamicTerrainConfig DynamicTerrainDefaultConfig(void);
 
 typedef struct DynamicTerrainStats {
     int activeBodies;
-    /* Raster slots reserved by live bodies, not occupied cells: this is the
-       number that has to stay inside the budget. */
+    /* Raster slots reserved by live bodies. Fixed per slot, so this says how
+       much of the arena is spoken for. */
     int allocatedDynamicCells;
+    /* Occupied cells across all bodies — the figure the budget is drawn
+       against, and the one that predicts collision and drawing cost. */
+    int dynamicCellsUsed;
     int peakBodies;
+    int peakAwakeBodies;
     int peakDynamicCells;
+    /* Refusals, counted rather than hidden: a budget that silently drops work
+       is indistinguishable from a bug. */
+    int allocationFailures;
+    int cellCapacityFailures;
+    int awakeBudgetRefusals;
+    int bodiesRemovedOutOfBounds;
     /* Extraction outcomes, counted by terrain_extraction.c. Structural rather
        than timed, so they mean the same thing on every machine. */
     int extractionsSucceeded;
@@ -249,6 +293,9 @@ typedef struct DynamicTerrainSystem {
        int16_t is ample — a local coordinate never exceeds TERRAIN_BODY_MAX_SPAN. */
     int16_t *surfaceX;
     int16_t *surfaceY;
+    /* Maintained wherever `awake` changes, so the awake budget can be honoured
+       between updates and not only during one. `stats.awakeBodies` mirrors it. */
+    int awakeCount;
     DynamicTerrainConfig config;
     DynamicTerrainStats stats;
 } DynamicTerrainSystem;
@@ -316,9 +363,19 @@ static inline bool TerrainFiniteSample(Vector2 value)
            value.y > -1.0e9f && value.y < 1.0e9f;
 }
 
-/* Puts a body back into integration and restarts its quiet spell. Safe on a
-   dead handle. */
-void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+/* Puts a body back into integration and restarts its quiet spell. Returns
+   false when the handle is dead, or when the awake budget is full and the body
+   was therefore left asleep — the caller learns that its wake did not take
+   rather than believing a body is moving when it is not. Safe on a dead
+   handle. */
+bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+
+/* World-space bounding box of a body's occupied cells, for callers deciding
+   what to draw or where a body has got to. Rotation is included, so the box is
+   the axis-aligned bound of the rotated shape. Returns false for a dead or
+   empty body. */
+bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
+                            Vector2 *maximum);
 /* Sets both velocities and wakes the body. Non-finite values are refused. */
 void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,
                                TerrainBodyHandle handle, Vector2 velocity,

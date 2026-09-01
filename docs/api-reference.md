@@ -277,7 +277,10 @@ const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *
 
 DynamicTerrainConfig DynamicTerrainDefaultConfig(void);
 void DynamicTerrainUpdate(DynamicTerrainSystem *system, float deltaTime);
-void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+/* false when the handle is dead or the awake budget is full. SetVelocity and
+   ApplyImpulse do nothing at all when the wake is refused, so a body never
+   holds motion it is not allowed to use. */
+bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
 void DynamicTerrainSetVelocity(DynamicTerrainSystem *system, TerrainBodyHandle handle,
                                Vector2 velocity, float angularVelocity);
 void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system, TerrainBodyHandle handle,
@@ -286,7 +289,19 @@ void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system, TerrainBodyHandle 
 /* The transform every other system must read rather than re-derive. */
 Vector2 TerrainBodyLocalToWorld(const TerrainBody *body, float localX, float localY);
 Vector2 TerrainBodyWorldToLocal(const TerrainBody *body, float worldX, float worldY);
+
+/* World-space AABB of the occupied box: culling metadata for the simulation,
+   readonly, and false for a body with nothing in it. It decides nothing about
+   visibility — being outside a viewport never destroys a body. */
+bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
+                            Vector2 *maximum);
 ```
+
+Бюджеты живут в `DynamicTerrainConfig`: `maxAwakeBodies` (24),
+`maxDynamicCells` (65 536) и `killBoundsMargin` (512.0). Каждый обеспечивается
+отказом, а не вытеснением, и каждый отказ виден в `DynamicTerrainStatistics`
+(`allocationFailures`, `cellCapacityFailures`, `awakeBudgetRefusals`,
+`bodiesRemovedOutOfBounds`). Подробности — `docs/dynamic-terrain.md`.
 
 ## Terrain physics API
 
@@ -300,7 +315,10 @@ bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
 Объявлено в `terrain_physics.h`. Единственная точка входа шага тела:
 интегрирование плюс столкновение со статическим миром, на фиксированном шаге из
 `GameAdvanceWorld`. `world` берётся как `const` — изменить клетку столкновение
-не может по сигнатуре; `NULL` даёт чистую кинематику. Спящие тела пропускаются
+не может по сигнатуре; `NULL` даёт чистую кинематику. Это же единственное место,
+где тело может быть уничтожено за то, что покинуло мир, — проверка выполняется
+до проверки `awake`, потому что потерянным бывает и спящее тело. Спящие тела
+пропускаются
 целиком; обход — плоский по 32 слотам, без аллокаций.
 
 Модель, границы стоимости и стратегия anti-tunnelling —

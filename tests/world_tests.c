@@ -3207,20 +3207,21 @@ static void test_a_body_outside_the_world_is_safe(void)
     PhysicsTick(&terrain, &world, 120);
 
     /* A body cannot fly out of the map on its own — the border reads as rock,
-       exactly as it does for the player — so one is placed outside by hand.
-       That is what makes every sample's coordinates negative and large, which
-       is the case the bounds checks exist for. */
-    DynamicTerrainGet(&terrain, handle)->position = (Vector2){-500.0f, -400.0f};
-    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){-120.0f, 60.0f}, 2.0f);
-    PhysicsTick(&terrain, &world, 200);
+       exactly as it does for the player — so one is placed outside by hand,
+       just inside the kill margin so that this test is about coordinate safety
+       and not about cleanup. Every sample's coordinates are then negative and
+       large, which is the case the bounds checks exist for. */
+    DynamicTerrainGet(&terrain, handle)->position =
+        (Vector2){-terrain.config.killBoundsMargin * 0.5f, -50.0f};
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 0.0f}, 2.0f);
+    PhysicsTick(&terrain, &world, 60);
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "a body inside the kill margin was destroyed");
     CHECK(DynamicTerrainGetConst(&terrain, handle)->position.x ==
               DynamicTerrainGetConst(&terrain, handle)->position.x &&
           DynamicTerrainGetConst(&terrain, handle)->position.y ==
               DynamicTerrainGetConst(&terrain, handle)->position.y,
           "a body outside the world acquired a NaN position");
-    CHECK(DynamicTerrainGetConst(&terrain, handle)->position.x < -400.0f,
-          "the body was meant to stay outside the world: x = %.3f",
-          (double)DynamicTerrainGetConst(&terrain, handle)->position.x);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -3372,6 +3373,422 @@ static void test_substeps_stay_inside_their_budget(void)
           TERRAIN_MAX_SUBSTEPS);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
+}
+
+/* --- dynamic terrain budgets and lifecycle ------------------------------ */
+
+/* Every budget here answers a worst case that automatic detach will otherwise
+   walk straight into: a series of explosions creating fragments faster than
+   anything retires them. What is bounded is how many bodies exist, how much of
+   them there is, and how many are awake — never how old they are. */
+
+/* Consistency between the awake counter and the bodies themselves. The counter
+   is maintained at every place `awake` changes, and a budget drawn against a
+   counter that has drifted would be worse than no budget at all. */
+static void CheckAwakeAccounting(DynamicTerrainSystem *system, const char *when)
+{
+    int awake = 0;
+    int active = 0;
+    int occupied = 0;
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (!system->bodies[slot].active) {
+            continue;
+        }
+        ++active;
+        occupied += system->bodies[slot].cellCount;
+        if (system->bodies[slot].awake) {
+            ++awake;
+        }
+    }
+    CHECK(system->awakeCount == awake, "%s: counter says %d awake, %d are",
+          when, system->awakeCount, awake);
+    CHECK(DynamicTerrainStatistics(system)->activeBodies == active,
+          "%s: counter says %d active, %d are", when,
+          DynamicTerrainStatistics(system)->activeBodies, active);
+    CHECK(DynamicTerrainStatistics(system)->dynamicCellsUsed == occupied,
+          "%s: counter says %d cells used, %d are", when,
+          DynamicTerrainStatistics(system)->dynamicCellsUsed, occupied);
+    CHECK(DynamicTerrainStatistics(system)->awakeBodies +
+              DynamicTerrainStatistics(system)->sleepingBodies == active,
+          "%s: awake and sleeping do not add up to active", when);
+}
+
+static void test_body_slots_are_bounded_and_reusable(void)
+{
+    TerrainBodyHandle handles[MAX_TERRAIN_BODIES];
+    TerrainBodyHandle overflow;
+    int index;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        handles[index] = DynamicTerrainAllocBody(&terrain, 4, 4);
+        CHECK(DynamicTerrainGet(&terrain, handles[index]) != NULL,
+              "slot %d could not be allocated", index);
+    }
+    CheckAwakeAccounting(&terrain, "at capacity");
+
+    overflow = DynamicTerrainAllocBody(&terrain, 4, 4);
+    CHECK(DynamicTerrainGet(&terrain, overflow) == NULL,
+          "the manager allocated past its body budget");
+    CHECK(DynamicTerrainStatistics(&terrain)->allocationFailures == 1,
+          "a refused allocation was not counted: %d",
+          DynamicTerrainStatistics(&terrain)->allocationFailures);
+    /* A refusal must leave everything else exactly as it was. */
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == MAX_TERRAIN_BODIES,
+          "a refused allocation disturbed the live bodies");
+    CheckAwakeAccounting(&terrain, "after a refusal");
+
+    DynamicTerrainFreeBody(&terrain, handles[7]);
+    CHECK(DynamicTerrainGet(&terrain,
+                            DynamicTerrainAllocBody(&terrain, 4, 4)) != NULL,
+          "a freed slot was not reused");
+    CheckAwakeAccounting(&terrain, "after reuse");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The cell budget bounds work, not memory: the raster arena is allocated once
+   whatever happens, but every occupied cell is one collision may test and one
+   the renderer will draw. */
+static void test_the_dynamic_cell_budget_is_counted_and_enforced(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    TerrainExtractResult extracted;
+    uint64_t before;
+    int used;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    handle = DynamicTerrainAllocBody(&terrain, 10, 10);
+    FillBody(&terrain, handle, 0, 0, 9, 9, MATERIAL_ROCK, 20.0f);
+    used = DynamicTerrainStatistics(&terrain)->dynamicCellsUsed;
+    CHECK(used == 100, "a hundred filled cells counted as %d", used);
+    DynamicTerrainFinalizeBody(&terrain, handle);
+    CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed == 100,
+          "finalize disagreed with the running count: %d",
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed);
+
+    DynamicTerrainFreeBody(&terrain, handle);
+    CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed == 0,
+          "freeing a body did not return its cells: %d left",
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed);
+
+    /* With the budget spent, extraction must refuse — and refuse atomically. */
+    FillRect(&world, 40, 30, 47, 35, MATERIAL_ROCK);
+    handle = DynamicTerrainAllocBody(&terrain, 64, 60);
+    FillBody(&terrain, handle, 0, 0, 63, 59, MATERIAL_ROCK, 20.0f);
+    terrain.config.maxDynamicCells =
+        DynamicTerrainStatistics(&terrain)->dynamicCellsUsed + 10;
+    before = WorldDigest(&world);
+
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_CELL_CAPACITY,
+          "extraction past the cell budget reported %s",
+          TerrainExtractStatusName(extracted.status));
+    CHECK(WorldDigest(&world) == before,
+          "a budget refusal changed the world");
+    CHECK(DynamicTerrainStatistics(&terrain)->cellCapacityFailures == 1,
+          "the cell budget refusal was not counted: %d",
+          DynamicTerrainStatistics(&terrain)->cellCapacityFailures);
+    CheckAwakeAccounting(&terrain, "after a budget refusal");
+
+    /* Freeing the hog lets the same extraction through. */
+    DynamicTerrainFreeBody(&terrain, handle);
+    extracted = ExtractAt(&world, &terrain, WholeWorld(&world), 41, 34);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK,
+          "extraction still refused after the budget was freed: %s",
+          TerrainExtractStatusName(extracted.status));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_the_awake_budget_is_honoured(void)
+{
+    TerrainBodyHandle handles[MAX_TERRAIN_BODIES];
+    int index;
+    int awakeLimit;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config.maxAwakeBodies = 4;
+    awakeLimit = terrain.config.maxAwakeBodies;
+
+    for (index = 0; index < 8; ++index) {
+        handles[index] = DynamicTerrainAllocBody(&terrain, 4, 4);
+    }
+    /* Allocation wakes a body, and the first four filled the budget; the rest
+       were created asleep rather than refused, because a body that exists but
+       is not moving is still a body. */
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 8,
+          "the awake budget refused an allocation it should not have");
+    CheckAwakeAccounting(&terrain, "after filling the awake budget");
+
+    /* Waking one more is refused, deterministically and countably. */
+    CHECK(!DynamicTerrainWakeBody(&terrain, handles[7]),
+          "waking past the budget succeeded");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBudgetRefusals > 0,
+          "a refused wake was not counted");
+    CHECK(!DynamicTerrainGetConst(&terrain, handles[7])->awake,
+          "a refused body woke anyway");
+
+    /* And an impulse on a refused body must not leave it holding a velocity it
+       is not allowed to use. */
+    DynamicTerrainApplyImpulse(&terrain, handles[7], (Vector2){500.0f, 0.0f},
+                               DynamicTerrainGetConst(&terrain, handles[7])->position);
+    CHECK(DynamicTerrainGetConst(&terrain, handles[7])->velocity.x == 0.0f,
+          "a sleeping body kept an impulse it could not act on: %.3f",
+          (double)DynamicTerrainGetConst(&terrain, handles[7])->velocity.x);
+
+    /* Freeing an awake body gives its slot in the budget back. */
+    DynamicTerrainFreeBody(&terrain, handles[0]);
+    CHECK(DynamicTerrainWakeBody(&terrain, handles[7]),
+          "the budget was not released by freeing an awake body");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == awakeLimit,
+          "the awake count is %d, expected %d",
+          DynamicTerrainStatistics(&terrain)->awakeBodies, awakeLimit);
+    CheckAwakeAccounting(&terrain, "after releasing the budget");
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Sleeping is what gives the awake budget back, so it has to be observable
+   through the collision path and not just in isolation. */
+static void test_sleeping_on_the_ground_releases_the_awake_budget(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){60.0f, 40.0f});
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == 1,
+          "a new body is not awake");
+
+    PhysicsTick(&terrain, &world, 600);
+    CHECK(!DynamicTerrainGetConst(&terrain, handle)->awake,
+          "a body resting on the floor never slept");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->sleepingBodies == 1,
+          "the settled body is counted as %d awake / %d sleeping",
+          DynamicTerrainStatistics(&terrain)->awakeBodies,
+          DynamicTerrainStatistics(&terrain)->sleepingBodies);
+    CheckAwakeAccounting(&terrain, "after settling");
+
+    /* And an impulse brings it back. */
+    CHECK(DynamicTerrainWakeBody(&terrain, handle), "the settled body would not wake");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBodies == 1,
+          "waking did not reclaim the awake slot");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A body that has left the map can never touch anything again, so it would fall
+   for ever and hold an awake slot nothing could reclaim. */
+static void test_a_body_lost_outside_the_world_is_destroyed(void)
+{
+    World world;
+    TerrainBodyHandle lost;
+    TerrainBodyHandle nearby;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    lost = MakeKinematicBody(&terrain, 4, 4, (Vector2){64.0f, 48.0f});
+    nearby = MakeKinematicBody(&terrain, 4, 4, (Vector2){64.0f, 48.0f});
+    /* One well past the kill margin, one just inside it. */
+    DynamicTerrainGet(&terrain, lost)->position =
+        (Vector2){-terrain.config.killBoundsMargin * 4.0f, 48.0f};
+    DynamicTerrainGet(&terrain, nearby)->position =
+        (Vector2){-terrain.config.killBoundsMargin * 0.5f, 48.0f};
+
+    TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+
+    CHECK(DynamicTerrainGet(&terrain, lost) == NULL,
+          "a body far outside the world survived");
+    CHECK(DynamicTerrainGet(&terrain, nearby) != NULL,
+          "a body inside the kill margin was destroyed with it");
+    CHECK(DynamicTerrainStatistics(&terrain)->bodiesRemovedOutOfBounds == 1,
+          "the removal was not counted: %d",
+          DynamicTerrainStatistics(&terrain)->bodiesRemovedOutOfBounds);
+    CheckAwakeAccounting(&terrain, "after cleanup");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Cleanup is a world-safety rule, not a camera one. A body resting quietly in a
+   corner of the map is exactly what the player should find when they come
+   back, however long they have been away and wherever they were looking. */
+static void test_an_offscreen_body_is_never_destroyed(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 6, 4, (Vector2){10.0f, 40.0f});
+
+    /* Twenty seconds of simulation, far from anything a camera would show. */
+    PhysicsTick(&terrain, &world, 1200);
+    CHECK(DynamicTerrainGet(&terrain, handle) != NULL,
+          "a settled body inside the world was destroyed for being idle");
+    CHECK(DynamicTerrainStatistics(&terrain)->bodiesRemovedOutOfBounds == 0,
+          "an in-world body was counted as lost");
+    CHECK(!DynamicTerrainGetConst(&terrain, handle)->awake,
+          "the body should have settled by now");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_world_bounds_follow_the_body(void)
+{
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 minimum;
+    Vector2 maximum;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    handle = MakeKinematicBody(&terrain, 8, 4, (Vector2){50.0f, 50.0f});
+    body = DynamicTerrainGet(&terrain, handle);
+
+    CHECK(TerrainBodyWorldBounds(body, &minimum, &maximum),
+          "a live body reported no bounds");
+    CHECK(fabsf(maximum.x - minimum.x - 8.0f) < 0.001f &&
+              fabsf(maximum.y - minimum.y - 4.0f) < 0.001f,
+          "an unrotated 8x4 body measures %.3f x %.3f",
+          (double)(maximum.x - minimum.x), (double)(maximum.y - minimum.y));
+    CHECK(fabsf((minimum.x + maximum.x) * 0.5f - 50.0f) < 0.001f,
+          "the box is not centred on the body: %.3f",
+          (double)((minimum.x + maximum.x) * 0.5f));
+
+    /* A quarter turn swaps the extents. */
+    body->angle = PI * 0.5f;
+    CHECK(TerrainBodyWorldBounds(body, &minimum, &maximum), "bounds failed");
+    CHECK(fabsf(maximum.x - minimum.x - 4.0f) < 0.01f &&
+              fabsf(maximum.y - minimum.y - 8.0f) < 0.01f,
+          "a rotated body measures %.3f x %.3f",
+          (double)(maximum.x - minimum.x), (double)(maximum.y - minimum.y));
+
+    /* An empty body has no extent to report. */
+    DynamicTerrainFreeBody(&terrain, handle);
+    CHECK(!TerrainBodyWorldBounds(body, &minimum, &maximum),
+          "a freed body still reported bounds");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_reset_returns_every_budget(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    int index;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    for (index = 0; index < 6; ++index) {
+        handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){40.0f, 30.0f});
+        CHECK(DynamicTerrainGet(&terrain, handle) != NULL, "allocation failed");
+    }
+    PhysicsTick(&terrain, &world, 30);
+
+    /* One refusal on the record, so the test can say what Reset does with it.
+       The body is settled first: waking is only ever refused to a body that is
+       actually asleep. */
+    DynamicTerrainGet(&terrain, handle)->velocity = (Vector2){0.0f, 0.0f};
+    DynamicTerrainGet(&terrain, handle)->angularVelocity = 0.0f;
+    for (index = 0; index < 64 && DynamicTerrainGetConst(&terrain, handle)->awake;
+         ++index) {
+        DynamicTerrainSettleBody(&terrain, DynamicTerrainGet(&terrain, handle),
+                                 KINEMATIC_STEP);
+    }
+    CHECK(!DynamicTerrainGetConst(&terrain, handle)->awake,
+          "the body would not settle");
+    terrain.config.maxAwakeBodies = 0;
+    CHECK(!DynamicTerrainWakeBody(&terrain, handle), "the budget did not refuse");
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBudgetRefusals == 1,
+          "the refusal was not counted: %d",
+          DynamicTerrainStatistics(&terrain)->awakeBudgetRefusals);
+
+    DynamicTerrainReset(&terrain);
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->awakeBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->sleepingBodies == 0 &&
+              DynamicTerrainStatistics(&terrain)->dynamicCellsUsed == 0 &&
+              DynamicTerrainStatistics(&terrain)->allocatedDynamicCells == 0,
+          "reset left usage behind: %d bodies, %d awake, %d cells used, %d "
+          "reserved", DynamicTerrainStatistics(&terrain)->activeBodies,
+          DynamicTerrainStatistics(&terrain)->awakeBodies,
+          DynamicTerrainStatistics(&terrain)->dynamicCellsUsed,
+          DynamicTerrainStatistics(&terrain)->allocatedDynamicCells);
+    CheckAwakeAccounting(&terrain, "after reset");
+    /* Peaks are what the session demanded and deliberately survive. */
+    CHECK(DynamicTerrainStatistics(&terrain)->peakBodies == 6 &&
+              DynamicTerrainStatistics(&terrain)->peakAwakeBodies == 6,
+          "reset erased the peaks: %d bodies, %d awake",
+          DynamicTerrainStatistics(&terrain)->peakBodies,
+          DynamicTerrainStatistics(&terrain)->peakAwakeBodies);
+    CHECK(DynamicTerrainStatistics(&terrain)->peakDynamicCells >= 6 * 48,
+          "peak cells were erased: %d",
+          DynamicTerrainStatistics(&terrain)->peakDynamicCells);
+    /* Refusals are session history for the same reason the peaks are: they say
+       what the world demanded, not what is left after clearing it. */
+    CHECK(DynamicTerrainStatistics(&terrain)->awakeBudgetRefusals == 1,
+          "reset erased the refusal count: %d",
+          DynamicTerrainStatistics(&terrain)->awakeBudgetRefusals);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The same scenario twice must retire, refuse and settle the same bodies at the
+   same moments: lifecycle decisions are simulation state like any other. */
+static void test_lifecycle_decisions_are_deterministic(void)
+{
+    World first;
+    World second;
+    DynamicTerrainSystem systemA;
+    DynamicTerrainSystem systemB;
+    int step;
+    int index;
+
+    CHECK(BuildFloorWorld(&first, 70), "world allocation failed");
+    CHECK(BuildFloorWorld(&second, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&systemA), "dynamic terrain allocation failed");
+    CHECK(DynamicTerrainInit(&systemB), "dynamic terrain allocation failed");
+    systemA.config.maxAwakeBodies = 5;
+    systemB.config.maxAwakeBodies = 5;
+
+    for (index = 0; index < 10; ++index) {
+        TerrainBodyHandle a = MakeKinematicBody(&systemA, 5, 4,
+                                                (Vector2){20.0f + (float)index * 9.0f,
+                                                          30.0f});
+        TerrainBodyHandle b = MakeKinematicBody(&systemB, 5, 4,
+                                                (Vector2){20.0f + (float)index * 9.0f,
+                                                          30.0f});
+
+        DynamicTerrainSetVelocity(&systemA, a, (Vector2){(float)index * 3.0f, 0.0f},
+                                  0.4f);
+        DynamicTerrainSetVelocity(&systemB, b, (Vector2){(float)index * 3.0f, 0.0f},
+                                  0.4f);
+    }
+    for (step = 0; step < 400; ++step) {
+        TerrainPhysicsUpdate(&systemA, &first, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&systemB, &second, KINEMATIC_STEP);
+    }
+
+    CHECK(DynamicTerrainStatistics(&systemA)->activeBodies ==
+                  DynamicTerrainStatistics(&systemB)->activeBodies &&
+              DynamicTerrainStatistics(&systemA)->awakeBodies ==
+                  DynamicTerrainStatistics(&systemB)->awakeBodies &&
+              DynamicTerrainStatistics(&systemA)->awakeBudgetRefusals ==
+                  DynamicTerrainStatistics(&systemB)->awakeBudgetRefusals &&
+              DynamicTerrainStatistics(&systemA)->bodiesRemovedOutOfBounds ==
+                  DynamicTerrainStatistics(&systemB)->bodiesRemovedOutOfBounds &&
+              DynamicTerrainStatistics(&systemA)->dynamicCellsUsed ==
+                  DynamicTerrainStatistics(&systemB)->dynamicCellsUsed,
+          "two identical runs made different lifecycle decisions");
+    WorldUnload(&first);
+    WorldUnload(&second);
+    DynamicTerrainUnload(&systemA);
+    DynamicTerrainUnload(&systemB);
 }
 
 /* --- abilities ----------------------------------------------------------- */
@@ -4810,6 +5227,15 @@ int main(void)
     RUN(test_collision_is_deterministic);
     RUN(test_the_contact_cap_is_never_exceeded);
     RUN(test_substeps_stay_inside_their_budget);
+    RUN(test_body_slots_are_bounded_and_reusable);
+    RUN(test_the_dynamic_cell_budget_is_counted_and_enforced);
+    RUN(test_the_awake_budget_is_honoured);
+    RUN(test_sleeping_on_the_ground_releases_the_awake_budget);
+    RUN(test_a_body_lost_outside_the_world_is_destroyed);
+    RUN(test_an_offscreen_body_is_never_destroyed);
+    RUN(test_world_bounds_follow_the_body);
+    RUN(test_reset_returns_every_budget);
+    RUN(test_lifecycle_decisions_are_deterministic);
     RUN(test_ability_table_passes_its_own_validation);
     RUN(test_a_one_shot_ability_respects_its_cooldown);
     RUN(test_a_held_ability_reports_one_start_per_hold);

@@ -59,6 +59,9 @@ DynamicTerrainConfig DynamicTerrainDefaultConfig(void)
     config.sleepDelay = 0.5f;
     config.restitution = 0.08f;
     config.friction = 0.55f;
+    config.maxAwakeBodies = 24;
+    config.maxDynamicCells = MAX_TERRAIN_DYNAMIC_CELLS;
+    config.killBoundsMargin = 512.0f;
     return config;
 }
 
@@ -138,8 +141,10 @@ void DynamicTerrainReset(DynamicTerrainSystem *system)
     }
     system->stats.activeBodies = 0;
     system->stats.allocatedDynamicCells = 0;
+    system->stats.dynamicCellsUsed = 0;
     system->stats.awakeBodies = 0;
     system->stats.sleepingBodies = 0;
+    system->awakeCount = 0;
 }
 
 TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
@@ -155,6 +160,7 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
     if (width <= 0 || height <= 0 || width > TERRAIN_BODY_MAX_SPAN ||
         height > TERRAIN_BODY_MAX_SPAN ||
         width * height > TERRAIN_BODY_RASTER_CAPACITY) {
+        ++system->stats.allocationFailures;
         return handle;
     }
 
@@ -165,7 +171,11 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
     }
     if (index >= MAX_TERRAIN_BODIES) {
         /* Full. Refusing is the whole point of a hard budget: the caller
-           decides what to do without a body, and nothing grows. */
+           decides what to do without a body, and nothing grows. Nothing is
+           evicted to make room either — a body is not less valuable for being
+           old, and choosing a victim would need a gameplay policy that does not
+           exist yet. */
+        ++system->stats.allocationFailures;
         return handle;
     }
 
@@ -178,7 +188,22 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
         body->generation = generation;
     }
     body->active = true;
-    body->awake = true;
+    /* Born awake only if the awake budget has room for it. The budget throttles
+       motion, not existence: a body that cannot move is still worth having —
+       it is the rubble the player comes back to — and refusing the allocation
+       instead would lose terrain that has already been decided on. The cost is
+       that under extreme load a fragment can freeze where it was made, and it
+       stays frozen until something wakes it, which is a far better failure than
+       simulating three hundred of them. */
+    if (system->awakeCount < system->config.maxAwakeBodies) {
+        body->awake = true;
+        ++system->awakeCount;
+        if (system->awakeCount > system->stats.peakAwakeBodies) {
+            system->stats.peakAwakeBodies = system->awakeCount;
+        }
+    } else {
+        ++system->stats.awakeBudgetRefusals;
+    }
     body->sleepTimer = 0.0f;
     body->width = width;
     body->height = height;
@@ -217,8 +242,13 @@ void DynamicTerrainFreeBody(DynamicTerrainSystem *system, TerrainBodyHandle hand
     }
     body = &system->bodies[handle.index];
     system->stats.allocatedDynamicCells -= body->width * body->height;
+    system->stats.dynamicCellsUsed -= body->cellCount;
     --system->stats.activeBodies;
+    if (body->awake) {
+        --system->awakeCount;
+    }
     body->active = false;
+    body->awake = false;
     /* Bumping on free is what makes every outstanding handle to this body stale
        from this moment, including the one that did the freeing. Zero is
        skipped: it is the value a zero-initialised handle carries. */
@@ -303,8 +333,10 @@ void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handl
     system->temperature[index] = isOccupied ? temperature : 0.0f;
     if (isOccupied && !wasOccupied) {
         ++body->cellCount;
+        ++system->stats.dynamicCellsUsed;
     } else if (!isOccupied && wasOccupied) {
         --body->cellCount;
+        --system->stats.dynamicCellsUsed;
     }
     ++body->rasterRevision;
     if (body->rasterRevision == 0u) {
@@ -384,6 +416,11 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
         }
     }
 
+    /* The shared cell counter is not touched here. DynamicTerrainSetCell is the
+       only way a raster is ever written, and it moves `cellCount` and
+       `dynamicCellsUsed` together, so this recount cannot disagree with either.
+       A correction term would be code that is provably never taken, which is
+       the kind of code that quietly stops being right. */
     body->cellCount = occupied;
     body->mass = mass;
     if (occupied == 0 || mass <= 0.0f) {
@@ -609,18 +646,68 @@ void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
         body->sleepTimer = 0.0f;
         body->velocity = (Vector2){0.0f, 0.0f};
         body->angularVelocity = 0.0f;
+        --system->awakeCount;
     }
 }
 
-void DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle)
+bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
+                            Vector2 *maximum)
+{
+    int corner;
+
+    if (body == NULL || !body->active || body->cellCount <= 0 ||
+        minimum == NULL || maximum == NULL) {
+        return false;
+    }
+    /* The four corners of the occupied box, rotated. Their axis-aligned bound
+       is the body's world box; taking the local box's corners rather than every
+       cell is exact for a rectangle and costs four transforms. */
+    for (corner = 0; corner < 4; ++corner) {
+        Vector2 point = TerrainBodyLocalToWorld(
+            body, corner & 1 ? (float)body->maximumX + 1.0f : (float)body->minimumX,
+            (corner >> 1) & 1 ? (float)body->maximumY + 1.0f
+                              : (float)body->minimumY);
+
+        if (corner == 0) {
+            *minimum = point;
+            *maximum = point;
+            continue;
+        }
+        if (point.x < minimum->x) minimum->x = point.x;
+        if (point.y < minimum->y) minimum->y = point.y;
+        if (point.x > maximum->x) maximum->x = point.x;
+        if (point.y > maximum->y) maximum->y = point.y;
+    }
+    return true;
+}
+
+bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle)
 {
     TerrainBody *body = DynamicTerrainGet(system, handle);
 
     if (body == NULL) {
-        return;
+        return false;
+    }
+    if (body->awake) {
+        body->sleepTimer = 0.0f;
+        return true;
+    }
+    /* The budget is spent at the moment of waking and never by putting an
+       already-moving body back to sleep: a body that is falling must not stop
+       mid-air because something else woke first. A refused body simply stays
+       asleep and can be woken again once a slot frees, which makes the
+       behaviour predictable without a priority scheduler to argue with. */
+    if (system->awakeCount >= system->config.maxAwakeBodies) {
+        ++system->stats.awakeBudgetRefusals;
+        return false;
     }
     body->awake = true;
     body->sleepTimer = 0.0f;
+    ++system->awakeCount;
+    if (system->awakeCount > system->stats.peakAwakeBodies) {
+        system->stats.peakAwakeBodies = system->awakeCount;
+    }
+    return true;
 }
 
 void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,
@@ -633,11 +720,12 @@ void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,
         !TerrainFinite(angularVelocity)) {
         return;
     }
+    if (!DynamicTerrainWakeBody(system, handle)) {
+        return;
+    }
     body->velocity = velocity;
     body->angularVelocity = angularVelocity;
     TerrainClampSpeeds(body, &system->config);
-    body->awake = true;
-    body->sleepTimer = 0.0f;
 }
 
 void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system,
@@ -660,6 +748,14 @@ void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system,
         return;
     }
 
+    /* Refused by the awake budget: applying the impulse anyway would leave a
+       sleeping body holding a velocity it is not allowed to use, and the
+       invariant that a sleeping body is motionless is what makes a sleeping
+       transform trustworthy. */
+    if (!DynamicTerrainWakeBody(system, handle)) {
+        return;
+    }
+
     body->velocity.x += impulse.x / body->mass;
     body->velocity.y += impulse.y / body->mass;
 
@@ -672,13 +768,21 @@ void DynamicTerrainApplyImpulse(DynamicTerrainSystem *system,
                              body->inertia;
 
     TerrainClampSpeeds(body, &system->config);
-    body->awake = true;
-    body->sleepTimer = 0.0f;
 }
 
 const DynamicTerrainStats *DynamicTerrainStatistics(const DynamicTerrainSystem *system)
 {
     static const DynamicTerrainStats empty = {0};
 
-    return system != NULL ? &system->stats : &empty;
+    if (system == NULL) {
+        return &empty;
+    }
+    /* awakeBodies and sleepingBodies are derived from the invariant rather than
+       from the last update, so they are right between ticks too — a caller that
+       wakes a body and immediately asks how many are awake gets an answer that
+       matches what it just did. */
+    ((DynamicTerrainSystem *)system)->stats.awakeBodies = system->awakeCount;
+    ((DynamicTerrainSystem *)system)->stats.sleepingBodies =
+        system->stats.activeBodies - system->awakeCount;
+    return &system->stats;
 }
