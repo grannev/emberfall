@@ -31,6 +31,27 @@ static void DrawForceArc(const AbilityState *state, float duration)
                       RAD2DEG;
     int ring;
 
+    /* Crisp cone edges make the pressure direction legible even when dust and
+       bloom overlap the centre of the blow. */
+    {
+        float left = (angle - halfAngle) * DEG2RAD;
+        float right = (angle + halfAngle) * DEG2RAD;
+        float edgeLength = ABILITY_FORCE_LENGTH * (0.72f + progress * 0.28f);
+        Color edge = Fade((Color){187, 224, 245, 255},
+                          (1.0f - progress) * 0.42f);
+
+        DrawLineEx(state->origin,
+                   Vector2Add(state->origin,
+                              (Vector2){cosf(left) * edgeLength,
+                                        sinf(left) * edgeLength}),
+                   0.55f, edge);
+        DrawLineEx(state->origin,
+                   Vector2Add(state->origin,
+                              (Vector2){cosf(right) * edgeLength,
+                                        sinf(right) * edgeLength}),
+                   0.55f, edge);
+    }
+
     for (ring = 0; ring < 4; ++ring) {
         float radius = 10.0f + (ABILITY_FORCE_LENGTH - 10.0f) * progress -
                        (float)ring * 6.0f;
@@ -45,6 +66,32 @@ static void DrawForceArc(const AbilityState *state, float duration)
         DrawCircleSectorLines(state->origin, radius, angle - halfAngle,
                               angle + halfAngle, 20,
                               (Color){182, 216, 255, alpha});
+    }
+}
+
+static void DrawCryoEdge(const AbilityState *state)
+{
+    Vector2 delta = Vector2Subtract(state->endpoint, state->origin);
+    float length = Vector2Length(delta);
+    Vector2 direction;
+    Vector2 normal;
+    int shard;
+
+    if (length <= 2.0f) {
+        return;
+    }
+    direction = Vector2Scale(delta, 1.0f / length);
+    normal = (Vector2){-direction.y, direction.x};
+    for (shard = 1; shard <= 7; ++shard) {
+        float amount = (float)shard / 8.0f;
+        float side = (shard & 1) == 0 ? 1.0f : -1.0f;
+        Vector2 point = Vector2Add(state->origin,
+                                   Vector2Scale(delta, amount));
+        Vector2 tip = Vector2Add(
+            Vector2Add(point, Vector2Scale(normal, side * 1.6f)),
+            Vector2Scale(direction, -1.2f));
+
+        DrawLineEx(point, tip, 0.45f, (Color){200, 244, 255, 190});
     }
 }
 
@@ -67,21 +114,28 @@ void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition)
                                             : (Color){180, 188, 199, 190};
 
     if (laser->active) {
-        DrawLineEx(laser->origin, laser->endpoint, 1.6f, (Color){255, 81, 43, 210});
-        DrawLineEx(laser->origin, laser->endpoint, 0.55f,
+        DrawLineEx(laser->origin, laser->endpoint, 1.7f,
+                   (Color){255, 74, 31, 225});
+        DrawLineEx(laser->origin, laser->endpoint, 0.62f,
                    (Color){255, 244, 188, 255});
         if (laser->hit) {
-            DrawCircleV(laser->endpoint, 4.2f, (Color){255, 74, 24, 70});
-            DrawCircleV(laser->endpoint, 2.5f, (Color){255, 161, 43, 190});
+            Vector2 normal = {-laser->direction.y, laser->direction.x};
+
+            DrawCircleV(laser->endpoint, 4.2f, (Color){255, 74, 24, 62});
+            DrawCircleV(laser->endpoint, 2.5f, (Color){255, 161, 43, 205});
             DrawCircleV(laser->endpoint, 1.1f, (Color){255, 248, 203, 255});
+            DrawLineEx(Vector2Add(laser->endpoint, Vector2Scale(normal, -3.6f)),
+                       Vector2Add(laser->endpoint, Vector2Scale(normal, 3.6f)),
+                       0.55f, (Color){255, 203, 106, 210});
         } else {
             DrawCircleV(laser->endpoint, 0.9f, (Color){255, 198, 88, 180});
         }
     }
 
     if (cryo->active) {
-        DrawBeam(cryo, (Color){232, 250, 255, 220}, (Color){126, 214, 255, 150},
-                 1.4f, 0.5f, 3.6f);
+        DrawBeam(cryo, (Color){239, 253, 255, 245},
+                 (Color){88, 196, 244, 175}, 1.65f, 0.56f, 3.8f);
+        DrawCryoEdge(cryo);
     }
 
     if (force->effectTime > 0.0f) {
@@ -107,16 +161,20 @@ void AbilityRendererDrawEmissive(const AbilitySystem *abilities)
     cryo = AbilityStateAt(abilities, ABILITY_CRYO);
 
     if (laser->active) {
-        DrawLineEx(laser->origin, laser->endpoint, 1.8f,
-                   (Color){255, 72, 24, 235});
-        DrawLineEx(laser->origin, laser->endpoint, 0.65f,
+        DrawLineEx(laser->origin, laser->endpoint, 4.0f,
+                   (Color){255, 45, 12, 84});
+        DrawLineEx(laser->origin, laser->endpoint, 1.85f,
+                   (Color){255, 72, 24, 230});
+        DrawLineEx(laser->origin, laser->endpoint, 0.68f,
                    (Color){255, 238, 166, 255});
         DrawCircleV(laser->endpoint, laser->hit ? 3.0f : 1.0f,
                     (Color){255, 126, 34, laser->hit ? 230 : 150});
     }
     if (cryo->active) {
-        DrawLineEx(cryo->origin, cryo->endpoint, 1.2f,
-                   (Color){104, 205, 255, 125});
+        DrawLineEx(cryo->origin, cryo->endpoint, 2.4f,
+                   (Color){69, 177, 242, 70});
+        DrawLineEx(cryo->origin, cryo->endpoint, 1.15f,
+                   (Color){104, 205, 255, 130});
         DrawCircleV(cryo->endpoint, cryo->hit ? 2.4f : 0.8f,
                     (Color){167, 232, 255, 130});
     }

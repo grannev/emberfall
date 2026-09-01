@@ -8,6 +8,7 @@
 #include <raymath.h>
 
 #include "audio.h"
+#include "camera_feedback.h"
 #include "game.h"
 #include "input.h"
 #include "renderer.h"
@@ -19,18 +20,6 @@
 #define VIEW_WIDTH 320.0f
 #define VIEW_HEIGHT 180.0f
 
-/* How far the camera leads the player, as a fraction of the view in each
-   direction, and over how many seconds of travel that lead is measured. The
-   final boost is much too fast for a centred 320-cell view, so lookahead works
-   together with speed-based widening below. */
-#define CAMERA_LOOKAHEAD_TIME 0.42f
-#define CAMERA_LOOKAHEAD_VIEW_FRACTION 0.30f
-/* The view also widens with speed, so the fastest flight is the one that sees
-   the most. It follows measured speed rather than the boost key: a player
-   thrown by an explosion gets the same widening, and a boost stalled against
-   rock does not. */
-#define CAMERA_FAST_VIEW_SCALE 2.0f
-
 static float CameraZoomForWindow(float viewScale)
 {
     float horizontal = (float)GetScreenWidth() / (VIEW_WIDTH * viewScale);
@@ -38,42 +27,37 @@ static float CameraZoomForWindow(float viewScale)
     return fmaxf(1.0f, fminf(horizontal, vertical));
 }
 
-static Vector2 CameraLookahead(Vector2 velocity)
-{
-    float limitX = VIEW_WIDTH * CAMERA_LOOKAHEAD_VIEW_FRACTION;
-    float limitY = VIEW_HEIGHT * CAMERA_LOOKAHEAD_VIEW_FRACTION;
-
-    return (Vector2){
-        Clamp(velocity.x * CAMERA_LOOKAHEAD_TIME, -limitX, limitX),
-        Clamp(velocity.y * CAMERA_LOOKAHEAD_TIME, -limitY, limitY)
-    };
-}
-
-static float CameraViewScaleForSpeed(const Player *player)
-{
-    float speed = sqrtf(player->velocity.x * player->velocity.x +
-                        player->velocity.y * player->velocity.y);
-    float range = player->boostMaxSpeed - player->maxSpeed;
-    float excess;
-
-    if (range <= 0.001f) {
-        return 1.0f;
-    }
-    excess = Clamp((speed - player->maxSpeed) / range, 0.0f, 1.0f);
-    return 1.0f + (CAMERA_FAST_VIEW_SCALE - 1.0f) * excess;
-}
-
 /* The part of the world the camera can see, in cells. WorldRenderer rebuilds
    only what falls inside it, so drawing costs what is on screen rather than
    what the whole simulation happens to be doing. */
 static Rectangle VisibleWorldRectangle(Camera2D camera)
 {
-    Vector2 topLeft = GetScreenToWorld2D((Vector2){0.0f, 0.0f}, camera);
-    Vector2 bottomRight = GetScreenToWorld2D(
-        (Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, camera);
+    Vector2 corners[4] = {
+        GetScreenToWorld2D((Vector2){0.0f, 0.0f}, camera),
+        GetScreenToWorld2D((Vector2){(float)GetScreenWidth(), 0.0f}, camera),
+        GetScreenToWorld2D(
+            (Vector2){0.0f, (float)GetScreenHeight()}, camera),
+        GetScreenToWorld2D(
+            (Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()},
+            camera),
+    };
+    float minimumX = corners[0].x;
+    float minimumY = corners[0].y;
+    float maximumX = corners[0].x;
+    float maximumY = corners[0].y;
+    int index;
 
-    return (Rectangle){topLeft.x, topLeft.y, bottomRight.x - topLeft.x,
-                       bottomRight.y - topLeft.y};
+    /* Rotation makes opposite corners insufficient: the other two can extend
+       beyond their axis-aligned bounds and would otherwise expose an uncached
+       world-page sliver during a camera impulse. */
+    for (index = 1; index < 4; ++index) {
+        minimumX = fminf(minimumX, corners[index].x);
+        minimumY = fminf(minimumY, corners[index].y);
+        maximumX = fmaxf(maximumX, corners[index].x);
+        maximumY = fmaxf(maximumY, corners[index].y);
+    }
+    return (Rectangle){minimumX, minimumY, maximumX - minimumX,
+                       maximumY - minimumY};
 }
 
 static const char *PlayerBoostLabel(const Player *player, float speed)
@@ -563,8 +547,7 @@ static bool EventsContain(const GameEventBuffer *events, GameEventType type)
 /* Presentation consumes transient gameplay facts after GameUpdate. Gameplay
    neither plays sounds nor shakes a Camera2D, and adding another consumer does
    not require another one-frame flag on Player or PowerSystem. */
-static void PresentGameEvents(const GameEventBuffer *events, GameAudio *audio,
-                              float *cameraShake)
+static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
 {
     uint16_t index;
 
@@ -574,30 +557,23 @@ static void PresentGameEvents(const GameEventBuffer *events, GameAudio *audio,
         switch (event->type) {
         case GAME_EVENT_BOOST_STAGE: {
             int stage = event->count;
-            float shake = stage == 1 ? 0.8f : (stage == 2 ? 1.8f : 4.0f);
-
-            *cameraShake = fmaxf(*cameraShake, shake);
             GameAudioPlayBoost(audio, stage);
             break;
         }
         case GAME_EVENT_PLAYER_IMPACT:
-            *cameraShake = fmaxf(
-                *cameraShake,
-                Clamp((event->strength - 10.0f) * 0.025f, 0.0f, 2.6f));
             GameAudioPlayImpact(audio, event->strength);
             break;
-        case GAME_EVENT_PLAYER_DRILL:
-            *cameraShake = fmaxf(
-                *cameraShake,
-                Clamp(0.25f + (float)event->count * 0.025f, 0.0f, 1.4f));
-            break;
         case GAME_EVENT_FORCE:
-            *cameraShake = fmaxf(*cameraShake, 4.2f);
             GameAudioPlayForce(audio);
             break;
         case GAME_EVENT_EXPLOSION:
-            *cameraShake = fmaxf(*cameraShake, 4.8f);
-            GameAudioPlayExplosion(audio);
+            GameAudioPlayExplosion(audio, event->strength);
+            break;
+        case GAME_EVENT_LASER_HIT:
+            GameAudioPlayLaserImpact(audio, 1.0f);
+            break;
+        case GAME_EVENT_CRYO_HIT:
+            GameAudioPlayChillImpact(audio);
             break;
         case GAME_EVENT_MATERIAL_REACTION:
             GameAudioPlayReaction(audio);
@@ -615,6 +591,7 @@ int main(int argc, char **argv)
     GameEventBuffer events = {0};
     GameAudio audio = {0};
     Renderer renderer = {0};
+    CameraFeedback cameraFeedback = {0};
     Camera2D camera = {0};
     bool debugHud = true;
     bool smokeTest = false;
@@ -622,11 +599,12 @@ int main(int argc, char **argv)
     int smokeFrames = 0;
     Vector2 cameraFocus;
     Vector2 smokeAim = {0.0f, 0.0f};
-    float cameraShake = 0.0f;
-    float cameraViewScale = 1.0f;
     bool smokeReactionObserved = false;
     bool smokeLaserHitObserved = false;
     bool smokeExplosionObserved = false;
+    bool smokeForceObserved = false;
+    bool smokeCryoObserved = false;
+    bool smokeBoostObserved = false;
     bool smokeCollisionObserved = false;
     bool smokeDrillObserved = false;
     bool smokeFireContained = false;
@@ -741,11 +719,12 @@ int main(int argc, char **argv)
         }
     }
     cameraFocus = game.player.position;
+    CameraFeedbackInit(&cameraFeedback);
     camera.target = cameraFocus;
     camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                               (float)GetScreenHeight() * 0.5f};
     camera.rotation = 0.0f;
-    camera.zoom = CameraZoomForWindow(cameraViewScale);
+    camera.zoom = CameraZoomForWindow(1.0f);
 
     while (!WindowShouldClose()) {
         /* The smoke run steps at exactly one fixed tick per frame. Real frame
@@ -756,6 +735,7 @@ int main(int argc, char **argv)
                                     : fminf(GetFrameTime(), 0.05f);
         AppInput input = InputPoll(&game.world, camera);
         Vector2 desiredCamera;
+        CameraFeedbackOutput cameraOutput;
         Vector2 cursorCell = input.cursorCell;
         Vector2 aimPosition = input.game.aimWorld;
 
@@ -836,16 +816,21 @@ int main(int argc, char **argv)
             aimPosition = (Vector2){smokeAim.x + 0.5f, smokeAim.y + 0.5f};
             cursorCell = smokeAim;
             input.game.aimWorld = aimPosition;
+            input.game.move = smokeFrames == 0 ? (Vector2){1.0f, 0.0f}
+                                                : (Vector2){0.0f, 0.0f};
+            input.game.boostHeld = smokeFrames == 0;
             memset(input.game.ability, 0, sizeof(input.game.ability));
-            input.game.ability[ABILITY_LASER] = smokeFrames >= 1 && smokeFrames <= 9;
+            input.game.ability[ABILITY_LASER] = smokeFrames >= 1 && smokeFrames <= 7;
             input.game.ability[ABILITY_EXPLOSION] = smokeFrames == 5;
+            input.game.ability[ABILITY_FORCE] = smokeFrames == 8;
+            input.game.ability[ABILITY_CRYO] = smokeFrames >= 9;
             input.game.regeneratePressed = false;
         }
 
         GameUpdate(&game, &input.game, deltaTime, &events);
         if (input.game.regeneratePressed) {
             cameraFocus = game.player.position;
-            cameraShake = 0.0f;
+            CameraFeedbackClear(&cameraFeedback);
             RendererClearPresentation(&renderer);
         }
         {
@@ -857,7 +842,9 @@ int main(int argc, char **argv)
             sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
             GameAudioUpdate(&audio, sounding, deltaTime);
         }
-        PresentGameEvents(&events, &audio, &cameraShake);
+        PresentGameAudio(&events, &audio);
+        CameraFeedbackConsumeEvents(&cameraFeedback, &events,
+                                    game.player.position);
         RendererUpdatePresentation(&renderer, &events, deltaTime);
         if (smokeTest) {
             smokeAutoDetachEvent = smokeAutoDetachEvent ||
@@ -912,21 +899,37 @@ int main(int argc, char **argv)
             smokeExplosionObserved = smokeExplosionObserved ||
                                      EventsContain(&events,
                                                    GAME_EVENT_EXPLOSION);
+            smokeForceObserved = smokeForceObserved ||
+                                 EventsContain(&events, GAME_EVENT_FORCE);
+            smokeCryoObserved = smokeCryoObserved ||
+                                EventsContain(&events, GAME_EVENT_CRYO_HIT);
+            smokeBoostObserved = smokeBoostObserved ||
+                                 EventsContain(&events,
+                                               GAME_EVENT_BOOST_STAGE);
         }
 
         camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
                                   (float)GetScreenHeight() * 0.5f};
-        /* Smooth the view scale rather than the zoom so the rate does not depend
-           on window size, and keep it slower than the focus so the frame breathes
-           instead of snapping. */
-        cameraViewScale +=
-            (CameraViewScaleForSpeed(&game.player) - cameraViewScale) *
-                           (1.0f - expf(-4.5f * deltaTime));
-        camera.zoom = CameraZoomForWindow(cameraViewScale);
+        cameraOutput = CameraFeedbackUpdate(
+            &cameraFeedback,
+            (CameraFeedbackMotion){
+                .velocity = game.player.velocity,
+                .normalSpeed = game.player.maxSpeed,
+                .maximumSpeed = game.player.boostMaxSpeed,
+                .viewWidth = VIEW_WIDTH,
+                .viewHeight = VIEW_HEIGHT,
+            },
+            deltaTime);
+        /* Widening is expressed in view units, not raw zoom, so it behaves the
+           same at every window size. A kick widens for an instant rather than
+           magnifying the impact and hiding its surrounding motion. */
+        camera.zoom = CameraZoomForWindow(
+            cameraOutput.viewScale * (1.0f + cameraOutput.zoomKick));
+        camera.rotation = cameraOutput.rotationDegrees;
         {
-            Vector2 lookahead = CameraLookahead(game.player.velocity);
-            Vector2 lead = {game.player.position.x + lookahead.x,
-                            game.player.position.y + lookahead.y};
+            Vector2 lead = {
+                game.player.position.x + cameraOutput.lookahead.x,
+                game.player.position.y + cameraOutput.lookahead.y};
 
             desiredCamera = ClampCameraTarget(lead, camera.zoom, &game.world);
         }
@@ -934,14 +937,9 @@ int main(int argc, char **argv)
                          (1.0f - expf(-8.0f * deltaTime));
         cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
                          (1.0f - expf(-8.0f * deltaTime));
-        cameraShake *= expf(-9.0f * deltaTime);
-        if (cameraShake < 0.02f) {
-            cameraShake = 0.0f;
-        }
-        camera.target = (Vector2){
-            cameraFocus.x + ((float)GetRandomValue(-1000, 1000) / 1000.0f) * cameraShake,
-            cameraFocus.y + ((float)GetRandomValue(-1000, 1000) / 1000.0f) * cameraShake
-        };
+        camera.target = ClampCameraTarget(
+            Vector2Add(cameraFocus, cameraOutput.impulseOffset), camera.zoom,
+            &game.world);
 
         /* The player carries their own light. Without it a bored tunnel would
            be unplayably dark the moment it leaves the reach of daylight, and
@@ -975,7 +973,7 @@ int main(int argc, char **argv)
                                   frameStats->renderTargets == 4u);
             smokePresentationFxObserved = smokePresentationFxObserved ||
                                           (frameStats->activeFx > 0u &&
-                                           frameStats->peakFx == 2u &&
+                                           frameStats->peakFx >= 22u &&
                                            frameStats->droppedFx == 0u);
             smokeTerrainTextureUpdates +=
                 frameStats->terrainBodyTextureUpdates;
@@ -1101,7 +1099,9 @@ int main(int argc, char **argv)
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
-                      !smokeExplosionObserved || !smokeCollisionObserved ||
+                      !smokeExplosionObserved || !smokeForceObserved ||
+                      !smokeCryoObserved || !smokeBoostObserved ||
+                      !smokeCollisionObserved ||
                       !smokeDrillObserved || !smokeFireContained ||
                       !smokeBloomObserved || !smokeTargetsSynchronized ||
                       !smokePresentationFxObserved ||
@@ -1123,14 +1123,17 @@ int main(int argc, char **argv)
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
-                "Smoke test failed: reaction=%d laser=%d explosion=%d collision=%d "
+                "Smoke test failed: reaction=%d laser=%d explosion=%d force=%d "
+                "cryo=%d boost=%d collision=%d "
                 "drill=%d fire_contained=%d resize=%d restored=%d "
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
                 "rotated=%d collision=%d released=%d auto_detach=%d "
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
                 "updates=%u chunks=%d/%d\n",
-                smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
+                smokeReactionObserved, smokeLaserHitObserved,
+                smokeExplosionObserved, smokeForceObserved,
+                smokeCryoObserved, smokeBoostObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
                 smokeBloomObserved, smokeBloomResized, smokeBloomRestored,

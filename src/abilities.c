@@ -82,6 +82,7 @@ static void AbilityApplyLaser(const AbilityContext *context, AbilityState *state
     (void)GameEventsPush(context->events, (GameEvent){
         .type = GAME_EVENT_LASER_HIT,
         .position = result.position,
+        .direction = context->direction,
         .material = result.material,
     });
 }
@@ -102,6 +103,8 @@ static void AbilityApplyCryo(const AbilityContext *context, AbilityState *state)
         (void)GameEventsPush(context->events, (GameEvent){
             .type = GAME_EVENT_CRYO_HIT,
             .position = result.position,
+            .direction = context->direction,
+            .material = result.material,
         });
     }
 }

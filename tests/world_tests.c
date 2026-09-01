@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "camera_feedback.h"
 #include "game.h"
 #include "materials.h"
 #include "particles.h"
@@ -319,11 +320,15 @@ static void test_presentation_fx_rejects_invalid_lifetime_and_clears(void)
     description.lifetime = NAN;
     CHECK(!PresentationFxSpawn(&fx, description),
           "non-finite FX lifetime was accepted");
+    description.lifetime = 0.25f;
+    description.delay = -0.1f;
+    CHECK(!PresentationFxSpawn(&fx, description),
+          "negative FX delay was accepted");
     CHECK(fx.stats.active == 0u, "invalid FX changed active count");
-    CHECK(fx.stats.dropped == 2u,
+    CHECK(fx.stats.dropped == 3u,
           "invalid FX did not increment dropped telemetry");
 
-    description.lifetime = 0.25f;
+    description.delay = 0.0f;
     CHECK(PresentationFxSpawn(&fx, description), "valid FX did not spawn");
     PresentationFxClear(&fx);
     CHECK(fx.stats.active == 0u && fx.stats.peak == 0u &&
@@ -389,6 +394,9 @@ static void test_presentation_fx_events_create_visuals_without_mutating_events(v
     uint16_t index;
     int flashes = 0;
     int rings = 0;
+    int glows = 0;
+    int trails = 0;
+    int puffs = 0;
 
     events.events[0] = (GameEvent){
         .type = GAME_EVENT_EXPLOSION,
@@ -405,19 +413,172 @@ static void test_presentation_fx_events_create_visuals_without_mutating_events(v
 
     PresentationFxInit(&fx);
     spawned = PresentationFxConsumeEvents(&fx, &events);
-    CHECK(spawned == 3u && fx.stats.active == 3u,
-          "two events created %u FX instead of three", (unsigned int)spawned);
+    CHECK(spawned == 23u && fx.stats.active == 23u,
+          "two events created %u FX instead of 23", (unsigned int)spawned);
     for (index = 0u; index < fx.stats.active; ++index) {
         if (fx.effects[index].description.type == PRESENTATION_FX_FLASH) {
             ++flashes;
         } else if (fx.effects[index].description.type == PRESENTATION_FX_RING) {
             ++rings;
+        } else if (fx.effects[index].description.type == PRESENTATION_FX_GLOW) {
+            ++glows;
+        } else if (fx.effects[index].description.type == PRESENTATION_FX_TRAIL) {
+            ++trails;
+        } else if (fx.effects[index].description.type == PRESENTATION_FX_PUFF) {
+            ++puffs;
         }
     }
-    CHECK(flashes == 2 && rings == 1,
-          "event conversion created flashes=%d rings=%d", flashes, rings);
+    CHECK(flashes == 2 && rings == 2 && glows == 2 && trails == 10 &&
+              puffs == 7,
+          "event conversion created flash=%d ring=%d glow=%d trail=%d puff=%d",
+          flashes, rings, glows, trails, puffs);
     CHECK(memcmp(&events, &before, sizeof(events)) == 0,
           "presentation event conversion mutated gameplay events");
+}
+
+static void test_presentation_fx_delays_a_stage_without_shortening_it(void)
+{
+    PresentationFxSystem fx;
+    PresentationFxDescription description =
+        TestFxDescription(PRESENTATION_FX_GLOW,
+                          PRESENTATION_FX_PRIORITY_NORMAL, 0.20f);
+
+    description.delay = 0.15f;
+    PresentationFxInit(&fx);
+    CHECK(PresentationFxSpawn(&fx, description), "delayed FX did not spawn");
+    CHECK(fx.effects[0].age == -0.15f, "delay was not represented in FX age");
+    PresentationFxUpdate(&fx, 0.15f);
+    CHECK(fx.stats.active == 1u && fabsf(fx.effects[0].age) < 0.0001f,
+          "delayed FX was shortened before it became visible");
+    PresentationFxUpdate(&fx, 0.19f);
+    CHECK(fx.stats.active == 1u, "delayed FX expired before its own lifetime");
+    PresentationFxUpdate(&fx, 0.01f);
+    CHECK(fx.stats.active == 0u, "delayed FX outlived delay plus lifetime");
+}
+
+static void test_presentation_fx_maps_every_combat_event_with_bounded_rates(void)
+{
+    PresentationFxSystem fx;
+    GameEventBuffer events = {0};
+    uint16_t firstSpawn;
+    uint16_t repeatedSpawn;
+
+    events.events[events.count++] = (GameEvent){
+        .type = GAME_EVENT_LASER_HIT,
+        .position = {20.0f, 20.0f},
+        .direction = {1.0f, 0.0f},
+    };
+    events.events[events.count++] = (GameEvent){
+        .type = GAME_EVENT_CRYO_HIT,
+        .position = {22.0f, 20.0f},
+        .direction = {1.0f, 0.0f},
+    };
+    events.events[events.count++] = (GameEvent){
+        .type = GAME_EVENT_FORCE,
+        .position = {10.0f, 20.0f},
+        .direction = {1.0f, 0.0f},
+        .radius = 84.0f,
+    };
+    events.events[events.count++] = (GameEvent){
+        .type = GAME_EVENT_BOOST_STAGE,
+        .position = {10.0f, 20.0f},
+        .direction = {160.0f, 0.0f},
+        .count = 3,
+    };
+    events.events[events.count++] = (GameEvent){
+        .type = GAME_EVENT_PLAYER_DRILL,
+        .position = {24.0f, 20.0f},
+        .direction = {160.0f, 0.0f},
+        .material = MATERIAL_ROCK,
+        .count = 12,
+    };
+
+    PresentationFxInit(&fx);
+    firstSpawn = PresentationFxConsumeEvents(&fx, &events);
+    CHECK(firstSpawn >= 25u && fx.stats.active == firstSpawn,
+          "combat event set spawned only %u FX", (unsigned int)firstSpawn);
+    repeatedSpawn = PresentationFxConsumeEvents(&fx, &events);
+    CHECK(repeatedSpawn < firstSpawn,
+          "held contacts ignored presentation spawn cooldowns");
+    CHECK(fx.stats.active <= PRESENTATION_FX_CAPACITY,
+          "combat event conversion exceeded fixed FX capacity");
+}
+
+static void test_camera_feedback_stacks_clamps_and_expires(void)
+{
+    CameraFeedback feedback;
+    GameEventBuffer events = {0};
+    GameEventBuffer before;
+    CameraFeedbackOutput output;
+    int index;
+
+    for (index = 0; index < 24; ++index) {
+        events.events[events.count++] = (GameEvent){
+            .type = GAME_EVENT_EXPLOSION,
+            .position = {(float)index, 10.0f},
+            .radius = 42.0f,
+        };
+    }
+    before = events;
+    CameraFeedbackInit(&feedback);
+    CameraFeedbackConsumeEvents(&feedback, &events, (Vector2){80.0f, 40.0f});
+    CHECK(memcmp(&events, &before, sizeof(events)) == 0,
+          "camera feedback mutated gameplay events");
+    CHECK(feedback.stats.active == CAMERA_IMPULSE_CAPACITY &&
+              feedback.stats.peak == CAMERA_IMPULSE_CAPACITY &&
+              feedback.stats.dropped == 8u,
+          "camera impulse stack did not enforce its capacity");
+    output = CameraFeedbackUpdate(
+        &feedback,
+        (CameraFeedbackMotion){.normalSpeed = 115.0f,
+                               .maximumSpeed = 680.0f,
+                               .viewWidth = 320.0f,
+                               .viewHeight = 180.0f},
+        1.0f / 60.0f);
+    CHECK(sqrtf(output.impulseOffset.x * output.impulseOffset.x +
+                output.impulseOffset.y * output.impulseOffset.y) <= 8.001f,
+          "stacked camera offset escaped its clamp");
+    CHECK(fabsf(output.rotationDegrees) <= 1.101f &&
+              output.zoomKick <= 0.101f,
+          "stacked rotation/zoom escaped camera clamps");
+    (void)CameraFeedbackUpdate(
+        &feedback,
+        (CameraFeedbackMotion){.normalSpeed = 115.0f,
+                               .maximumSpeed = 680.0f,
+                               .viewWidth = 320.0f,
+                               .viewHeight = 180.0f},
+        1.0f);
+    CHECK(feedback.stats.active == 0u,
+          "expired camera impulses remained in the stack");
+}
+
+static void test_camera_lookahead_damps_reversal_before_leading_backward(void)
+{
+    CameraFeedback feedback;
+    CameraFeedbackMotion motion = {
+        .velocity = {300.0f, 0.0f},
+        .normalSpeed = 115.0f,
+        .maximumSpeed = 680.0f,
+        .viewWidth = 320.0f,
+        .viewHeight = 180.0f,
+    };
+    CameraFeedbackOutput output = {0};
+    int step;
+
+    CameraFeedbackInit(&feedback);
+    for (step = 0; step < 30; ++step) {
+        output = CameraFeedbackUpdate(&feedback, motion, 1.0f / 60.0f);
+    }
+    CHECK(output.lookahead.x > 20.0f, "camera never developed speed lookahead");
+    motion.velocity.x = -300.0f;
+    output = CameraFeedbackUpdate(&feedback, motion, 1.0f / 60.0f);
+    CHECK(output.lookahead.x > 0.0f,
+          "camera whipped through the player on the first reversal frame");
+    for (step = 0; step < 120; ++step) {
+        output = CameraFeedbackUpdate(&feedback, motion, 1.0f / 60.0f);
+    }
+    CHECK(output.lookahead.x < -20.0f,
+          "camera never settled into reversed speed lookahead");
 }
 
 static void test_a_refused_chunk_keeps_its_dirty_flag(void)
@@ -6456,6 +6617,10 @@ int main(void)
     RUN(test_presentation_fx_rejects_invalid_lifetime_and_clears);
     RUN(test_presentation_fx_capacity_has_bounded_priority_overflow);
     RUN(test_presentation_fx_events_create_visuals_without_mutating_events);
+    RUN(test_presentation_fx_delays_a_stage_without_shortening_it);
+    RUN(test_presentation_fx_maps_every_combat_event_with_bounded_rates);
+    RUN(test_camera_feedback_stacks_clamps_and_expires);
+    RUN(test_camera_lookahead_damps_reversal_before_leading_backward);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_the_same_seed_always_generates_the_same_world);
