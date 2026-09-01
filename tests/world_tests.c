@@ -146,7 +146,7 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     CHECK(WorldInit(&world, 64, 64), "world allocation failed");
     WorldGenerate(&world, 0xE6BEu);
 
-    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 4, "first preparation visited %d/4 chunks",
           probe.regions);
     CHECK(probe.pixels == 64u * 64u,
@@ -154,12 +154,12 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
           (unsigned long long)probe.pixels);
 
     probe = (RenderProbe){0};
-    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 0,
           "settled renderer rebuilt %d unchanged chunks", probe.regions);
 
     WorldSetCell(&world, 10, 10, MATERIAL_EMPTY);
-    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 1,
           "one local edit rebuilt %d chunks instead of one", probe.regions);
     WorldUnload(&world);
@@ -193,7 +193,7 @@ static void test_empty_world_render_data_preserves_background_depth(void)
     EmptyRenderProbe probe = {0};
 
     CHECK(WorldInit(&world, 32, 32), "world allocation failed");
-    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f},
+    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f}, 0,
                         CaptureEmptyRenderData, &probe);
     CHECK(probe.sawTranslucentAir,
           "empty world pixels still fully hide the environment background");
@@ -259,7 +259,7 @@ static void test_emissive_render_data_selects_emitters_not_bright_terrain(void)
     WorldSetCell(&world, 5, 4, MATERIAL_FIRE);
     WorldSetCell(&world, 6, 4, MATERIAL_SAND);
 
-    WorldPrepareVisible(&world, wholeWorld, CaptureMaterialEmission, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureMaterialEmission, &probe);
     CHECK(probe.lavaEmits, "lava produced no emissive render data");
     CHECK(probe.fireEmits, "fire produced no emissive render data");
     CHECK(probe.sandStaysDark,
@@ -738,16 +738,16 @@ static void test_a_refused_chunk_keeps_its_dirty_flag(void)
     CHECK(WorldInit(&world, 64, 64), "world allocation failed");
     WorldGenerate(&world, 0xE6BEu);
 
-    WorldPrepareVisible(&world, wholeWorld, RefuseRenderChunk, &refused);
+    WorldPrepareVisible(&world, wholeWorld, 0, RefuseRenderChunk, &refused);
     CHECK(refused == 4, "first preparation offered %d/4 chunks", refused);
 
     /* Nothing was accepted, so the same four chunks must still be owed. */
-    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 4,
           "a refused chunk was forgotten: %d/4 offered again", probe.regions);
 
     probe = (RenderProbe){0};
-    WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
+    WorldPrepareVisible(&world, wholeWorld, 0, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 0,
           "an accepted chunk was rebuilt again: %d chunks", probe.regions);
     WorldUnload(&world);

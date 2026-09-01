@@ -13,6 +13,7 @@
 #define WORLD_RENDER_PAGE_LIMIT 256
 
 typedef struct PageUploadContext {
+    int budget;
     WorldRenderer *renderer;
 } PageUploadContext;
 
@@ -145,6 +146,7 @@ static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
     if (slot < 0) {
         return false;
     }
+    --upload->budget;
     local = (Rectangle){bounds.x - (float)(pageX * WORLD_RENDER_PAGE_SIZE),
                         bounds.y - (float)(pageY * WORLD_RENDER_PAGE_SIZE),
                         bounds.width, bounds.height};
@@ -220,6 +222,7 @@ bool WorldRendererInit(WorldRenderer *renderer, const World *world)
 void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
 {
     PageUploadContext upload;
+    Rectangle prefetch;
     double started;
     int firstPageX;
     int lastPageX;
@@ -237,11 +240,21 @@ void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
     ++renderer->frame;
     started = GetTime();
 
-    firstPageX = (int)floorf(visible.x / (float)WORLD_RENDER_PAGE_SIZE);
-    lastPageX = (int)floorf((visible.x + visible.width) /
+    /* No margin: pages are claimed exactly where the camera looks.
+
+       Claiming them ahead of the camera was tried and measured several times
+       worse, not better. The light solve and the relight marking that follow
+       are driven by this rectangle, and widening it cost far more than the
+       earlier arrival saved. A page is therefore still bound on the frame it
+       first becomes visible; what stops that from costing a whole frame is
+       that a page is now small and the rebuild is rationed. */
+    prefetch = visible;
+
+    firstPageX = (int)floorf(prefetch.x / (float)WORLD_RENDER_PAGE_SIZE);
+    lastPageX = (int)floorf((prefetch.x + prefetch.width) /
                             (float)WORLD_RENDER_PAGE_SIZE);
-    firstPageY = (int)floorf(visible.y / (float)WORLD_RENDER_PAGE_SIZE);
-    lastPageY = (int)floorf((visible.y + visible.height) /
+    firstPageY = (int)floorf(prefetch.y / (float)WORLD_RENDER_PAGE_SIZE);
+    lastPageY = (int)floorf((prefetch.y + prefetch.height) /
                             (float)WORLD_RENDER_PAGE_SIZE);
     if (firstPageX < 0) firstPageX = 0;
     if (firstPageY < 0) firstPageY = 0;
@@ -289,7 +302,12 @@ void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
     }
 
     upload.renderer = renderer;
-    WorldPrepareVisible(world, visible, WorldRendererUploadChunk, &upload);
+    upload.budget = WORLD_RENDER_UPLOAD_BUDGET;
+    WorldPrepareVisible(world, prefetch, WORLD_RENDER_UPLOAD_BUDGET,
+                        WorldRendererUploadChunk, &upload);
+    /* Whether the budget ran out. Zero in steady flight; a few frames of
+       backlog after a burst. */
+    renderer->lastFrame.budgetSpent = upload.budget > 0 ? 0u : 1u;
     renderer->lastFrame.preparationMilliseconds = (GetTime() - started) * 1000.0;
     WorldRendererDrawLayer(renderer, world, visible, false);
     renderer->lastFrame.residentPages = (uint32_t)renderer->pageCapacity;

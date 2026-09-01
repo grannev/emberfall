@@ -18,7 +18,13 @@ typedef bool (*WorldRenderChunkVisitor)(void *context, Rectangle bounds,
                                         const Color *pixels,
                                         const Color *emissivePixels);
 
-void WorldPrepareVisible(World *world, Rectangle visible,
+/* `maxChunks` caps how many chunks may be rebuilt in one call; zero or less
+   means no cap. The cap has to live here rather than in the visitor because by
+   the time the visitor is called the expensive part is already done: a chunk is
+   a thousand cells of pixel conversion with a bilinear light sample each, and
+   refusing the finished block only saves the upload. A chunk not reached keeps
+   its dirty flag and is built by a later call. */
+void WorldPrepareVisible(World *world, Rectangle visible, int maxChunks,
                          WorldRenderChunkVisitor visitor, void *context);
 
 /* Marks every chunk overlapping `region` as owing the renderer a rebuild. The

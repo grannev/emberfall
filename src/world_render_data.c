@@ -82,9 +82,10 @@ void WorldMarkRegionDirty(World *world, Rectangle region)
     }
 }
 
-void WorldPrepareVisible(World *world, Rectangle visible,
+void WorldPrepareVisible(World *world, Rectangle visible, int maxChunks,
                          WorldRenderChunkVisitor visitor, void *context)
 {
+    int remaining = maxChunks;
     Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     Color emissivePixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
@@ -143,6 +144,12 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             if (world->dirtyChunks[chunkIndex] == 0u) {
                 continue;
             }
+            /* Out of budget: stop before the work, not after it. The chunk
+               keeps its dirty flag and the next call finds it. */
+            if (maxChunks > 0 && remaining <= 0) {
+                return;
+            }
+            --remaining;
             minimumX = chunkX * WORLD_CHUNK_SIZE;
             maximumX = minimumX + WORLD_CHUNK_SIZE;
             minimumY = chunkY * WORLD_CHUNK_SIZE;

@@ -141,12 +141,14 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (unsigned int)events->count,
                         (unsigned int)events->dropped),
              24, 135, 14, (Color){150, 205, 178, 255});
-    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u",
+    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u"
+                        " | %s",
                         renderStats->textureUploads,
                         (double)renderStats->uploadedBytes / 1024.0,
                         renderStats->preparationMilliseconds,
                         renderStats->visiblePages, renderStats->residentPages,
-                        renderStats->pageBinds),
+                        renderStats->pageBinds,
+                        renderStats->budgetSpent != 0u ? "CATCHING UP" : "CURRENT"),
              24, 153, 14, (Color){166, 183, 223, 255});
     DrawText(TextFormat("POST: %s %dx%d | %u PASSES %u TARGETS | %.2f ms",
                         frameStats->bloomEnabled ? "BLOOM" : "SHARP",
@@ -1106,6 +1108,13 @@ int main(int argc, char **argv)
     uint64_t smokeTerrainMaximumTextureBytes = 0u;
     double smokeBloomSubmissionTotal = 0.0;
     double smokeBloomSubmissionMaximum = 0.0;
+    /* What the world costs to keep on screen, measured over the flight rather
+       than read off one frame of the HUD. A single frame's number varies by
+       several times between runs on a loaded machine, which is enough to tune
+       a renderer in the wrong direction. */
+    double smokePrepareTotal = 0.0;
+    double smokePrepareMaximum = 0.0;
+    int smokePrepareFrames = 0;
     int smokeBloomFrames = 0;
     int exitCode = 0;
 
@@ -1607,6 +1616,16 @@ int main(int argc, char **argv)
                          frameStats->bloomSubmissionMilliseconds);
                 ++smokeBloomFrames;
             }
+            {
+                const WorldRendererStats *worldStats = RendererWorldStats(&renderer);
+
+                if (smokeFrames >= 8 && worldStats != NULL) {
+                    smokePrepareTotal += worldStats->preparationMilliseconds;
+                    smokePrepareMaximum = fmax(smokePrepareMaximum,
+                                               worldStats->preparationMilliseconds);
+                    ++smokePrepareFrames;
+                }
+            }
             smokeResizeObserved = smokeResizeObserved ||
                                   (frameStats->targetWidth == WINDOW_WIDTH - 320 &&
                                    frameStats->targetHeight == WINDOW_HEIGHT - 180);
@@ -1667,6 +1686,7 @@ int main(int argc, char **argv)
 
         printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
                "submit_avg=%.3fms submit_max=%.3fms "
+               "prepare_avg=%.3fms prepare_max=%.3fms "
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
                "target_sync=%d fx_peak=%u fx_dropped=%u "
                "body_draws=%u body_updates=%u body_kib=%.1f "
@@ -1687,7 +1707,11 @@ int main(int argc, char **argv)
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
-               smokeBloomSubmissionMaximum, smokeResizeObserved,
+               smokeBloomSubmissionMaximum,
+               smokePrepareFrames > 0
+                   ? smokePrepareTotal / (double)smokePrepareFrames
+                   : 0.0,
+               smokePrepareMaximum, smokeResizeObserved,
                smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
                smokeTargetsSynchronized, (unsigned int)frameStats->peakFx,
                (unsigned int)frameStats->droppedFx,
