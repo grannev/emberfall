@@ -66,6 +66,37 @@ typedef struct WorldReactionEvent {
     Vector2 position;
 } WorldReactionEvent;
 
+/* Regions a destructive operation cut solid material out of, since the log was
+   last cleared.
+
+   The world records these and nothing more. It does not know that terrain
+   bodies exist and must not learn: this is a fact about the world itself —
+   "structural material was removed here" — and it is the only thing the
+   cellular simulation contributes to automatic detachment.
+
+   Only explicit destructive operations write here. Ordinary simulation does
+   not: sand that falls has not cut anything, and a connectivity search after
+   every settled grain is exactly the full-world scan this design exists to
+   avoid. */
+#define MAX_WORLD_DESTRUCTION_REGIONS 8
+
+/* The largest box the log will aggregate into one entry. Two cuts far enough
+   apart stay two entries rather than becoming one box with untouched ground in
+   the middle. Whoever consumes the log has to be able to look at a whole entry
+   plus some ground around it, so this is deliberately smaller than any sensible
+   search window; terrain_detach.c asserts the relation it needs. */
+#define WORLD_DESTRUCTION_MAX_SPAN 96
+
+/* Inclusive cell bounds. Ints rather than a Rectangle because these are cells,
+   not a drawing area, and rounding a region is how an off-by-one becomes a
+   wrong answer about what is connected to what. */
+typedef struct WorldDestructionRegion {
+    int minimumX;
+    int minimumY;
+    int maximumX;
+    int maximumY;
+} WorldDestructionRegion;
+
 typedef struct LaserResult {
     Vector2 position;
     CellMaterial material;
@@ -96,6 +127,13 @@ typedef struct World {
     WorldTickStats lastTickStats;
     WorldReactionEvent reactions[MAX_WORLD_REACTIONS];
     int reactionCount;
+    /* Destructive cuts awaiting a detach check. Aggregated on write, drained by
+       whoever runs the check; `destructionDropped` counts the regions the log
+       had no room for, which is a refusal to look rather than a lost mutation:
+       the world is correct either way, some terrain merely stays static. */
+    WorldDestructionRegion destruction[MAX_WORLD_DESTRUCTION_REGIONS];
+    int destructionCount;
+    int destructionDropped;
     int chunkColumns;
     int chunkRows;
     int activeChunkCount;
@@ -183,6 +221,19 @@ float WorldGetTemperature(const World *world, int x, int y);
 void WorldSetTemperature(World *world, int x, int y, float temperature);
 bool WorldMaterialIsSolid(CellMaterial material);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
+
+/* Notes that solid material was cut out of the given inclusive cell bounds.
+   Destructive world effects call this for themselves; a caller outside the
+   world module needs it only when it removes structural cells by some other
+   route. Overlapping or touching regions are merged, so an operation that hits
+   the same area many times in a tick costs one entry rather than many. */
+void WorldRecordDestruction(World *world, int minimumX, int minimumY,
+                            int maximumX, int maximumY);
+/* Empties the log. Whoever consumes the regions is responsible for this;
+   nothing clears them implicitly, so a tick that never runs a detach check does
+   not silently discard what it was told. */
+void WorldClearDestruction(World *world);
+
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius);

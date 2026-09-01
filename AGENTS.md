@@ -126,6 +126,18 @@ coherent phase with an explanatory message.
   need a gameplay policy that does not exist, and an old body is not less
   valuable than a new one. The awake budget throttles motion, not existence — a
   body created past it is born asleep rather than refused.
+- **Emberfall never scans the world looking for detached terrain.** Connectivity
+  checks run only where a known destructive operation just removed structural
+  material, inside a window whose side is a compile-time constant. Destructive
+  effects report what they cut through `WorldRecordDestruction`; ordinary
+  simulation reports nothing, and a detach check after every settled grain of
+  sand is the full-world flood fill this design exists to avoid. Adding a new
+  trigger means adding a bounded changed region, never a scan — and never from
+  inside the thermal tick.
+- Automatic detachment may act only on `WORLD_COMPONENT_DETACHED`. Missing a
+  loose fragment costs nothing; tearing a piece out of the main landmass is
+  unrecoverable. It extracts through the ordinary atomic path and never copies
+  or clears cells itself, so a refusal leaves the world byte-for-byte unchanged.
 - A terrain body is destroyed only for leaving the world, never for being old,
   idle or off screen. Kill bounds are a world-safety region with its own margin;
   the camera has no say in what the simulation keeps. The player must be able to

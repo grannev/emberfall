@@ -174,14 +174,27 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (double)frameStats->terrainBodyTextureMemoryBytes /
                             1024.0),
              24, 207, 14, (Color){139, 218, 201, 255});
+    /* Simulation-side counters, read and never written here: the HUD is a
+       reader of gameplay state, and no simulation module draws. The detach
+       numbers answer the two questions a player-facing bug about falling
+       terrain always turns into — did anything get checked, and did anything
+       come loose. */
+    DrawText(TextFormat("TERRAIN: %d LIVE %d AWAKE | DETACH %d CHECKS %d FREED "
+                        "%d CELLS",
+                        DynamicTerrainStatistics(&game->dynamicTerrain)->activeBodies,
+                        DynamicTerrainStatistics(&game->dynamicTerrain)->awakeBodies,
+                        game->detach.stats.detachChecks,
+                        game->detach.stats.autoDetachSucceeded,
+                        game->detach.stats.autoDetachCells),
+             24, 225, 14, (Color){139, 218, 201, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
     DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
-             24, 225, 14, (Color){186, 194, 205, 255});
+             24, 243, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
-        DrawText("EXPLOSION: READY", 24, 243, 14, LIME);
+        DrawText("EXPLOSION: READY", 24, 261, 14, LIME);
     } else {
-        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 243, 14,
+        DrawText(TextFormat("EXPLOSION: %.2fs", cooldown), 24, 261, 14,
                  LIGHTGRAY);
     }
 }
@@ -300,10 +313,11 @@ static void SetupSmokeTarget(World *world, Vector2 aim)
     WorldSetCell(world, centerX + 31, centerY + 10, MATERIAL_FIRE);
 }
 
-/* The normal game intentionally has no automatic detach until EF-DYN-011.
-   Smoke still needs visual proof, so this showcase builds a small isolated
-   island, extracts it through the production atomic API and gives the body a
-   visible transform. Nothing on this path runs outside --smoke-test. */
+/* An island extracted explicitly, given a visible transform, and freed on the
+   last frame so the run also proves the generation-keyed cache releases its
+   textures. This is the renderer's showcase and stays deliberately separate
+   from the automatic-detach one below, which proves the gameplay path instead.
+   Nothing here runs outside --smoke-test. */
 static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
                                                bool *worldCellsCleared)
 {
@@ -394,6 +408,57 @@ static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
     DynamicTerrainSetVelocity(&game->dynamicTerrain, extracted.body,
                               (Vector2){26.0f, 78.0f}, 1.8f);
     return extracted.body;
+}
+
+/* The acceptance shape for automatic detachment, built where the screenshot
+   can see it:
+
+       ########   block
+          #       pillar
+       ########   ground
+
+   Nothing about this scene is special-cased downstream. A blast takes the
+   pillar out through the ordinary world API, the world logs the damage the way
+   it logs any destructive cut, and the fixed step does the rest. Returns the
+   cell the blast should be centred on. */
+static Vector2 SetupSmokeDetachScene(World *world, Vector2 aim)
+{
+    int originX = (int)aim.x + 44;
+    int originY = (int)aim.y - 26;
+    int pillarX = originX + 9;
+    int blockBottom = originY + 6;
+    int groundTop = originY + 26;
+    int x;
+    int y;
+
+    for (y = originY - 10; y < groundTop; ++y) {
+        for (x = originX - 8; x <= originX + 26; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_EMPTY);
+        }
+    }
+    /* The floor reaches well past the cleared air on both sides so it grows
+       into the hillside that was already there. A slab that merely floated
+       where the scene was built would be genuinely detached, and the detector
+       would be right to take it — which is a fine result but a confusing
+       screenshot. */
+    for (y = groundTop; y <= groundTop + 8; ++y) {
+        for (x = originX - 16; x <= originX + 34; ++x) {
+            WorldSetCell(world, x, y, MATERIAL_ROCK);
+        }
+    }
+    for (y = blockBottom + 1; y < groundTop; ++y) {
+        WorldSetCell(world, pillarX, y, MATERIAL_ROCK);
+    }
+    for (y = originY; y <= blockBottom; ++y) {
+        for (x = originX; x <= originX + 18; ++x) {
+            /* Two materials, so the body that appears is visibly the block that
+               was standing there and not a grey rectangle. */
+            WorldSetCell(world, x, y, x < originX + 9 ? MATERIAL_ROCK
+                                                      : MATERIAL_DIRT);
+        }
+    }
+    return (Vector2){(float)pillarX,
+                     (float)((blockBottom + groundTop) / 2)};
 }
 
 static bool RunSmokeFireContainmentProbe(void)
@@ -544,6 +609,12 @@ int main(int argc, char **argv)
     bool smokeTerrainRotated = false;
     bool smokeTerrainCollisionObserved = false;
     bool smokeTerrainCacheReleased = false;
+    /* The automatic-detach acceptance run: a blast severs a pillar and the
+       fixed step is expected to turn the block above it into a body without
+       anything in main.c reaching for the extraction API. */
+    Vector2 smokeDetachBlast = {0.0f, 0.0f};
+    bool smokeAutoDetachObserved = false;
+    bool smokeAutoDetachEvent = false;
     uint32_t smokeTerrainTextureUpdates = 0u;
     uint32_t smokeTerrainMaximumDrawCalls = 0u;
     uint64_t smokeTerrainMaximumTextureBytes = 0u;
@@ -607,6 +678,7 @@ int main(int argc, char **argv)
         SetupSmokeTarget(&game.world, smokeAim);
         smokeTerrainBody = SetupSmokeTerrainBody(
             &game, smokeAim, &smokeTerrainWorldCleared);
+        smokeDetachBlast = SetupSmokeDetachScene(&game.world, smokeAim);
         {
             const TerrainBody *body = DynamicTerrainGetConst(
                 &game.dynamicTerrain, smokeTerrainBody);
@@ -643,7 +715,34 @@ int main(int argc, char **argv)
            final frame so the same GL smoke run also proves that the generation-
            keyed cache releases its textures and draws no ghost. */
         if (smokeTest && smokeFrames == 11) {
+            int slot;
+
+            /* Every body, not only the showcase one: the check below is that
+               the generation-keyed cache releases what it holds, and it only
+               means that if nothing is left holding a slot. */
             DynamicTerrainFreeBody(&game.dynamicTerrain, smokeTerrainBody);
+            for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+                if (game.dynamicTerrain.bodies[slot].active) {
+                    DynamicTerrainFreeBody(&game.dynamicTerrain,
+                                           (TerrainBodyHandle){
+                                               (uint16_t)slot,
+                                               game.dynamicTerrain.bodies[slot]
+                                                   .generation});
+                }
+            }
+        }
+        /* Early enough that the freed block has several fixed steps to fall and
+           land before the reference screenshot at frame ten. The scene is laid
+           out again immediately before the blast: the surrounding generated
+           world is a live simulation, and loose material that has poured into
+           the gaps since setup would genuinely reconnect the block — a correct
+           answer from the detector, and a useless showcase. Nothing here
+           touches the terrain system: this is a blast, and the rest is the
+           production path. */
+        if (smokeTest && smokeFrames == 2) {
+            smokeDetachBlast = SetupSmokeDetachScene(&game.world, smokeAim);
+            WorldDestroyCircle(&game.world, (int)smokeDetachBlast.x,
+                               (int)smokeDetachBlast.y, 5, 0.0f);
         }
 
         if (input.toggleDebugPressed) {
@@ -678,6 +777,10 @@ int main(int argc, char **argv)
         PresentGameEvents(&events, &audio, &cameraShake);
         RendererUpdatePresentation(&renderer, &events, deltaTime);
         if (smokeTest) {
+            smokeAutoDetachEvent = smokeAutoDetachEvent ||
+                                   EventsContain(&events,
+                                                 GAME_EVENT_TERRAIN_DETACHED);
+            smokeAutoDetachObserved = game.detach.stats.autoDetachSucceeded > 0;
             smokeReactionObserved = smokeReactionObserved ||
                                     EventsContain(&events,
                                                   GAME_EVENT_MATERIAL_REACTION);
@@ -841,7 +944,9 @@ int main(int argc, char **argv)
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
                "target_sync=%d fx_peak=%u fx_dropped=%u "
                "body_draws=%u body_updates=%u body_kib=%.1f "
-               "body_collision=%d body_released=%d\n",
+               "body_collision=%d body_released=%d "
+               "auto_detach=%d auto_detach_event=%d detach_checks=%d "
+               "detach_cells=%d detach_rejects=a%d/u%d/s%d/l%d/b%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -852,7 +957,15 @@ int main(int argc, char **argv)
                smokeTerrainMaximumDrawCalls, smokeTerrainTextureUpdates,
                (double)smokeTerrainMaximumTextureBytes / 1024.0,
                smokeTerrainCollisionObserved,
-               smokeTerrainCacheReleased);
+               smokeTerrainCacheReleased,
+               game.detach.stats.autoDetachSucceeded,
+               smokeAutoDetachEvent, game.detach.stats.detachChecks,
+               game.detach.stats.autoDetachCells,
+               game.detach.stats.autoDetachRejectedAnchored,
+               game.detach.stats.autoDetachRejectedUnknown,
+               game.detach.stats.autoDetachRejectedTooSmall,
+               game.detach.stats.autoDetachRejectedTooLarge,
+               game.detach.stats.autoDetachRejectedBudget);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -865,7 +978,13 @@ int main(int argc, char **argv)
                       !smokeTerrainRotated ||
                       !smokeTerrainCollisionObserved ||
                       !smokeTerrainCacheReleased ||
-                      smokeTerrainTextureUpdates != 2u ||
+                      !smokeAutoDetachObserved || !smokeAutoDetachEvent ||
+                      /* Two uploads — scene and emissive — for each body that
+                         ever existed, and not one more: a body whose raster
+                         never changes must not be re-uploaded per frame. */
+                      smokeTerrainTextureUpdates !=
+                          2u * (1u + (unsigned int)
+                                         game.detach.stats.autoDetachSucceeded) ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
                           game.world.chunkColumns * game.world.chunkRows)) {
@@ -874,7 +993,8 @@ int main(int argc, char **argv)
                 "drill=%d fire_contained=%d resize=%d restored=%d "
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
-                "rotated=%d collision=%d released=%d updates=%u chunks=%d/%d\n",
+                "rotated=%d collision=%d released=%d auto_detach=%d "
+                "auto_detach_event=%d updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
@@ -884,7 +1004,8 @@ int main(int argc, char **argv)
                 smokeTerrainExtracted, smokeTerrainWorldCleared,
                 smokeTerrainRendered, smokeTerrainMoved,
                 smokeTerrainRotated, smokeTerrainCollisionObserved,
-                smokeTerrainCacheReleased,
+                smokeTerrainCacheReleased, smokeAutoDetachObserved,
+                smokeAutoDetachEvent,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);
