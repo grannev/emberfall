@@ -628,7 +628,8 @@ emissive primitive submissions**, все три palettes (`env_mask=0x7`), ко�
 resize, transient rotation/zoom feedback и принудительный high-speed zoom-out.
 Pipeline остался на 5 offscreen passes / 4 targets, bloom — 640×360. llvmpipe
 submission timing сильно зависит от software rasterizer и приведён только как
-информационный: 26.895 ms average, 42.460 ms maximum в этом запуске.
+информационный: два полных актуальных smoke дали 24.6..25.8 ms average и
+56.2..56.9 ms maximum.
 
 Headless simulation benchmark не rasterizes environment. Его counters должны
 оставаться неизменными, потому что `EnvironmentRenderer` не входит в

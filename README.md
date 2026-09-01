@@ -74,7 +74,7 @@ make ubsan
 make profile
 ```
 
-Короткий автоматический smoke-test открывает игру на несколько кадров,
+Автоматический smoke-test запускает детерминированную scripted session,
 проверяет реакцию water/lava, попадание лазера, взрыв, player collision,
 boost-бурение через rock, локализацию fire, засыпание chunks и renderer
 извлечённого движущегося TerrainBody с освобождением texture cache, resize,

@@ -159,8 +159,9 @@ make clean
 
 ## Smoke-test
 
-`--smoke-test` запускает обычное raylib-приложение, но подставляет короткую
-последовательность input и завершает его через несколько frames. Без явного
+`--smoke-test` запускает обычное raylib-приложение, но подставляет
+детерминированную scripted input sequence и завершает его после renderer,
+dynamic-terrain gameplay и полного movement acceptance phases. Без явного
 `--seed` он использует фиксированный seed, иначе reference screenshot нечего
 сравнивать между запусками.
 

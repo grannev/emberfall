@@ -129,9 +129,14 @@ static float EnvironmentHorizon(Camera2D camera, int height, float parallax,
     float travel = (camera.target.y - 210.0f) * camera.zoom * parallax;
     float limitUp = (float)height * 0.18f;
     float limitDown = (float)height * 0.22f;
+    float horizon;
 
     travel = EnvironmentClamp(travel, -limitUp, limitDown);
-    return (float)height * base - travel;
+    horizon = (float)height * base - travel;
+    /* A camera at the vertical world extremes must not produce negative
+       rectangle heights or move every silhouette entirely off target. */
+    return EnvironmentClamp(horizon, (float)height * 0.08f,
+                            (float)height * 0.96f);
 }
 
 static void EnvironmentGenerateFeatures(EnvironmentRenderer *renderer,
@@ -566,7 +571,9 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
     float scale;
     int index;
 
-    if (renderer == NULL || !EnvironmentRendererViewIsValid(camera, width, height)) {
+    if (renderer == NULL ||
+        !EnvironmentRendererViewIsValid(camera, width, height) ||
+        !EnvironmentRendererStateIsValid(renderer)) {
         return;
     }
     palette = EnvironmentPaletteDefinitionAt(renderer->palette);
