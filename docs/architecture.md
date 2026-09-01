@@ -94,7 +94,7 @@ update. При переполнении новые события отбрасы
 | `world_lighting.c/.h` | Грубое двухканальное поле света и его solve. |
 | `world_effects.c` | Мировая половина способностей: бурение, взрыв, силовой удар, лазер, криолуч. |
 | `material_render.c/.h` | Общая CPU-конверсия material/temperature в scene+emissive pixels; static world и detached bodies не имеют двух расходящихся palette paths. |
-| `world_render_data.c` | Единственное место, превращающее `Cell` в `Color`; отдаёт renderer готовые прямоугольники пикселей. |
+| `world_render_data.c` | World-specific dirty traversal и light sampling; делегирует palette conversion в `material_render` и отдаёт renderer готовые прямоугольники pixels. |
 | `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает, никем пока не вызывается. |
 
 `world_internal.h` держит горячие accessors (`WorldCell`, `WorldMaterialAt`,
