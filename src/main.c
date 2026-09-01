@@ -1544,6 +1544,13 @@ int main(int argc, char **argv)
         EndDrawing();
 
         if (smokeTest) {
+            /* Mid-beam, so the frame shows where a beam actually leaves the
+               character. It left the chest for a long time and nobody could
+               tell from the reference screenshot, which is taken after the
+               beam has stopped. */
+            if (smokeFrames == 6) {
+                TakeScreenshot("build/emberfall-beam.png");
+            }
             if (smokeFrames == 10) {
                 TakeScreenshot("build/emberfall-smoke.png");
             }

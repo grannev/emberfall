@@ -7325,9 +7325,18 @@ static void test_ability_knockback_reaches_the_player_through_events(void)
 
     CHECK(HasGameEvent(&events, GAME_EVENT_FORCE),
           "the force ability published no event");
-    CHECK(game.player.velocity.x < before.x - 50.0f,
-          "force recoil did not push the player back: %.1f -> %.1f",
-          before.x, game.player.velocity.x);
+    /* The punch deliberately does not shove the one who threw it: being knocked
+       backwards reads as recoil from a gun rather than as a strike landing, and
+       it takes the player out of position at the moment they wanted to be
+       there. Its weight is carried by the crater, the debris and the camera.
+
+       The channel that carries an impulse from an event to the player is still
+       live — the explosion still throws the player with it — so what is
+       asserted here is the punch's own choice, not the absence of a
+       mechanism. */
+    CHECK(fabsf(game.player.velocity.x - before.x) < 1.0f,
+          "the punch moved the player: %.1f -> %.1f", (double)before.x,
+          (double)game.player.velocity.x);
     GameUnload(&game);
 }
 
@@ -8190,9 +8199,14 @@ static void test_configured_force_power_hits_far_and_hard(void)
     CHECK(forceEvent != NULL, "the force ability published no game event");
     /* The recoil now travels as the event's player impulse, so the player
        module never needs to know the force blast exists. */
-    CHECK(forceEvent->playerImpulse.x <= -120.0f,
-          "configured recoil is too small or points the wrong way: %.1f",
-          forceEvent->playerImpulse.x);
+    CHECK(forceEvent->playerImpulse.x == 0.0f &&
+              forceEvent->playerImpulse.y == 0.0f,
+          "the punch still shoves the player: (%.1f, %.1f)",
+          (double)forceEvent->playerImpulse.x,
+          (double)forceEvent->playerImpulse.y);
+    CHECK(forceEvent->strength >= ABILITY_FORCE_IMPACT_STRENGTH,
+          "the blow reports no weight for the camera and the effects: %.1f",
+          (double)forceEvent->strength);
     WorldUnload(&world);
 }
 

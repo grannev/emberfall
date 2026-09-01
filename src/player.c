@@ -152,49 +152,83 @@ static int PlayerCutFree(Player *player, World *world, Vector2 at)
     return removed;
 }
 
+Vector2 PlayerBodyUp(const Player *player)
+{
+    float uprightAngle = -PI * 0.5f;
+    float speed;
+    Vector2 travel = {0.0f, -1.0f};
+    float lean;
+    float travelAngle;
+    float turn;
+
+    if (player == NULL) {
+        return (Vector2){0.0f, -1.0f};
+    }
+    lean = Clamp(player->leanAmount, 0.0f, 1.0f);
+    speed = sqrtf(player->velocity.x * player->velocity.x +
+                  player->velocity.y * player->velocity.y);
+    if (speed > 0.001f) {
+        travel = (Vector2){player->velocity.x / speed, player->velocity.y / speed};
+    }
+    travelAngle = atan2f(travel.y, travel.x);
+    turn = travelAngle - uprightAngle;
+    while (turn > PI) turn -= 2.0f * PI;
+    while (turn < -PI) turn += 2.0f * PI;
+    /* Straight down has two equally short rotations. Keep the side chosen by
+       the last horizontal motion instead of letting float noise flip the body
+       between left and right. */
+    if (fabsf(fabsf(turn) - PI) < 0.0001f) {
+        turn = player->facingRight ? PI : -PI;
+    }
+    return (Vector2){cosf(uprightAngle + turn * lean),
+                     sinf(uprightAngle + turn * lean)};
+}
+
+/* Distance up the body axis from the hips to the visor. The renderer builds the
+   head at 6.0 and puts the visor a little to the side of it; this is that same
+   point, and both go through this one number. */
+#define PLAYER_VISOR_ALONG_UP 6.0f
+#define PLAYER_VISOR_ALONG_SIDE 0.9f
+
 Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
 {
-    Vector2 eye;
+    Vector2 up;
+    Vector2 side;
+    Vector2 visor;
     float dx;
     float dy;
     float length;
+    float aimAcross;
 
     if (player == NULL) {
         return aim;
     }
-    /* The head sits above the middle of the collider, and leans forward with
-       the same posture the renderer draws: at full boost the character is laid
-       out along the direction of travel, and the eyes go with them. */
-    eye = (Vector2){player->position.x +
-                        (player->facingRight ? 1.0f : -1.0f) * player->radius *
-                            0.35f * player->leanAmount,
-                    player->position.y - player->radius * 0.55f};
-    dx = aim.x - eye.x;
-    dy = aim.y - eye.y;
+    /* The eye, in the body's own frame — the same frame the character is drawn
+       in. Measuring it straight up in world space put the muzzle in the chest
+       the moment the character leaned, which at boost speed is always. */
+    up = PlayerBodyUp(player);
+    side = (Vector2){-up.y, up.x};
+
+    dx = aim.x - player->position.x;
+    dy = aim.y - player->position.y;
     length = sqrtf(dx * dx + dy * dy);
     if (length < 0.001f) {
-        return eye;
+        dx = side.x;
+        dy = side.y;
+        length = 1.0f;
     }
     dx /= length;
     dy /= length;
-    {
-        Vector2 out = {eye.x + dx * player->radius * 0.85f,
-                       eye.y + dy * player->radius * 0.85f};
-        float clearance = sqrtf((out.x - player->position.x) *
-                                    (out.x - player->position.x) +
-                                (out.y - player->position.y) *
-                                    (out.y - player->position.y));
+    /* The head turns a little toward the cursor, exactly as it is drawn. */
+    aimAcross = dx * side.x + dy * side.y;
 
-        /* Aiming straight down, the offset to the head and the push along the
-           aim point opposite ways and very nearly cancel, leaving the beam
-           starting inside the character. Whatever the eye happens to be, the
-           muzzle has to end up clear of the collider. */
-        if (clearance < player->radius * 0.9f) {
-            out = (Vector2){player->position.x + dx * player->radius * 0.9f,
-                            player->position.y + dy * player->radius * 0.9f};
-        }
-        return out;
-    }
+    visor = (Vector2){player->position.x + up.x * PLAYER_VISOR_ALONG_UP +
+                          side.x * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross),
+                      player->position.y + up.y * PLAYER_VISOR_ALONG_UP +
+                          side.y * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross)};
+    /* Just clear of the visor itself, so the beam starts in front of the face
+       rather than inside it. */
+    return (Vector2){visor.x + dx * 1.4f, visor.y + dy * 1.4f};
 }
 
 bool PlayerIsDrilling(const Player *player)

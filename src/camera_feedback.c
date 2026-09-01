@@ -124,12 +124,15 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
             impulse.duration = 0.42f;
             break;
         case GAME_EVENT_FORCE:
-            impulse.direction = Vector2Negate(CameraFeedbackDirection(
-                event->direction, (Vector2){1.0f, 0.0f}));
-            impulse.positionStrength = 3.8f;
-            impulse.rotationStrength = 0.46f;
-            impulse.zoomStrength = 0.036f;
-            impulse.duration = 0.30f;
+            /* The punch no longer moves the player, so what sells its weight is
+               the camera. A short, hard shove along the blow, not away from
+               it: the frame lurches after the strike. */
+            impulse.direction = CameraFeedbackDirection(event->direction,
+                                                        (Vector2){1.0f, 0.0f});
+            impulse.positionStrength = 7.4f;
+            impulse.rotationStrength = 0.95f;
+            impulse.zoomStrength = 0.072f;
+            impulse.duration = 0.34f;
             break;
         case GAME_EVENT_BOOST_STAGE: {
             int stage = event->count < 1 ? 1 :

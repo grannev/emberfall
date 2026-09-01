@@ -140,6 +140,16 @@ float PlayerDrillRadius(const Player *player);
    and a beam that is cast from the chest but drawn from the head reads as a
    bug the moment the player aims down. */
 Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim);
+
+/* The body axis: hips to head. Straight up when hovering, turning toward the
+   direction of travel as the character leans, so at full boost it *is* the
+   direction of travel.
+
+   It lives here rather than in the renderer because the beam origin needs it
+   too, and the head has to be in one place: a visor drawn six cells up the body
+   axis while the laser is cast from a point measured straight up in world space
+   are two different heads, and the player sees both. */
+Vector2 PlayerBodyUp(const Player *player);
 /* Holds a pose for `holdTime` seconds. Held powers refresh it every frame with a
    short time; a one-shot like the force blast asks for the length of its own
    animation. */

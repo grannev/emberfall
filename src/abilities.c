@@ -186,6 +186,17 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
     });
     ParticlesSpawnForceBlast(context->particles, context->origin,
                              context->direction);
+    if (contact.hit) {
+        /* Rubble thrown back out of the crater. The blow has to leave something
+           in the air, or all the player sees of a hit that heavy is cells
+           quietly ceasing to exist. */
+        Vector2 back = {-context->direction.x, -context->direction.y};
+
+        ParticlesSpawnImpact(context->particles, contact.position, back,
+                             contact.material);
+        ParticlesSpawnDrillDebris(context->particles, contact.position,
+                                  context->direction, contact.material);
+    }
     state->origin = context->origin;
     state->direction = context->direction;
     state->endpoint = (Vector2){
@@ -193,13 +204,15 @@ static void AbilityApplyForce(const AbilityContext *context, AbilityState *state
         context->origin.y + context->direction.y * ABILITY_FORCE_LENGTH};
     (void)GameEventsPush(context->events, (GameEvent){
         .type = GAME_EVENT_FORCE,
-        .position = context->origin,
+        /* Reported where it landed, not where it was thrown from, so the camera
+           and the effects answer to the impact rather than to the fist. */
+        .position = contact.hit ? contact.position : context->origin,
         .direction = context->direction,
-        .strength = ABILITY_FORCE_RECOIL,
+        .strength = ABILITY_FORCE_IMPACT_STRENGTH,
         .radius = ABILITY_FORCE_LENGTH,
-        /* A blow that hard has to move the one who threw it. */
-        .playerImpulse = {-context->direction.x * ABILITY_FORCE_RECOIL,
-                          -context->direction.y * ABILITY_FORCE_RECOIL},
+        .material = contact.material,
+        /* Deliberately none: see ABILITY_FORCE_RECOIL. */
+        .playerImpulse = {0.0f, 0.0f},
     });
 }
 

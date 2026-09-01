@@ -55,7 +55,17 @@ typedef enum AbilityTrigger {
 #define ABILITY_FORCE_LENGTH 84.0f
 #define ABILITY_FORCE_SPREAD_COSINE 0.78f
 #define ABILITY_FORCE_REACH 54
-#define ABILITY_FORCE_RECOIL 235.0f
+/* The blow does not shove the one who threw it. A punch that knocks the player
+   backwards reads as recoil from a gun rather than as a strike landing, and it
+   takes the player out of position at the exact moment they wanted to be
+   there. The force is meant to be felt in what it does to the world — the
+   crater, the fractures, the debris and the camera — not in being pushed away
+   from it. */
+#define ABILITY_FORCE_RECOIL 0.0f
+/* What the blow is worth to the camera and the effects. Kept separate from the
+   recoil so that "how hard it looks" and "how far it moves the player" are two
+   decisions rather than one number doing both jobs. */
+#define ABILITY_FORCE_IMPACT_STRENGTH 320.0f
 /* The dent the blow leaves, and the fractures out of it. A punch that made a
    neat little hole would read as a gunshot; what it should read as is something
    very heavy landing. */

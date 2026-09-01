@@ -27,6 +27,62 @@ typedef struct BodyFrame {
     Vector2 side;
 } BodyFrame;
 
+/* The block language the rest of the effects use. A perfect ring drawn over a
+   world of cells is the single most obvious thing in the frame that does not
+   belong to it. */
+static float PlayerFxNoise(int a, int b)
+{
+    unsigned int h = (unsigned int)a * 374761393u ^ (unsigned int)b * 668265263u;
+
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return (float)((h ^ (h >> 16)) & 0xffffu) / 65535.0f;
+}
+
+static void PlayerFxBlock(float x, float y, float block, Color color)
+{
+    DrawRectangleV((Vector2){floorf(x / block) * block,
+                             floorf(y / block) * block},
+                   (Vector2){block, block}, color);
+}
+
+/* Separate embers on a circle rather than a drawn curve, with gaps. */
+static void PlayerFxRing(Vector2 centre, float radius, float block, Color color)
+{
+    int count = (int)(radius * 6.283185f / (block * 1.4f));
+    int index;
+
+    if (radius <= 0.0f || count <= 0) {
+        return;
+    }
+    if (count > 160) count = 160;
+    for (index = 0; index < count; ++index) {
+        float angle = (float)index / (float)count * 6.283185f;
+        float wobble = 1.0f + (PlayerFxNoise(index, (int)radius) - 0.5f) * 0.2f;
+
+        if (PlayerFxNoise(index, (int)radius + 31) < 0.3f) {
+            continue;
+        }
+        PlayerFxBlock(centre.x + cosf(angle) * radius * wobble,
+                      centre.y + sinf(angle) * radius * wobble, block, color);
+    }
+}
+
+static void PlayerFxBlob(Vector2 centre, float radius, float block, Color color)
+{
+    float y;
+
+    for (y = -radius; y <= radius; y += block) {
+        float x;
+
+        for (x = -radius; x <= radius; x += block) {
+            if (sqrtf(x * x + y * y) > radius) {
+                continue;
+            }
+            PlayerFxBlock(centre.x + x, centre.y + y, block, color);
+        }
+    }
+}
+
 static Vector2 BodyPoint(const BodyFrame *frame, float alongUp, float alongSide)
 {
     return (Vector2){
@@ -205,25 +261,13 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
 
     /* The body axis turns from straight up toward the direction of travel. `up`
        runs from the hips to the head, so at full lean it *is* the direction of
-       travel: the head leads and the feet trail. Pointing it away from travel
-       instead flies the character feet first and tips them backwards out of
-       every turn. */
-    {
-        float uprightAngle = -PI * 0.5f;
-        float travelAngle = atan2f(travel.y, travel.x);
-        float turn = travelAngle - uprightAngle;
+       travel: the head leads and the feet trail.
 
-        while (turn > PI) turn -= 2.0f * PI;
-        while (turn < -PI) turn += 2.0f * PI;
-        /* Straight down has two equally short rotations. Keep the side chosen
-           by the last horizontal motion instead of allowing tiny float noise to
-           flip the body between left and right. */
-        if (fabsf(fabsf(turn) - PI) < 0.0001f) {
-            turn = player->facingRight ? PI : -PI;
-        }
-        frame.up = (Vector2){cosf(uprightAngle + turn * lean),
-                             sinf(uprightAngle + turn * lean)};
-    }
+       Taken from the player module rather than derived again here. The beam
+       origin needs the same axis, and two derivations of where the head is are
+       two heads — which is exactly how the laser ended up leaving from the
+       chest while the visor was drawn somewhere else. */
+    frame.up = PlayerBodyUp(player);
     frame.side = (Vector2){-frame.up.y, frame.up.x};
 
     aimX = aimPosition.x - player->position.x;
@@ -322,8 +366,9 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
             float ringRadius = radius - (float)ringIndex * 3.0f;
 
             if (ringRadius > 1.0f) {
-                DrawCircleLinesV(player->position, ringRadius,
-                                 Fade(ring, alpha / (1.0f + (float)ringIndex * 0.35f)));
+                PlayerFxRing(player->position, ringRadius, 1.5f,
+                             Fade(ring,
+                                  alpha / (1.0f + (float)ringIndex * 0.35f)));
             }
         }
     }
@@ -581,7 +626,7 @@ void PlayerRendererDrawEmissive(const Player *player)
                           : (Color){93, 216, 255, 185};
 
         DrawLineEx(player->position, trail, 1.2f + stage * 0.45f, color);
-        DrawCircleV(player->position, 1.2f + stage * 0.5f, color);
+        PlayerFxBlob(player->position, 1.2f + stage * 0.5f, 1.0f, color);
         if (player->boostStage >= PLAYER_BOOST_STAGE_TWO) {
             DrawLineEx(Vector2Add(player->position, Vector2Scale(normal, 1.8f)),
                        Vector2Add(trail, Vector2Scale(normal, 3.2f)),
@@ -601,12 +646,12 @@ void PlayerRendererDrawEmissive(const Player *player)
                                   (8.0f +
                                    (float)player->boostBurstStage * 5.0f);
 
-        DrawCircleLinesV(player->position, radius,
-                         Fade((Color){150, 224, 255, 255},
-                              (1.0f - progress) * 0.75f));
+        PlayerFxRing(player->position, radius, 1.5f,
+                     Fade((Color){150, 224, 255, 255},
+                          (1.0f - progress) * 0.75f));
     }
     if (player->drilledCells > 0) {
-        DrawCircleV(player->drillPosition, 2.4f,
-                    (Color){255, 151, 42, 215});
+        PlayerFxBlob(player->drillPosition, 2.4f, 1.0f,
+                     (Color){255, 151, 42, 215});
     }
 }
