@@ -633,8 +633,6 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
             }
             system->laserContactValid = true;
             system->lastLaserContact = event->position;
-            system->laserContactTime = fminf(1.5f,
-                                             system->laserContactTime + 1.0f / 60.0f);
             if (system->laserSpawnCooldown <= 0.0f) {
                 PresentationFxSpawnLaserContact(system, event, &spawned);
                 system->laserSpawnCooldown = 0.045f;
@@ -683,6 +681,13 @@ void PresentationFxUpdate(PresentationFxSystem *system, float deltaTime)
                                       system->cryoSpawnCooldown - deltaTime);
     system->drillSpawnCooldown = fmaxf(0.0f,
                                        system->drillSpawnCooldown - deltaTime);
+    /* Contact heat is presentation time, not simulation ticks or render-event
+       count. Accumulating here keeps the ramp identical at 30, 60 and 144 Hz;
+       ConsumeEvents below either preserves the streak or resets it. */
+    if (system->laserContactValid) {
+        system->laserContactTime = fminf(1.5f,
+                                         system->laserContactTime + deltaTime);
+    }
 
     while (index < system->stats.active) {
         PresentationFx *effect = &system->effects[index];

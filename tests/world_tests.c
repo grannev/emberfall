@@ -504,6 +504,35 @@ static void test_presentation_fx_maps_every_combat_event_with_bounded_rates(void
           "combat event conversion exceeded fixed FX capacity");
 }
 
+static void test_laser_contact_heat_uses_elapsed_time_not_frame_count(void)
+{
+    PresentationFxSystem oneFrame;
+    PresentationFxSystem twoFrames;
+    GameEventBuffer events = {0};
+
+    events.events[0] = (GameEvent){
+        .type = GAME_EVENT_LASER_HIT,
+        .position = {20.0f, 20.0f},
+        .direction = {1.0f, 0.0f},
+    };
+    events.count = 1u;
+    PresentationFxInit(&oneFrame);
+    PresentationFxInit(&twoFrames);
+    (void)PresentationFxConsumeEvents(&oneFrame, &events);
+    (void)PresentationFxConsumeEvents(&twoFrames, &events);
+
+    PresentationFxUpdate(&oneFrame, 0.10f);
+    (void)PresentationFxConsumeEvents(&oneFrame, &events);
+    PresentationFxUpdate(&twoFrames, 0.05f);
+    (void)PresentationFxConsumeEvents(&twoFrames, &events);
+    PresentationFxUpdate(&twoFrames, 0.05f);
+    (void)PresentationFxConsumeEvents(&twoFrames, &events);
+
+    CHECK(fabsf(oneFrame.laserContactTime - 0.10f) < 0.0001f &&
+              fabsf(twoFrames.laserContactTime - 0.10f) < 0.0001f,
+          "laser contact heat depends on presentation frame count");
+}
+
 static void test_camera_feedback_stacks_clamps_and_expires(void)
 {
     CameraFeedback feedback;
@@ -6619,6 +6648,7 @@ int main(void)
     RUN(test_presentation_fx_events_create_visuals_without_mutating_events);
     RUN(test_presentation_fx_delays_a_stage_without_shortening_it);
     RUN(test_presentation_fx_maps_every_combat_event_with_bounded_rates);
+    RUN(test_laser_contact_heat_uses_elapsed_time_not_frame_count);
     RUN(test_camera_feedback_stacks_clamps_and_expires);
     RUN(test_camera_lookahead_damps_reversal_before_leading_backward);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
