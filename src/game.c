@@ -8,6 +8,7 @@
 #include <raymath.h>
 
 #include "terrain_physics.h"
+#include "terrain_weld.h"
 
 #define DEFAULT_WORLD_WIDTH 16384
 #define DEFAULT_WORLD_HEIGHT 864
@@ -49,6 +50,7 @@ bool GameInit(GameState *game, GameConfig config)
         return false;
     }
     TerrainDetachInit(&game->detach);
+    TerrainWeldInit(&game->weld);
     TerrainImpulseInit(&game->impulses);
     TerrainDamageInit(&game->damage);
     TerrainInteractionInit(&game->interaction);
@@ -81,6 +83,7 @@ void GameReset(GameState *game, uint64_t seed)
        already dropped the damage log for the same reason. */
     DynamicTerrainReset(&game->dynamicTerrain);
     TerrainDetachResetStats(&game->detach);
+    TerrainWeldInit(&game->weld);
     /* A blast queued against a world that no longer exists must not land in the
        new one, and a hold cannot survive the body it was on. */
     TerrainImpulseInit(&game->impulses);
@@ -215,6 +218,14 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            for collision to change a cell. */
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
+        /* After integration, so a body that settled on this very step starts
+           its rest here rather than a step late. Rubble that has lain still
+           long enough stops being a body and becomes ground again, which is
+           what returns its slot and its share of the dynamic cell budget to a
+           player who keeps demolishing things. */
+        (void)TerrainWeldProcess(&game->weld, &game->world,
+                                 &game->dynamicTerrain, game->player.position,
+                                 game->config.fixedStep);
         for (reaction = 0; reaction < game->world.reactionCount; ++reaction) {
             Vector2 position = game->world.reactions[reaction].position;
 

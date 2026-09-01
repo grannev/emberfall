@@ -28,10 +28,13 @@ TerrainDetachConfig TerrainDetachDefaultConfig(void)
     /* Eight cells is about the smallest piece that reads as a chunk of rock
        rather than as grit once it is tumbling. */
     config.minimumBodyCells = 8;
-    /* A 32x32 block. Well inside MAX_TERRAIN_BODY_CELLS, and small enough that
-       a body's surface list and contact solver stay in the range EF-DYN-006
-       was measured at. */
-    config.maximumBodyCells = 1024;
+    /* Roughly a 55x55 block. The old limit was 1024 — a 32x32 square — which
+       refused most of what a beam or a blast actually cuts free: the wedge of
+       cliff a laser carves out is bigger than that, and refusing it meant it
+       hung in the air instead of falling. Still well inside
+       MAX_TERRAIN_BODY_CELLS, and still the bound on how far a detection search
+       may walk. */
+    config.maximumBodyCells = 3072;
     config.maxCandidatesPerRegion = 24;
     config.maxExtractionsPerTick = 4;
     return config;

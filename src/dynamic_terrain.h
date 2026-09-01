@@ -38,15 +38,18 @@
  * is enforced by refusing work rather than by growing.
  */
 
-/* Bodies alive at once. A single blast severs a handful of pieces; thirty-two
-   leaves room for a chaotic scene without pretending the budget is infinite. */
-#define MAX_TERRAIN_BODIES 32
+/* Bodies alive at once. A single blast severs a handful of pieces; sixty-four
+   leaves room for a chaotic scene without pretending the budget is infinite.
+   It could be raised because settled rubble no longer holds a slot for the rest
+   of the session — see terrain_weld.h — so the number bounds how much is loose
+   at one time rather than how much has ever come loose. */
+#define MAX_TERRAIN_BODIES 64
 
 /* Raster slots reserved for each body. A body's bounding box must fit in this
    many cells — not in a square, so a long thin slab is as welcome as a
-   compact lump. 8192 holds a 64x128 shard, or any shape whose bounding box is
-   at most twice the 4096-cell component limit the detector will hand over. */
-#define TERRAIN_BODY_RASTER_CAPACITY 8192
+   compact lump. 12288 holds a 96x128 shard, which is what lets a body be a
+   slab worth calling one rather than a chip. */
+#define TERRAIN_BODY_RASTER_CAPACITY 12288
 
 /* Longest side of a body's bounding box, matching the detector's own region
    limit so that anything WorldFindComponent can report as detached is a shape
@@ -60,8 +63,8 @@
 #define MAX_TERRAIN_BODY_CELLS 4096
 
 /* Total material/temperature raster storage:
-   32 x 8192 x (1 byte material + 4 bytes temperature) = 1.25 MiB, allocated
-   once and never resized. Collision also owns a fixed 0.50 MiB surface list. */
+   64 x 12288 x (1 byte material + 4 bytes temperature) = 3.75 MiB, allocated
+   once and never resized. Collision also owns a fixed surface list. */
 #define MAX_TERRAIN_RASTER_CELLS (MAX_TERRAIN_BODIES * TERRAIN_BODY_RASTER_CAPACITY)
 
 /* Occupied cells across every live body. This is the budget that bounds *work*
@@ -69,9 +72,9 @@
    happens, but every occupied cell is a cell collision may test and a cell the
    renderer will eventually draw, so a long series of explosions must not be
    able to accumulate them without limit. Half the theoretical maximum
-   (32 x 4096) buys either sixteen of the largest bodies the detector can hand
-   over or thirty-two ordinary ones. */
-#define MAX_TERRAIN_DYNAMIC_CELLS 65536
+   (64 x 4096) buys either forty of the largest bodies the detector hands over
+   or every slot filled with an ordinary one. */
+#define MAX_TERRAIN_DYNAMIC_CELLS 131072
 
 /* ---- handles ------------------------------------------------------------
  *

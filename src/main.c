@@ -173,12 +173,13 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
        terrain always turns into — did anything get checked, and did anything
        come loose. */
     DrawText(TextFormat("TERRAIN: %d LIVE %d AWAKE | DETACH %d CHECKS %d FREED "
-                        "%d CELLS | BLAST %d BOOM %d FORCE",
+                        "%d CELLS | WELD %d BACK | BLAST %d BOOM %d FORCE",
                         DynamicTerrainStatistics(&game->dynamicTerrain)->activeBodies,
                         DynamicTerrainStatistics(&game->dynamicTerrain)->awakeBodies,
                         game->detach.stats.detachChecks,
                         game->detach.stats.autoDetachSucceeded,
                         game->detach.stats.autoDetachCells,
+                        game->weld.stats.bodiesWelded,
                         game->impulses.stats.bodiesAffectedByExplosion,
                         game->impulses.stats.bodiesAffectedByForce),
              24, 225, 14, (Color){139, 218, 201, 255});

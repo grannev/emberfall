@@ -11,6 +11,7 @@
 #include "abilities.h"
 #include "dynamic_terrain.h"
 #include "terrain_detach.h"
+#include "terrain_weld.h"
 #include "terrain_damage.h"
 #include "terrain_impulse.h"
 #include "terrain_interaction.h"
@@ -43,6 +44,7 @@ typedef struct GameState {
     /* Turns destructive damage into bodies. Owned beside the terrain it feeds
        and run on the fixed step, after the world has finished its own tick. */
     TerrainDetachSystem detach;
+    TerrainWeldSystem weld;
     /* Blasts abilities want delivered to those bodies, held until the fixed
        step so that a fragment freed by a blast can be thrown by it. */
     TerrainImpulseSystem impulses;

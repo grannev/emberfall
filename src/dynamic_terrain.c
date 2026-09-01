@@ -59,7 +59,7 @@ DynamicTerrainConfig DynamicTerrainDefaultConfig(void)
     config.sleepDelay = 0.5f;
     config.restitution = 0.08f;
     config.friction = 0.55f;
-    config.maxAwakeBodies = 24;
+    config.maxAwakeBodies = 40;
     config.maxDynamicCells = MAX_TERRAIN_DYNAMIC_CELLS;
     config.killBoundsMargin = 512.0f;
     return config;

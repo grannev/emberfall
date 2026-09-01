@@ -30,6 +30,7 @@
 #include "terrain_impulse.h"
 #include "terrain_interaction.h"
 #include "terrain_physics.h"
+#include "terrain_weld.h"
 #include "world_components.h"
 #include "world_lighting.h"
 #include "world_render_data.h"
@@ -2869,15 +2870,19 @@ static void test_a_component_too_wide_for_a_body_changes_nothing(void)
 {
     World world;
     WorldComponentResult component;
-    Rectangle region = {30.0f, 20.0f, 128.0f, 90.0f};
+    Rectangle region = {30.0f, 20.0f, 128.0f, 128.0f};
     uint64_t before;
 
-    CHECK(WorldInit(&world, 200, 140), "world allocation failed");
+    CHECK(WorldInit(&world, 200, 180), "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    /* A hollow square the full width and height of a search region: 128x128 of
+       bounding box around a few hundred cells of wall. It is the shape that
+       separates the two capacity rules, because a body is refused on the box it
+       needs and not on the material in it. */
     FillRect(&world, 30, 20, 157, 20, MATERIAL_ROCK);
-    FillRect(&world, 30, 109, 157, 109, MATERIAL_ROCK);
-    FillRect(&world, 30, 20, 30, 109, MATERIAL_ROCK);
-    FillRect(&world, 157, 20, 157, 109, MATERIAL_ROCK);
+    FillRect(&world, 30, 147, 157, 147, MATERIAL_ROCK);
+    FillRect(&world, 30, 20, 30, 147, MATERIAL_ROCK);
+    FillRect(&world, 157, 20, 157, 147, MATERIAL_ROCK);
     before = WorldDigest(&world);
 
     component = WorldFindComponent(&world, &componentWorkspace, region, 60, 20,
@@ -4620,6 +4625,45 @@ static void test_an_explosion_under_a_block_detaches_it(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* The bug this was written for: a beam cut a wedge free and the wedge hung in
+   the air. The beam is the one destructive power that removes nothing directly —
+   it heats cells until they stop being rock — so every cell it destroys leaves
+   the world through the thermal path, and until that path reported itself the
+   detach system was never told to look where the cut had been. */
+static void test_a_beam_that_burns_through_a_support_detaches_the_block(void)
+{
+    World world;
+    int blockCells;
+    int burns;
+    const TerrainBody *body = NULL;
+    int slot;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    blockCells = BuildPillarScene(&world, 52, 69, 64, 69, 60, 80);
+
+    for (burns = 0; burns < 600 && world.destructionCount == 0; ++burns) {
+        WorldApplyLaser(&world, (Vector2){30.0f, 75.0f},
+                        (Vector2){90.0f, 75.0f}, 2.0f, 1.0f / 60.0f);
+    }
+    CHECK(world.destructionCount > 0,
+          "burning through the pillar logged no destruction in %d frames",
+          burns);
+
+    CHECK(RunDetach(&world, &terrain) == 1,
+          "the block the beam cut free did not come loose");
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active) body = &terrain.bodies[slot];
+    }
+    CHECK(body != NULL, "no live body after the beam severed the support");
+    CHECK(body->cellCount >= blockCells,
+          "the body holds %d cells, the block alone had %d",
+          body != NULL ? body->cellCount : 0, blockCells);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 /* Damage alone is not a reason to detach anything. */
 static void test_damage_that_leaves_the_support_standing_detaches_nothing(void)
 {
@@ -4718,17 +4762,19 @@ static void test_a_fragment_above_the_maximum_size_stays_static(void)
 {
     World world;
 
-    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(WorldInit(&world, 160, 140), "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainDetachInit(&detach);
-    /* 45x30 is 1350 cells, comfortably past the default ceiling of 1024. */
-    (void)BuildPillarScene(&world, 20, 64, 30, 59, 60, 80);
+    /* 64x49 is 3136 cells, past the default ceiling of 3072 and still inside
+       what the detector itself will report, so the refusal below belongs to
+       this module's policy. */
+    (void)BuildPillarScene(&world, 20, 83, 30, 78, 60, 100);
 
-    WorldDestroyCircle(&world, 60, 70, 4, 0.0f);
+    WorldDestroyCircle(&world, 60, 90, 4, 0.0f);
     CHECK(RunDetach(&world, &terrain) == 0, "an oversized slab became a body");
     CHECK(detach.stats.autoDetachRejectedTooLarge > 0,
           "the slab was not rejected for its size");
-    CHECK(CountMaterial(&world, MATERIAL_ROCK) > 1300,
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) > 3000,
           "the slab left the static world");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
@@ -4769,6 +4815,171 @@ static void test_a_fragment_one_cell_past_the_ceiling_stays_static(void)
     CHECK(DynamicTerrainStatistics(&terrain)->dynamicCellsUsed == blockCells + 1,
           "the body holds %d cells, expected %d",
           DynamicTerrainStatistics(&terrain)->dynamicCellsUsed, blockCells + 1);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A square body, asleep, sitting on empty world at `at`. Built through the
+   ordinary settle path rather than by writing `awake` directly, so the awake
+   bookkeeping stays consistent with what the physics would have produced. */
+static TerrainBodyHandle BuildSleepingBlock(DynamicTerrainSystem *bodies,
+                                            Vector2 at, int side)
+{
+    TerrainBodyHandle handle = DynamicTerrainAllocBody(bodies, side, side);
+    TerrainBody *body = DynamicTerrainGet(bodies, handle);
+    int x;
+    int y;
+    int settle;
+
+    if (body == NULL) return handle;
+    for (y = 0; y < side; ++y) {
+        for (x = 0; x < side; ++x) {
+            DynamicTerrainSetCell(bodies, handle, x, y, MATERIAL_ROCK, 20.0f);
+        }
+    }
+    DynamicTerrainFinalizeBody(bodies, handle);
+    body->position = at;
+    body->angle = 0.0f;
+    body->velocity = (Vector2){0.0f, 0.0f};
+    body->angularVelocity = 0.0f;
+    for (settle = 0; settle < 240 && body->awake; ++settle) {
+        DynamicTerrainSettleBody(bodies, body, 1.0f / 60.0f);
+    }
+    return handle;
+}
+
+static void test_rubble_that_lies_still_long_enough_becomes_ground_again(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainBodyHandle handle;
+    Vector2 away = {-4000.0f, -4000.0f};
+    int solidBefore;
+    int steps;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainWeldInit(&weld);
+    solidBefore = CountMaterial(&world, MATERIAL_ROCK);
+
+    handle = BuildSleepingBlock(&terrain, (Vector2){40.0f, 40.0f}, 4);
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "the fixture body was not created");
+    CHECK(!DynamicTerrainGetConst(&terrain, handle)->awake,
+          "the fixture body never fell asleep");
+
+    /* Well past the delay, and one step at a time, so this also proves the
+       body is not welded on the first tick it happens to be asleep for. */
+    for (steps = 0; steps < 1200 &&
+                    DynamicTerrainGetConst(&terrain, handle) != NULL;
+         ++steps) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain, away, 1.0f / 60.0f);
+        if (steps == 30) {
+            CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+                  "the body was welded half a second after settling");
+        }
+    }
+
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "the body never became ground again");
+    CHECK(weld.stats.bodiesWelded == 1, "%d bodies were welded",
+          weld.stats.bodiesWelded);
+    CHECK(weld.stats.cellsWelded == 16,
+          "the 4x4 block wrote %d cells", weld.stats.cellsWelded);
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == solidBefore + 16,
+          "the world gained %d cells, expected 16",
+          CountMaterial(&world, MATERIAL_ROCK) - solidBefore);
+    /* And the slot came back, which is the whole reason for doing this. */
+    CHECK(DynamicTerrainStatistics(&terrain)->activeBodies == 0,
+          "the welded body still holds a slot");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_moving_body_is_never_welded(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainBodyHandle handle;
+    TerrainBody *body;
+    Vector2 away = {-4000.0f, -4000.0f};
+    int steps;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainWeldInit(&weld);
+    handle = BuildSleepingBlock(&terrain, (Vector2){40.0f, 40.0f}, 4);
+    body = DynamicTerrainGet(&terrain, handle);
+    CHECK(body != NULL, "the fixture body was not created");
+
+    /* Woken every few frames, the way a body being shot at or shoved would be:
+       the rest clock has to start again each time, never accumulate across the
+       interruptions. */
+    for (steps = 0; steps < 2400; ++steps) {
+        if (steps % 40 == 0) {
+            (void)DynamicTerrainWakeBody(&terrain, handle);
+        }
+        (void)TerrainWeldProcess(&weld, &world, &terrain, away, 1.0f / 60.0f);
+        body = DynamicTerrainGet(&terrain, handle);
+        if (body == NULL) break;
+        if (!body->awake) continue;
+        DynamicTerrainSettleBody(&terrain, body, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "a body that kept being disturbed was welded anyway");
+    CHECK(weld.stats.bodiesWelded == 0, "%d bodies were welded",
+          weld.stats.bodiesWelded);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_weld_never_overwrites_the_world_or_buries_the_player(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainBodyHandle handle;
+    uint64_t before;
+    int steps;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainWeldInit(&weld);
+    /* Ground exactly where the body is sitting. Every cell it would write is
+       already occupied, so a weld must add nothing at all. */
+    FillRect(&world, 30, 30, 60, 60, MATERIAL_SAND);
+    before = WorldDigest(&world);
+
+    handle = BuildSleepingBlock(&terrain, (Vector2){40.0f, 40.0f}, 4);
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "the fixture body was not created");
+
+    /* While the player stands in it, the body waits rather than closing over
+       them — however long it has rested. */
+    for (steps = 0; steps < 1200; ++steps) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain,
+                                 (Vector2){40.0f, 40.0f}, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "the body was welded around the player");
+    CHECK(weld.stats.bodiesDeferredByPlayer > 0,
+          "the player deferral was never counted");
+
+    /* Step away and it welds, but writes nothing: the ground is already there.
+       The world must come out byte for byte as it went in. */
+    for (steps = 0; steps < 1200 &&
+                    DynamicTerrainGetConst(&terrain, handle) != NULL;
+         ++steps) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain,
+                                 (Vector2){-4000.0f, -4000.0f}, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "the body never welded once the player left");
+    CHECK(weld.stats.cellsWelded == 0, "a weld overwrote %d occupied cells",
+          weld.stats.cellsWelded);
+    CHECK(weld.stats.cellsRefused == 16, "%d cells were refused, expected 16",
+          weld.stats.cellsRefused);
+    CHECK(WorldDigest(&world) == before,
+          "welding into occupied ground changed the world");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -9156,11 +9367,15 @@ int main(void)
     RUN(test_reset_returns_every_budget);
     RUN(test_lifecycle_decisions_are_deterministic);
     RUN(test_an_explosion_under_a_block_detaches_it);
+    RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
     RUN(test_drilling_through_a_support_detaches_the_section_above);
     RUN(test_a_fragment_that_escapes_the_search_window_stays_static);
     RUN(test_a_fragment_below_the_minimum_size_stays_static);
     RUN(test_a_fragment_above_the_maximum_size_stays_static);
+    RUN(test_rubble_that_lies_still_long_enough_becomes_ground_again);
+    RUN(test_a_moving_body_is_never_welded);
+    RUN(test_a_weld_never_overwrites_the_world_or_buries_the_player);
     RUN(test_a_fragment_one_cell_past_the_ceiling_stays_static);
     RUN(test_a_full_body_manager_leaves_the_fragment_static);
     RUN(test_a_full_cell_budget_leaves_the_world_unchanged);

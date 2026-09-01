@@ -44,6 +44,7 @@ bool WorldTryThermalTransition(World *world, int x, int y)
     Cell *cell = WorldCell(world, x, y);
     const MaterialInfo *info = MaterialAt(cell->material);
     CellMaterial next = cell->material;
+    bool wasSolid;
 
     if (info->onHeat.enabled && cell->temperature >= info->onHeat.threshold) {
         next = info->onHeat.target;
@@ -55,8 +56,23 @@ bool WorldTryThermalTransition(World *world, int x, int y)
         return false;
     }
 
+    wasSolid = MaterialIsSolid(cell->material);
     WorldSetCellRaw(world, x, y, next);
     WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+    /* Melting through a slab severs it exactly as cutting through it does, and
+       until this was here the game could not tell the difference: the laser
+       does not remove cells, it heats them, so every cell it destroys leaves by
+       this path and none of them were being reported. A wedge cut free by a
+       beam simply hung in the air, because nothing had ever told the detach
+       system to look where the cut was.
+
+       The condition is structural, not thermal: a cell that stops being solid
+       has stopped holding anything up, whether it melted, boiled or thawed.
+       Freezing runs through here too and is deliberately not recorded — it adds
+       material, and nothing comes loose from that. */
+    if (wasSolid && !MaterialIsSolid(next)) {
+        WorldRecordDestruction(world, x, y, x, y);
+    }
     return true;
 }
 
