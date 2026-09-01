@@ -588,7 +588,8 @@ Worst-case texture pixels:
 
 Texture создаются exact-size, поэтому фактический smoke body 12×6 занял 576 B
 (HUD округляет до 0.6 KiB). Первый GL frame сделал ровно два uploads, следующие
-unchanged frames — ноль; scene+emissive дали два draw calls. После free cache в
+unchanged frames — ноль; scene+emissive дали два draw calls, а smoke
+зафиксировал contact body с static shelf. После free cache в
 том же render frame сообщил 0 bodies и 0 bytes. Resize offscreen targets не
 пересоздавал body textures.
 

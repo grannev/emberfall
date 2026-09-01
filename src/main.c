@@ -379,9 +379,20 @@ static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
     if (body == NULL) {
         return invalid;
     }
+    /* Collision is already part of the production fixed step. A short shelf
+       below the extracted island makes the renderer showcase exercise that
+       shared transform at contact instead of only showing free flight. It is
+       placed after extraction and outside the detector region, so it cannot
+       become part of the detached component. */
+    for (index = -6; index <= 17; ++index) {
+        WorldSetCell(&game->world, originX + index, originY + 10,
+                     MATERIAL_ROCK);
+        WorldSetCell(&game->world, originX + index, originY + 11,
+                     MATERIAL_ROCK);
+    }
     body->angle = 0.18f;
     DynamicTerrainSetVelocity(&game->dynamicTerrain, extracted.body,
-                              (Vector2){-48.0f, -34.0f}, 1.8f);
+                              (Vector2){26.0f, 78.0f}, 1.8f);
     return extracted.body;
 }
 
@@ -531,6 +542,7 @@ int main(int argc, char **argv)
     bool smokeTerrainRendered = false;
     bool smokeTerrainMoved = false;
     bool smokeTerrainRotated = false;
+    bool smokeTerrainCollisionObserved = false;
     bool smokeTerrainCacheReleased = false;
     uint32_t smokeTerrainTextureUpdates = 0u;
     uint32_t smokeTerrainMaximumDrawCalls = 0u;
@@ -755,6 +767,8 @@ int main(int argc, char **argv)
                                    (frameStats->visibleTerrainBodies == 1u &&
                                     frameStats->cachedTerrainBodies == 1u &&
                                     frameStats->terrainBodyDrawCalls >= 2u);
+            smokeTerrainCollisionObserved = smokeTerrainCollisionObserved ||
+                game.dynamicTerrain.stats.collisionContacts > 0;
             {
                 const TerrainBody *body = DynamicTerrainGetConst(
                     &game.dynamicTerrain, smokeTerrainBody);
@@ -826,7 +840,8 @@ int main(int argc, char **argv)
                "submit_avg=%.3fms submit_max=%.3fms "
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
                "target_sync=%d fx_peak=%u fx_dropped=%u "
-               "body_draws=%u body_updates=%u body_kib=%.1f body_released=%d\n",
+               "body_draws=%u body_updates=%u body_kib=%.1f "
+               "body_collision=%d body_released=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -836,6 +851,7 @@ int main(int argc, char **argv)
                (unsigned int)frameStats->droppedFx,
                smokeTerrainMaximumDrawCalls, smokeTerrainTextureUpdates,
                (double)smokeTerrainMaximumTextureBytes / 1024.0,
+               smokeTerrainCollisionObserved,
                smokeTerrainCacheReleased);
     }
 
@@ -846,7 +862,9 @@ int main(int argc, char **argv)
                       !smokePresentationFxObserved ||
                       !smokeTerrainExtracted || !smokeTerrainWorldCleared ||
                       !smokeTerrainRendered || !smokeTerrainMoved ||
-                      !smokeTerrainRotated || !smokeTerrainCacheReleased ||
+                      !smokeTerrainRotated ||
+                      !smokeTerrainCollisionObserved ||
+                      !smokeTerrainCacheReleased ||
                       smokeTerrainTextureUpdates != 2u ||
                       game.world.activeChunkCount <= 0 ||
                       game.world.activeChunkCount >=
@@ -856,7 +874,7 @@ int main(int argc, char **argv)
                 "drill=%d fire_contained=%d resize=%d restored=%d "
                 "bloom=%d bloom_resize=%d bloom_restored=%d target_sync=%d "
                 "presentation_fx=%d body=%d cleared=%d rendered=%d moved=%d "
-                "rotated=%d released=%d updates=%u chunks=%d/%d\n",
+                "rotated=%d collision=%d released=%d updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved, smokeExplosionObserved,
                 smokeCollisionObserved, smokeDrillObserved, smokeFireContained,
                 smokeResizeObserved, smokeResizeRestored,
@@ -865,7 +883,8 @@ int main(int argc, char **argv)
                 smokePresentationFxObserved,
                 smokeTerrainExtracted, smokeTerrainWorldCleared,
                 smokeTerrainRendered, smokeTerrainMoved,
-                smokeTerrainRotated, smokeTerrainCacheReleased,
+                smokeTerrainRotated, smokeTerrainCollisionObserved,
+                smokeTerrainCacheReleased,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);

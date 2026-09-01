@@ -183,9 +183,9 @@ make run RUN_ARGS="--seed 0x1234"
 - локализация fire внутри тестового блока dirt;
 - переход части chunks в sleeping state;
 - smoke-only остров проходит штатный `WorldFindComponent` + atomic extraction,
-  исчезает из static World, движется и вращается как `TerrainBody`, рисуется
-  scene/emissive cache ровно с двумя initial uploads и после `FreeBody` оставляет
-  ноль cached textures/bytes;
+  исчезает из static World, падает, вращается и сталкивается с
+  static-world smoke shelf; scene/emissive cache делает ровно два initial
+  uploads и после `FreeBody` оставляет ноль cached textures/bytes;
 - resize offscreen targets не пересоздаёт body-local textures.
 
 Проверка fire создаёт отдельный мир 48×32, зажигает в центре dirt-блока область

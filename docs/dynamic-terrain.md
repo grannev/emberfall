@@ -247,8 +247,9 @@ normal frame:   O(MAX_TERRAIN_BODIES) sync/culling + O(visible bodies) draws
 
 HUD/`RendererFrameStats` показывают cached/visible bodies, draw calls, texture
 updates и оценку RGBA8 bytes. Автоматический smoke showcase штатно извлекает
-остров, показывает его движение/rotation/emission, затем освобождает handle и
-проверяет нулевой cache без ghost. Обычный gameplay этот showcase не запускает.
+остров, показывает его падение/rotation/emission и контакт с smoke-only
+полкой, затем освобождает handle и проверяет нулевой cache без ghost.
+Обычный gameplay этот showcase не запускает.
 
 ## Извлечение из мира
 
