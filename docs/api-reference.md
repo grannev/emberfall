@@ -32,7 +32,7 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 
 `world.h` — единственный публичный заголовок мира. Реализация разделена на
 `materials.c`, `world_storage.c`, `world_simulation.c`, `world_thermal.c`,
-`world_generation.c`, `world_lighting.c`, `world_effects.c` и
+`world_generation.c`, `world_biomes.c`, `world_lighting.c`, `world_effects.c` и
 `world_render_data.c`. Заголовки `world_internal.h`, `world_thermal.h` и
 `world_lighting.h` внутренние: их включают только файлы модуля мира.
 `materials.h` описывает таблицу материалов и нужен всем, кто добавляет материал.
@@ -43,6 +43,8 @@ raylib keyboard/mouse и `Camera2D` в `GameInput` и `cursorCell`.
 bool WorldInit(World *world, int width, int height);
 void WorldUnload(World *world);
 void WorldGenerate(World *world, uint64_t seed);
+WorldBiome WorldBiomeAt(const World *world, int x);
+const char *WorldBiomeName(WorldBiome biome);
 Vector2 WorldPlayerSpawn(const World *world);
 void WorldActivateRegion(World *world, Rectangle region);
 ```
@@ -56,6 +58,10 @@ void WorldActivateRegion(World *world, Rectangle region);
   который производит seed.
 - `WorldGenerate` заполняет уже инициализированный мир; повторный вызов не
   выделяет память и оставляет simulation chunks спящими.
+- `WorldBiomeAt` возвращает nominal biome колонки: `TEMPERATE`, `DUNES`,
+  `FROST` или `VOLCANIC`. Рельеф вокруг границы уже смешан, поэтому query не
+  означает жёсткую стену материалов. `WorldBiomeName` даёт стабильное имя для
+  HUD/debug tooling.
 - `WorldPlayerSpawn` возвращает свободную точку над сгенерированной поверхностью,
   чтобы вызывающий код не знал о форме рельефа.
 - `WorldActivateRegion` сканирует только запрошенные chunks и будит находящиеся

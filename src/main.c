@@ -201,7 +201,10 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
              24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
-    DrawText(TextFormat("SEED: 0x%llx", (unsigned long long)game->worldSeed),
+    DrawText(TextFormat("SEED: 0x%llx | BIOME: %s",
+                        (unsigned long long)game->worldSeed,
+                        WorldBiomeName(WorldBiomeAt(world,
+                                                    (int)player->position.x))),
              24, 279, 14, (Color){186, 194, 205, 255});
     if (cooldown <= 0.0f) {
         DrawText("EXPLOSION: READY", 24, 297, 14, LIME);

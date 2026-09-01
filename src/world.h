@@ -30,6 +30,17 @@ typedef enum CellMaterial {
     MATERIAL_COUNT
 } CellMaterial;
 
+/* Large horizontal generation regions. Biomes choose terrain shape and
+   material composition; material physics remains defined by CellMaterial and
+   the single material table. */
+typedef enum WorldBiome {
+    WORLD_BIOME_TEMPERATE = 0,
+    WORLD_BIOME_DUNES,
+    WORLD_BIOME_FROST,
+    WORLD_BIOME_VOLCANIC,
+    WORLD_BIOME_COUNT
+} WorldBiome;
+
 /* Fourteen million of these exist, so every byte here is 13.5 MiB on the
    production map and the layout is a memory decision before it is anything
    else. Fields are ordered widest first so the struct packs to 12 bytes with a
@@ -206,6 +217,10 @@ void WorldUnload(World *world);
    the same world, which is what makes bug reports, regression tests and
    benchmark scenarios repeatable. */
 void WorldGenerate(World *world, uint64_t seed);
+/* The nominal biome at a column. Terrain parameters blend near boundaries, so
+   this is an identity/debug query rather than a hard material border. */
+WorldBiome WorldBiomeAt(const World *world, int x);
+const char *WorldBiomeName(WorldBiome biome);
 Vector2 WorldPlayerSpawn(const World *world);
 /* Wakes generated dynamic or heated cells inside a streamed gameplay region.
    Actual cell mutations wake themselves regardless of this region. */

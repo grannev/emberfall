@@ -108,6 +108,9 @@ void WorldSetCellRaw(World *world, int x, int y, CellMaterial material);
 void WorldSetGeneratedCell(World *world, int x, int y, CellMaterial material);
 void WorldCountActiveState(World *world);
 
+/* world_biomes.c */
+void WorldGenerateBiomeTerrain(World *world);
+
 /* world_simulation.c */
 void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY);
 
