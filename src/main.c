@@ -707,6 +707,198 @@ static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
     }
 }
 
+/* --- movement acceptance run ---------------------------------------------- */
+
+/* The traversal chain EF-MOV-001 exists for, flown once on a script so it can be
+   watched and measured rather than only asserted:
+
+       still
+         -> ordinary acceleration up to cruise
+         -> boost, and the three stages it climbs through
+         -> a wide turn at the top of the range
+         -> drilling straight through a rock support
+         -> braking back down out of the boost
+         -> reversing
+         -> stopped
+
+   Each phase records the one number that says whether it felt right, and those
+   numbers are what the tuning was done against. */
+#define MOVE_START (ACCEPT_END)
+#define MOVE_CRUISE (MOVE_START + 80)
+#define MOVE_BOOST (MOVE_CRUISE + 5)
+#define MOVE_TURN (MOVE_BOOST + 220)
+#define MOVE_DRILL (MOVE_TURN + 60)
+#define MOVE_BRAKE (MOVE_DRILL + 110)
+#define MOVE_REVERSE (MOVE_BRAKE + 70)
+#define MOVE_SHOT (MOVE_REVERSE + 50)
+/* The most characteristic frame of the run: mid-tunnel, at the top of the boost
+   range, with the cut trailing behind. */
+#define MOVE_SHOT_FRAME (MOVE_DRILL + 22)
+#define MOVE_STOP (MOVE_SHOT + 4)
+#define MOVE_END (MOVE_STOP + 130)
+
+typedef struct SmokeMovement {
+    Vector2 origin;
+    float cruiseSpeed;
+    float stageOneSpeed;
+    float stageTwoSpeed;
+    float peakSpeed;
+    float turnLateral;
+    float brakeFrom;
+    float reverseSpeed;
+    float finalSpeed;
+    int drilled;
+    int brakeFrames;
+    PlayerBoostStage topStage;
+    bool turned;
+    bool reversed;
+    bool stopped;
+} SmokeMovement;
+
+/* Clear sky to fly through. Long enough to hold a full boost run: the player
+   crosses better than two thousand cells before the turn, and flying into
+   untouched world would turn the whole phase into a drilling test. */
+#define MOVE_CORRIDOR_LENGTH 3000
+#define MOVE_CORRIDOR_HEIGHT 100
+
+static void SetupSmokeMovementScene(World *world, Vector2 origin)
+{
+    int firstX = (int)origin.x;
+    int y = (int)origin.y;
+    int x;
+    int row;
+
+    for (row = y - MOVE_CORRIDOR_HEIGHT; row <= y + MOVE_CORRIDOR_HEIGHT; ++row) {
+        for (x = firstX - 60; x <= firstX + MOVE_CORRIDOR_LENGTH; ++x) {
+            WorldSetCell(world, x, row, MATERIAL_EMPTY);
+        }
+    }
+}
+
+/* The support to drill through, built where the player actually is rather than
+   at a coordinate guessed in advance. The trajectory is deterministic, but it
+   is not something to work out on paper — and a test that misses its own
+   obstacle proves nothing about drilling. */
+static void SetupSmokeMovementSupport(World *world, Vector2 at, Vector2 heading)
+{
+    float length = sqrtf(heading.x * heading.x + heading.y * heading.y);
+    int wallX;
+    int y = (int)at.y;
+    int row;
+    int x;
+
+    if (length < 0.001f) {
+        return;
+    }
+    /* Far enough ahead that the player meets it at speed rather than starting
+       inside it. */
+    wallX = (int)(at.x + heading.x / length * 40.0f);
+    for (row = y - 60; row <= y + 60; ++row) {
+        for (x = wallX; x <= wallX + 11; ++x) {
+            WorldSetCell(world, x, row, MATERIAL_ROCK);
+        }
+    }
+}
+
+static void RunSmokeMovement(GameState *game, SmokeMovement *state, int frame,
+                             GameInput *input)
+{
+    float speed = Vector2Length(game->player.velocity);
+
+    memset(input->ability, 0, sizeof(input->ability));
+    input->grabHeld = false;
+    input->regeneratePressed = false;
+    input->aimWorld = (Vector2){game->player.position.x + 40.0f,
+                                game->player.position.y};
+
+    if (frame == MOVE_START) {
+        SetupSmokeMovementScene(&game->world, state->origin);
+        game->player.position = (Vector2){state->origin.x, state->origin.y};
+        game->player.velocity = (Vector2){0.0f, 0.0f};
+        input->move = (Vector2){0.0f, 0.0f};
+        input->boostHeld = false;
+        return;
+    }
+
+    if (frame < MOVE_CRUISE) {
+        /* Ordinary flight: no boost, and it has to reach a steady cruise. */
+        input->move = (Vector2){1.0f, 0.0f};
+        input->boostHeld = false;
+        state->cruiseSpeed = speed;
+        return;
+    }
+    if (frame < MOVE_TURN) {
+        input->move = (Vector2){1.0f, 0.0f};
+        input->boostHeld = true;
+        if (game->player.boostStage > state->topStage) {
+            state->topStage = game->player.boostStage;
+        }
+        if (game->player.boostStage == PLAYER_BOOST_STAGE_ONE) {
+            state->stageOneSpeed = speed;
+        }
+        if (game->player.boostStage == PLAYER_BOOST_STAGE_TWO) {
+            state->stageTwoSpeed = speed;
+        }
+        if (speed > state->peakSpeed) {
+            state->peakSpeed = speed;
+        }
+        return;
+    }
+    if (frame < MOVE_DRILL) {
+        /* Down and then back up: an arc the player flies out of, rather than a
+           dive that ends in the ground. What is recorded is how far off the
+           line the turn carried them, which at this speed is the whole point —
+           a fast turn is a wide one. */
+        float deviation = fabsf(game->player.position.y - state->origin.y);
+
+        input->move = (Vector2){1.0f, frame < MOVE_TURN + 30 ? 0.85f : -0.85f};
+        input->boostHeld = true;
+        if (deviation > state->turnLateral) {
+            state->turnLateral = deviation;
+        }
+        state->turned = state->turnLateral > 12.0f;
+        return;
+    }
+    if (frame < MOVE_BRAKE) {
+        if (frame == MOVE_DRILL) {
+            /* Levelled out before the wall goes up, so the tunnel is cut across
+               open sky and the player comes out the far side into it rather
+               than into the ground the dive was heading for. */
+            game->player.velocity = (Vector2){speed, 0.0f};
+            game->player.position.y = state->origin.y;
+            SetupSmokeMovementSupport(&game->world, game->player.position,
+                                      game->player.velocity);
+        }
+        input->move = (Vector2){1.0f, 0.0f};
+        input->boostHeld = true;
+        state->drilled += game->player.drilledCells;
+        return;
+    }
+    if (frame < MOVE_REVERSE) {
+        if (frame == MOVE_BRAKE) {
+            state->brakeFrom = speed;
+        }
+        input->move = (Vector2){-1.0f, 0.0f};
+        input->boostHeld = false;
+        if (speed > 40.0f) {
+            ++state->brakeFrames;
+        }
+        return;
+    }
+    if (frame < MOVE_STOP) {
+        input->move = (Vector2){-1.0f, 0.0f};
+        input->boostHeld = false;
+        state->reversed = state->reversed || game->player.velocity.x < -20.0f;
+        state->reverseSpeed = game->player.velocity.x;
+        return;
+    }
+    /* Hands off: momentum has to bleed away on its own rather than vanish. */
+    input->move = (Vector2){0.0f, 0.0f};
+    input->boostHeld = false;
+    state->finalSpeed = speed;
+    state->stopped = state->stopped || speed < 20.0f;
+}
+
 static bool RunSmokeFireContainmentProbe(void)
 {
     const int minimumX = 8;
@@ -869,6 +1061,9 @@ int main(int argc, char **argv)
     bool smokeForceMovedBody = false;
     /* The gameplay acceptance run's progress. Zeroed at setup rather than here
        so the whole struct is cleared in one place. */
+    SmokeMovement movement = {{0.0f, 0.0f}, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                              0.0f, 0.0f, 0, 0, PLAYER_BOOST_NONE, false, false,
+                              false};
     SmokeAcceptance acceptance = {{0.0f, 0.0f}, {0.0f, 0.0f}, false, false,
                                   false, false, false, false, false, false,
                                   false, 0.0f, 0.0f, 0.0f, 0, {0.0f, 0.0f}};
@@ -944,6 +1139,12 @@ int main(int argc, char **argv)
         /* Far enough from every other smoke fixture that the two phases never
            share a cell. */
         acceptance.platformAt = (Vector2){smokeAim.x + 150.0f, smokeAim.y - 6.0f};
+        /* Open sky, well above the terrain. Underground the corridor has to be
+           carved, and a carved corridor immediately fills with the sand its own
+           ceiling drops into it — the player then spends the run bouncing off
+           falling grains instead of building a boost. Up here nothing can fall
+           in, and the turn has the whole sky to use. */
+        movement.origin = (Vector2){smokeAim.x + 400.0f, 140.0f};
         {
             const TerrainBody *body = DynamicTerrainGetConst(
                 &game.dynamicTerrain, smokeTerrainBody);
@@ -1078,8 +1279,12 @@ int main(int argc, char **argv)
             input.game.ability[ABILITY_FORCE] = smokeFrames == 8;
             input.game.ability[ABILITY_CRYO] = smokeFrames >= 9;
             input.game.regeneratePressed = false;
-        } else if (smokeTest) {
+        } else if (smokeTest && smokeFrames < MOVE_START) {
             RunSmokeAcceptance(&game, &acceptance, smokeFrames, &input.game);
+            aimPosition = input.game.aimWorld;
+            cursorCell = aimPosition;
+        } else if (smokeTest) {
+            RunSmokeMovement(&game, &movement, smokeFrames, &input.game);
             aimPosition = input.game.aimWorld;
             cursorCell = aimPosition;
         }
@@ -1335,7 +1540,10 @@ int main(int argc, char **argv)
             if (smokeFrames == ACCEPT_SHOT) {
                 TakeScreenshot("build/emberfall-gameplay.png");
             }
-            if (++smokeFrames >= ACCEPT_END) {
+            if (smokeFrames == MOVE_SHOT_FRAME) {
+                TakeScreenshot("build/emberfall-movement.png");
+            }
+            if (++smokeFrames >= MOVE_END) {
                 break;
             }
         }
@@ -1357,7 +1565,11 @@ int main(int argc, char **argv)
                "force_hits=%d force_moved=%d impulses=%d "
                "play_detached=%d play_pushed=%d(%.1f) play_grabbed=%d "
                "play_dragged=%d(%.1f) play_threw=%d(%.1f) play_carved=%d "
-               "play_split=%d play_fragments=%d play_fx=%d play_camera=%d\n",
+               "play_split=%d play_fragments=%d play_fx=%d play_camera=%d "
+               "move_cruise=%.1f move_s1=%.1f move_s2=%.1f move_peak=%.1f "
+               "move_stage=%d move_turn=%.1f move_drilled=%d "
+               "move_brake=%.1f->%.1f in %d frames move_reverse=%.1f "
+               "move_final=%.1f\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smokeBloomSubmissionTotal / (double)smokeBloomFrames,
@@ -1388,7 +1600,13 @@ int main(int argc, char **argv)
                (double)acceptance.dragDistance, acceptance.threw,
                (double)acceptance.throwSpeed, acceptance.carved, acceptance.split,
                acceptance.fragments, acceptance.fxDuringPlay,
-               acceptance.cameraFeedbackDuringPlay);
+               acceptance.cameraFeedbackDuringPlay,
+               (double)movement.cruiseSpeed, (double)movement.stageOneSpeed,
+               (double)movement.stageTwoSpeed, (double)movement.peakSpeed,
+               (int)movement.topStage, (double)movement.turnLateral,
+               movement.drilled, (double)movement.brakeFrom,
+               (double)movement.finalSpeed, movement.brakeFrames,
+               (double)movement.reverseSpeed, (double)movement.finalSpeed);
     }
 
     if (smokeTest && (!smokeReactionObserved || !smokeLaserHitObserved ||
@@ -1411,6 +1629,11 @@ int main(int argc, char **argv)
                       !acceptance.split || acceptance.fragments < 2 ||
                       !acceptance.fxDuringPlay ||
                       !acceptance.cameraFeedbackDuringPlay ||
+                      movement.topStage != PLAYER_BOOST_STAGE_THREE ||
+                      movement.cruiseSpeed < 40.0f ||
+                      movement.peakSpeed < movement.stageTwoSpeed ||
+                      !movement.turned || movement.drilled <= 0 ||
+                      !movement.reversed || !movement.stopped ||
                       fabsf(smokeThrownSpin) <= 0.0f ||
                       /* Two uploads — scene and emissive — for each body that
                          ever existed, and not one more: a body whose raster
@@ -1429,6 +1652,7 @@ int main(int argc, char **argv)
                 "rotated=%d collision=%d released=%d auto_detach=%d "
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
                 "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
+                "move=cruise%.0f/peak%.0f/stage%d/turn%.0f/drill%d/rev%d/stop%d "
                 "updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved,
                 smokeExplosionObserved, smokeForceObserved,
@@ -1447,6 +1671,9 @@ int main(int argc, char **argv)
                 acceptance.grabbed, acceptance.dragged, acceptance.threw,
                 acceptance.carved, acceptance.split, acceptance.fragments,
                 acceptance.fxDuringPlay, acceptance.cameraFeedbackDuringPlay,
+                (double)movement.cruiseSpeed, (double)movement.peakSpeed,
+                (int)movement.topStage, (double)movement.turnLateral,
+                movement.drilled, movement.reversed, movement.stopped,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,
                 game.world.chunkColumns * game.world.chunkRows);

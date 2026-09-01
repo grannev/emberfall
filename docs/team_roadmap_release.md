@@ -1,253 +1,291 @@
-# Emberfall — Team Roadmap to Trailer-Quality Physics Sandbox
+# Emberfall — team roadmap release
 
-> **Назначение:** рабочий документ тимлида для двух параллельных разработчиков:
-> **Codex** и **Claude**.
+> Актуализировано по состоянию проекта на 2026-09-01.
 >
-> **Технологии фиксированы:** C11 + raylib.
+> Стек: **C11 + raylib**.
 >
-> **Референс:** `moltyn-trailer.mp4` используется только как ориентир по уровню
-> динамики, читаемости эффектов, разрушению, воде, освещению и game feel.
-> Нельзя копировать чужие ассеты, персонажей, UI, уровни, название или lore.
+> Команда: **Claude** и **Codex**.
+>
+> Главная цель: не наращивать инфраструктуру ради инфраструктуры, а доводить
+> Emberfall крупными вертикальными срезами до состояния, где каждая новая задача
+> заканчивается реально заметной игровой возможностью.
 
 ---
 
-## 0. Executive summary
+# 1. Новый принцип разработки
 
-Текущая версия Emberfall уже имеет хорошую инженерную основу:
+Предыдущий этап был намеренно разбит на маленькие архитектурные задачи.
 
-- `GameState` и явный gameplay update;
+Это дало хороший фундамент, но оказалось слишком дорогим по времени и лимитам:
+на каждую маленькую задачу повторялись setup, tests, sanitizers, benchmark,
+docs, PR и handoff.
+
+С этого момента:
+
+## Одна roadmap-задача = одна законченная feature
+
+Агент сам внутри задачи:
+
+- делит работу на внутренние этапы;
+- делает несколько commits;
+- запускает релевантные проверки;
+- при необходимости делает небольшие refactors;
+- доводит feature до playable/visible состояния;
+- открывает один PR на всю feature.
+
+Не открывать отдельный PR на каждый helper/subsystem, если они являются частью
+одной законченной механики.
+
+---
+
+# 2. Фактическое состояние проекта
+
+Ниже — foundation, который уже присутствует в актуальном коде.
+
+## Готово: core / world
+
+- fixed-step cellular simulation;
 - deterministic RNG;
-- fixed-step simulation;
-- active-chunk scheduler;
-- `Cell` = 12 bytes;
+- active/sleeping chunks;
 - paged world renderer;
-- локализованный lighting solve;
-- headless tests и benchmark;
-- отдельные player/ability/particle renderers;
-- fixed-capacity gameplay events;
-- отсутствие heap allocations в обычных simulation hot paths.
+- explicit emissive material rendering;
+- localized lighting architecture;
+- GameState/GameEvents boundary.
 
-Поэтому следующая стадия — **не очередной большой архитектурный рефакторинг**.
-Нужно наращивать игровые и presentation-системы поверх уже существующих
-границ и менять архитектуру только там, где новая механика действительно
-требует нового ownership/API.
+## Готово: dynamic terrain foundation
 
-### Четыре главных разрыва с уровнем референса
+Есть отдельные модули:
 
-1. **Presentation stack.**
-   Сейчас мир читаемый, но плоский. В референсе кадр строится из нескольких
-   слоёв: яркое emission, мягкое свечение, атмосферный фон, вспышки,
-   послесвечение, плотные частицы, camera impulse и контрастная палитра.
+```text
+dynamic_terrain.*
+world_components.*
+terrain_extraction.*
+terrain_detach.*
+terrain_physics.*
+terrain_impulse.*
+terrain_body_render_data.*
+terrain_body_renderer.*
+```
 
-2. **Dynamic terrain bodies.**
-   В диапазоне примерно `12–18 s` визуально видны отделившиеся куски породы,
-   которые существуют как отдельные тела, перемещаются и вращаются. Это
-   принципиально другой уровень разрушения, чем просто удаление клеток.
+Фактически реализованы:
 
-3. **Fluid/destruction feedback.**
-   В `6–8 s` и `23–25 s` вода имеет выраженную поверхность, всплески и крупные
-   выбросы. В `1–5 s`, `9–10 s`, `19–25 s` разрушение читается одновременно
-   через crater, debris, glow, dust, shockwave и изменение света.
+- bounded connected-component detector;
+- fixed-capacity `DynamicTerrainSystem`;
+- stable TerrainBody handles/generations;
+- material + temperature raster storage;
+- mass;
+- center of mass;
+- inertia;
+- World → TerrainBody atomic extraction;
+- automatic detachment after destructive world mutations;
+- deterministic linear/angular kinematics;
+- gravity/damping;
+- sleeping/waking;
+- TerrainBody ↔ static World collision;
+- anti-tunnelling/substeps;
+- collision contacts;
+- hard body/cell/awake budgets;
+- out-of-world cleanup;
+- scene/emissive TerrainBody renderer;
+- cached body textures;
+- rotation around simulation COM;
+- explosion/force impulses;
+- mass/inertia-sensitive impulse response.
 
-4. **Game feel.**
-   Высокая скорость читается через trail, camera lead/zoom, вспышки, частицы,
-   звук и сильные переходные эффекты. Каждое действие имеет attack → impact →
-   decay, а не один визуальный primitive.
+**Это больше не infrastructure TODO. Это готовый фундамент, который теперь
+нужно превратить в полноценный gameplay.**
+
+## Готово: presentation foundation
+
+Есть:
+
+- renderer-owned offscreen scene target;
+- explicit emissive target;
+- half-resolution bloom ping/pong;
+- bloom shaders;
+- sharp-scene + additive blurred-emissive composite;
+- graceful bloom fallback;
+- scene/emissive world pages;
+- scene/emissive TerrainBody rendering;
+- scene/emissive player/abilities/particles;
+- fixed-capacity `PresentationFxSystem`;
+- event-driven transient visual FX;
+- renderer telemetry.
+
+## Сделано частично
+
+### Dynamic terrain gameplay
+
+TerrainBody уже:
+
+- появляется;
+- падает;
+- вращается;
+- сталкивается со static World;
+- получает explosion/force impulse;
+- рендерится.
+
+Но полноценной player-facing механики ещё нет:
+
+- player ↔ TerrainBody collision;
+- natural pushing;
+- grab/drag/carry;
+- throw;
+- damage/carving dynamic body;
+- fracture/splitting dynamic body.
+
+### Combat presentation
+
+Foundation есть, но качество текущих abilities ещё не считается законченным
+vertical slice уровня target:
+
+- explosion;
+- laser;
+- force;
+- cryo;
+- boost/drill;
+- camera feedback;
+- layered audio.
+
+Их нужно довести как единый presentation/game-feel pass.
+
+## Пока не является готовой крупной feature
+
+- dynamic terrain interaction руками игрока;
+- fracture dynamic terrain;
+- spectacular water presentation;
+- lightning ability;
+- high-speed movement full polish;
+- atmospheric world identity/biomes;
+- full impact/audio pass;
+- showcase/release scenes.
 
 ---
 
-# 1. Что видно в референсном видео и что из этого следует
+# 3. Git workflow
 
-Таймкоды приблизительные; это визуальный анализ трейлера, а не утверждение о
-внутренней реализации другой игры.
+## Branch naming
 
-| Время | Наблюдаемое качество | Что нужно Emberfall |
-|---|---|---|
-| 0–1 s | Атмосферный цветной sky, silhouettes/set dressing, маленький читаемый герой | procedural background, parallax, original ruins/set dressing |
-| 1–5 s | Очень яркий impact/comet/beam, большая область разрушения, glowing debris, bloom | multi-pass presentation, emissive mask, bloom, staged explosion/impact FX |
-| 6–8 s | Большой объём воды, выраженная поверхность, spray/splash; электрический эффект | water surface presentation, splash emitters, lightning effect/ability |
-| 9–10 s | Сильная световая вспышка и разлетающиеся частицы | flash + shock ring + debris + camera impulse |
-| 11–18 s | Крупные куски terrain отделяются, летят и вращаются | dynamic terrain body subsystem |
-| 16–18 s | Удары/выстрелы по отдельному куску terrain | body collision, body impulse, body damage/fracture |
-| 19–21 s | Плотная среда из dust/sand/water particles, beam/shot читается сквозь неё | dense but budgeted particles, depth-aware palette, beam polish |
-| 22–25 s | Lightning + water + крупный displacement | lightning gameplay + conductive/water feedback + splash |
-| 27–29 s | Даже титр разрушается и рассыпается — демонстрация плотности FX | высокий particle/impact quality bar для showcase |
+```text
+agent/<agent>/<TASK-ID>-<slug>
+```
 
-## Необходимый итог
+Примеры:
 
-Emberfall не должен стать копией Moltyn. Целевой результат:
+```text
+agent/claude/EF-PHY-001-dynamic-terrain-gameplay-v1
+agent/codex/EF-VFX-001-combat-presentation-v1
+```
 
-- собственный визуальный язык Emberfall;
-- та же **плотность причинно-следственной физической реакции**;
-- тот же класс читаемости силы способностей;
-- мир, который выглядит физически живым даже в одном скриншоте;
-- разрушение, которое интересно наблюдать само по себе.
+## Один vertical slice = один PR
 
----
-
-# 2. Team model и git strategy
-
-## 2.1 Main — интеграционная ветка
-
-`main` считается защищённой веткой.
-
-**Только пользователь/тимлид сливает изменения в `main`.**
+Внутри branch агент может делать несколько commits.
 
 Агенты:
 
-- не merge-ят свои ветки в `main`;
-- не force-push-ят `main`;
-- не делают unrelated cleanup во время feature-task;
-- не начинают следующую задачу до завершения текущей, если тимлид явно не
-  разрешил иначе.
+- сами commit;
+- сами push;
+- сами открывают PR;
+- не merge-ят `main`.
 
-## 2.2 Не работать параллельно в одном worktree
+Merge выполняет пользователь.
 
-Два агента не должны одновременно менять один root working tree.
+## Если предыдущий PR ещё не merge-нут
 
-Создать постоянные worktree:
+Допускается stacked branch.
 
-```sh
-# выполняется каждым агентом только для своего workspace
-git worktree add ../emberfall-codex  -b agent/codex/<TASK-ID>-<slug>  main
-git worktree add ../emberfall-claude -b agent/claude/<TASK-ID>-<slug> main
-```
+В PR явно указать dependency.
 
-После merge задачи старую ветку можно удалить, а worktree переключить на новую
-task branch, созданную от свежего `main`.
-
-## 2.3 Branch naming
-
-```text
-agent/codex/EF-RND-001-render-pipeline
-agent/claude/EF-DYN-001-detached-components
-```
-
-Формат:
-
-```text
-agent/<agent>/<TASK-ID>-<short-slug>
-```
-
-## 2.4 Одна ветка = одна атомарная задача
-
-Задача должна быть:
-
-- самостоятельно ревьюваема;
-- самостоятельно тестируема;
-- mergeable без незаконченного half-feature;
-- ограничена одним основным subsystem;
-- по возможности не больше ~300–800 net LOC; если значительно больше —
-  сначала разбить задачу.
-
-Большой refactor и новая gameplay-механика не должны идти одним task.
-
-## 2.5 Merge policy
-
-Рекомендуемый процесс:
-
-1. Агент создаёт task branch от актуального `main`.
-2. Реализует только одну задачу.
-3. Запускает Definition of Done.
-4. Делает понятные commit(s).
-5. Сообщает SHA и короткий handoff.
-6. Второй агент делает code review.
-7. Автор исправляет `BLOCKER`/`MAJOR`.
-8. Reviewer делает короткий re-review.
-9. Пользователь squash-merge-ит ветку в `main`.
-10. Следующие зависимые задачи создаются уже от обновлённого `main`.
-
-Для `main` предпочтителен **squash merge на одну задачу**, чтобы один commit
-соответствовал одному `TASK-ID`.
-
-Пример итогового commit:
-
-```text
-feat(render): [EF-RND-001] add offscreen render pipeline
-```
-
-## 2.6 Rebase rule
-
-Перед финальным review автор:
-
-```sh
-git fetch
-git rebase main
-```
-
-только если `main` действительно изменился после создания ветки.
-
-Нельзя rebase-ить чужую ветку.
+После merge parent branch — rebase/update base при необходимости.
 
 ---
 
-# 3. Code review protocol
+# 4. Review workflow
 
-Каждая задача обязана получить review второго агента.
+Review остаётся lightweight.
 
-Reviewer **не исправляет код молча** и не переписывает архитектуру автора.
+Reviewer не обязан повторять tests автора.
 
-Review должен проверять:
+Он быстро смотрит diff и ищет:
 
-1. correctness;
-2. ownership/lifetime;
-3. gameplay invariants;
-4. deterministic behaviour;
-5. hot-path allocations;
-6. performance implications;
-7. API size;
-8. tests;
-9. docs;
-10. соответствие task scope.
+- correctness bugs;
+- unsafe memory/lifetime;
+- ownership violations;
+- deterministic gameplay regressions;
+- render/gameplay coupling;
+- unbounded work;
+- hot-path allocations;
+- architectural dead ends;
+- scope creep.
 
-Severity:
+Комментарии оставляются прямо в PR.
 
-- `BLOCKER` — нельзя merge;
-- `MAJOR` — исправить до merge;
-- `MINOR` — желательно исправить сейчас;
-- `NIT` — style/readability;
-- `QUESTION` — требуется объяснение.
-
-Reviewer обязан отдельно написать:
-
-```text
-VERDICT: APPROVE
-```
-
-или
-
-```text
-VERDICT: CHANGES_REQUESTED
-```
-
-### Как ревьювать чужую branch без повреждения своей
-
-Можно смотреть diff прямо из текущего worktree:
-
-```sh
-git diff main...agent/claude/EF-DYN-001-detached-components
-git log --oneline main..agent/claude/EF-DYN-001-detached-components
-```
-
-Для запуска чужой ветки создать временный detached worktree:
-
-```sh
-git worktree add --detach ../emberfall-review <branch>
-cd ../emberfall-review
-# build/test
-cd -
-git worktree remove ../emberfall-review
-```
-
-Если peer branch ещё не готова — завершить свою задачу и явно написать:
-`READY_FOR_PEER_REVIEW`. Не ждать в фоне и не начинать следующую roadmap-task
-самостоятельно.
+Автор в конце каждой feature проверяет новые comments и исправляет существенные.
 
 ---
 
-# 4. Global Definition of Done
+# 5. Verification policy
 
-Для каждой code-task применимо всё релевантное из списка:
+## Во время работы
+
+Обычно:
+
+```sh
+make
+```
+
+плюс релевантные subsystem tests.
+
+Не запускать полный suite после каждого внутреннего commit.
+
+## Перед PR
+
+Обязательно:
+
+```sh
+make
+make test
+```
+
+Плюс manual/deterministic acceptance самой feature.
+
+## ASan / UBSan
+
+Только если feature затрагивает:
+
+- pointers;
+- memory ownership;
+- pools;
+- raster mutation;
+- collision;
+- dynamic storage;
+- GPU resource lifetime.
+
+## Benchmark
+
+Только если feature меняет:
+
+- simulation hot path;
+- collision workload;
+- body counts;
+- world scans;
+- render passes;
+- GPU uploads;
+- particle/FX budgets.
+
+## Smoke test
+
+Для end-to-end gameplay/rendering feature:
+
+```sh
+xvfb-run -a make run RUN_ARGS=--smoke-test
+```
+
+если среда позволяет.
+
+## Полный release gate
+
+Полный набор:
 
 ```sh
 make
@@ -256,1122 +294,472 @@ make test
 make asan
 make ubsan
 make bench
-```
-
-Для presentation-задач дополнительно:
-
-```sh
 xvfb-run -a make run RUN_ARGS=--smoke-test
 ```
 
-и ручная визуальная проверка обычного запуска, когда display доступен.
-
-Требования:
-
-- zero new compiler warnings;
-- zero sanitizer findings;
-- no unrelated formatting/rewrite;
-- no heap allocations in established steady-state frame/tick paths без
-  отдельного обоснования;
-- deterministic gameplay не должен зависеть от presentation RNG;
-- public API минимален;
-- при изменении behaviour есть regression tests;
-- при изменении architecture обновлена соответствующая документация;
-- при performance-sensitive изменении есть before/after measurement;
-- roadmap-файл не переписывается агентом без отдельной задачи.
+запускается на milestone/release integration, а не на каждый внутренний шаг.
 
 ---
 
-# 5. Архитектурные правила следующей стадии
+# 6. Архитектурные правила
 
-## 5.1 Simulation остаётся headless
+## Cellular World остаётся специализированной simulation
 
-Не возвращать `Draw*`, `Texture2D`, shader state и window state в gameplay/world.
+Не превращать cells в ECS entities.
 
-## 5.2 Presentation может быть богатой
+## TerrainBody = крупный connected fragment
 
-Renderer может владеть:
+Большие полностью отделённые куски должны оставаться допустимыми физическими
+телами.
 
+Их тяжесть определяется:
+
+- mass;
+- inertia;
+- collision;
+- strength игровых воздействий.
+
+Не запрещать большие тела искусственным маленьким size threshold только потому,
+что они большие.
+
+## Simulation остаётся headless
+
+Gameplay не должен владеть:
+
+- Texture2D;
 - RenderTexture2D;
-- shaders;
-- emissive masks;
-- post-process targets;
-- visual-only particles;
-- trails;
-- screen-space effects.
+- Shader;
+- Draw* state.
 
-## 5.3 Dynamic terrain — отдельный тип объектов
+## Presentation не меняет gameplay
 
-Нельзя превращать каждую cell в Entity/RigidBody.
-
-Предполагаемая модель:
+Направление:
 
 ```text
-Static cellular World
-        +
-DynamicTerrainSystem
-   └── TerrainBody[N]
-        +
-Player / future entities
+GameState + GameEvents
+        ↓
+Renderer / PresentationFx / Audio
 ```
 
-`TerrainBody` — это крупный связный фрагмент клеточного terrain, а не одна cell.
+## Не строить новый generic engine
 
-## 5.4 Никакого generic engine внутри Emberfall
-
-Не писать:
+Без отдельной реальной причины не нужны:
 
 - generic ECS;
-- generic render graph framework;
-- generic physics engine;
-- generic scripting VM;
+- generic rigid-body engine;
+- generic render graph;
+- scripting VM;
+- plugin framework;
 - generic event bus.
 
-Пишем ровно то, что нужно игре.
+---
 
-## 5.5 Third-party dependency
-
-Новая dependency допускается только через отдельный ADR/task, если:
-
-- она permissive/open-source;
-- реально экономит сложный код;
-- не превращает cellular world в чужую object model;
-- имеет понятную стоимость build/support.
-
-Для первых milestones новых dependencies не требуется.
+# 7. Ближайшие две крупные задачи
 
 ---
 
-# 6. Quality gates / milestones
+## EF-PHY-001 — Dynamic Terrain Gameplay v1
 
-## Milestone A — Visual floor
+**Owner:** Claude  
+**Priority:** P0
 
-Считается закрытым, когда:
+### Цель
 
-- игра рисуется через offscreen presentation pipeline;
-- emissive objects имеют controlled glow;
-- есть atmospheric sky/parallax;
-- explosion/laser/boost выглядят многослойно;
-- camera feedback читается без раздражающего random jitter;
-- normal frame не создаёт heap allocations.
+Превратить уже работающий dynamic-terrain foundation в полноценную игровую
+механику.
 
-## Milestone B — Dynamic destruction
+После feature игрок должен уметь:
 
-Закрыт, когда:
+```text
+вырезать connected fragment
+→ fragment отделяется
+→ падает / вращается
+→ player сталкивается с ним
+→ может толкать
+→ может захватить / тащить / переносить
+→ может отпустить / бросить
+→ explosion / force продолжают воздействовать
+→ dynamic body можно локально разрушить
+→ сильное разрушение может расколоть body
+```
 
-- небольшой полностью отделённый solid cluster может стать `TerrainBody`;
-- body перемещается и вращается;
-- рисуется pixel-perfect;
-- сталкивается со static world;
-- может получить impulse от explosion/force;
-- имеет budgets/sleep/culling;
-- не повреждает deterministic cellular simulation.
+### Входит
 
-## Milestone C — Fluid spectacle
+#### Player ↔ TerrainBody collision
 
-Закрыт, когда:
+- player не проходит сквозь body;
+- body может блокировать движение;
+- player может приземлиться/опереться, если это устойчиво с текущей моделью;
+- столкновение может передавать bounded impulse;
+- масса body влияет на ощущение.
 
-- water визуально имеет поверхность;
-- сильный impact создаёт splash/spray;
-- движение больших объёмов читается на расстоянии;
-- water остаётся cellular gameplay state, visual foam/spray — presentation.
+#### Push
 
-## Milestone D — Ability spectacle
+Маленькие тела естественно сдвигаются легче больших.
 
-Закрыт, когда:
+#### Grab / drag / carry
 
-- explosion, laser, force, cryo имеют attack/impact/decay presentation;
-- есть оригинальная lightning ability;
-- есть один крупный projectile/meteor-like impact;
-- dynamic terrain bodies получают воздействие способностей.
+Нужен простой оригинальный interaction:
 
-## Milestone E — World identity
+- выбрать nearby body;
+- захватить world/local grab point;
+- тянуть к aim/hold target ограниченной силой;
+- никакого teleport;
+- collision с World продолжает работать;
+- mass/inertia влияют на управление;
+- слишком тяжёлый body двигается медленно, а не запрещается автоматически.
 
-Закрыт, когда:
+#### Throw
 
-- 2–3 оригинальные environment palettes/biomes;
-- procedural background;
-- original industrial/ruin silhouettes или аналогичный set dressing;
-- ambient/emissive world details;
-- кадр Emberfall узнаваем без HUD.
+Release сохраняет momentum и/или добавляет bounded aim impulse.
 
-## Milestone F — Showcase-ready
+#### Dynamic body damage
 
-Закрыт, когда:
+Existing destructive mechanics должны уметь локально удалить клетки из
+TerrainBody raster.
 
-- deterministic showcase scenes;
-- automated screenshots;
-- 10-minute soak;
-- perf budgets соблюдаются;
-- debug overlay выключается для capture;
-- минимум 5 сцен демонстрируют разные physics verbs.
+Минимум использовать те mechanics, которые естественно подходят:
 
----
+- explosion;
+- laser/drill.
 
-# 7. Task backlog
+Не переносить полную cellular simulation внутрь moving body.
 
-Ниже задачи уже разрезаны так, чтобы их можно было выдавать отдельно.
+#### Fracture v1
 
----
+После meaningful raster damage:
 
-## RENDER / PRESENTATION
+```text
+TerrainBody raster
+→ bounded connectivity recompute
+→ connected components
+→ original/new TerrainBody objects
+```
 
-### EF-RND-001 — Offscreen render pipeline foundation
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** none
+Нужны:
 
-Цель: перестать рисовать финальный world-space кадр напрямую в backbuffer и
-создать минимальную основу для post-processing.
+- material preservation;
+- transform conversion;
+- mass/COM/inertia recompute;
+- velocity inheritance;
+- budgets;
+- deterministic component ordering.
 
-Scope:
+Не нужен stress solver.
 
-- `Renderer` владеет scene `RenderTexture2D`;
-- `Renderer` владеет отдельной emissive `RenderTexture2D`;
-- корректный resize/recreate;
-- steady-state без allocation;
-- current world/player/abilities/particles всё ещё выглядят максимально
-  эквивалентно до включения post-FX;
-- backbuffer получает итоговый scene texture с правильным raylib Y-flip;
-- emissive target пока может содержать только явно выбранные существующие
-  emissive элементы или оставаться инфраструктурным контрактом;
-- gameplay state не меняется.
+### Acceptance scene
 
-Out of scope:
+Feature не закончена без сцены:
 
-- bloom;
-- new abilities;
-- terrain bodies;
-- background redesign.
-
-Acceptance:
-
-- release/debug/test/sanitizers/smoke pass;
-- resize не ломает изображение;
-- нет per-frame `LoadRenderTexture`;
-- `RendererUnload` освобождает все GPU resources;
-- architecture docs кратко описывают новый ownership.
+```text
+large platform
+→ cut support
+→ platform detaches
+→ player pushes it
+→ grabs and carries/drags it
+→ throws/releases it
+→ explosion spins it
+→ laser/explosion breaks it
+→ it fractures into several moving pieces
+```
 
 ---
 
-### EF-RND-002 — Bloom + emissive composite
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-001
+## EF-VFX-001 — Combat Presentation & Game Feel v1
 
-Добавить маленький специализированный post-process:
+**Owner:** Codex  
+**Priority:** P0
 
-- emissive extraction/explicit emissive pass;
-- separable blur или другой дешёвый bloom;
-- controlled additive composite;
-- tunable threshold/intensity/radius;
-- graceful fallback, если shader не загрузился;
-- pixel art остаётся резким, blur применяется к glow, а не ко всему scene.
+### Цель
 
-Acceptance:
+Используя уже готовые bloom/emissive/PresentationFx systems, сделать current
+gameplay визуально и тактильно значительно сильнее.
 
-- lava/fire/laser/boost/emissive particles читаются ярче;
-- обычный terrain не становится мыльным;
-- resize работает;
-- измерены CPU-side cost и количество passes/targets;
-- shader sources лежат в понятном `assets/shaders/` или аналогичном каталоге.
+В одной feature довести:
 
----
+- explosion;
+- laser;
+- force;
+- cryo;
+- boost/drilling;
+- camera feedback;
+- соответствующий audio feedback.
 
-### EF-RND-003 — Color grading + flash/vignette hooks
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-002
+### Explosion
 
-Лёгкий final composite:
+Полный staged effect:
 
-- exposure;
-- saturation/contrast;
-- event-driven white/orange flash;
-- optional subtle vignette;
-- никаких постоянных тяжёлых full-screen effects без budget.
+```text
+flash
+→ bright core
+→ shock ring
+→ sparks/debris
+→ dust/smoke
+→ glow decay
+→ camera impulse
+→ layered audio
+```
 
----
+### Laser
 
-### EF-RND-004 — Distortion/heat-haze pass
-**Priority:** P2  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-002, EF-FX-002
-
-Локальный heat/distortion mask для lava, fresh drilling, explosion.
-
----
-
-## CAMERA / GAME FEEL
-
-### EF-CAM-001 — Deterministic camera impulse stack
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-001
-
-Заменить один `cameraShake float` на presentation-only impulse system:
-
-- positional trauma;
-- rotational impulse;
-- short zoom kick;
-- exponential decay;
-- event strength;
-- deterministic/noisy presentation seed отдельно от gameplay RNG;
-- stacking without unbounded shake.
-
-Explosion, impact, boost-stage, body impact могут публиковать параметры.
-
----
-
-### EF-CAM-002 — High-speed camera behaviour
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-CAM-001, EF-PLY-002
-
-- speed-dependent lookahead;
-- smooth zoom-out;
-- directional lead;
-- fast reversal damping;
-- no motion sickness / no jitter.
-
----
-
-## VISUAL EFFECTS
-
-### EF-FX-001 — Presentation FX manager
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-001
-
-Небольшой fixed-capacity presentation subsystem для transient visual effects:
-
-- rings;
-- flashes;
-- arcs;
-- trails;
-- shockwaves;
-- short-lived sprites/primitives.
-
-Не generic particle engine. Gameplay events создают visual instances.
-
----
-
-### EF-FX-002 — Staged explosion presentation
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FX-001, EF-RND-002
-
-Explosion = последовательность:
-
-1. instant flash;
-2. bright core;
-3. expanding ring;
-4. debris/sparks;
-5. dust/smoke;
-6. fading glow;
-7. camera impulse.
-
-Gameplay crater/shockwave не переписывать без отдельной задачи.
-
----
-
-### EF-FX-003 — Laser presentation pass
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-002, EF-FX-001
-
-- bright core;
-- colored halo;
+- sharp core;
+- emissive halo;
 - impact flare;
 - sparks;
-- heated contact point;
-- stable thickness at zoom.
+- hot contact;
+- afterglow;
+- consistent thickness.
 
----
+### Force
 
-### EF-FX-004 — Boost trail / Mach cone polish
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FX-001, EF-RND-002
+- readable directional wave;
+- origin pulse;
+- pressure/ring/cone feedback;
+- terrain/debris reaction;
+- camera response.
 
-- persistent short trail;
+### Cryo
+
+- cold flash;
+- frost shards/particles;
+- clear affected area;
+- cold palette;
+- short decay.
+
+### Boost / drill
+
 - stage-specific exhaust;
-- clearer Mach transition;
-- speed lines/afterimage only when useful;
-- bounded fixed-capacity storage.
+- trail;
+- speed/Mach cue;
+- drilling sparks;
+- dust;
+- contact glow.
+
+### Camera
+
+Законченный presentation-only feedback:
+
+- positional impulses;
+- subtle rotational impulse;
+- short zoom kick;
+- stacking;
+- decay;
+- velocity lookahead;
+- high-speed zoom-out;
+- reversal damping.
+
+Без uncontrolled random jitter.
+
+### Audio
+
+В рамках feature допустимо:
+
+- explosion attack/body/tail layers;
+- boost variation;
+- laser/force/cryo accents;
+- impact strength;
+- presentation RNG variation.
+
+### Acceptance
+
+В normal gameplay подряд использовать все текущие abilities.
+
+Каждая должна иметь:
+
+```text
+attack
+→ readable impact
+→ decay
+```
+
+Игра должна визуально ощущаться заметно лучше без добавления новой gameplay
+ability.
 
 ---
 
-### EF-FX-005 — Procedural lightning renderer
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FX-001
+# 8. Следующие vertical slices
 
-Renderer for deterministic-looking branched arcs:
-
-- polyline segments;
-- branches;
-- core + glow;
-- short persistence;
-- target endpoints supplied by gameplay.
-
-Это presentation half будущей lightning ability.
+После merge двух P0 задач.
 
 ---
 
-## DYNAMIC TERRAIN
+## EF-FLD-001 — Water & Fluid Spectacle v1
 
-### EF-DYN-001 — Detached solid component detector
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** none
+**Priority:** P1
 
-Создать **headless, behaviour-neutral** foundation.
+Цель:
 
-Нужен алгоритм, который на маленьком/ограниченном регионе умеет:
+```text
+large pool
+→ readable surface/depth
+→ player/body entry splash
+→ explosion/force displacement
+→ spray/foam
+→ surface reforms
+```
 
-- определить связные solid components;
-- отличить component, которая явно связана с anchored terrain;
-- вернуть bounds, cell count и component cells через caller-owned/fixed
-  workspace;
-- корректно работать через simulation chunk boundaries;
-- не делать heap allocation в query hot path;
-- безопасно сказать `unknown/too_large`, а не сканировать весь production world.
+Включает:
 
-На этой задаче **ничего ещё не отрывается от мира**.
+- surface classification;
+- depth/surface palette;
+- foam;
+- spray;
+- body impact splash;
+- large blast displacement;
+- optional player drag/buoyancy.
 
-Добавить tests на:
+Gameplay water остаётся cellular.
 
-- single island;
-- two islands;
-- bridge intact → anchored;
-- bridge destroyed → detached;
-- component crossing chunk boundary;
-- region boundary → conservative anchored/unknown;
-- capacity overflow is safe.
+Visual spray/foam — presentation-only.
 
 ---
 
-### EF-DYN-002 — TerrainBody data model + manager
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-001
+## EF-ABL-001 — Lightning Ability v1
 
-Создать fixed-capacity `DynamicTerrainSystem`.
+**Priority:** P1
 
-`TerrainBody` минимум:
+Одна законченная ability:
 
-- active/sleep state;
-- local cell/pixel mask or compact raster;
-- local bounds;
-- world position;
-- angle;
-- linear velocity;
-- angular velocity;
-- mass/inertia estimate;
-- material data needed for rendering/interactions.
+- deterministic target/arc selection;
+- short chain behaviour;
+- explicit water interaction;
+- gameplay damage/force;
+- branched visual arcs;
+- emissive core/bloom;
+- impact FX;
+- camera;
+- audio;
+- tests;
+- showcase.
 
-Пока body не создаётся автоматически из World.
-
-No heap allocation during update.
+Не делать глобальную expensive conductivity simulation.
 
 ---
 
-### EF-DYN-003 — Atomic extraction World → TerrainBody
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-001, EF-DYN-002
+## EF-MOV-001 — High-Speed Movement v1
 
-По explicit call:
-
-1. validate detached component;
-2. copy required cells into body;
-3. clear original world cells;
-4. wake/dirty affected chunks;
-5. preserve material/temperature where practical;
-6. rollback/no-op on capacity failure.
-
-Добавить headless tests mass/material conservation.
-
----
-
-### EF-DYN-004 — TerrainBody kinematics
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-002
-
-- translation;
-- angular motion;
-- configurable gravity/drag;
-- sleep threshold;
-- deterministic fixed-step integration;
-- no world collision yet.
-
----
-
-### EF-DYN-005 — TerrainBody renderer
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-DYN-002, EF-RND-001
-
-Pixel-perfect render of dynamic fragments:
-
-- local texture/cache owned by presentation;
-- rotation around body centre;
-- nearest filtering;
-- lighting/emissive approximation compatible with existing palette;
-- GPU lifetime detached from simulation ownership.
-
----
-
-### EF-DYN-006 — Body vs static world collision
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-003, EF-DYN-004
-
-Начать с robust conservative collision, не с идеальной физики:
-
-- broad phase bounds;
-- sampled/mask narrow phase;
-- positional correction;
-- bounce/friction;
-- angular response where stable;
-- no tunnelling at expected speeds.
-
----
-
-### EF-DYN-007 — Player vs TerrainBody collision
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-006
-
-Player не проходит через fragment; сильный impact публикует event.
-
----
-
-### EF-DYN-008 — Abilities apply impulse to TerrainBody
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-004
-
-Explosion и force получают body query/impulse path.
-
-Не связывать `abilities.c` с renderer.
-
----
-
-### EF-DYN-009 — Fracture / split on severe damage
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-003, EF-DYN-006, EF-DYN-008
-
-Body можно повредить, после чего connectivity пересчитывается и fragment
-делится на 2+ bodies в рамках budgets.
-
----
-
-### EF-DYN-010 — TerrainBody budgets, sleep, culling
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-004
-
-Hard limits:
-
-- max bodies;
-- max total raster cells;
-- max awake bodies;
-- safe eviction/reintegration/despawn policy;
-- counters in debug HUD/benchmark.
-
----
-
-### EF-DYN-011 — Automatic detach trigger after destructive events
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-003, EF-DYN-010
-
-После explosion/drill/other structural cut проверять только bounded changed
-region и автоматически извлекать небольшие полностью detached components.
-
-Не запускать flood-fill всего мира после каждой cell mutation.
-
----
-
-## WATER / FLUID PRESENTATION
-
-### EF-FLD-001 — Water surface classification for renderer
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** none
-
-CPU-side cheap query/metadata for visible water:
-
-- surface cell;
-- body/interior cell;
-- local depth estimate or small category;
-- no change to cellular simulation.
-
----
-
-### EF-FLD-002 — Water depth/surface shading
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FLD-001, EF-RND-002
-
-- brighter surface;
-- deeper/cooler interior;
-- subtle emissive/specular-like crest;
-- preserve pixel aesthetic.
-
----
-
-### EF-FLD-003 — Splash/foam emitters
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FLD-001, EF-FX-001
-
-Visual-only foam/spray generated from:
-
-- cells entering/leaving surface;
-- player/body impact;
-- explosion/force.
-
-Budgeted and fixed-capacity.
-
----
-
-### EF-FLD-004 — Large impact fluid displacement
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-008 or existing shockwave path
-
-Tune/add bounded world impulse so a strong event visibly throws a large sheet of
-water without repeatedly moving one cell in the same effect.
-
----
-
-### EF-FLD-005 — Player submersion behaviour
-**Priority:** P2  
-**Preferred owner:** Claude  
-**Dependencies:** EF-PLY-002
-
-- drag;
-- optional buoyancy;
-- entry/exit events;
-- no health system required.
-
----
-
-## PLAYER
-
-### EF-PLY-001 — Original procedural character readability pass
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-002
-
-Сделать Emberfall hero более читаемым в motion, не копируя референс:
-
-- clear silhouette;
-- aim direction;
-- velocity lean;
-- boost pose;
-- recoil pose;
-- small emissive accents.
-
----
-
-### EF-PLY-002 — High-speed flight feel pass
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** none
-
-Не просто увеличить max speed.
-
-Исследовать/tune:
+**Priority:** P1
 
 - acceleration curve;
 - turning authority vs speed;
-- momentum;
 - braking;
+- momentum;
 - boost transitions;
-- collision response;
-- tunnel/drill feel.
+- high-speed collision feel;
+- drilling;
+- camera;
+- trails;
+- water transition;
+- tuning.
 
-Behaviour changes покрыть tests where deterministic.
+Movement должно быть интересно само по себе.
 
 ---
 
-### EF-PLY-003 — Impact events with strength/material
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** none
+## EF-ENV-001 — World Presentation & Identity v1
 
-GameEvent impact payload:
+**Priority:** P1
+
+- atmospheric procedural sky;
+- parallax;
+- haze/clouds/stars;
+- 2–3 original palette zones;
+- ruins/industrial silhouettes;
+- emissive environment details;
+- local lighting tuning.
+
+Без копирования assets/level composition референса.
+
+---
+
+## EF-AUD-001 — Audio & Impact v1
+
+**Priority:** P2
+
+Привести audio events к выразительной системе:
 
 - strength;
-- normal;
 - material;
-- position.
-
-Presentation/audio получают достаточно данных для richer feedback.
-
----
-
-## ABILITIES
-
-### EF-ABL-001 — Lightning gameplay ability
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-FX-005
-
-Оригинальная electric ability:
-
-- deterministic gameplay target selection;
-- short range/chain rules;
-- interaction with water designed explicitly;
-- event carries arc endpoints;
-- renderer only visualizes supplied path;
-- cooldown/tuning in ability registry.
-
-Не превращать всю воду в глобальную мгновенную conductive graph simulation.
-
----
-
-### EF-ABL-002 — Meteor / plasma impact ability
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-FX-002
-
-Крупный projectile/strike:
-
-- travel phase;
-- visible world impact;
-- heat;
-- crater;
-- shockwave;
-- terrain body impulse.
-
-Projectile должен быть entity-like gameplay object, не cell.
-
----
-
-### EF-ABL-003 — Force + TerrainBody integration
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-008
-
-Силовой удар должен убедительно толкать большие detached fragments.
-
----
-
-### EF-ABL-004 — Explosion gameplay scale pass
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-011, EF-FLD-004
-
-Сделать несколько параметризованных blast profiles вместо одного визуально
-одинакового взрыва:
-
-- normal;
-- heavy;
-- showcase/large.
-
-Не создавать новый ability framework.
-
----
-
-### EF-ABL-005 — Laser impact/thermal tuning
-**Priority:** P2  
-**Preferred owner:** Claude  
-**Dependencies:** EF-FX-003
-
-Подкрутить gameplay-side burn/drill/heat feedback только после visual upgrade.
-
----
-
-## ENVIRONMENT
-
-### EF-ENV-001 — Procedural sky/parallax
-**Priority:** P0  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-001
-
-Presentation-only:
-
-- gradient sky;
-- star/noise field;
-- distant clouds/haze;
-- 2–3 parallax depth layers;
-- seed stable within session;
-- no borrowed assets.
-
----
-
-### EF-ENV-002 — Environment palette zones
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-ENV-001
-
-2–3 original visual zones using world position/biome metadata:
-
-- ember dusk;
-- cold night;
-- deep cavern/industrial haze.
-
-Gameplay materials remain same unless separate task says otherwise.
-
----
-
-### EF-ENV-003 — Procedural ruin/set-dressing primitives
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** none
-
-World generation of original non-Moltyn silhouettes:
-
-- towers;
-- broken frames;
-- pipes/arches;
-- sparse structures.
-
-Сначала static terrain/material composition; никакого asset system ради пары
-форм.
-
----
-
-### EF-ENV-004 — Emissive terrain accents
-**Priority:** P2  
-**Preferred owner:** Claude  
-**Dependencies:** EF-RND-002
-
-Original world details feeding existing ember/emission path.
-
----
-
-## AUDIO
-
-### EF-AUD-001 — Audio event parameterization
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-PLY-003
-
-Существующие procedural sounds получают параметры:
-
-- event strength;
 - distance;
-- material;
-- pitch/variation from presentation RNG.
+- context.
 
-Не затрагивать gameplay RNG.
+Добавить/доработать:
 
----
-
-### EF-AUD-002 — Layered explosion/boost/body impacts
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-AUD-001
-
-Layer attack/body/tail rather than single flat sound.
-
----
-
-### EF-AUD-003 — Ambient soundscape
-**Priority:** P2  
-**Preferred owner:** Codex  
-**Dependencies:** EF-ENV-002
-
-Low-cost procedural/loop ambience tied to environment.
-
----
-
-### EF-AUD-004 — Water and debris impact audio
-**Priority:** P2  
-**Preferred owner:** Codex  
-**Dependencies:** EF-FLD-003, EF-DYN-007
-
----
-
-## TOOLING / QA / PERFORMANCE
-
-### EF-QA-001 — Deterministic showcase capture CLI
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** none
-
-Добавить reproducible capture mode поверх существующей seeded infrastructure.
-
-Пример идеи:
-
-```sh
-make run RUN_ARGS="--showcase explosion --capture-frame 180"
-```
-
-Минимум сцены:
-
-- explosion;
+- body impacts;
+- debris;
 - water;
+- explosions;
 - boost;
-- laser.
-
-Capture не должен требовать ручного input.
-
----
-
-### EF-QA-002 — Visual screenshot gallery
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-QA-001, EF-RND-002
-
-Скрипт/target создаёт несколько PNG для ручного сравнения.
-
-Не вводить хрупкий pixel-perfect CI threshold для bloom/shader output без
-отдельной причины.
+- ambience;
+- lightning.
 
 ---
 
-### EF-PERF-001 — Presentation performance counters
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-RND-002
+## EF-SHOW-001 — Showcase & Release Polish
 
-HUD/telemetry:
+**Priority:** final
 
-- render target size;
-- resident pages;
-- post-process passes;
-- FX active count;
-- terrain body draw count;
-- uploaded bytes;
-- CPU preparation times.
-
----
-
-### EF-PERF-002 — Dynamic terrain benchmark
-**Priority:** P0  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-004
-
-Headless scenarios:
-
-- 1 body;
-- 16 bodies;
-- maximum expected awake bodies;
-- body extraction;
-- collision workload later.
-
-No wall-clock assertion in tests.
-
----
-
-### EF-QA-003 — 10-minute deterministic soak
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** EF-DYN-011, EF-ABL-001
-
-Scripted inputs/actions. Проверять:
-
-- no crash;
-- fixed capacities;
-- body counts;
-- active chunk counts;
-- deterministic digest.
-
----
-
-### EF-QA-004 — Final sanitizer + leak gate
-**Priority:** P0 before milestone release  
-**Preferred owner:** reviewer of release candidate
-
-ASan/UBSan + repeated init/reset/unload + renderer resize cycles.
-
----
-
-## SHOWCASE
-
-### EF-SHOW-001 — Five deterministic showcase scenes
-**Priority:** P1  
-**Preferred owner:** Claude  
-**Dependencies:** Milestones A–D
-
-Сцены:
+Deterministic showcase scenes:
 
 1. high-speed drilling;
-2. heavy explosion detaching terrain;
-3. force throwing a detached island;
-4. lightning over water;
-5. meteor/plasma impact.
+2. detach large platform;
+3. carry/throw terrain;
+4. fracture body;
+5. explosion over water;
+6. lightning over water;
+7. large impact;
+8. environment fly-through.
+
+Затем:
+
+- profiling;
+- sanitizer release gate;
+- memory pass;
+- 10-minute soak;
+- final visual/audio tuning;
+- screenshot/video capture.
 
 ---
 
-### EF-SHOW-002 — Presentation polish pass
-**Priority:** P1  
-**Preferred owner:** Codex  
-**Dependencies:** EF-SHOW-001
+# 9. Parallel ownership
 
-На этих сценах сделать финальный tuning:
-
-- palette;
-- bloom;
-- camera;
-- particle budgets;
-- readability;
-- no debug HUD.
-
----
-
-# 8. Рекомендуемый порядок двух параллельных дорожек
-
-Главная идея — первые недели держать специализацию, чтобы уменьшить merge
-conflicts:
+На ближайшем этапе:
 
 ```text
-CODEX LANE                       CLAUDE LANE
-presentation/render/audio        simulation/world/gameplay
-----------------------------------------------------------------
-RND-001                          DYN-001
-RND-002                          DYN-002
-FX-001                           DYN-003
-ENV-001                          DYN-004
-DYN-005                          DYN-006
-CAM-001                          DYN-010
-FX-002                           DYN-008
-FLD-002                          FLD-001
-FLD-003                          FLD-004
-FX-005                           ABL-001
-FX-003                           ABL-002
-PLY-001                          PLY-002 / PLY-003
-AUD-001/002                      DYN-009/011
-QA-002/PERF-001                  PERF-002/QA-003
-SHOW-002                         SHOW-001
+CLAUDE                          CODEX
+---------------------------------------------------------------
+EF-PHY-001                      EF-VFX-001
+dynamic terrain gameplay        combat presentation/game feel
+
+EF-MOV-001                      EF-ENV-001
+movement gameplay               world presentation
+
+EF-ABL-001 gameplay             ability visual/audio polish
+
+fluid gameplay                  fluid presentation
 ```
 
-Каждая следующая строка не означает обязательный календарный sprint.
-Dependency из task description важнее таблицы.
+Разрешены маленькие cross-layer hooks, если без них feature нельзя закончить.
+
+Но не переписывать subsystem другого агента без необходимости.
 
 ---
 
-# 9. Что НЕ делать в ближайших milestones
+# 10. Definition of Done vertical feature
 
-Не тратить время на:
+Feature считается готовой только если:
 
-- новый язык/движок;
-- ECS rewrite;
-- networking;
-- inventory;
-- quests;
-- save format до появления реальной потребности;
-- editor;
-- scripting language;
-- Steam integration;
-- generic asset manager;
-- procedural animation framework;
-- multithreaded cellular simulation;
-- infinite world до решения dynamic terrain/presentation quality.
+1. её можно реально увидеть/почувствовать;
+2. architecture не сломана;
+3. dangerous invariants покрыты tests;
+4. нет очевидного unbounded workload;
+5. автор сделал manual/deterministic acceptance;
+6. docs обновлены только там, где это реально нужно;
+7. один понятный PR описывает конечный пользовательский результат.
 
-Эти вещи не сокращают текущий визуальный и физический разрыв с target.
+Главный вопрос перед PR:
 
----
+> Что нового теперь реально может сделать или почувствовать игрок?
 
-# 10. Первые две задачи
-
-## Codex — EF-RND-001
-
-Branch:
-
-```text
-agent/codex/EF-RND-001-render-pipeline
-```
-
-Зачем первой:
-
-Все дальнейшие bloom, flash, distortion, color grading и выразительный
-emission требуют корректного offscreen pipeline. Это presentation-only работа и
-почти не пересекается с первой задачей Claude.
-
-## Claude — EF-DYN-001
-
-Branch:
-
-```text
-agent/claude/EF-DYN-001-detached-components
-```
-
-Зачем первой:
-
-Самая глубокая physics-разница с референсом — независимые вращающиеся куски
-ландшафта. Сначала нужен безопасный headless detector, который ничего не меняет
-в gameplay. Это даёт foundation без giant rewrite.
-
-### Merge order
-
-Эти задачи независимы. После peer review их можно merge в любом порядке.
-
-После обоих merge:
-
-- Codex получает `EF-RND-002`;
-- Claude получает `EF-DYN-002`.
-
----
-
-# 11. Team lead acceptance for first pair
-
-## EF-RND-001
-
-Я не принимаю задачу, если:
-
-- gameplay code начинает зависеть от RenderTexture/Shader;
-- RenderTexture пересоздаётся каждый frame;
-- resize течёт;
-- smoke screenshot перестаёт создаваться;
-- output явно теряет pixel crispness без причины;
-- branch одновременно добавляет bloom/новый background/новые abilities.
-
-## EF-DYN-001
-
-Я не принимаю задачу, если:
-
-- алгоритм может случайно flood-fill 14 млн cells из hot path;
-- для каждого query делается malloc/free;
-- найденная component сразу удаляется из World;
-- anchored/unknown случай трактуется как detached;
-- detector зависит от renderer/raylib GPU;
-- нет chunk-boundary tests.
-
----
-
-# 12. Long-term performance budgets
-
-Это не жёсткие CI asserts, а engineering targets.
-
-На машине класса текущего baseline:
-
-- fixed simulation typical: желательно < 4 ms;
-- chaotic cellular case: желательно < 6 ms;
-- moving light: ~2 ms или лучше;
-- steady-state presentation CPU prep: < 2 ms;
-- no unbounded GPU upload growth;
-- no steady-state heap allocations;
-- dynamic bodies: hard configured cap;
-- visual FX: hard configured cap;
-- 120 FPS target в обычной сцене на разумном desktop GPU;
-- 60 FPS minimum target в showcase chaos после tuning.
-
-Если эффект требует 10+ ms сам по себе, его архитектуру надо пересматривать,
-а не просто скрывать за красивым кадром.
-
----
-
-# 13. Когда менять этот roadmap
-
-Roadmap — направление, не религия.
-
-Можно изменить задачу/порядок, если:
-
-- profiling опроверг предположение;
-- API предыдущего task делает следующий ненужным;
-- gameplay test показывает плохой feel;
-- review находит более простой путь;
-- новая feature требует ADR.
-
-Но изменение должно быть **явным**: причина записывается в task handoff или ADR,
-а не возникает как случайный scope creep внутри ветки.
+Если ответ сводится только к "появился новый internal API", задача слишком
+мелкая для нового roadmap.
