@@ -303,6 +303,63 @@ bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
 (`allocationFailures`, `cellCapacityFailures`, `awakeBudgetRefusals`,
 `bodiesRemovedOutOfBounds`). Подробности — `docs/dynamic-terrain.md`.
 
+## Terrain interaction API
+
+```c
+TerrainInteractionConfig TerrainInteractionDefaultConfig(void);
+void TerrainInteractionInit(TerrainInteractionSystem *system);
+void TerrainInteractionResetStats(TerrainInteractionSystem *system);
+void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
+                              DynamicTerrainSystem *terrain, Vector2 aimWorld,
+                              bool grabHeld, float deltaTime);
+bool TerrainInteractionIsHolding(const TerrainInteractionSystem *system,
+                                 const DynamicTerrainSystem *terrain);
+```
+
+Объявлено в `terrain_interaction.h`, вызывается из `GameUpdate` последним. Из
+перекрытия выталкивается игрок, никогда не тело. Толчок выпадает из обмена
+импульсом в контакте, поэтому маленькое тело отлетает, а большое нет — разница
+из деления на массу.
+
+Захват удерживается на `F`; берётся ближайшее к прицелу тело в пределах
+`grabDistance` и от игрока, и от прицела. Точка захвата хранится в координатах
+растра тела. Удержание — пружина с демпфированием, а не присвоение позиции.
+Presentation читает `holding`/`hovered`/`holdWorldPoint` напрямую: подсветку надо
+рисовать всё время удержания, а не один раз в его начале.
+
+## Terrain damage API
+
+```c
+TerrainDamageConfig TerrainDamageDefaultConfig(void);
+void TerrainDamageInit(TerrainDamageSystem *system);
+void TerrainDamageResetStats(TerrainDamageSystem *system);
+/* Clears occupied cells inside a world-space circle; returns cells removed. */
+int TerrainDamageCarveCircle(TerrainDamageSystem *system,
+                             DynamicTerrainSystem *terrain,
+                             TerrainBodyHandle handle, Vector2 worldCentre,
+                             float radius);
+/* Splits a body whose raster has stopped being one piece. */
+int TerrainDamageFracture(TerrainDamageSystem *system,
+                          DynamicTerrainSystem *terrain,
+                          TerrainBodyHandle handle);
+/* Carve, then split if the carve severed anything. */
+int TerrainDamageApplyCircle(TerrainDamageSystem *system,
+                             DynamicTerrainSystem *terrain,
+                             TerrainBodyHandle handle, Vector2 worldCentre,
+                             float radius);
+bool TerrainDamageBeamReady(TerrainDamageSystem *system, float deltaTime);
+```
+
+Объявлено в `terrain_damage.h`. Никогда не видит `World`. Обе операции
+заканчиваются поправкой на сдвиг центра масс, иначе тело утащило бы каждую
+уцелевшую клетку. Связность пересчитывается только после настоящего повреждения
+растра. Самый большой кусок остаётся в исходном слоте; кусок меньше
+`minimumFractureCells` отбрасывается; при нехватке слота кусок остаётся частью
+родителя.
+
+Подробности — `docs/dynamic-terrain.md`, разделы «Игрок и тела» и «Повреждение и
+раскол тел».
+
 ## Terrain impulse API
 
 ```c

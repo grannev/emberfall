@@ -150,7 +150,21 @@ coherent phase with an explanatory message.
 - Large terrain bodies intentionally remain movable physical bodies. Their
   resistance to being moved comes from mass and inertia and from nothing else;
   never add a size check that refuses to push something for being big, and never
-  a coefficient that cancels mass out of the result.
+  a coefficient that cancels mass out of the result. The same applies to what
+  the player can pick up: what makes a boulder uncarryable is that the hold's
+  force divided by its mass falls under gravity, not a rule about size.
+- The player is what gets corrected out of an overlap with a body, never the
+  body. Pushing a slab aside to make room teleports terrain the player may be
+  standing on.
+- A terrain body's raster can lose cells, and losing them moves its centre of
+  mass. Every path that edits a raster must correct `position` and `velocity`
+  for that shift, or the surviving cells are dragged across the world. Editing a
+  raster is also the only thing that may trigger a connectivity recompute: a
+  per-tick scan over every body's cells is the cost this design refuses.
+- Cells inside a body do not fall, flow, burn or settle. A body is a rigid shape
+  that can lose material; the moment its cells would need to move relative to
+  each other, that is fracture, and fracture makes new bodies rather than a
+  second sand simulation with its own frame of reference.
 - A terrain body is destroyed only for leaving the world, never for being old,
   idle or off screen. Kill bounds are a world-safety region with its own margin;
   the camera has no say in what the simulation keeps. The player must be able to
