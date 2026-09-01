@@ -303,6 +303,43 @@ bool TerrainBodyWorldBounds(const TerrainBody *body, Vector2 *minimum,
 (`allocationFailures`, `cellCapacityFailures`, `awakeBudgetRefusals`,
 `bodiesRemovedOutOfBounds`). Подробности — `docs/dynamic-terrain.md`.
 
+## Terrain detach API
+
+```c
+TerrainDetachConfig TerrainDetachDefaultConfig(void);
+void TerrainDetachInit(TerrainDetachSystem *system);
+void TerrainDetachResetStats(TerrainDetachSystem *system);
+/* Drains the world's destruction log and extracts what it can prove loose.
+   Returns bodies created; `events` may be NULL. */
+int TerrainDetachProcess(TerrainDetachSystem *system, World *world,
+                         DynamicTerrainSystem *terrain, GameEventBuffer *events);
+
+/* The world's half: a destructive effect reports the cells it cut. */
+void WorldRecordDestruction(World *world, int minimumX, int minimumY,
+                            int maximumX, int maximumY);
+void WorldClearDestruction(World *world);
+```
+
+Объявлено в `terrain_detach.h`. Вызывается из `GameAdvanceWorld` между
+`WorldUpdate` и `TerrainPhysicsUpdate`: мир к этому моменту закончил все записи
+в клетки, поэтому связность описывает состояние, которое действительно
+существовало.
+
+**Emberfall не сканирует весь World в поисках detached terrain.** Проверка
+запускается только там, где известная разрушающая операция убрала структурный
+материал, и только внутри окна с compile-time стороной
+(`TERRAIN_DETACH_SEARCH_SPAN`). Обычная симуляция сюда не попадает: журнал
+разрушений пишут только `WorldDestroyCircle` и `WorldDrillCircle`, и только
+когда действительно исчезла solid-клетка.
+
+Пороги живут в `TerrainDetachConfig`: `minimumBodyCells` (8),
+`maximumBodyCells` (1024), `maxCandidatesPerRegion` (24),
+`maxExtractionsPerTick` (4). Отказ по любому из них, как и отказ бюджетов
+EF-DYN-010, оставляет рельеф static и мир бит в бит неизменным. Счётчики —
+`TerrainDetachStats`; отдельно публикуется `GAME_EVENT_TERRAIN_DETACHED`.
+
+Подробности — `docs/dynamic-terrain.md`, раздел «Автоматический detach».
+
 ## Terrain physics API
 
 ```c

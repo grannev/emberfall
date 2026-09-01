@@ -19,6 +19,9 @@ typedef enum GameEventType {
     GAME_EVENT_EXPLOSION,
     GAME_EVENT_LASER_HIT,
     GAME_EVENT_CRYO_HIT,
+    /* A piece of terrain came loose and is now a body. `position` is where the
+       body starts, `count` is how many cells it took with it. */
+    GAME_EVENT_TERRAIN_DETACHED,
     GAME_EVENT_COUNT
 } GameEventType;
 

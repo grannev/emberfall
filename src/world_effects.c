@@ -24,6 +24,14 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
     int y;
     int radiusSquared = radius * radius;
     int chance = (int)(Clamp(rockToLavaChance, 0.0f, 1.0f) * 1000.0f);
+    /* Bounds of the solid material this blast actually removed, so a detach
+       check later looks only where structure was lost. Tracked as the cells go
+       rather than assumed from the radius: a blast in open air severs nothing
+       and must not ask anyone to go looking. */
+    int cutMinimumX = 0;
+    int cutMinimumY = 0;
+    int cutMaximumX = -1;
+    int cutMaximumY = -1;
 
     if (world == NULL || world->cells == NULL) {
         return;
@@ -40,12 +48,28 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
             }
 
             material = WorldMaterialAt(world, x, y);
+            if (MaterialIsSolid(material)) {
+                if (cutMaximumX < cutMinimumX) {
+                    cutMinimumX = cutMaximumX = x;
+                    cutMinimumY = cutMaximumY = y;
+                } else {
+                    if (x < cutMinimumX) cutMinimumX = x;
+                    if (x > cutMaximumX) cutMaximumX = x;
+                    if (y < cutMinimumY) cutMinimumY = y;
+                    if (y > cutMaximumY) cutMaximumY = y;
+                }
+            }
             if (material == MATERIAL_ROCK && RngRange(&world->rng, 0, 999) < chance) {
                 WorldSetCellRaw(world, x, y, MATERIAL_LAVA);
             } else {
                 WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
             }
         }
+    }
+
+    if (cutMaximumX >= cutMinimumX) {
+        WorldRecordDestruction(world, cutMinimumX, cutMinimumY, cutMaximumX,
+                               cutMaximumY);
     }
 }
 
@@ -55,6 +79,12 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
     int radiusSquared = radius * radius;
     int rimSquared = (radius + 1) * (radius + 1);
     int y;
+    /* Same reasoning as the blast: only the cells that were solid and are now
+       gone. A drill boring through open air severs nothing. */
+    int cutMinimumX = 0;
+    int cutMinimumY = 0;
+    int cutMaximumX = -1;
+    int cutMaximumY = -1;
 
     if (world == NULL || world->cells == NULL || radius < 0) {
         return 0;
@@ -87,6 +117,15 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
                 continue;
             }
 
+            if (cutMaximumX < cutMinimumX) {
+                cutMinimumX = cutMaximumX = x;
+                cutMinimumY = cutMaximumY = y;
+            } else {
+                if (x < cutMinimumX) cutMinimumX = x;
+                if (x > cutMaximumX) cutMaximumX = x;
+                if (y < cutMinimumY) cutMinimumY = y;
+                if (y > cutMaximumY) cutMaximumY = y;
+            }
             if (RngRange(&world->rng, 0, 99) < 3) {
                 WorldSetCellRaw(world, x, y, MATERIAL_ASH);
             } else {
@@ -96,6 +135,10 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
         }
     }
 
+    if (cutMaximumX >= cutMinimumX) {
+        WorldRecordDestruction(world, cutMinimumX, cutMinimumY, cutMaximumX,
+                               cutMaximumY);
+    }
     return destroyed;
 }
 

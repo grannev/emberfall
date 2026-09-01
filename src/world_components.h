@@ -94,6 +94,18 @@ typedef struct WorldComponentResult {
     int minimumY;
     int maximumX;
     int maximumY;
+    /* How many cells the search had reached in the workspace when it stopped,
+       on every status including the failures. This is deliberately *not* a
+       component: it is a partial exploration, and acting on it as if it were a
+       piece of terrain is exactly the mistake `cellCount` refuses to enable.
+
+       It exists for one honest purpose. A caller that tries several seeds in
+       the same damaged area will keep landing inside the same mass, and
+       re-exploring it each time is the difference between a bounded check and a
+       slow one. Such a caller can mark
+       `workspace->cellX/cellY[0 .. exploredCells)` as already covered and skip
+       any seed that falls inside. */
+    int exploredCells;
 } WorldComponentResult;
 
 /* Explores the connected solid component containing (seedX, seedY), confined to
