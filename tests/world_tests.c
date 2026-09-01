@@ -22,6 +22,7 @@
 #include "abilities.h"
 #include "world.h"
 #include "dynamic_terrain.h"
+#include "environment_renderer.h"
 #include "terrain_extraction.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
@@ -158,6 +159,41 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
     WorldPrepareVisible(&world, wholeWorld, CaptureRenderChunk, &probe);
     CHECK(probe.regions == 1,
           "one local edit rebuilt %d chunks instead of one", probe.regions);
+    WorldUnload(&world);
+}
+
+typedef struct EmptyRenderProbe {
+    bool sawTranslucentAir;
+} EmptyRenderProbe;
+
+static bool CaptureEmptyRenderData(void *context, Rectangle bounds,
+                                   const Color *pixels,
+                                   const Color *emissivePixels)
+{
+    EmptyRenderProbe *probe = context;
+    int count = (int)(bounds.width * bounds.height);
+    int index;
+
+    for (index = 0; index < count; ++index) {
+        if (pixels[index].a > 0u && pixels[index].a < 255u &&
+            emissivePixels[index].a == 0u) {
+            probe->sawTranslucentAir = true;
+            break;
+        }
+    }
+    return true;
+}
+
+static void test_empty_world_render_data_preserves_background_depth(void)
+{
+    World world;
+    EmptyRenderProbe probe = {0};
+
+    CHECK(WorldInit(&world, 32, 32), "world allocation failed");
+    WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f},
+                        CaptureEmptyRenderData, &probe);
+    CHECK(probe.sawTranslucentAir,
+          "empty world pixels still fully hide the environment background");
     WorldUnload(&world);
 }
 
@@ -922,6 +958,128 @@ static uint64_t WorldDigest(const World *world)
         }
     }
     return digest;
+}
+
+static void test_environment_palettes_validate_parse_and_force(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentPalette parsed = ENVIRONMENT_PALETTE_AUTO;
+    EnvironmentPalette seeded = EnvironmentPaletteForSeed(0xE6BEu);
+    int index;
+
+    CHECK(EnvironmentPalettesValidate(),
+          "environment palette table failed validation");
+    CHECK(seeded >= 0 && seeded < ENVIRONMENT_PALETTE_COUNT,
+          "seed selected invalid palette %d", (int)seeded);
+    for (index = 0; index < ENVIRONMENT_PALETTE_COUNT; ++index) {
+        const EnvironmentPaletteDefinition *definition =
+            EnvironmentPaletteDefinitionAt((EnvironmentPalette)index);
+
+        CHECK(definition != NULL && definition->name != NULL &&
+                  definition->cliName != NULL,
+              "palette %d has no complete definition", index);
+        CHECK(EnvironmentPaletteParse(definition->cliName, &parsed) &&
+                  parsed == (EnvironmentPalette)index,
+              "palette '%s' did not parse back to %d", definition->cliName,
+              index);
+    }
+    CHECK(EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_AUTO) == NULL &&
+              !EnvironmentPaletteParse("molten-copy", &parsed),
+          "invalid environment palette was accepted");
+
+    EnvironmentRendererInit(&environment, 0xE6BEu,
+                            ENVIRONMENT_PALETTE_ABYSSAL_BLUE);
+    CHECK(environment.palette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE &&
+              environment.forcedPalette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
+          "forced palette was ignored");
+    EnvironmentRendererSyncSeed(&environment, 0x1234u);
+    CHECK(environment.palette == ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
+          "world seed replaced a forced palette");
+    CHECK(EnvironmentRendererSetPalette(&environment,
+                                        ENVIRONMENT_PALETTE_AUTO) &&
+              environment.palette == EnvironmentPaletteForSeed(0x1234u),
+          "auto palette did not return to deterministic seed selection");
+    CHECK(!EnvironmentRendererSetPalette(
+              &environment, (EnvironmentPalette)ENVIRONMENT_PALETTE_COUNT),
+          "out-of-range forced palette was accepted");
+}
+
+static void test_environment_descriptors_are_seeded_and_finite(void)
+{
+    EnvironmentRenderer first;
+    EnvironmentRenderer second;
+    EnvironmentRenderer different;
+
+    EnvironmentRendererInit(&first, 0xE6BEu, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererInit(&second, 0xE6BEu, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererInit(&different, 0xA11CEu, ENVIRONMENT_PALETTE_AUTO);
+
+    CHECK(memcmp(&first, &second, sizeof(first)) == 0,
+          "same seed produced different environment descriptors");
+    CHECK(first.palette == EnvironmentPaletteForSeed(0xE6BEu),
+          "auto palette disagrees with seed selector");
+    CHECK(memcmp(first.structures, different.structures,
+                 sizeof(first.structures)) != 0,
+          "different seeds produced identical environment structures");
+    CHECK(EnvironmentRendererStateIsValid(&first) &&
+              EnvironmentRendererStateIsValid(&different),
+          "seed generated invalid or non-finite environment geometry");
+}
+
+static void test_environment_view_handles_resize_rotation_and_invalid_time(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentRenderer before;
+    Camera2D camera = {
+        .offset = {640.0f, 360.0f},
+        .target = {8192.0f, 220.0f},
+        .rotation = 1.1f,
+        .zoom = 2.0f,
+    };
+    Rectangle wide = EnvironmentRendererOverscanBounds(1920, 1080);
+    Rectangle small = EnvironmentRendererOverscanBounds(640, 360);
+
+    EnvironmentRendererInit(&environment, 0xE6BEu,
+                            ENVIRONMENT_PALETTE_VERDIGRIS_STORM);
+    before = environment;
+    CHECK(EnvironmentRendererViewIsValid(camera, 1920, 1080) &&
+              EnvironmentRendererViewIsValid(camera, 640, 360),
+          "valid rotated/zoomed camera or resize was rejected");
+    CHECK(wide.x < 0.0f && wide.y < 0.0f && wide.width > 1920.0f &&
+              wide.height > 1080.0f && small.width > 640.0f &&
+              small.height > 360.0f,
+          "environment overscan does not cover rotated view corners");
+    CHECK(memcmp(&environment, &before, sizeof(environment)) == 0,
+          "resize/view helper mutated persistent environment state");
+
+    EnvironmentRendererUpdate(&environment, 0.0f);
+    EnvironmentRendererUpdate(&environment, NAN);
+    CHECK(environment.time == before.time,
+          "zero/NaN presentation time advanced environment animation");
+    camera.zoom = NAN;
+    CHECK(!EnvironmentRendererViewIsValid(camera, 1280, 720) &&
+              !EnvironmentRendererViewIsValid((Camera2D){0}, 0, 720),
+          "invalid camera or target dimensions were accepted");
+}
+
+static void test_environment_state_never_changes_gameplay_world(void)
+{
+    World world;
+    EnvironmentRenderer environment;
+    uint64_t before;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    WorldGenerate(&world, 0xE6BEu);
+    before = WorldDigest(&world);
+    EnvironmentRendererInit(&environment, world.seed,
+                            ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    (void)EnvironmentRendererSetPalette(
+        &environment, ENVIRONMENT_PALETTE_EMBER_WASTE);
+    EnvironmentRendererSyncSeed(&environment, 0x1234u);
+    CHECK(WorldDigest(&world) == before,
+          "presentation environment changed the gameplay world digest");
+    WorldUnload(&world);
 }
 
 static void test_the_same_seed_always_generates_the_same_world(void)
@@ -8108,6 +8266,7 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 int main(void)
 {
     RUN(test_world_render_preparation_is_headless_and_incremental);
+    RUN(test_empty_world_render_data_preserves_background_depth);
     RUN(test_a_refused_chunk_keeps_its_dirty_flag);
     RUN(test_emissive_render_data_selects_emitters_not_bright_terrain);
     RUN(test_particle_emission_is_explicit_per_effect);
@@ -8124,6 +8283,10 @@ int main(void)
     RUN(test_transient_camera_never_changes_mouse_aim_transform);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
+    RUN(test_environment_palettes_validate_parse_and_force);
+    RUN(test_environment_descriptors_are_seeded_and_finite);
+    RUN(test_environment_view_handles_resize_rotation_and_invalid_time);
+    RUN(test_environment_state_never_changes_gameplay_world);
     RUN(test_the_same_seed_always_generates_the_same_world);
     RUN(test_regenerating_one_world_from_a_seed_reproduces_it);
     RUN(test_world_effects_cannot_shift_the_terrain_a_seed_produces);
