@@ -216,7 +216,20 @@ CameraFeedbackOutput CameraFeedbackUpdate(CameraFeedback *feedback,
     bool reversing;
     uint8_t index = 0u;
 
-    if (feedback == NULL || !isfinite(deltaTime) || deltaTime <= 0.0f) {
+    if (feedback == NULL) {
+        output.viewScale = 1.0f;
+        return output;
+    }
+
+    /* A paused or invalid presentation frame must preserve the stable camera
+       state. Returning the zero-initialized view scale would collapse the
+       downstream zoom calculation even though no camera time elapsed. */
+    output.lookahead = feedback->lookahead;
+    output.viewScale = isfinite(feedback->viewScale) &&
+                               feedback->viewScale >= 1.0f
+                           ? feedback->viewScale
+                           : 1.0f;
+    if (!isfinite(deltaTime) || deltaTime <= 0.0f) {
         return output;
     }
 
@@ -280,4 +293,35 @@ CameraFeedbackOutput CameraFeedbackUpdate(CameraFeedback *feedback,
     output.zoomKick = CameraFeedbackClamp(output.zoomKick, 0.0f,
                                           CAMERA_MAX_ZOOM_KICK);
     return output;
+}
+
+Camera2D CameraFeedbackApplyTransient(Camera2D stableCamera,
+                                      CameraFeedbackOutput output)
+{
+    Camera2D presentationCamera = stableCamera;
+    float stableZoom = isfinite(stableCamera.zoom) && stableCamera.zoom >= 1.0f
+                           ? stableCamera.zoom
+                           : 1.0f;
+    float zoomKick = isfinite(output.zoomKick)
+                         ? CameraFeedbackClamp(output.zoomKick, 0.0f,
+                                               CAMERA_MAX_ZOOM_KICK)
+                         : 0.0f;
+
+    /* Work on a copy: the stable transform remains the sole mouse-to-world
+       contract while shake, rotation and zoom kick are presentation-only. */
+    presentationCamera.target = Vector2Add(
+        stableCamera.target,
+        (Vector2){isfinite(output.impulseOffset.x) ? output.impulseOffset.x
+                                                  : 0.0f,
+                  isfinite(output.impulseOffset.y) ? output.impulseOffset.y
+                                                  : 0.0f});
+    presentationCamera.rotation =
+        stableCamera.rotation +
+        (isfinite(output.rotationDegrees)
+             ? CameraFeedbackClamp(output.rotationDegrees,
+                                   -CAMERA_MAX_ROTATION_DEGREES,
+                                   CAMERA_MAX_ROTATION_DEGREES)
+             : 0.0f);
+    presentationCamera.zoom = fmaxf(1.0f, stableZoom / (1.0f + zoomKick));
+    return presentationCamera;
 }

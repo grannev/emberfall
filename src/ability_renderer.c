@@ -95,13 +95,11 @@ static void DrawCryoEdge(const AbilityState *state)
     }
 }
 
-void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition)
+void AbilityRendererDraw(const AbilitySystem *abilities)
 {
     const AbilityState *laser;
     const AbilityState *cryo;
     const AbilityState *force;
-    const AbilityState *explosion;
-    Color crosshair;
 
     if (abilities == NULL) {
         return;
@@ -109,9 +107,6 @@ void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition)
     laser = AbilityStateAt(abilities, ABILITY_LASER);
     cryo = AbilityStateAt(abilities, ABILITY_CRYO);
     force = AbilityStateAt(abilities, ABILITY_FORCE);
-    explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
-    crosshair = explosion->cooldown <= 0.0f ? (Color){255, 232, 118, 230}
-                                            : (Color){180, 188, 199, 190};
 
     if (laser->active) {
         DrawLineEx(laser->origin, laser->endpoint, 1.7f,
@@ -141,6 +136,20 @@ void AbilityRendererDraw(const AbilitySystem *abilities, Vector2 aimPosition)
     if (force->effectTime > 0.0f) {
         DrawForceArc(force, AbilityDefinitionAt(ABILITY_FORCE)->effectTime);
     }
+}
+
+void AbilityRendererDrawReticle(const AbilitySystem *abilities,
+                                Vector2 aimPosition)
+{
+    const AbilityState *explosion;
+    Color crosshair;
+
+    if (abilities == NULL) {
+        return;
+    }
+    explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
+    crosshair = explosion->cooldown <= 0.0f ? (Color){255, 232, 118, 230}
+                                            : (Color){180, 188, 199, 190};
 
     DrawCircleLinesV(aimPosition, 4.0f, crosshair);
     DrawLineV((Vector2){aimPosition.x - 6.0f, aimPosition.y},

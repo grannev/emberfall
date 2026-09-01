@@ -63,5 +63,7 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
 CameraFeedbackOutput CameraFeedbackUpdate(CameraFeedback *feedback,
                                           CameraFeedbackMotion motion,
                                           float deltaTime);
+Camera2D CameraFeedbackApplyTransient(Camera2D stableCamera,
+                                      CameraFeedbackOutput output);
 
 #endif

@@ -279,6 +279,12 @@ zoom-out kick. Explosion, force, boost-stage, impact и drill имеют раз�
 duration. При переполнении слабейший импульс заменяется только более сильным;
 каждый instance истекает за ограниченное время, allocations нет.
 
+Mouse-to-world conversion всегда использует стабильную копию камеры без этих
+трёх transient-компонентов. Тот же transform применяется к reticle, а shake,
+rotation и zoom kick накладываются только на отдельную presentation-копию.
+Поэтому feedback не попадает в aim текущего или следующего кадра и не меняет
+deterministic gameplay input.
+
 Вместо нового случайного offset каждый frame импульс использует затухающие
 sin/cos волны с phase, вычисленной один раз из события. Итог ограничен 8 cells,
 1.1 градуса и 10% zoom kick: несколько одновременных ударов складываются, но не

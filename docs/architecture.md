@@ -338,7 +338,8 @@ device не является фатальной.
 Текущий порядок между `main.c` и `GameUpdate` важен:
 
 1. Ограничить `deltaTime` значением 0.05 секунды.
-2. `InputPoll` создать `GameInput`; F1 переключить на app-уровне.
+2. Зафиксировать stable aim camera без transient feedback; `InputPoll` создать
+   из неё `GameInput`, а F1 переключить на app-уровне.
 3. `GameUpdate` при необходимости выполнить reset, обновить player и streaming.
 4. Обновить abilities, gameplay/visual particle pool и накопить transient
    `GameEvents`.
@@ -348,8 +349,10 @@ device не является фатальной.
    `CameraFeedback` consumers.
 7. Состарить прежние `PresentationFx`, затем один раз преобразовать события
    текущего кадра в новые instances; при reset очистить presentation pool.
-8. Сгладить speed lookahead/view scale, собрать camera impulse stack и обновить
-   player point light.
+8. Сгладить speed lookahead/view scale, собрать camera impulse stack; вывести
+   из stable aim camera отдельную presentation camera и обновить player point
+   light. Reticle рисуется через stable camera, world-space scene — через
+   presentation camera.
 9. `RendererRenderScene` при необходимости пересоздать targets, обновить обе
    paged world layers, синхронизировать generation/revision cache динамических
    тел, отрисовать static и detached terrain в sharp scene и выполнить

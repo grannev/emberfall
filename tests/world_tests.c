@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <raylib.h>
+#include <raymath.h>
+
 #include "camera_feedback.h"
 #include "game.h"
 #include "materials.h"
@@ -608,6 +611,80 @@ static void test_camera_lookahead_damps_reversal_before_leading_backward(void)
     }
     CHECK(output.lookahead.x < -20.0f,
           "camera never settled into reversed speed lookahead");
+}
+
+static void test_camera_feedback_invalid_time_preserves_safe_stable_state(void)
+{
+    CameraFeedback feedback;
+    CameraFeedback before;
+    CameraFeedbackOutput output;
+
+    CameraFeedbackInit(&feedback);
+    feedback.lookahead = (Vector2){18.0f, -7.0f};
+    feedback.viewScale = 1.35f;
+    before = feedback;
+
+    output = CameraFeedbackUpdate(&feedback, (CameraFeedbackMotion){0}, 0.0f);
+    CHECK(output.viewScale >= 1.0f &&
+              fabsf(output.viewScale - before.viewScale) < 0.0001f,
+          "zero-dt camera update returned unsafe view scale %.3f",
+          (double)output.viewScale);
+    CHECK(Vector2Distance(output.lookahead, before.lookahead) < 0.0001f &&
+              Vector2LengthSqr(output.impulseOffset) == 0.0f &&
+              output.rotationDegrees == 0.0f && output.zoomKick == 0.0f,
+          "zero-dt camera update changed stable or transient output");
+    CHECK(memcmp(&feedback, &before, sizeof(feedback)) == 0,
+          "zero-dt camera update mutated controller state");
+
+    output = CameraFeedbackUpdate(&feedback, (CameraFeedbackMotion){0}, NAN);
+    CHECK(output.viewScale >= 1.0f &&
+              fabsf(output.viewScale - before.viewScale) < 0.0001f &&
+              Vector2Distance(output.lookahead, before.lookahead) < 0.0001f,
+          "NaN-dt camera update did not preserve its stable state");
+    CHECK(Vector2LengthSqr(output.impulseOffset) == 0.0f &&
+              output.rotationDegrees == 0.0f && output.zoomKick == 0.0f &&
+              memcmp(&feedback, &before, sizeof(feedback)) == 0,
+          "NaN-dt camera update emitted or retained a transient impulse");
+
+    feedback.viewScale = NAN;
+    output = CameraFeedbackUpdate(&feedback, (CameraFeedbackMotion){0}, 0.0f);
+    CHECK(output.viewScale == 1.0f,
+          "invalid stored view scale was not sanitized: %.3f",
+          (double)output.viewScale);
+}
+
+static void test_transient_camera_never_changes_mouse_aim_transform(void)
+{
+    Camera2D stable = {
+        .offset = {640.0f, 360.0f},
+        .target = {420.0f, 180.0f},
+        .rotation = 0.0f,
+        .zoom = 4.0f,
+    };
+    Camera2D before = stable;
+    Vector2 mouse = {917.0f, 441.0f};
+    Vector2 aimWorld = GetScreenToWorld2D(mouse, stable);
+    Camera2D presentation = CameraFeedbackApplyTransient(
+        stable,
+        (CameraFeedbackOutput){
+            .impulseOffset = {7.0f, -5.0f},
+            .rotationDegrees = 1.0f,
+            .zoomKick = 0.1f,
+        });
+    Vector2 reticleScreen = GetWorldToScreen2D(aimWorld, stable);
+    Vector2 shakenScreen = GetWorldToScreen2D(aimWorld, presentation);
+
+    CHECK(memcmp(&stable, &before, sizeof(stable)) == 0,
+          "applying camera feedback mutated the stable aim camera");
+    CHECK(Vector2Distance(reticleScreen, mouse) < 0.001f,
+          "stable aim/reticle transform drifted from the mouse by %.4f px",
+          (double)Vector2Distance(reticleScreen, mouse));
+    CHECK(Vector2Distance(shakenScreen, mouse) > 1.0f,
+          "camera test did not exercise a meaningful transient transform");
+    CHECK(Vector2Distance(presentation.target, stable.target) > 1.0f &&
+              presentation.rotation != stable.rotation &&
+              presentation.zoom < stable.zoom,
+          "transient feedback was not applied to the presentation copy");
 }
 
 static void test_a_refused_chunk_keeps_its_dirty_flag(void)
@@ -6651,6 +6728,8 @@ int main(void)
     RUN(test_laser_contact_heat_uses_elapsed_time_not_frame_count);
     RUN(test_camera_feedback_stacks_clamps_and_expires);
     RUN(test_camera_lookahead_damps_reversal_before_leading_backward);
+    RUN(test_camera_feedback_invalid_time_preserves_safe_stable_state);
+    RUN(test_transient_camera_never_changes_mouse_aim_transform);
     RUN(test_game_event_buffer_is_fixed_and_ordered);
     RUN(test_game_update_publishes_transient_events);
     RUN(test_the_same_seed_always_generates_the_same_world);

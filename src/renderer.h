@@ -62,7 +62,8 @@ void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime);
 void RendererClearPresentation(Renderer *renderer);
-void RendererRenderScene(Renderer *renderer, GameState *game, Camera2D camera,
+void RendererRenderScene(Renderer *renderer, GameState *game,
+                         Camera2D presentationCamera, Camera2D aimCamera,
                          Vector2 aimPosition, Rectangle visible);
 void RendererComposite(const Renderer *renderer);
 const WorldRendererStats *RendererWorldStats(const Renderer *renderer);

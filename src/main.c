@@ -22,6 +22,9 @@
 
 static float CameraZoomForWindow(float viewScale)
 {
+    if (!isfinite(viewScale) || viewScale < 1.0f) {
+        viewScale = 1.0f;
+    }
     float horizontal = (float)GetScreenWidth() / (VIEW_WIDTH * viewScale);
     float vertical = (float)GetScreenHeight() / (VIEW_HEIGHT * viewScale);
     return fmaxf(1.0f, fminf(horizontal, vertical));
@@ -592,7 +595,7 @@ int main(int argc, char **argv)
     GameAudio audio = {0};
     Renderer renderer = {0};
     CameraFeedback cameraFeedback = {0};
-    Camera2D camera = {0};
+    Camera2D stableCamera = {0};
     bool debugHud = true;
     bool smokeTest = false;
     int argument;
@@ -720,11 +723,11 @@ int main(int argc, char **argv)
     }
     cameraFocus = game.player.position;
     CameraFeedbackInit(&cameraFeedback);
-    camera.target = cameraFocus;
-    camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
-                              (float)GetScreenHeight() * 0.5f};
-    camera.rotation = 0.0f;
-    camera.zoom = CameraZoomForWindow(1.0f);
+    stableCamera.target = cameraFocus;
+    stableCamera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
+                                    (float)GetScreenHeight() * 0.5f};
+    stableCamera.rotation = 0.0f;
+    stableCamera.zoom = CameraZoomForWindow(1.0f);
 
     while (!WindowShouldClose()) {
         /* The smoke run steps at exactly one fixed tick per frame. Real frame
@@ -733,11 +736,13 @@ int main(int argc, char **argv)
            got to into a coin flip — and the reference screenshot with it. */
         float deltaTime = smokeTest ? game.config.fixedStep
                                     : fminf(GetFrameTime(), 0.05f);
-        AppInput input = InputPoll(&game.world, camera);
+        AppInput input;
+        Camera2D aimCamera;
+        Camera2D presentationCamera;
         Vector2 desiredCamera;
         CameraFeedbackOutput cameraOutput;
-        Vector2 cursorCell = input.cursorCell;
-        Vector2 aimPosition = input.game.aimWorld;
+        Vector2 cursorCell;
+        Vector2 aimPosition;
 
         /* Exercise the render-target resize lifecycle in the automated GL
            smoke run, then restore the reference screenshot dimensions. */
@@ -746,6 +751,20 @@ int main(int argc, char **argv)
         } else if (smokeTest && smokeFrames == 7) {
             SetWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
         }
+        /* Input and the reticle share this exact stable transform. Camera
+           impulses are applied later to a copy and therefore cannot leak back
+           through GetScreenToWorld2D on the next frame. */
+        stableCamera.offset =
+            (Vector2){(float)GetScreenWidth() * 0.5f,
+                      (float)GetScreenHeight() * 0.5f};
+        stableCamera.rotation = 0.0f;
+        stableCamera.zoom = CameraZoomForWindow(cameraFeedback.viewScale);
+        stableCamera.target = ClampCameraTarget(
+            stableCamera.target, stableCamera.zoom, &game.world);
+        aimCamera = stableCamera;
+        input = InputPoll(&game.world, aimCamera);
+        cursorCell = input.cursorCell;
+        aimPosition = input.game.aimWorld;
         /* The screenshot at frame ten contains the moving body. Free it on the
            final frame so the same GL smoke run also proves that the generation-
            keyed cache releases its textures and draws no ghost. */
@@ -908,8 +927,6 @@ int main(int argc, char **argv)
                                                GAME_EVENT_BOOST_STAGE);
         }
 
-        camera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
-                                  (float)GetScreenHeight() * 0.5f};
         cameraOutput = CameraFeedbackUpdate(
             &cameraFeedback,
             (CameraFeedbackMotion){
@@ -920,26 +937,28 @@ int main(int argc, char **argv)
                 .viewHeight = VIEW_HEIGHT,
             },
             deltaTime);
-        /* Widening is expressed in view units, not raw zoom, so it behaves the
-           same at every window size. A kick widens for an instant rather than
-           magnifying the impact and hiding its surrounding motion. */
-        camera.zoom = CameraZoomForWindow(
-            cameraOutput.viewScale * (1.0f + cameraOutput.zoomKick));
-        camera.rotation = cameraOutput.rotationDegrees;
+        /* Widening belongs to the stable camera used on the next input frame.
+           The immediate kick is applied only to the presentation copy below,
+           so transient feedback never changes mouse-to-world conversion. */
         {
             Vector2 lead = {
                 game.player.position.x + cameraOutput.lookahead.x,
                 game.player.position.y + cameraOutput.lookahead.y};
 
-            desiredCamera = ClampCameraTarget(lead, camera.zoom, &game.world);
+            desiredCamera = ClampCameraTarget(
+                lead, CameraZoomForWindow(cameraOutput.viewScale), &game.world);
         }
         cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
                          (1.0f - expf(-8.0f * deltaTime));
         cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
                          (1.0f - expf(-8.0f * deltaTime));
-        camera.target = ClampCameraTarget(
-            Vector2Add(cameraFocus, cameraOutput.impulseOffset), camera.zoom,
-            &game.world);
+        stableCamera.zoom = CameraZoomForWindow(cameraOutput.viewScale);
+        stableCamera.target = ClampCameraTarget(cameraFocus, stableCamera.zoom,
+                                                &game.world);
+        presentationCamera =
+            CameraFeedbackApplyTransient(aimCamera, cameraOutput);
+        presentationCamera.target = ClampCameraTarget(
+            presentationCamera.target, presentationCamera.zoom, &game.world);
 
         /* The player carries their own light. Without it a bored tunnel would
            be unplayably dark the moment it leaves the reach of daylight, and
@@ -949,8 +968,9 @@ int main(int argc, char **argv)
                            52.0f + (float)game.player.boostStage * 22.0f,
                            0.72f + (float)game.player.boostStage * 0.09f);
 
-        RendererRenderScene(&renderer, &game, camera, aimPosition,
-                            VisibleWorldRectangle(camera));
+        RendererRenderScene(&renderer, &game, presentationCamera, aimCamera,
+                            aimPosition,
+                            VisibleWorldRectangle(presentationCamera));
         if (smokeTest) {
             const RendererFrameStats *frameStats = RendererStats(&renderer);
             int screenWidth = GetScreenWidth();
