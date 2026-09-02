@@ -8,7 +8,7 @@
  * nothing in the game calls it yet.
  *
  * The hard requirement is that a query can never become a full-world flood
- * fill. The production map is 16384x864, and every solid cell in it is one
+ * fill. The production map is 16384x1440, and every solid cell in it is one
  * connected mass reaching the bottom of the world, so a fill started anywhere
  * in the ground would visit fourteen million cells. A caller therefore supplies
  * a query region, and the search is confined to it. What lies outside is not

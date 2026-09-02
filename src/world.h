@@ -296,6 +296,28 @@ static inline float WorldGravityScaleAt(const World *world, float y)
     return amount * amount * (3.0f - 2.0f * amount);
 }
 
+/* How much air there is at `y`: one at and below the cloud line, zero at and
+   above the space line.
+ *
+ * The same band the gravity uses, asked as a different question, and it is a
+ * question presentation needs: a painted horizon is something you can only see
+ * from inside the air. Linear rather than smoothed, because what reads it fades
+ * a picture rather than accelerating a body — a smoothstep here holds the
+ * horizon at nearly full strength for the first third of the climb, which is
+ * the part of the climb where losing it is the whole point. */
+static inline float WorldAirFractionAt(const World *world, float y)
+{
+    float space;
+    float cloud;
+
+    if (world == NULL || world->height <= 0) return 1.0f;
+    space = WorldSpaceLineY(world);
+    cloud = WorldCloudLineY(world);
+    if (y >= cloud) return 1.0f;
+    if (y <= space) return 0.0f;
+    return (y - space) / (cloud - space);
+}
+
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);
 float WorldGetTemperature(const World *world, int x, int y);

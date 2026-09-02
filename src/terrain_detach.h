@@ -17,7 +17,7 @@
  *     TerrainBody                   (dynamic_terrain.h, terrain_physics.h)
  *
  * The one rule that shapes everything here: **Emberfall never scans the world
- * looking for detached terrain.** The production map is 16384x864 and every
+ * looking for detached terrain.** The production map is 16384x1440 and every
  * solid cell in the ground is one connected mass, so a search that is allowed
  * to wander is a fourteen-million-cell flood fill. Checks run only where a
  * known destructive operation just removed structural material, and only inside

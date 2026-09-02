@@ -21,7 +21,10 @@
 #include "world_lighting.h"
 
 #define BENCH_WORLD_WIDTH 16384
-#define BENCH_WORLD_HEIGHT 864
+/* Tracks the production map. A benchmark measuring a world the game no longer
+   ships is a benchmark of nothing: the height decides how much sky the light
+   field has to fill and how deep the ground the simulation walks is. */
+#define BENCH_WORLD_HEIGHT 1440
 #define BENCH_DEFAULT_TICKS 180
 #define BENCH_SEED 0x00e6be11u
 

@@ -83,11 +83,18 @@ static void PlayerFxBlob(Vector2 centre, float radius, float block, Color color)
     }
 }
 
+/* Body units into cells. Every length in this file that is a part of the
+   character passes through it, so the figure has exactly one size and the
+   proportions between its parts cannot drift when that size changes. */
+#define BODY(units) ((units) * PLAYER_BODY_SCALE)
+
 static Vector2 BodyPoint(const BodyFrame *frame, float alongUp, float alongSide)
 {
     return (Vector2){
-        frame->origin.x + frame->up.x * alongUp + frame->side.x * alongSide,
-        frame->origin.y + frame->up.y * alongUp + frame->side.y * alongSide
+        frame->origin.x + frame->up.x * BODY(alongUp) +
+            frame->side.x * BODY(alongSide),
+        frame->origin.y + frame->up.y * BODY(alongUp) +
+            frame->side.y * BODY(alongSide)
     };
 }
 
@@ -337,16 +344,16 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     if (player->boosting && player->boostStage != PLAYER_BOOST_NONE) {
         float stage = (float)player->boostStage;
         Vector2 nozzle = Vector2Add(player->position,
-                                    Vector2Scale(travel, -3.5f));
+                                    Vector2Scale(travel, BODY(-3.5f)));
         Vector2 tail = Vector2Add(
-            nozzle, Vector2Scale(travel, -(5.0f + stage * 4.5f)));
+            nozzle, Vector2Scale(travel, BODY(-(5.0f + stage * 4.5f))));
         Color exhaust = player->boostStage == PLAYER_BOOST_STAGE_THREE
                             ? (Color){255, 224, 151, 230}
                             : (Color){104, 222, 255, 215};
 
-        DrawLineEx(nozzle, tail, 1.45f + stage * 0.24f,
+        DrawLineEx(nozzle, tail, BODY(1.45f + stage * 0.24f),
                    Fade(exhaust, 0.48f));
-        DrawLineEx(nozzle, tail, 0.55f, exhaust);
+        DrawLineEx(nozzle, tail, BODY(0.55f), exhaust);
     }
 
     /* ---- acceleration burst, behind the body ---- */
@@ -356,8 +363,9 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
                              ? 0.52f
                              : 0.30f;
         float progress = 1.0f - player->boostBurstTimer / duration;
-        float radius = 3.0f + progress *
-                                  (8.0f + (float)player->boostBurstStage * 5.0f);
+        float radius = BODY(3.0f + progress *
+                                       (8.0f +
+                                        (float)player->boostBurstStage * 5.0f));
         float alpha = (1.0f - progress) * 0.8f;
         Color ring = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
                          ? (Color){255, 239, 190, 255}
@@ -365,10 +373,13 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         int ringIndex;
 
         for (ringIndex = 0; ringIndex < (int)player->boostBurstStage; ++ringIndex) {
-            float ringRadius = radius - (float)ringIndex * 3.0f;
+            float ringRadius = radius - BODY((float)ringIndex * 3.0f);
 
             if (ringRadius > 1.0f) {
-                PlayerFxRing(player->position, ringRadius, 1.5f,
+                /* The block never shrinks below a cell: a ring drawn out of
+                   half-cells is a ring nobody can see. */
+                PlayerFxRing(player->position, ringRadius,
+                             fmaxf(1.0f, BODY(1.5f)),
                              Fade(ring,
                                   alpha / (1.0f + (float)ringIndex * 0.35f)));
             }
@@ -393,9 +404,10 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
                         back.y * (0.3f + 0.7f * lean) -
                             frame.up.y * (1.0f - lean) * 0.95f};
         float flowLength = sqrtf(flow.x * flow.x + flow.y * flow.y);
-        float length = 8.0f + 4.0f * lean +
-                       (player->boosting ? 1.2f + (float)player->boostStage * 1.4f
-                                         : 0.0f);
+        float length = BODY(8.0f + 4.0f * lean +
+                            (player->boosting
+                                 ? 1.2f + (float)player->boostStage * 1.4f
+                                 : 0.0f));
         int steps = 24;
 
         if (flowLength > 0.001f) {
@@ -408,17 +420,19 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
             /* Barely a stir while hovering — cloth hangs — and a real wave at
                speed. */
             float ripple = sinf(player->animationTime * 9.0f - amount * 4.2f) *
-                           (0.3f + 1.9f * amount) * (0.18f + 0.82f * lean);
+                           BODY(0.3f + 1.9f * amount) *
+                           (0.18f + 0.82f * lean);
             Vector2 spine = {anchor.x + flow.x * along - flow.y * ripple,
                              anchor.y + flow.y * along + flow.x * ripple};
             /* Narrow enough to stay cloth behind the shoulders rather than a
                slab covering the character. */
-            float width = 1.4f - 1.1f * amount;
+            float width = BODY(1.4f - 1.1f * amount);
             float across;
 
             /* Sampled finer than half a cell: at this width half-cell steps
                leave the cloth as a dotted line rather than a sheet. */
-            for (across = -width; across <= width + 0.001f; across += 0.34f) {
+            for (across = -width; across <= width + 0.001f;
+                 across += BODY(0.34f)) {
                 Color tone = across < -width * 0.45f
                                  ? capeShade
                                  : (across > width * 0.45f ? capeEdge : capeCore);
@@ -445,10 +459,12 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     kneeLead = BodyPoint(&frame, -0.6f - kneeDrop, 1.3f + 0.3f * (1.0f - lean));
     kneeTrail = BodyPoint(&frame, -0.6f - kneeDrop, -1.3f - 0.3f * (1.0f - lean));
     {
-        Vector2 footLead = {kneeLead.x - frame.up.x * 2.2f + back.x * footBack,
-                            kneeLead.y - frame.up.y * 2.2f + back.y * footBack};
-        Vector2 footTrail = {kneeTrail.x - frame.up.x * 2.2f + back.x * footBack,
-                             kneeTrail.y - frame.up.y * 2.2f + back.y * footBack};
+        Vector2 footLead = {
+            kneeLead.x - frame.up.x * BODY(2.2f) + back.x * BODY(footBack),
+            kneeLead.y - frame.up.y * BODY(2.2f) + back.y * BODY(footBack)};
+        Vector2 footTrail = {
+            kneeTrail.x - frame.up.x * BODY(2.2f) + back.x * BODY(footBack),
+            kneeTrail.y - frame.up.y * BODY(2.2f) + back.y * BODY(footBack)};
 
         /* Thigh thicker than shin, and a boot at the end, so a leg reads as a
            leg rather than as a drawn line. */
@@ -470,13 +486,13 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         Vector2 leadPoint = BodyPoint(&frame, leadHand.y, leadHand.x);
         Vector2 trailPoint = BodyPoint(&frame, trailHand.y, trailHand.x);
         Vector2 leadElbow = {(shoulderLead.x + leadPoint.x) * 0.5f +
-                                 frame.side.x * 0.6f,
+                                 frame.side.x * BODY(0.6f),
                              (shoulderLead.y + leadPoint.y) * 0.5f +
-                                 frame.side.y * 0.6f};
+                                 frame.side.y * BODY(0.6f)};
         Vector2 trailElbow = {(shoulderTrail.x + trailPoint.x) * 0.5f -
-                                  frame.side.x * 0.6f,
+                                  frame.side.x * BODY(0.6f),
                               (shoulderTrail.y + trailPoint.y) * 0.5f -
-                                  frame.side.y * 0.6f};
+                                  frame.side.y * BODY(0.6f)};
 
         DrawLimb(shoulderTrail, trailElbow, 2, limbDark);
         DrawLimb(trailElbow, trailPoint, 1, limbDark);
@@ -485,8 +501,8 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         DrawLimb(shoulderLead, leadElbow, 2, limbMid);
         DrawLimb(leadElbow, leadPoint, 1, lit);
         DrawBodyCell(leadPoint, 1, trim);
-        DrawBodyCell((Vector2){leadPoint.x + aimX * 0.9f,
-                               leadPoint.y + aimY * 0.9f},
+        DrawBodyCell((Vector2){leadPoint.x + aimX * BODY(0.9f),
+                               leadPoint.y + aimY * BODY(0.9f)},
                      1, skin);
 
         if (player->pose == PLAYER_POSE_LASER ||
@@ -522,12 +538,14 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     FillBodyRect(&frame, 5.2f, 6.9f, 1.0f, dark, mid, lit);
     {
         /* The visor looks where the cursor is, independently of the body. */
-        Vector2 visor = {head.x + frame.side.x * 0.9f + aimX * 0.5f,
-                         head.y + frame.side.y * 0.9f + aimY * 0.5f};
+        Vector2 visor = {head.x + frame.side.x * BODY(0.9f) +
+                             aimX * BODY(0.5f),
+                         head.y + frame.side.y * BODY(0.9f) +
+                             aimY * BODY(0.5f)};
 
         DrawBodyCell(visor, 1, accent);
-        DrawBodyCell((Vector2){visor.x + frame.up.x * 0.6f,
-                               visor.y + frame.up.y * 0.6f},
+        DrawBodyCell((Vector2){visor.x + frame.up.x * BODY(0.6f),
+                               visor.y + frame.up.y * BODY(0.6f)},
                      1, accent);
         DrawBodyCell(BodyPoint(&frame, 5.4f, -0.9f), 1, skin);
     }
@@ -546,8 +564,9 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         }
 
         for (streak = 0; streak < streakCount; ++streak) {
-            float streakBack = 8.0f + (float)streak * 4.0f;
-            float offset = sinf(player->animationTime * 11.0f + (float)streak) * 3.4f;
+            float streakBack = BODY(8.0f + (float)streak * 4.0f);
+            float offset = sinf(player->animationTime * 11.0f +
+                                (float)streak) * BODY(3.4f);
             int length = 3 + (int)player->boostStage - streak / 2;
             int cell;
 
@@ -569,11 +588,12 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
 
         if (player->boostStage == PLAYER_BOOST_STAGE_THREE &&
             speed >= player->sonicSpeed) {
-            float pulse = 10.0f + sinf(player->animationTime * 18.0f) * 1.8f;
-            Vector2 coneStart = {player->position.x - travel.x * 3.5f,
-                                 player->position.y - travel.y * 3.5f};
-            Vector2 coneBack = {player->position.x - travel.x * 28.0f,
-                                player->position.y - travel.y * 28.0f};
+            float pulse = BODY(10.0f +
+                               sinf(player->animationTime * 18.0f) * 1.8f);
+            Vector2 coneStart = {player->position.x - travel.x * BODY(3.5f),
+                                 player->position.y - travel.y * BODY(3.5f)};
+            Vector2 coneBack = {player->position.x - travel.x * BODY(28.0f),
+                                player->position.y - travel.y * BODY(28.0f)};
 
             DrawLineEx(coneStart,
                        (Vector2){coneBack.x + across.x * pulse,
@@ -592,8 +612,9 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         int spark;
 
         for (spark = -1; spark <= 1; ++spark) {
-            Vector2 point = {player->drillPosition.x + across.x * (float)spark * 2.5f,
-                             player->drillPosition.y + across.y * (float)spark * 2.5f};
+            Vector2 point = {
+                player->drillPosition.x + across.x * (float)spark * BODY(2.5f),
+                player->drillPosition.y + across.y * (float)spark * BODY(2.5f)};
 
             DrawBodyCell(point, spark == 0 ? 3 : 1,
                          spark == 0 ? (Color){255, 214, 96, 245} : accent);
@@ -621,21 +642,24 @@ void PlayerRendererDrawEmissive(const Player *player)
     if (player->boosting || player->boostStage != PLAYER_BOOST_NONE) {
         float stage = (float)player->boostStage;
         Vector2 normal = {-direction.y, direction.x};
-        Vector2 trail = {player->position.x - direction.x * (6.0f + stage * 3.0f),
-                         player->position.y - direction.y * (6.0f + stage * 3.0f)};
+        Vector2 trail = {
+            player->position.x - direction.x * BODY(6.0f + stage * 3.0f),
+            player->position.y - direction.y * BODY(6.0f + stage * 3.0f)};
         Color color = player->boostStage == PLAYER_BOOST_STAGE_THREE
                           ? (Color){255, 233, 178, 220}
                           : (Color){93, 216, 255, 185};
 
-        DrawLineEx(player->position, trail, 1.2f + stage * 0.45f, color);
-        PlayerFxBlob(player->position, 1.2f + stage * 0.5f, 1.0f, color);
+        DrawLineEx(player->position, trail, BODY(1.2f + stage * 0.45f), color);
+        PlayerFxBlob(player->position, BODY(1.2f + stage * 0.5f), 1.0f, color);
         if (player->boostStage >= PLAYER_BOOST_STAGE_TWO) {
-            DrawLineEx(Vector2Add(player->position, Vector2Scale(normal, 1.8f)),
-                       Vector2Add(trail, Vector2Scale(normal, 3.2f)),
-                       0.65f, Fade(color, 0.66f));
-            DrawLineEx(Vector2Add(player->position, Vector2Scale(normal, -1.8f)),
-                       Vector2Add(trail, Vector2Scale(normal, -3.2f)),
-                       0.65f, Fade(color, 0.66f));
+            DrawLineEx(Vector2Add(player->position,
+                                  Vector2Scale(normal, BODY(1.8f))),
+                       Vector2Add(trail, Vector2Scale(normal, BODY(3.2f))),
+                       BODY(0.65f), Fade(color, 0.66f));
+            DrawLineEx(Vector2Add(player->position,
+                                  Vector2Scale(normal, BODY(-1.8f))),
+                       Vector2Add(trail, Vector2Scale(normal, BODY(-3.2f))),
+                       BODY(0.65f), Fade(color, 0.66f));
         }
     }
     if (player->boostBurstTimer > 0.0f &&
@@ -644,16 +668,16 @@ void PlayerRendererDrawEmissive(const Player *player)
                              ? 0.52f
                              : 0.30f;
         float progress = 1.0f - player->boostBurstTimer / duration;
-        float radius = 3.0f + progress *
-                                  (8.0f +
-                                   (float)player->boostBurstStage * 5.0f);
+        float radius = BODY(3.0f + progress *
+                                       (8.0f +
+                                        (float)player->boostBurstStage * 5.0f));
 
-        PlayerFxRing(player->position, radius, 1.5f,
+        PlayerFxRing(player->position, radius, fmaxf(1.0f, BODY(1.5f)),
                      Fade((Color){150, 224, 255, 255},
                           (1.0f - progress) * 0.75f));
     }
     if (player->drilledCells > 0) {
-        PlayerFxBlob(player->drillPosition, 2.4f, 1.0f,
+        PlayerFxBlob(player->drillPosition, BODY(2.4f), 1.0f,
                      (Color){255, 151, 42, 215});
     }
 }

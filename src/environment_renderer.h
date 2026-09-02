@@ -104,6 +104,9 @@ typedef struct EnvironmentRenderer {
        picture with no cells in it, so nothing else can tell the player what
        time it is. */
     float daylight;
+    /* How much of the backdrop is there to see, 0..1. One at ground level,
+       zero once the camera has climbed out of the air. */
+    float altitude;
 } EnvironmentRenderer;
 
 bool EnvironmentPalettesValidate(void);
@@ -125,6 +128,20 @@ void EnvironmentRendererFadeTo(EnvironmentRenderer *renderer,
                                EnvironmentPalette palette);
 void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
                                     float daylight);
+/* How much of the painted horizon to draw: 1 at ground level, 0 out of the air.
+ *
+ * A backdrop is a lie that only works from the ground. It is screen-space
+ * geometry with a parallax factor a fiftieth of the camera's motion — which is
+ * exactly right for something infinitely far away, and exactly wrong once the
+ * player can climb above the air it is painted on. Left alone it drew a ridge
+ * of desert hills across the middle of the screen while the character was in
+ * orbit looking down at them.
+ *
+ * The renderer cannot work this out for itself: it is told what to draw and
+ * never given a World, so it does not know where the air ends. The caller knows
+ * both and passes the answer, the same way it passes the daylight. */
+void EnvironmentRendererSetAltitude(EnvironmentRenderer *renderer,
+                                    float altitude);
 /* The palette actually drawn: the two sides of a crossing mixed, then taken
    toward night. Exposed so that a test can assert what the player sees rather
    than what the state says. */

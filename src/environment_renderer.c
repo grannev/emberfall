@@ -224,6 +224,15 @@ void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
     renderer->daylight = EnvironmentClamp(daylight, 0.0f, 1.0f);
 }
 
+void EnvironmentRendererSetAltitude(EnvironmentRenderer *renderer,
+                                    float altitude)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    renderer->altitude = EnvironmentClamp(altitude, 0.0f, 1.0f);
+}
+
 static int EnvironmentMaxInt(int first, int second)
 {
     return first > second ? first : second;
@@ -444,6 +453,7 @@ void EnvironmentRendererInit(EnvironmentRenderer *renderer, uint64_t seed,
     renderer->fadeFrom = renderer->palette;
     renderer->fade = 1.0f;
     renderer->daylight = 1.0f;
+    renderer->altitude = 1.0f;
     renderer->stats.viewValid = true;
 }
 
@@ -864,6 +874,25 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
     EnvironmentDrawStructures(renderer, palette, camera, width, height);
     EnvironmentDrawNearLayer(renderer, palette, camera, width, height);
     EnvironmentDrawHaze(renderer, palette, camera, width, height);
+
+    /* And then dissolved back into its own sky by however far out of the air
+       the camera has climbed. Drawn as one veil of the sky's own colour rather
+       than by fading every layer: the layers overlap, and fading each of them
+       separately shows the ones behind through the ones in front, which reads
+       as the horizon becoming transparent rather than as its going away. */
+    if (renderer->altitude < 1.0f) {
+        Rectangle bounds = EnvironmentRendererOverscanBounds(width, height);
+        float amount = 1.0f - renderer->altitude;
+        Color top = EnvironmentFade(palette->skyTop, amount);
+        Color bottom = EnvironmentFade(palette->skyBottom, amount);
+
+        /* The sky's own gradient, laid back over the layers — not a flat fill.
+           Flooding with one colour dissolves the horizon and the sky with it,
+           and leaves a slab of paint where the atmosphere should be. */
+        DrawRectangleGradientV((int)bounds.x, (int)bounds.y, (int)bounds.width,
+                               (int)bounds.height, top, bottom);
+        ++renderer->stats.sceneDrawCalls;
+    }
 }
 
 void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,

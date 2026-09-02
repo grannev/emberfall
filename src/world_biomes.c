@@ -67,11 +67,22 @@ typedef struct BiomeSample {
     float mix;
 } BiomeSample;
 
+/* Every field is a fraction of the world's height, which is what lets the same
+   table describe a test world sixty cells tall and the production one.
+ *
+ * The base heights sit far lower down the world than they used to, and the
+ * amplitudes are correspondingly smaller. Both changes are the same decision:
+ * the world grew a long way upward, and if these numbers had been left alone
+ * the whole gain would have gone into taller mountains and a surface still only
+ * a few seconds of boost below space. Lowering the surface spends the new
+ * height on sky; shrinking the amplitudes keeps a hill the size it was, in
+ * cells, so the character — who is now smaller — is what makes it read as
+ * bigger. */
 static const BiomeSurfaceShape BIOME_SURFACES[WORLD_BIOME_COUNT] = {
-    [WORLD_BIOME_TEMPERATE] = {0.38f, 0.042f, 0.030f, 0.008f},
-    [WORLD_BIOME_DUNES] = {0.40f, 0.030f, 0.044f, 0.012f},
-    [WORLD_BIOME_FROST] = {0.34f, 0.052f, 0.036f, 0.010f},
-    [WORLD_BIOME_VOLCANIC] = {0.31f, 0.060f, 0.060f, 0.018f},
+    [WORLD_BIOME_TEMPERATE] = {0.535f, 0.0252f, 0.0180f, 0.0048f},
+    [WORLD_BIOME_DUNES] = {0.555f, 0.0180f, 0.0264f, 0.0072f},
+    [WORLD_BIOME_FROST] = {0.495f, 0.0312f, 0.0216f, 0.0060f},
+    [WORLD_BIOME_VOLCANIC] = {0.465f, 0.0360f, 0.0360f, 0.0108f},
 };
 
 _Static_assert(sizeof(BIOME_SURFACES) / sizeof(BIOME_SURFACES[0]) ==
@@ -897,16 +908,30 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
         }
         x += cosf(angle);
         y += sinf(angle);
-        /* Crooked, not curved: the drift is redrawn every step. */
-        angle += ((float)RngRange(rng, -100, 100) / 100.0f) * 0.10f;
+        /* Crooked, not curved: the drift is redrawn every step. On top of it a
+           slow pull back toward the sky, because a limb that only wanders
+           drifts flat — every branch ends up horizontal, every crown ends up a
+           pad balanced on a pole, and every tree in the forest is the same
+           tree. Growing back toward the light is what gives a crown its
+           height. */
+        angle += ((float)RngRange(rng, -100, 100) / 100.0f) * 0.10f +
+                 (-1.5708f - angle) * 0.045f;
     }
 
-    if (depth == 0) {
-        if (canopy != MATERIAL_EMPTY && canopyRadius > 0) {
-            FloraFillDisc(world, (int)floorf(x), (int)floorf(y), canopyRadius,
-                          canopyRadius, canopy, world->seed,
-                          RngRange(rng, 0, 255));
+    /* Foliage on the last two levels rather than only on the tips. Hung on the
+       tips alone it forms a shell at one distance from the root and the tree
+       reads as an umbrella: a crown has depth, and the depth comes from the
+       leaves inside it. The inner level carries a smaller clump so the crown
+       still thins outward. */
+    if (depth <= 1 && canopy != MATERIAL_EMPTY && canopyRadius > 0) {
+        int radius = depth == 0 ? canopyRadius : (canopyRadius * 2) / 3;
+
+        if (radius > 0) {
+            FloraFillDisc(world, (int)floorf(x), (int)floorf(y), radius, radius,
+                          canopy, world->seed, RngRange(rng, 0, 255));
         }
+    }
+    if (depth == 0) {
         return;
     }
 
@@ -915,7 +940,11 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
         int fork;
 
         for (fork = 0; fork < forks; ++fork) {
-            float spread = ((float)fork / (float)(forks - 1)) - 0.5f;
+            /* Evenly spaced and then knocked off it. A perfectly symmetric
+               split at every node is what makes a procedural tree look
+               procedural: the eye reads the rule before it reads the tree. */
+            float spread = ((float)fork / (float)(forks - 1)) - 0.5f +
+                           (float)RngRange(rng, -20, 20) * 0.01f;
             float turn = spread * (0.9f + (float)RngRange(rng, 0, 40) * 0.01f);
             float shorter = length * (0.52f + (float)RngRange(rng, 0, 22) * 0.01f);
 
@@ -926,19 +955,29 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
     }
 }
 
-/* A tree that spreads: a leaning trunk that divides three times, with foliage
-   only where the limbs end. */
+/* A tree that spreads: a leaning trunk that divides four times, with foliage
+   only where the limbs end.
+ *
+ * Four divisions rather than three, and a stem no longer than it was. Reaching
+ * the new height by lengthening the first limb instead produced a bare pole
+ * with a tuft on top — an umbrella, not a broadleaf. Height belongs to the
+ * branching: the crown is where a tree keeps its size. */
 static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
                                 int trunkHeight, int canopyRadius,
                                 CellMaterial canopy)
 {
     float lean = (float)RngRange(rng, -22, 22) * 0.01f;
+    /* A bare trunk divides once less: without foliage the extra level is a
+       thicket of twigs nobody can read, and a dead tree is a silhouette. */
+    /* Three levels or four, decided per tree: a stand where every trunk
+       divides the same number of times is a stand of one tree repeated. */
+    int depth = canopy == MATERIAL_EMPTY ? 3 : RngRange(rng, 3, 4);
 
     if (!FloraSpaceIsClear(world, x, groundY - 1, 1, trunkHeight / 2)) {
         return;
     }
     FloraGrowLimb(world, (float)x + 0.5f, (float)groundY - 0.5f,
-                  -1.5708f + lean, (float)trunkHeight, 3, 3, rng, canopy,
+                  -1.5708f + lean, (float)trunkHeight, depth, 4, rng, canopy,
                   canopyRadius);
 }
 
@@ -1021,7 +1060,7 @@ static void FloraCactusColumn(World *world, int x, int topY, int bottomY,
 static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
                              int height)
 {
-    int width = RngRange(rng, 0, 99) < 45 ? 3 : 2;
+    int width = RngRange(rng, 0, 99) < 55 ? 4 : 3;
     int top = groundY - height;
     int arms = RngRange(rng, 0, 99) < 68 ? 2 : 1;
     int arm;
@@ -1043,9 +1082,9 @@ static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
         /* How far out the elbow sits, then how far up the arm climbs from it.
            The climb is measured against what is left of the trunk above the
            elbow, so an arm never overtops its own plant. */
-        int reach = RngRange(rng, 3, 5);
-        int rise = RngRange(rng, 4, 9);
-        int armWidth = width > 2 ? 2 : width;
+        int reach = RngRange(rng, 4, 8);
+        int rise = RngRange(rng, 7, 15);
+        int armWidth = width > 3 ? 3 : 2;
         int armX = side > 0 ? x + width - 1 + reach : x - reach - armWidth + 1;
         int armTop = elbowY - rise;
 
@@ -1116,14 +1155,14 @@ static void GenerateFlora(World *world)
                    chance made the forest thinner. */
                 if (RngRange(&rng, 0, 999) < 48) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
-                                        RngRange(&rng, 13, 24),
-                                        RngRange(&rng, 3, 6), MATERIAL_LEAF);
+                                        RngRange(&rng, 12, 21),
+                                        RngRange(&rng, 4, 8), MATERIAL_LEAF);
                 }
                 /* Grass on almost every exposed cell of soil: it is the
                    cheapest thing that makes ground read as living. */
                 if (RngRange(&rng, 0, 99) < 86 &&
                     WorldMaterialAt(world, x, surface - 1) == MATERIAL_EMPTY) {
-                    int tuft = RngRange(&rng, 0, 99) < 34 ? 2 : 1;
+                    int tuft = RngRange(&rng, 0, 99) < 34 ? 3 : 2;
                     int blade;
 
                     /* One cell alone is a tint on the ground; a tuft is
@@ -1146,7 +1185,7 @@ static void GenerateFlora(World *world)
                    none: a cactus is the only landmark a dune field has. */
                 if (RngRange(&rng, 0, 999) < 28) {
                     FloraPlaceCactus(world, x, surface, &rng,
-                                     RngRange(&rng, 10, 19));
+                                     RngRange(&rng, 17, 32));
                 }
                 break;
             case WORLD_BIOME_FROST:
@@ -1155,7 +1194,7 @@ static void GenerateFlora(World *world)
                    the trunk, which is what separates them from the broadleaf. */
                 if (RngRange(&rng, 0, 999) < 30) {
                     FloraPlaceConifer(world, x, surface, &rng,
-                                      RngRange(&rng, 18, 32), MATERIAL_LEAF);
+                                      RngRange(&rng, 30, 54), MATERIAL_LEAF);
                 }
                 break;
             case WORLD_BIOME_VOLCANIC:
@@ -1165,7 +1204,7 @@ static void GenerateFlora(World *world)
                    after they have burned. */
                 if (RngRange(&rng, 0, 999) < 30) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
-                                        RngRange(&rng, 9, 17), 0,
+                                        RngRange(&rng, 13, 24), 0,
                                         MATERIAL_EMPTY);
                 }
                 break;

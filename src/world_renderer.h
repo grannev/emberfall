@@ -5,7 +5,7 @@
  *
  * The renderer used to hold one Texture2D the size of the whole world. That
  * worked, but it made the maximum world width a property of the GPU: at
- * 16384x864 the map was already within sight of the smallest guaranteed
+ * 16384x1440 the map is well past the smallest guaranteed
  * GL_MAX_TEXTURE_SIZE, and it cost 54 MiB of VRAM for a map of which a few
  * per cent is ever on screen.
  *

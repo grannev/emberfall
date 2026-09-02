@@ -48,7 +48,10 @@ void PlayerInit(Player *player, Vector2 position)
     player->fluidDrag = 3.4f;
     player->drag = 1.1f;
     player->restitution = 0.34f;
-    player->radius = 3.2f;
+    /* Scaled with the drawn figure. The collider and the body have to agree or
+       the character stands with his shins in the ground, which is what a
+       thirteen-cell figure on a 3.2-cell collider already looked like. */
+    player->radius = 3.2f * PLAYER_BODY_SCALE;
     player->impactStrength = 0.0f;
     player->impactTimer = 0.0f;
     player->animationTime = 0.0f;
@@ -187,6 +190,7 @@ Vector2 PlayerBodyUp(const Player *player)
 /* Distance up the body axis from the hips to the visor. The renderer builds the
    head at 6.0 and puts the visor a little to the side of it; this is that same
    point, and both go through this one number. */
+/* In body units, like everything else on the figure. */
 #define PLAYER_VISOR_ALONG_UP 6.0f
 #define PLAYER_VISOR_ALONG_SIDE 0.9f
 
@@ -200,11 +204,13 @@ Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing)
     float dx;
     float dy;
     float length;
-    float reach = trailing ? PLAYER_TWO_HAND_REACH - 0.8f
-                           : PLAYER_TWO_HAND_REACH;
-    float across = trailing ? -0.8f : 1.1f;
-    float along = trailing ? PLAYER_SHOULDER_UP - 2.2f
-                           : PLAYER_SHOULDER_UP - 0.6f;
+    /* Body units into cells, once, here: every number below is a place on the
+       figure, and the figure has a scale. */
+    float reach = (trailing ? PLAYER_TWO_HAND_REACH - 0.8f
+                            : PLAYER_TWO_HAND_REACH) * PLAYER_BODY_SCALE;
+    float across = (trailing ? -0.8f : 1.1f) * PLAYER_BODY_SCALE;
+    float along = (trailing ? PLAYER_SHOULDER_UP - 2.2f
+                            : PLAYER_SHOULDER_UP - 0.6f) * PLAYER_BODY_SCALE;
 
     if (player == NULL) {
         return aim;
@@ -260,10 +266,15 @@ Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim)
     /* The head turns a little toward the cursor, exactly as it is drawn. */
     aimAcross = dx * side.x + dy * side.y;
 
-    visor = (Vector2){player->position.x + up.x * PLAYER_VISOR_ALONG_UP +
-                          side.x * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross),
-                      player->position.y + up.y * PLAYER_VISOR_ALONG_UP +
-                          side.y * (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross)};
+    {
+        float alongUp = PLAYER_VISOR_ALONG_UP * PLAYER_BODY_SCALE;
+        float alongSide = (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross) *
+                          PLAYER_BODY_SCALE;
+
+        visor = (Vector2){
+            player->position.x + up.x * alongUp + side.x * alongSide,
+            player->position.y + up.y * alongUp + side.y * alongSide};
+    }
     return visor;
 }
 
@@ -285,7 +296,12 @@ Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim)
     }
     /* Just clear of the visor itself, so the cast ray starts in front of the
        face rather than inside it. */
-    return (Vector2){visor.x + dx / length * 1.4f, visor.y + dy / length * 1.4f};
+    {
+        float clearance = 1.4f * PLAYER_BODY_SCALE;
+
+        return (Vector2){visor.x + dx / length * clearance,
+                         visor.y + dy / length * clearance};
+    }
 }
 
 bool PlayerIsDrilling(const Player *player)

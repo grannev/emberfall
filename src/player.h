@@ -150,11 +150,27 @@ Vector2 PlayerBeamOrigin(const Player *player, Vector2 aim);
  * moves the eye moves both. */
 Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim);
 
+/* Cells per body unit.
+ *
+ * The figure is written in body units — the shoulders at 3.2, the visor at 6.0,
+ * the knee a little under five below it — and this is the one number that turns
+ * those into cells. It exists because the character was drawn some thirteen
+ * cells tall, and at that size a full-grown tree stood barely a head above him
+ * and the world read as a set of props built for a giant. Shrinking him is the
+ * cheaper half of fixing the proportions: everything else in the world gains
+ * scale for free.
+ *
+ * It has to be shared rather than living in the renderer, because the beams are
+ * cast from the same body frame they are drawn in. A scale applied to the
+ * drawing alone would put the eyes in one place and the laser's muzzle in
+ * another — the exact bug the visor origin already had once. */
+#define PLAYER_BODY_SCALE 0.62f
+
 /* Where the shoulders sit along the body axis, and how far a two-handed power
-   reaches past them. Here rather than in the renderer because the telekinetic
-   hold is drawn from the hands and cast from the hands: the moment those are
-   two different numbers, the beam leaves from a point where no hand is, which
-   is the bug the visor origin already had once. */
+   reaches past them, in body units. Here rather than in the renderer because
+   the telekinetic hold is drawn from the hands and cast from the hands: the
+   moment those are two different numbers, the beam leaves from a point where no
+   hand is, which is the bug the visor origin already had once. */
 #define PLAYER_SHOULDER_UP 3.2f
 #define PLAYER_TWO_HAND_REACH 4.6f
 

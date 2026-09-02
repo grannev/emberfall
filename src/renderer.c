@@ -415,6 +415,18 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                              (int)game->player.position.x)));
     EnvironmentRendererSetDaylight(&renderer->environment,
                                    GameDaylightAt(game->dayPhase));
+    /* Full backdrop at and below the clouds, none at and above the space line.
+       Asked here because the environment renderer is never given a World and
+       could not work it out; the answer itself belongs to the world, beside the
+       gravity that fades across the same band.
+
+       The player's altitude, not the camera's. Near the top of the world the
+       camera cannot centre on the character at all — it is held inside the
+       world's bounds — so its target says the view is lower than the character
+       is, and the horizon would never fully go away. */
+    EnvironmentRendererSetAltitude(
+        &renderer->environment,
+        WorldAirFractionAt(&game->world, game->player.position.y));
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});

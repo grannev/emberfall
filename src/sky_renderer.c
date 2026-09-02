@@ -190,17 +190,27 @@ static void SkyDrawSpace(SkyRenderer *sky, Rectangle visible, int worldHeight,
            picture is made of. */
         for (y = top; y < cloudY && y < bottom; y += step) {
             /* Nothing at the cloud line, everything at the space line — but the
-               darkening only starts well up the band. Spreading it across the
+               darkening starts some way up the band. Spreading it across the
                whole band put a veil over the entire daytime sky and turned every
                backdrop into a silhouette against black: the sky between the
-               clouds and space is still sky, and only the top of it is not. */
+               clouds and space is still sky, and only the top of it is not.
+             *
+               Where it starts, and how fast it closes, are a fraction of the
+               band rather than a distance, so they hold whatever the world's
+               height is. They were tuned when that band was a hundred and
+               eighty cells deep, and on a taller world the same fractions left
+               the ground's painted horizon showing at seventy per cent through
+               air the player had already climbed above — hills at eye level,
+               seen from orbit. Beginning sooner and closing faster is what
+               makes the top of the climb read as space rather than as a dim
+               afternoon. */
             float height = (cloudY - y) / (cloudY - spaceY);
-            float amount = (height - 0.45f) / 0.55f;
+            float amount = (height - 0.20f) / 0.80f;
             unsigned char alpha;
 
             if (amount < 0.0f) amount = 0.0f;
             if (amount > 1.0f) amount = 1.0f;
-            alpha = (unsigned char)(250.0f * amount * amount);
+            alpha = (unsigned char)(250.0f * amount * amount * sqrtf(amount));
             DrawRectangleV((Vector2){visible.x, y},
                            (Vector2){visible.width, step},
                            (Color){2, 3, 8, alpha});
