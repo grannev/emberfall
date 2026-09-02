@@ -1414,6 +1414,126 @@ static void test_flora_grows_on_the_biome_it_belongs_to(void)
     WorldUnload(&world);
 }
 
+/* A cactus is the desert's only landmark, and at one cell wide it is not a
+   plant, it is a green line. Two things make the silhouette: thickness, and an
+   arm that stands clear of the trunk before it turns up.
+ *
+ * Measured per plant rather than per row. Counting rows that hold two runs of
+ * cactus looked like it measured arms and did not: two cacti standing near each
+ * other put two runs on a row, so the count stayed healthy with the arms taken
+ * out altogether. A plant is a connected group of cells, and an arm is what
+ * makes one wider than its own trunk. */
+static void CactusComponent(World *world, int x, int y, int *left, int *right,
+                            int *cells)
+{
+    /* A cactus is a few hundred cells at most; anything larger is two plants
+       that have grown into each other, and the bound stops a runaway from
+       hanging the suite. */
+    enum { CACTUS_STACK = 2048 };
+    int stackX[CACTUS_STACK];
+    int stackY[CACTUS_STACK];
+    int depth = 0;
+
+    stackX[depth] = x;
+    stackY[depth] = y;
+    ++depth;
+    /* Cleared as it is counted: the cleared cell is the visited mark, which
+       costs no second array over a world of millions of cells. */
+    WorldSetCell(world, x, y, MATERIAL_EMPTY);
+    *left = x;
+    *right = x;
+    *cells = 0;
+
+    while (depth > 0) {
+        int offsetX;
+        int atX;
+        int atY;
+
+        --depth;
+        atX = stackX[depth];
+        atY = stackY[depth];
+        ++(*cells);
+        if (atX < *left) *left = atX;
+        if (atX > *right) *right = atX;
+
+        for (offsetX = -1; offsetX <= 1; ++offsetX) {
+            int offsetY;
+
+            for (offsetY = -1; offsetY <= 1; ++offsetY) {
+                int nextX = atX + offsetX;
+                int nextY = atY + offsetY;
+
+                if (offsetX == 0 && offsetY == 0) continue;
+                if (nextX < 0 || nextX >= world->width) continue;
+                if (nextY < 0 || nextY >= world->height) continue;
+                if (WorldGetCell(world, nextX, nextY) != MATERIAL_CACTUS) {
+                    continue;
+                }
+                WorldSetCell(world, nextX, nextY, MATERIAL_EMPTY);
+                if (depth >= CACTUS_STACK) continue;
+                stackX[depth] = nextX;
+                stackY[depth] = nextY;
+                ++depth;
+            }
+        }
+    }
+}
+
+static void test_a_cactus_is_thick_and_carries_arms(void)
+{
+    World world;
+    int cells = 0;
+    int paired = 0;
+    int plants = 0;
+    int armed = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    WorldGenerate(&world, 0xF10A5u);
+
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            if (WorldGetCell(&world, x, y) != MATERIAL_CACTUS) continue;
+            ++cells;
+            if ((x > 0 &&
+                 WorldGetCell(&world, x - 1, y) == MATERIAL_CACTUS) ||
+                (x + 1 < world.width &&
+                 WorldGetCell(&world, x + 1, y) == MATERIAL_CACTUS)) {
+                ++paired;
+            }
+        }
+    }
+    CHECK(cells > 200, "the world grew only %d cells of cactus", cells);
+    /* A one-cell column has no horizontal neighbour anywhere. */
+    CHECK(paired * 4 > cells * 3,
+          "only %d of %d cactus cells have a neighbour beside them", paired,
+          cells);
+
+    /* Destructive, so it runs last on its own world: the flood fill clears what
+       it counts. */
+    for (y = 0; y < world.height; ++y) {
+        for (x = 0; x < world.width; ++x) {
+            int left;
+            int right;
+            int size;
+
+            if (WorldGetCell(&world, x, y) != MATERIAL_CACTUS) continue;
+            CactusComponent(&world, x, y, &left, &right, &size);
+            if (size < 8) continue;
+            ++plants;
+            /* The widest trunk is three cells. Anything reaching past that
+               reached with an arm. */
+            if (right - left >= 5) ++armed;
+        }
+    }
+    CHECK(plants > 10, "the world grew only %d cacti", plants);
+    CHECK(armed * 2 > plants,
+          "only %d of %d cacti reach wider than their own trunk", armed,
+          plants);
+    WorldUnload(&world);
+}
+
 /* Flora is solid, and every measurement of "where is the ground" has to be able
    to say that a tree is not a cliff. */
 static void test_flora_is_solid_but_is_never_the_ground(void)
@@ -10084,6 +10204,7 @@ int main(void)
     RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
     RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
+    RUN(test_a_cactus_is_thick_and_carries_arms);
     RUN(test_flora_is_solid_but_is_never_the_ground);
     RUN(test_the_day_turns_and_takes_the_sky_with_it);
     RUN(test_the_backdrop_crosses_between_biomes_without_snapping);

@@ -980,29 +980,111 @@ static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
                   RngRange(rng, 0, 255));
 }
 
-/* A column with two arms, which is the silhouette a desert reads by. */
+/* One vertical run of a cactus, `width` cells across, from `topY` down to
+   `bottomY`. Nothing here overwrites: a limb meeting the trunk stops rather
+   than carving into it. */
+static void FloraCactusColumn(World *world, int x, int topY, int bottomY,
+                              int width)
+{
+    int y;
+
+    for (y = topY; y <= bottomY; ++y) {
+        int offset;
+
+        for (offset = 0; offset < width; ++offset) {
+            if (!WorldInBounds(world, x + offset, y)) continue;
+            if (WorldMaterialAt(world, x + offset, y) != MATERIAL_EMPTY) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, x + offset, y, MATERIAL_CACTUS);
+        }
+    }
+    /* Rounded, not sawn off: the top cell of the outermost rib is dropped, so a
+       trunk and an arm both end in a dome rather than in a flat lid. */
+    if (width > 2 && WorldInBounds(world, x + width - 1, topY) &&
+        WorldMaterialAt(world, x + width - 1, topY) == MATERIAL_CACTUS) {
+        WorldSetGeneratedCell(world, x + width - 1, topY, MATERIAL_EMPTY);
+    }
+}
+
+/* A saguaro: a thick ribbed column with one or two elbowed arms.
+ *
+ * It used to be a single cell wide with a hook on it, and at that width a
+ * cactus is not a plant, it is a green line — the desert's one landmark read as
+ * a scratch on the screen. Everything here is at least two cells thick, and the
+ * arms turn a corner rather than sprouting sideways, because the corner is the
+ * whole silhouette: it is what the eye names a cactus by.
+ *
+ * The ribs are the same trick as the broken edge of a beam and the eaten edge
+ * of a canopy — a hash decides them rather than a drawing — so no two cacti in
+ * a dune field are the same cactus. */
 static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
                              int height)
 {
-    int armY = groundY - height + RngRange(rng, 2, 5);
+    int width = RngRange(rng, 0, 99) < 45 ? 3 : 2;
+    int top = groundY - height;
+    int arms = RngRange(rng, 0, 99) < 68 ? 2 : 1;
+    int arm;
     int side = RngRange(rng, 0, 1) == 0 ? -1 : 1;
-    bool thick;
     int y;
 
-    if (!FloraSpaceIsClear(world, x, groundY - 1, 1, height)) {
+    /* Trunk-width clearance only. Demanding room for the arms as well is what
+       once made trees vanish from every slope: any hillside violates a box as
+       wide as the plant, and the limbs already stop at whatever they meet. */
+    if (!FloraSpaceIsClear(world, x, groundY - 1, width / 2, height)) {
         return;
     }
-    thick = WorldInBounds(world, x + 1, groundY) &&
-            MaterialIsSolid(WorldMaterialAt(world, x + 1, groundY));
-    for (y = groundY - 1; y >= groundY - height; --y) {
-        WorldSetGeneratedCell(world, x, y, MATERIAL_CACTUS);
-        if (thick) WorldSetGeneratedCell(world, x + 1, y, MATERIAL_CACTUS);
+    FloraCactusColumn(world, x, top, groundY - 1, width);
+
+    for (arm = 0; arm < arms; ++arm) {
+        /* Arms are hung on the lower half of the trunk and never at the same
+           height, so a two-armed cactus is lopsided the way a real one is. */
+        int elbowY = groundY - height / 2 + RngRange(rng, -2, 4) - arm * 3;
+        /* How far out the elbow sits, then how far up the arm climbs from it.
+           The climb is measured against what is left of the trunk above the
+           elbow, so an arm never overtops its own plant. */
+        int reach = RngRange(rng, 3, 5);
+        int rise = RngRange(rng, 4, 9);
+        int armWidth = width > 2 ? 2 : width;
+        int armX = side > 0 ? x + width - 1 + reach : x - reach - armWidth + 1;
+        int armTop = elbowY - rise;
+
+        if (armTop < top + 2) armTop = top + 2;
+        if (elbowY >= groundY - 2 || armTop >= elbowY - 1) continue;
+
+        /* The horizontal run out to the elbow, two cells deep so the corner has
+           a thickness rather than being a single line of pixels. */
+        for (y = elbowY; y < elbowY + armWidth; ++y) {
+            int step;
+            int from = side > 0 ? x + width : armX;
+            int to = side > 0 ? armX + armWidth - 1 : x - 1;
+
+            for (step = from; step <= to; ++step) {
+                if (!WorldInBounds(world, step, y)) continue;
+                if (WorldMaterialAt(world, step, y) != MATERIAL_EMPTY) continue;
+                WorldSetGeneratedCell(world, step, y, MATERIAL_CACTUS);
+            }
+        }
+        FloraCactusColumn(world, armX, armTop, elbowY + armWidth - 1, armWidth);
+        side = -side;
     }
-    for (y = armY; y >= armY - 4; --y) {
-        WorldSetGeneratedCell(world, x + side * 3, y, MATERIAL_CACTUS);
+
+    /* Ribs: a shallow notch bitten out of the sides, never out of the middle,
+       so the column keeps its spine and gains a surface. */
+    for (y = top + 1; y < groundY - 1; ++y) {
+        int edge;
+
+        for (edge = 0; edge < 2; ++edge) {
+            int cellX = edge == 0 ? x : x + width - 1;
+
+            if (width < 3) break;
+            if (!WorldInBounds(world, cellX, y)) continue;
+            if (WorldMaterialAt(world, cellX, y) != MATERIAL_CACTUS) continue;
+            if (PatchUnit(world->seed, cellX * 5, y * 3 + edge) < 0.24f) {
+                WorldSetGeneratedCell(world, cellX, y, MATERIAL_EMPTY);
+            }
+        }
     }
-    WorldSetGeneratedCell(world, x + side, armY, MATERIAL_CACTUS);
-    WorldSetGeneratedCell(world, x + side * 2, armY, MATERIAL_CACTUS);
 }
 
 static void GenerateFlora(World *world)
@@ -1060,9 +1142,11 @@ static void GenerateFlora(World *world)
                 break;
             case WORLD_BIOME_DUNES:
                 if (ground != MATERIAL_SAND) break;
-                if (RngRange(&rng, 0, 999) < 16) {
+                /* Sparse, but not so sparse that a screen of desert holds
+                   none: a cactus is the only landmark a dune field has. */
+                if (RngRange(&rng, 0, 999) < 28) {
                     FloraPlaceCactus(world, x, surface, &rng,
-                                     RngRange(&rng, 9, 17));
+                                     RngRange(&rng, 10, 19));
                 }
                 break;
             case WORLD_BIOME_FROST:
@@ -1076,12 +1160,10 @@ static void GenerateFlora(World *world)
                 break;
             case WORLD_BIOME_VOLCANIC:
                 if (ground != MATERIAL_ROCK) break;
-                /* Dead trunks with nothing on them. The ember wastes are what
-                   the other biomes look like after they have burned. */
-                if (RngRange(&rng, 0, 999) < 20) {
-                    /* Bare: the same branching with nothing hanging on it. The
-                       ember wastes are what the other biomes look like after
-                       they have burned. */
+                /* Dead trunks: the same branching with nothing hanging on
+                   it. The ember wastes are what the other biomes look like
+                   after they have burned. */
+                if (RngRange(&rng, 0, 999) < 30) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
                                         RngRange(&rng, 9, 17), 0,
                                         MATERIAL_EMPTY);
