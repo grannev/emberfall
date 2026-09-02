@@ -1,5 +1,7 @@
 #include "environment_renderer.h"
 
+#include "beam_render.h"
+
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
@@ -19,6 +21,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {18, 18, 26, 255},
         .haze = {151, 91, 63, 255},
         .accent = {255, 113, 42, 255},
+        .profile = {1.00f, 0.86f, 1.18f, 0.75f, 0.00f, 0.85f},
     },
     [ENVIRONMENT_PALETTE_ABYSSAL_BLUE] = {
         .name = "ABYSSAL BLUE",
@@ -31,6 +34,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {5, 20, 35, 255},
         .haze = {55, 129, 151, 255},
         .accent = {80, 216, 243, 255},
+        .profile = {0.55f, 1.00f, 0.92f, 1.00f, 0.10f, 0.20f},
     },
     [ENVIRONMENT_PALETTE_VERDIGRIS_STORM] = {
         .name = "VERDIGRIS STORM",
@@ -43,6 +47,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {11, 27, 28, 255},
         .haze = {100, 120, 85, 255},
         .accent = {188, 225, 103, 255},
+        .profile = {0.42f, 1.20f, 0.70f, 0.25f, 1.00f, 0.15f},
     },
     [ENVIRONMENT_PALETTE_AMBER_DUNES] = {
         .name = "AMBER DUNES",
@@ -55,6 +60,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {22, 20, 22, 255},
         .haze = {172, 138, 88, 255},
         .accent = {255, 196, 96, 255},
+        .profile = {0.08f, 1.45f, 0.55f, 0.00f, 0.00f, 0.35f},
     },
     [ENVIRONMENT_PALETTE_GLACIER_SHELF] = {
         .name = "GLACIER SHELF",
@@ -67,6 +73,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {14, 24, 36, 255},
         .haze = {126, 160, 184, 255},
         .accent = {186, 233, 255, 255},
+        .profile = {0.82f, 0.95f, 1.05f, 0.10f, 0.45f, 0.55f},
     },
 };
 
@@ -152,6 +159,39 @@ EnvironmentPaletteDefinition EnvironmentRendererResolvedPalette(
     resolved.accent = EnvironmentMixColor(from->accent, to->accent, amount,
                                           0.55f + 0.45f * daylight);
     return resolved;
+}
+
+EnvironmentProfile EnvironmentRendererResolvedProfile(
+    const EnvironmentRenderer *renderer)
+{
+    const EnvironmentPaletteDefinition *from;
+    const EnvironmentPaletteDefinition *to;
+    EnvironmentProfile blended;
+    float amount;
+
+    to = EnvironmentPaletteDefinitionAt(renderer != NULL ? renderer->palette
+                                                         : ENVIRONMENT_PALETTE_AUTO);
+    if (to == NULL) to = &PALETTES[0];
+    from = renderer != NULL ? EnvironmentPaletteDefinitionAt(renderer->fadeFrom)
+                            : NULL;
+    if (from == NULL) from = to;
+    amount = renderer != NULL ? EnvironmentClamp(renderer->fade, 0.0f, 1.0f)
+                              : 1.0f;
+
+    blended.sharpness = from->profile.sharpness +
+                        (to->profile.sharpness - from->profile.sharpness) *
+                            amount;
+    blended.breadth = from->profile.breadth +
+                      (to->profile.breadth - from->profile.breadth) * amount;
+    blended.relief = from->profile.relief +
+                     (to->profile.relief - from->profile.relief) * amount;
+    blended.towers = from->profile.towers +
+                     (to->profile.towers - from->profile.towers) * amount;
+    blended.treeline = from->profile.treeline +
+                       (to->profile.treeline - from->profile.treeline) * amount;
+    blended.plume = from->profile.plume +
+                    (to->profile.plume - from->profile.plume) * amount;
+    return blended;
 }
 
 void EnvironmentRendererFadeTo(EnvironmentRenderer *renderer,
@@ -430,6 +470,13 @@ bool EnvironmentRendererSetPalette(EnvironmentRenderer *renderer,
     renderer->palette = palette == ENVIRONMENT_PALETTE_AUTO
                             ? EnvironmentPaletteForSeed(renderer->seed)
                             : palette;
+    /* Immediate, and that means finishing whatever crossing was in flight.
+       Leaving the blend alone looked harmless and was not: a forced palette set
+       while the backdrop was six per cent of the way out of the previous one
+       drew ninety-four per cent of the previous one, so every forced palette
+       painted the same sky and the option appeared to do nothing. */
+    renderer->fadeFrom = renderer->palette;
+    renderer->fade = 1.0f;
     renderer->stats.palette = renderer->palette;
     return true;
 }
@@ -554,12 +601,105 @@ static void EnvironmentDrawSky(EnvironmentRenderer *renderer,
     }
 }
 
+/* A ridge drawn as a stack of columns rather than as a triangle.
+ *
+ * The world is squares and every effect in it is squares; a smooth hypotenuse
+ * on the horizon is the one edge in the picture that came from a different
+ * program. Each column's height comes from a shape that runs between a cone and
+ * a flat-topped mesa, so the same code draws a volcanic spire and a dune by
+ * being handed a different number, and the crest is broken by the same hash the
+ * beams use so no two ridges repeat. */
+static void EnvironmentRidge(EnvironmentRenderer *renderer, float centreX,
+                             float foot, float halfWidth, float peakHeight,
+                             float sharpness, float step, Color color,
+                             int salt)
+{
+    float x;
+
+    if (halfWidth <= 0.0f || peakHeight <= 0.0f || step <= 0.0f) {
+        return;
+    }
+    for (x = -halfWidth; x <= halfWidth; x += step) {
+        float unit = fabsf(x) / halfWidth;
+        /* Cone and mesa, mixed. The mesa is flat across its middle and falls
+           away steeply at the sides; the cone falls away linearly from its
+           apex. */
+        float cone = 1.0f - unit;
+        float mesa = unit < 0.62f ? 1.0f : (1.0f - unit) / 0.38f;
+        float shape = mesa + (cone - mesa) * sharpness;
+        float ragged;
+        float top;
+
+        if (shape <= 0.0f) continue;
+        ragged = 1.0f - 0.16f * BeamNoise((int)(x / step), salt, 71);
+        top = foot - peakHeight * shape * ragged;
+        /* Snapped, so the crest steps in whole blocks like everything else. */
+        top = floorf(top / step) * step;
+        DrawRectangleV((Vector2){centreX + x, top},
+                       (Vector2){step + 1.0f, foot - top + 1.0f}, color);
+    }
+    ++renderer->stats.sceneDrawCalls;
+}
+
+/* Trees along a crest: short ragged columns, drawn in the same silhouette
+   colour so they read as part of the ridge rather than as objects on it. */
+static void EnvironmentTreeline(EnvironmentRenderer *renderer, float fromX,
+                                float toX, float crestY, float density,
+                                float step, Color color, int salt)
+{
+    float x;
+
+    if (density <= 0.01f || step <= 0.0f) {
+        return;
+    }
+    for (x = fromX; x <= toX; x += step * 2.0f) {
+        float roll = BeamNoise((int)(x / step), salt, 83);
+        float height;
+
+        if (roll > density * 0.55f) continue;
+        height = step * (2.0f + BeamNoise((int)(x / step), salt, 89) * 5.0f);
+        DrawRectangleV((Vector2){x, crestY - height},
+                       (Vector2){step, height + 1.0f}, color);
+    }
+    ++renderer->stats.sceneDrawCalls;
+}
+
+/* A smudge rising off a peak: volcanic smoke, or snow blown off a ridge. */
+static void EnvironmentPlume(EnvironmentRenderer *renderer, float x, float top,
+                             float amount, float step, float time, Color color,
+                             int salt)
+{
+    int puff;
+
+    if (amount <= 0.01f) {
+        return;
+    }
+    for (puff = 0; puff < 7; ++puff) {
+        float rise = (float)puff * step * 3.0f * amount;
+        float drift = sinf(time * 0.6f + (float)puff * 0.8f + (float)salt) *
+                      step * (1.0f + (float)puff * 0.7f);
+        float size = step * (1.6f - (float)puff * 0.12f);
+
+        if (size <= 0.0f) break;
+        DrawRectangleV((Vector2){x + drift - size * 0.5f, top - rise - size},
+                       (Vector2){size, size},
+                       EnvironmentFade(color, 0.42f * amount *
+                                                  (1.0f - (float)puff / 8.0f)));
+    }
+    ++renderer->stats.sceneDrawCalls;
+}
+
 static void EnvironmentDrawFarLayer(EnvironmentRenderer *renderer,
                                     const EnvironmentPaletteDefinition *palette,
                                     Camera2D camera, int width, int height)
 {
     float horizon = EnvironmentHorizon(camera, height, 0.018f, 0.64f);
     float scale = EnvironmentViewScale(camera, width);
+    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
+    /* One block of the backdrop, in screen pixels. Coarser than a world cell
+       because the backdrop is far away: a horizon drawn at the same pitch as
+       the ground in front of it stops reading as distance. */
+    float step = fmaxf(2.0f, 3.0f * scale);
     Color farColor = EnvironmentToward(palette->farSilhouette,
                                        palette->skyBottom, 0.24f);
     int index;
@@ -569,14 +709,17 @@ static void EnvironmentDrawFarLayer(EnvironmentRenderer *renderer,
     for (index = 0; index < ENVIRONMENT_FAR_PEAK_COUNT; ++index) {
         const EnvironmentFeature *peak = &renderer->farPeaks[index];
         float x = EnvironmentFeatureX(peak, renderer, camera, width, 0.018f, 0.0f);
-        float halfWidth = (28.0f + peak->width * 46.0f) * scale;
-        float peakHeight = (42.0f + peak->height * 92.0f) * scale;
+        float halfWidth = (28.0f + peak->width * 46.0f) * scale * profile.breadth;
+        float peakHeight = (42.0f + peak->height * 92.0f) * scale * profile.relief;
         float foot = horizon + 2.0f + peak->y * 12.0f;
 
-        DrawTriangle((Vector2){x - halfWidth, foot},
-                     (Vector2){x, foot - peakHeight},
-                     (Vector2){x + halfWidth, foot}, farColor);
-        ++renderer->stats.sceneDrawCalls;
+        EnvironmentRidge(renderer, x, foot, halfWidth, peakHeight,
+                         profile.sharpness, step, farColor, index * 13);
+        EnvironmentPlume(renderer, x, foot - peakHeight, profile.plume, step,
+                         renderer->time,
+                         EnvironmentToward(palette->haze, palette->skyBottom,
+                                           0.35f),
+                         index);
     }
 }
 
@@ -587,10 +730,19 @@ static void EnvironmentDrawStructures(
 {
     float horizon = EnvironmentHorizon(camera, height, 0.045f, 0.79f);
     float scale = EnvironmentViewScale(camera, width);
+    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
     int index;
 
     for (index = 0; index < ENVIRONMENT_STRUCTURE_COUNT; ++index) {
         const EnvironmentFeature *structure = &renderer->structures[index];
+
+        /* A desert horizon has no towers on it, and a forest has a couple. The
+           count is a fraction of the eight rather than a flag, so a crossing
+           thins them out instead of switching them off. */
+        if ((float)index >= profile.towers *
+                                (float)ENVIRONMENT_STRUCTURE_COUNT) {
+            continue;
+        }
         float x = EnvironmentFeatureX(structure, renderer, camera, width,
                                       0.045f, 0.0f);
         float bodyWidth = (12.0f + structure->width * 34.0f) * scale;
@@ -627,6 +779,8 @@ static void EnvironmentDrawNearLayer(EnvironmentRenderer *renderer,
 {
     float horizon = EnvironmentHorizon(camera, height, 0.075f, 0.88f);
     float scale = EnvironmentViewScale(camera, width);
+    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
+    float step = fmaxf(2.0f, 3.0f * scale);
     int index;
 
     DrawRectangle(0, (int)horizon, width, height - (int)horizon + 1,
@@ -636,15 +790,22 @@ static void EnvironmentDrawNearLayer(EnvironmentRenderer *renderer,
         const EnvironmentFeature *spire = &renderer->nearSpires[index];
         float x = EnvironmentFeatureX(spire, renderer, camera, width, 0.075f,
                                       0.0f);
-        float halfWidth = (12.0f + spire->width * 26.0f) * scale;
-        float spireHeight = (28.0f + spire->height * 82.0f) * scale;
+        float halfWidth = (12.0f + spire->width * 26.0f) * scale *
+                          profile.breadth;
+        float spireHeight = (28.0f + spire->height * 82.0f) * scale *
+                            profile.relief;
         float foot = horizon + spire->y * 14.0f;
 
-        DrawTriangle((Vector2){x - halfWidth, foot},
-                     (Vector2){x + halfWidth * 0.16f, foot - spireHeight},
-                     (Vector2){x + halfWidth, foot}, palette->nearSilhouette);
-        ++renderer->stats.sceneDrawCalls;
+        EnvironmentRidge(renderer, x, foot, halfWidth, spireHeight,
+                         profile.sharpness, step, palette->nearSilhouette,
+                         index * 29 + 5);
+        /* A crest of trees on the near ridge, where a forest biome has one. */
+        EnvironmentTreeline(renderer, x - halfWidth, x + halfWidth,
+                            foot - spireHeight * 0.34f, profile.treeline, step,
+                            palette->nearSilhouette, index * 31);
     }
+    EnvironmentTreeline(renderer, 0.0f, (float)width, horizon,
+                        profile.treeline, step, palette->nearSilhouette, 907);
 }
 
 static void EnvironmentDrawHaze(EnvironmentRenderer *renderer,
@@ -709,6 +870,7 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
                                      Camera2D camera, int width, int height)
 {
     const EnvironmentPaletteDefinition *palette;
+    EnvironmentProfile profile;
     float horizon;
     float scale;
     int index;
@@ -724,8 +886,17 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
     }
     horizon = EnvironmentHorizon(camera, height, 0.045f, 0.79f);
     scale = EnvironmentViewScale(camera, width);
+    profile = EnvironmentRendererResolvedProfile(renderer);
     for (index = 0; index < ENVIRONMENT_STRUCTURE_COUNT; ++index) {
         const EnvironmentFeature *structure = &renderer->structures[index];
+
+        /* A desert horizon has no towers on it, and a forest has a couple. The
+           count is a fraction of the eight rather than a flag, so a crossing
+           thins them out instead of switching them off. */
+        if ((float)index >= profile.towers *
+                                (float)ENVIRONMENT_STRUCTURE_COUNT) {
+            continue;
+        }
         float x = EnvironmentFeatureX(structure, renderer, camera, width,
                                       0.045f, 0.0f);
         float bodyHeight = (88.0f + structure->height * 210.0f) * scale;

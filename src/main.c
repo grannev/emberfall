@@ -1356,6 +1356,12 @@ int main(int argc, char **argv)
                 (void)RendererSetEnvironmentPalette(&renderer,
                                                     ENVIRONMENT_PALETTE_AUTO);
             }
+            /* The backdrop frames are photographs of a backdrop, and a
+               backdrop at dawn is a dark shape against a dark sky. Noon while
+               they are taken; the day resumes from where it was afterwards. */
+            if (smokeFrames >= 8 && smokeFrames <= 14) {
+                game.dayPhase = 0.25f;
+            }
             /* Above the clouds, where there is nothing to hold anything down.
                Asked for the same way midnight is: the run is ten seconds long
                and cannot fly there on its own. Two frames so the light and the

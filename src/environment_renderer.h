@@ -37,6 +37,29 @@ typedef struct EnvironmentFeature {
     float phase;
 } EnvironmentFeature;
 
+/* The shape of a backdrop, as opposed to its colour.
+ *
+ * Two biomes that differ only in palette are the same place painted twice: the
+ * ridge line is the thing the eye reads first, and a frost shelf and a dune sea
+ * do not have the same ridge line. Every field is a number rather than a switch
+ * so that a crossing between two biomes can blend the profiles and the horizon
+ * *morphs* — cones flattening into mesas as the player walks — instead of one
+ * silhouette being cross-faded into another, which reads as two backdrops
+ * overlaid rather than as one place becoming the next. */
+typedef struct EnvironmentProfile {
+    /* 1 draws a cone, 0 draws a flat-topped mesa. */
+    float sharpness;
+    /* Width and height of the far ridge, as multipliers. */
+    float breadth;
+    float relief;
+    /* How many of the eight far towers are drawn, 0..1. A desert has none. */
+    float towers;
+    /* A ragged crest of trees along the near ridge, 0..1. */
+    float treeline;
+    /* Smudges rising off the far peaks, 0..1: volcanic plumes, or blown snow. */
+    float plume;
+} EnvironmentProfile;
+
 typedef struct EnvironmentPaletteDefinition {
     const char *name;
     const char *cliName;
@@ -48,6 +71,7 @@ typedef struct EnvironmentPaletteDefinition {
     Color nearSilhouette;
     Color haze;
     Color accent;
+    EnvironmentProfile profile;
 } EnvironmentPaletteDefinition;
 
 typedef struct EnvironmentRendererStats {
@@ -105,6 +129,11 @@ void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
    toward night. Exposed so that a test can assert what the player sees rather
    than what the state says. */
 EnvironmentPaletteDefinition EnvironmentRendererResolvedPalette(
+    const EnvironmentRenderer *renderer);
+/* The two sides of a crossing blended into one shape. Exposed for the same
+   reason the palette is: a test should be able to assert what the horizon is
+   doing rather than what the state says. */
+EnvironmentProfile EnvironmentRendererResolvedProfile(
     const EnvironmentRenderer *renderer);
 void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
                                   Camera2D camera, int width, int height);

@@ -100,12 +100,35 @@ static inline void WorldLightAxis(int samples, int coordinate, int *low, int *hi
  *
  * The fade between them follows the light field, which is smooth, so the ground
  * closes over the sky gradually across the surface line rather than along a
- * hard edge. */
+ * hard edge.
+ *
+ * Open sky is very nearly a window. It used to be half a wall — a floor of 132
+ * over every lit cell of air, whatever the light — and that floor cost the
+ * backdrop its whole purpose: a noon sky with a painted horizon behind it,
+ * clouds drifting through it and space above them was drawn under a dark
+ * rectangle, and every biome read as dusk. The floor was what the surface line
+ * needed, not what open air needs, so the closing lives in the curve instead. */
+
+/* Sky light at and above which air is a window, and at and below which it is
+   ground. The band between them is the surface line; it is narrow because the
+   light field is already smooth, and a wide band would put the horizon inside
+   cave mouths. */
+#define WORLD_AIR_VEIL_OPEN 0.85f
+#define WORLD_AIR_VEIL_SEALED 0.35f
+
 static inline unsigned char WorldAirVeilAlpha(float sky)
 {
-    float veil = 1.0f - (sky < 0.0f ? 0.0f : (sky > 1.0f ? 1.0f : sky));
+    float lit = sky < 0.0f ? 0.0f : (sky > 1.0f ? 1.0f : sky);
+    float closing = (WORLD_AIR_VEIL_OPEN - lit) /
+                    (WORLD_AIR_VEIL_OPEN - WORLD_AIR_VEIL_SEALED);
+    float shaped;
 
-    return (unsigned char)(132.0f + 123.0f * veil * veil);
+    if (closing < 0.0f) closing = 0.0f;
+    if (closing > 1.0f) closing = 1.0f;
+    /* Smoothed rather than linear, so neither end of the band is a visible
+       crease across the ground. */
+    shaped = closing * closing * (3.0f - 2.0f * closing);
+    return (unsigned char)(18.0f + 237.0f * shaped);
 }
 
 /* Turns the two light channels into a multiplier per colour channel. Light that

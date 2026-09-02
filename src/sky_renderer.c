@@ -189,12 +189,18 @@ static void SkyDrawSpace(SkyRenderer *sky, Rectangle visible, int worldHeight,
            cells of solid colour at a time is what everything else in the
            picture is made of. */
         for (y = top; y < cloudY && y < bottom; y += step) {
-            float amount = 1.0f - (y - spaceY) / (cloudY - spaceY);
+            /* Nothing at the cloud line, everything at the space line — but the
+               darkening only starts well up the band. Spreading it across the
+               whole band put a veil over the entire daytime sky and turned every
+               backdrop into a silhouette against black: the sky between the
+               clouds and space is still sky, and only the top of it is not. */
+            float height = (cloudY - y) / (cloudY - spaceY);
+            float amount = (height - 0.45f) / 0.55f;
             unsigned char alpha;
 
             if (amount < 0.0f) amount = 0.0f;
             if (amount > 1.0f) amount = 1.0f;
-            alpha = (unsigned char)(248.0f * amount * amount);
+            alpha = (unsigned char)(250.0f * amount * amount);
             DrawRectangleV((Vector2){visible.x, y},
                            (Vector2){visible.width, step},
                            (Color){2, 3, 8, alpha});

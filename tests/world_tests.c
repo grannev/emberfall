@@ -7,6 +7,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <raylib.h>
@@ -1621,6 +1622,134 @@ static void test_the_backdrop_crosses_between_biomes_without_snapping(void)
           "the night sky lost the lights in it");
 }
 
+static void test_each_backdrop_has_a_shape_and_crossings_morph_it(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentProfile dunes;
+    EnvironmentProfile glacier;
+    EnvironmentProfile previous;
+    int palette;
+    int step;
+
+    /* Every backdrop is a different shape, not just a different colour. Two
+       biomes that differ only in palette are the same place painted twice, and
+       the ridge line is what the eye reads first. */
+    for (palette = 0; palette < ENVIRONMENT_PALETTE_COUNT; ++palette) {
+        const EnvironmentPaletteDefinition *definition =
+            EnvironmentPaletteDefinitionAt((EnvironmentPalette)palette);
+        int other;
+
+        CHECK(definition != NULL, "palette %d has no definition", palette);
+        CHECK(definition->profile.breadth > 0.0f &&
+                  definition->profile.relief > 0.0f,
+              "%s has a backdrop with no size", definition->name);
+        CHECK(definition->profile.sharpness >= 0.0f &&
+                  definition->profile.sharpness <= 1.0f,
+              "%s has a sharpness of %.2f", definition->name,
+              (double)definition->profile.sharpness);
+        for (other = 0; other < palette; ++other) {
+            const EnvironmentProfile *a = &definition->profile;
+            const EnvironmentProfile *b =
+                &EnvironmentPaletteDefinitionAt((EnvironmentPalette)other)
+                     ->profile;
+
+            CHECK(fabsf(a->sharpness - b->sharpness) > 0.05f ||
+                      fabsf(a->breadth - b->breadth) > 0.05f ||
+                      fabsf(a->relief - b->relief) > 0.05f,
+                  "palettes %d and %d draw the same ridge", palette, other);
+        }
+    }
+
+    /* The desert has no towers and the forest has a treeline: the two shape
+       decisions a player would name if asked what the horizon looks like. */
+    dunes = EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_AMBER_DUNES)
+                ->profile;
+    glacier = EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_GLACIER_SHELF)
+                  ->profile;
+    CHECK(dunes.towers == 0.0f, "the dunes grew %.2f of a tower",
+          (double)dunes.towers);
+    CHECK(dunes.sharpness < 0.2f, "the dunes are cones, not mesas");
+    CHECK(EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_VERDIGRIS_STORM)
+              ->profile.treeline > 0.5f,
+          "the forest horizon has no trees on it");
+    CHECK(glacier.sharpness > 0.6f, "the glacier has no peaks");
+
+    /* And a crossing morphs the shape rather than swapping it: every step is
+       between the two, and the sequence arrives without jumping. */
+    EnvironmentRendererInit(&environment, 0xB10B1E5u, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_AMBER_DUNES);
+    for (step = 0; step < 300; ++step) {
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    }
+    CHECK(fabsf(EnvironmentRendererResolvedProfile(&environment).sharpness -
+                dunes.sharpness) < 0.001f,
+          "the crossing to the dunes never finished");
+
+    previous = EnvironmentRendererResolvedProfile(&environment);
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_GLACIER_SHELF);
+    CHECK(fabsf(EnvironmentRendererResolvedProfile(&environment).sharpness -
+                dunes.sharpness) < 0.001f,
+          "the ridge changed shape on the frame the crossing started");
+    for (step = 0; step < 200; ++step) {
+        EnvironmentProfile now;
+
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+        now = EnvironmentRendererResolvedProfile(&environment);
+        CHECK(now.sharpness >= dunes.sharpness - 0.001f &&
+                  now.sharpness <= glacier.sharpness + 0.001f,
+              "the ridge left both biomes at %.3f", (double)now.sharpness);
+        CHECK(fabsf(now.sharpness - previous.sharpness) < 0.05f,
+              "the ridge jumped by %.3f in one frame",
+              (double)fabsf(now.sharpness - previous.sharpness));
+        previous = now;
+    }
+    CHECK(fabsf(previous.sharpness - glacier.sharpness) < 0.001f,
+          "the crossing to the glacier never arrived");
+}
+
+/* A forced palette is immediate. It used to be merged with whatever crossing
+   happened to be in flight, so a palette set six per cent of the way out of the
+   previous one drew ninety-four per cent of the previous one and every forced
+   backdrop painted the same sky. */
+static void test_a_forced_backdrop_takes_effect_at_once(void)
+{
+    EnvironmentRenderer environment;
+    EnvironmentPaletteDefinition resolved;
+    const EnvironmentPaletteDefinition *wanted;
+
+    int step;
+
+    EnvironmentRendererInit(&environment, 0xB10B1E5u, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererSetDaylight(&environment, 1.0f);
+    /* Settled on a palette this test picked rather than whichever the seed
+       chose, so that "none of the previous one is left" is a real claim. */
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_EMBER_WASTE);
+    for (step = 0; step < 300; ++step) {
+        EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+    }
+    /* Start a crossing and interrupt it almost immediately. */
+    EnvironmentRendererFadeTo(&environment, ENVIRONMENT_PALETTE_AMBER_DUNES);
+    EnvironmentRendererUpdate(&environment, 1.0f / 60.0f);
+
+    CHECK(EnvironmentRendererSetPalette(&environment,
+                                        ENVIRONMENT_PALETTE_GLACIER_SHELF),
+          "the glacier backdrop was refused");
+    resolved = EnvironmentRendererResolvedPalette(&environment);
+    wanted = EnvironmentPaletteDefinitionAt(ENVIRONMENT_PALETTE_GLACIER_SHELF);
+    /* Within a couple of counts rather than exact: the resolved palette also
+       carries the daylight tint, which nudges a channel by a per cent. What is
+       being asserted is that none of the palette it replaced is left. */
+    CHECK(abs((int)resolved.skyBottom.r - (int)wanted->skyBottom.r) <= 4 &&
+              abs((int)resolved.skyBottom.g - (int)wanted->skyBottom.g) <= 4 &&
+              abs((int)resolved.skyBottom.b - (int)wanted->skyBottom.b) <= 4,
+          "a forced backdrop drew (%u,%u,%u) instead of (%u,%u,%u)",
+          resolved.skyBottom.r, resolved.skyBottom.g, resolved.skyBottom.b,
+          wanted->skyBottom.r, wanted->skyBottom.g, wanted->skyBottom.b);
+    CHECK(fabsf(EnvironmentRendererResolvedProfile(&environment).sharpness -
+                wanted->profile.sharpness) < 0.001f,
+          "a forced backdrop kept the shape of the one it replaced");
+}
+
 static void test_a_forced_backdrop_outranks_the_ground(void)
 {
     EnvironmentRenderer environment;
@@ -1719,9 +1848,17 @@ static void test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it(void)
     CHECK(WorldAirVeilAlpha(0.0f) == 255,
           "sealed air was drawn at alpha %u instead of opaque",
           (unsigned int)WorldAirVeilAlpha(0.0f));
-    CHECK(WorldAirVeilAlpha(1.0f) < 160,
+    /* And air the sky fully reaches is a window, not a tinted one. A floor
+       here is what a backdrop, its clouds and the space above them are drawn
+       behind, and at alpha 132 all three read as dusk at noon. */
+    CHECK(WorldAirVeilAlpha(1.0f) < 48,
           "open sky was veiled at alpha %u",
           (unsigned int)WorldAirVeilAlpha(1.0f));
+    /* Sky light a little short of the maximum is still sky: a hillside that
+       shades the air beside it must not paint a dark band down the sky. */
+    CHECK(WorldAirVeilAlpha(0.9f) < 48,
+          "nearly open sky was veiled at alpha %u",
+          (unsigned int)WorldAirVeilAlpha(0.9f));
     CHECK(WorldAirVeilAlpha(0.5f) > WorldAirVeilAlpha(1.0f) &&
               WorldAirVeilAlpha(0.5f) < WorldAirVeilAlpha(0.0f),
           "the veil does not close gradually across the surface line");
@@ -9950,6 +10087,8 @@ int main(void)
     RUN(test_flora_is_solid_but_is_never_the_ground);
     RUN(test_the_day_turns_and_takes_the_sky_with_it);
     RUN(test_the_backdrop_crosses_between_biomes_without_snapping);
+    RUN(test_each_backdrop_has_a_shape_and_crossings_morph_it);
+    RUN(test_a_forced_backdrop_takes_effect_at_once);
     RUN(test_a_forced_backdrop_outranks_the_ground);
     RUN(test_daylight_dies_a_short_way_into_solid_ground);
     RUN(test_a_carried_light_is_what_makes_the_dark_passable);
