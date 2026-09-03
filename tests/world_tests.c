@@ -1583,6 +1583,139 @@ static void test_flora_grows_on_the_biome_it_belongs_to(void)
     WorldUnload(&world);
 }
 
+/* A conifer is a cone of needles with a trunk inside it, not a ladder.
+ *
+ * It used to be a bare pole with short horizontal wooden limbs and a small
+ * clump of leaves on the end of each, and the two things that gave it away were
+ * that the trunk was the most visible part of the tree and that the silhouette
+ * did not widen. Both are measured here on one plant at a time: a conifer is a
+ * connected group of wood and leaf, its crown has to be markedly wider near the
+ * base than near the tip, and it has to be mostly foliage. */
+static void ConiferComponent(World *world, int x, int y, int *top, int *bottom,
+                             int *leaves, int *wood, int *widthAt, int rows)
+{
+    enum { CONIFER_STACK = 8192, CONIFER_ROWS = 512 };
+    static int stackX[CONIFER_STACK];
+    static int stackY[CONIFER_STACK];
+    static int leftAt[CONIFER_ROWS];
+    static int rightAt[CONIFER_ROWS];
+    int depth = 0;
+    int row;
+
+    for (row = 0; row < CONIFER_ROWS; ++row) {
+        leftAt[row] = 1 << 29;
+        rightAt[row] = -(1 << 29);
+    }
+    *top = y;
+    *bottom = y;
+    *leaves = 0;
+    *wood = 0;
+    stackX[depth] = x;
+    stackY[depth] = y;
+    ++depth;
+
+    while (depth > 0) {
+        int offsetX;
+        int atX;
+        int atY;
+        CellMaterial material;
+
+        --depth;
+        atX = stackX[depth];
+        atY = stackY[depth];
+        material = WorldGetCell(world, atX, atY);
+        if (material != MATERIAL_LEAF && material != MATERIAL_WOOD) continue;
+        /* Cleared as it is counted: the cleared cell is the visited mark, which
+           costs no second array over a world of millions of cells. */
+        WorldSetCell(world, atX, atY, MATERIAL_EMPTY);
+        if (material == MATERIAL_LEAF) {
+            ++(*leaves);
+        } else {
+            ++(*wood);
+        }
+        if (atY < *top) *top = atY;
+        if (atY > *bottom) *bottom = atY;
+        if (atY >= 0 && atY < CONIFER_ROWS) {
+            if (atX < leftAt[atY]) leftAt[atY] = atX;
+            if (atX > rightAt[atY]) rightAt[atY] = atX;
+        }
+
+        for (offsetX = -1; offsetX <= 1; ++offsetX) {
+            int offsetY;
+
+            for (offsetY = -1; offsetY <= 1; ++offsetY) {
+                int nextX = atX + offsetX;
+                int nextY = atY + offsetY;
+                CellMaterial next;
+
+                if (offsetX == 0 && offsetY == 0) continue;
+                if (nextX < 0 || nextX >= world->width) continue;
+                if (nextY < 0 || nextY >= world->height) continue;
+                next = WorldGetCell(world, nextX, nextY);
+                if (next != MATERIAL_LEAF && next != MATERIAL_WOOD) continue;
+                if (depth >= CONIFER_STACK) continue;
+                stackX[depth] = nextX;
+                stackY[depth] = nextY;
+                ++depth;
+            }
+        }
+    }
+
+    for (row = 0; row < rows; ++row) {
+        int at = *top + (*bottom - *top) * row / (rows > 1 ? rows - 1 : 1);
+
+        widthAt[row] = (at >= 0 && at < CONIFER_ROWS && rightAt[at] >= leftAt[at])
+                           ? rightAt[at] - leftAt[at] + 1
+                           : 0;
+    }
+}
+
+static void test_a_conifer_is_a_cone_of_needles_not_a_ladder(void)
+{
+    World world;
+    int examined = 0;
+    int widening = 0;
+    int leafy = 0;
+    int x;
+
+    CHECK(WorldInit(&world, 4096, 448), "world allocation failed");
+    WorldGenerate(&world, 0x1A4E5u);
+
+    for (x = 2; x < world.width - 2 && examined < 24; ++x) {
+        int y;
+
+        if (WorldBiomeAt(&world, x) != WORLD_BIOME_FROST) continue;
+        for (y = 40; y < 400; ++y) {
+            int top;
+            int bottom;
+            int leaves;
+            int wood;
+            int width[4];
+
+            if (WorldGetCell(&world, x, y) != MATERIAL_LEAF) continue;
+            ConiferComponent(&world, x, y, &top, &bottom, &leaves, &wood, width,
+                             4);
+            /* Big enough to be a whole tree rather than a scrap of one that the
+               scan reached from the side. */
+            if (leaves + wood < 120 || bottom - top < 18) break;
+            ++examined;
+            /* Two thirds of the way down the crown against a third of the way
+               down it: a cone, not a column. */
+            if (width[2] > width[0] * 2) ++widening;
+            if (leaves > wood * 4) ++leafy;
+            break;
+        }
+    }
+
+    CHECK(examined >= 8, "the frost shelf grew only %d conifers", examined);
+    CHECK(widening * 4 > examined * 3,
+          "only %d of %d conifers widen toward their base", widening, examined);
+    CHECK(leafy * 4 > examined * 3,
+          "only %d of %d conifers are mostly foliage rather than wood", leafy,
+          examined);
+    WorldUnload(&world);
+}
+
 /* A cactus is the desert's only landmark, and at one cell wide it is not a
    plant, it is a green line. Two things make the silhouette: thickness, and an
    arm that stands clear of the trunk before it turns up.
@@ -10593,6 +10726,7 @@ int main(void)
     RUN(test_the_world_holds_a_sea_and_ponds_on_the_land);
     RUN(test_generated_liquid_is_held_by_the_ground);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
+    RUN(test_a_conifer_is_a_cone_of_needles_not_a_ladder);
     RUN(test_a_cactus_is_thick_and_carries_arms);
     RUN(test_flora_is_solid_but_is_never_the_ground);
     RUN(test_the_day_turns_and_takes_the_sky_with_it);

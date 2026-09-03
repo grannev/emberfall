@@ -1001,6 +1001,46 @@ static bool FloraSpaceIsClear(const World *world, int x, int y, int halfWidth,
     return true;
 }
 
+/* The ragged edge of a canopy is drawn by a hash, and a hash left to itself
+   strands single cells in mid air: a leaf with nothing touching it is not
+   foliage, it is a dead pixel. Sweeping the box afterwards is the cheapest
+   honest fix — the erosion stays random, and nothing survives it alone. */
+static void FloraSweepStranded(World *world, int firstX, int firstY, int lastX,
+                               int lastY, CellMaterial material)
+{
+    int y;
+
+    for (y = firstY; y <= lastY; ++y) {
+        int x;
+
+        for (x = firstX; x <= lastX; ++x) {
+            bool joined = false;
+            int offsetX;
+
+            if (!WorldInBounds(world, x, y) ||
+                WorldMaterialAt(world, x, y) != material) {
+                continue;
+            }
+            for (offsetX = -1; offsetX <= 1 && !joined; ++offsetX) {
+                int offsetY;
+
+                for (offsetY = -1; offsetY <= 1; ++offsetY) {
+                    if (offsetX == 0 && offsetY == 0) continue;
+                    if (!WorldInBounds(world, x + offsetX, y + offsetY)) continue;
+                    if (WorldMaterialAt(world, x + offsetX, y + offsetY) !=
+                        MATERIAL_EMPTY) {
+                        joined = true;
+                        break;
+                    }
+                }
+            }
+            if (!joined) {
+                WorldSetGeneratedCell(world, x, y, MATERIAL_EMPTY);
+            }
+        }
+    }
+}
+
 static void FloraFillDisc(World *world, int centerX, int centerY, int radiusX,
                           int radiusY, CellMaterial material, uint64_t seed,
                           int salt)
@@ -1028,39 +1068,8 @@ static void FloraFillDisc(World *world, int centerX, int centerY, int radiusX,
         }
     }
 
-    /* The ragged edge is drawn by a hash, and a hash left to itself strands
-       single cells in mid air: a leaf with nothing touching it is not foliage,
-       it is a dead pixel. Sweeping the same box afterwards is the cheapest
-       honest fix — the erosion stays random, and nothing survives it alone. */
-    for (y = centerY - radiusY; y <= centerY + radiusY; ++y) {
-        int x;
-
-        for (x = centerX - radiusX; x <= centerX + radiusX; ++x) {
-            bool joined = false;
-            int offsetX;
-
-            if (!WorldInBounds(world, x, y) ||
-                WorldMaterialAt(world, x, y) != material) {
-                continue;
-            }
-            for (offsetX = -1; offsetX <= 1 && !joined; ++offsetX) {
-                int offsetY;
-
-                for (offsetY = -1; offsetY <= 1; ++offsetY) {
-                    if (offsetX == 0 && offsetY == 0) continue;
-                    if (!WorldInBounds(world, x + offsetX, y + offsetY)) continue;
-                    if (WorldMaterialAt(world, x + offsetX, y + offsetY) !=
-                        MATERIAL_EMPTY) {
-                        joined = true;
-                        break;
-                    }
-                }
-            }
-            if (!joined) {
-                WorldSetGeneratedCell(world, x, y, MATERIAL_EMPTY);
-            }
-        }
-    }
+    FloraSweepStranded(world, centerX - radiusX, centerY - radiusY,
+                       centerX + radiusX, centerY + radiusY, material);
 }
 
 /* One limb, and the limbs that grow out of it.
@@ -1103,8 +1112,12 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
             WorldSetGeneratedCell(world, cellX, cellY, MATERIAL_WOOD);
         }
         /* Thicker near the base, and the extra cells go on the side the limb is
-           leaning away from, which is where a real one carries its weight. */
-        for (side = 1; side < thickness; ++side) {
+           leaning away from, which is where a real one carries its weight. The
+           taper runs along the limb as well as between levels: a trunk that is
+           one thickness from root to fork is a post with a shape on top. */
+        int here = thickness - (thickness - 1) * step / steps;
+
+        for (side = 1; side < here; ++side) {
             int offsetX = cellX + (angle > -1.5708f ? -side : side);
 
             if (WorldInBounds(world, offsetX, cellY) &&
@@ -1124,13 +1137,15 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
                  (-1.5708f - angle) * 0.045f;
     }
 
-    /* Foliage on the last two levels rather than only on the tips. Hung on the
-       tips alone it forms a shell at one distance from the root and the tree
-       reads as an umbrella: a crown has depth, and the depth comes from the
-       leaves inside it. The inner level carries a smaller clump so the crown
-       still thins outward. */
-    if (depth <= 1 && canopy != MATERIAL_EMPTY && canopyRadius > 0) {
-        int radius = depth == 0 ? canopyRadius : (canopyRadius * 2) / 3;
+    /* Foliage on the last three levels rather than only on the tips. Hung on
+       the tips alone it forms a shell at one distance from the root and the
+       tree reads as an umbrella; hung on every level down to the fork it fills
+       the crown with clumps at three sizes, which is what gives it depth
+       instead of an outline. Each level inward carries a smaller clump, so the
+       crown still thins outward. */
+    if (depth <= 2 && canopy != MATERIAL_EMPTY && canopyRadius > 0) {
+        static const float shrink[3] = {1.0f, 0.70f, 0.45f};
+        int radius = (int)((float)canopyRadius * shrink[depth]);
 
         if (radius > 0) {
             FloraFillDisc(world, (int)floorf(x), (int)floorf(y), radius, radius,
@@ -1182,47 +1197,117 @@ static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
     if (!FloraSpaceIsClear(world, x, groundY - 1, 1, trunkHeight / 2)) {
         return;
     }
+    /* The first limb is a fraction of the tree's height, not the whole of it.
+       Given the full height it produced a bare pole with everything happening
+       at the top; the crown is supposed to start where the trunk first
+       divides, and the rest of the height comes from the divisions. */
     FloraGrowLimb(world, (float)x + 0.5f, (float)groundY - 0.5f,
-                  -1.5708f + lean, (float)trunkHeight, depth, 4, rng, canopy,
-                  canopyRadius);
+                  -1.5708f + lean, (float)trunkHeight * 0.62f, depth, 5, rng,
+                  canopy, canopyRadius);
 }
 
-/* A conifer: one straight spine with short limbs in tiers, each tier a little
-   shorter than the one below it. The silhouette is a cone, and it is a cone
-   because of where the limbs are, not because an ellipse was squashed. */
+/* A conifer: a spine with tiers of needles hung on it.
+ *
+ * It used to be a bare pole with short horizontal wooden limbs and a small
+ * clump of leaves on the end of each, and on screen that is a ladder rather
+ * than a tree: the trunk was the most visible thing about it and the foliage
+ * read as beads threaded onto it. What makes a pine is the opposite — the
+ * needles are the silhouette, and the trunk is barely visible through them.
+ *
+ * So the crown is drawn as rows rather than as limbs. The half-width grows from
+ * the tip toward the base, and inside each tier it starts narrow and widens
+ * before dropping back at the next tier: that step is the drooping layer a pine
+ * is made of, and it is what keeps the edge a saw instead of a straight cone.
+ * The edge is eaten by the same hash the canopies and the beams use, so no two
+ * pines on a slope are the same pine. */
 static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
                               int trunkHeight, CellMaterial canopy)
 {
     int top = groundY - trunkHeight;
-    int tiers = trunkHeight / 4;
-    int tier;
+    /* A bare bole under the crown, so the tree stands on something rather than
+       sitting on the ground like a bush. */
+    int bole = trunkHeight / 7 + 2;
+    int crownBottom = groundY - 1 - bole;
+    int tierHeight = 3 + trunkHeight / 20;
+    float maxReach = 2.0f + (float)trunkHeight * 0.20f;
+    int salt = RngRange(rng, 0, 255);
     int y;
 
     if (!FloraSpaceIsClear(world, x, groundY - 1, 1, trunkHeight / 2)) {
         return;
     }
-    for (y = groundY - 1; y >= top; --y) {
+
+    /* The bole first, two cells thick, and it stops at whatever it meets: a
+       trunk does not grow through a cliff. */
+    for (y = groundY - 1; y > crownBottom; --y) {
+        int offset;
+
         if (!WorldInBounds(world, x, y)) return;
         if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) break;
-        WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
-    }
-    for (tier = 0; tier < tiers; ++tier) {
-        /* Measured from the top down, so the tiers narrow toward the crown
-           however tall the tree turned out. */
-        float amount = (float)tier / (float)(tiers > 1 ? tiers - 1 : 1);
-        float reach = 1.5f + amount * (float)trunkHeight * 0.26f;
-        int tierY = top + 1 + (int)(amount * (float)(trunkHeight - 2));
-        int side;
-
-        for (side = -1; side <= 1; side += 2) {
-            FloraGrowLimb(world, (float)x + 0.5f, (float)tierY + 0.5f,
-                          side > 0 ? 0.45f : PI - 0.45f, reach, 0, 1, rng,
-                          canopy, 1 + (int)(amount * 3.0f));
+        for (offset = 0; offset < 2; ++offset) {
+            if (!WorldInBounds(world, x + offset, y)) continue;
+            if (WorldMaterialAt(world, x + offset, y) != MATERIAL_EMPTY) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, x + offset, y, MATERIAL_WOOD);
         }
     }
-    /* A crown, so the spine does not end in a bare stick. */
-    FloraFillDisc(world, x, top, 2, 3, canopy, world->seed,
-                  RngRange(rng, 0, 255));
+
+    if (canopy == MATERIAL_EMPTY || crownBottom <= top + 2) {
+        /* A bare spine is all a dead conifer is, so it is drawn and that is
+           the whole tree. */
+        for (y = crownBottom; y >= top; --y) {
+            if (!WorldInBounds(world, x, y)) return;
+            if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) break;
+            WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
+        }
+        return;
+    }
+
+    for (y = top; y <= crownBottom; ++y) {
+        float along = (float)(y - top) / (float)(crownBottom - top);
+        int tier = (crownBottom - y) % tierHeight;
+        float within = 1.0f - (float)tier / (float)tierHeight;
+        float half = (0.8f + along * maxReach) * (0.50f + 0.50f * within);
+        int reach = (int)half;
+        int offset;
+
+        for (offset = -reach; offset <= reach; ++offset) {
+            int cellX = x + offset;
+            float edge = half > 0.001f
+                             ? (float)(offset < 0 ? -offset : offset) / half
+                             : 1.0f;
+
+            if (!WorldInBounds(world, cellX, y)) continue;
+            if (WorldMaterialAt(world, cellX, y) != MATERIAL_EMPTY) continue;
+            if (edge > 0.5f &&
+                PatchUnit(world->seed, cellX * 3 + salt, y * 3) <
+                    (edge - 0.5f) * 1.5f) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, cellX, y, canopy);
+        }
+    }
+
+    FloraSweepStranded(world, x - (int)maxReach - 2, top,
+                       x + (int)maxReach + 2, crownBottom, canopy);
+
+    /* The spine inside the crown, drawn last. Drawn first it was a solid brown
+       line running the whole height of the tree, which is the one thing a pine
+       never shows; drawn only into what the needles left empty it disappeared
+       altogether, which is the other. So it takes the empty cells, and also the
+       one row of each tier where the foliage is at its thinnest — the gap
+       between two layers is exactly where a real trunk is visible. */
+    for (y = crownBottom; y >= top; --y) {
+        bool gap = (crownBottom - y) % tierHeight == tierHeight - 1;
+
+        if (!WorldInBounds(world, x, y)) break;
+        if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY &&
+            !(gap && WorldMaterialAt(world, x, y) == canopy)) {
+            continue;
+        }
+        WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
+    }
 }
 
 /* One vertical run of a cactus, `width` cells across, from `topY` down to
