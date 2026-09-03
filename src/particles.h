@@ -56,9 +56,9 @@ void ParticlesSpawnLaserSparks(ParticleSystem *system, Vector2 position, Vector2
 void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 normal,
                           float strength);
 void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, int stage);
+                              Vector2 velocity);
 void ParticlesSpawnBoostBurst(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, int stage);
+                              Vector2 velocity);
 void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
                                Vector2 velocity, int destroyedCells);
 void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,

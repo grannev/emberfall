@@ -647,7 +647,7 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
         case GAME_EVENT_FORCE:
             PresentationFxSpawnForce(system, event, &spawned);
             break;
-        case GAME_EVENT_BOOST_STAGE:
+        case GAME_EVENT_BOOST_ENGAGED:
             PresentationFxSpawnBoost(system, event, &spawned);
             break;
         case GAME_EVENT_PLAYER_DRILL:

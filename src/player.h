@@ -14,26 +14,28 @@ typedef enum PlayerPose {
     PLAYER_POSE_BLAST
 } PlayerPose;
 
-typedef enum PlayerBoostStage {
-    PLAYER_BOOST_NONE = 0,
-    PLAYER_BOOST_STAGE_ONE,
-    PLAYER_BOOST_STAGE_TWO,
-    PLAYER_BOOST_STAGE_THREE
-} PlayerBoostStage;
-
 /* Most pieces one frame of movement is ever broken into. The step is half a
    cell, and the largest displacement a frame can produce is the top speed times
    the longest step the game will take, so this covers it with room to spare:
    the cap exists to bound the work, not to be reached. */
 #define PLAYER_MAX_MOVE_SUBSTEPS 64
 
-/* How wide a tunnel each boost stage cuts, as a multiple of the player's own
-   radius. A tunnel the size of the collider reads as a worm hole; what a body
-   moving this fast should leave is a corridor with room around it. */
+/* How wide a tunnel the boost cuts, as a multiple of the player's own radius. A
+   tunnel the size of the collider reads as a worm hole; what a body moving this
+   fast should leave is a corridor with room around it. The idle figure is what
+   a player pressed into a wall below the drill threshold scrapes free. */
 #define PLAYER_DRILL_WIDTH_IDLE 1.15f
-#define PLAYER_DRILL_WIDTH_STAGE_ONE 1.55f
-#define PLAYER_DRILL_WIDTH_STAGE_TWO 2.00f
-#define PLAYER_DRILL_WIDTH_STAGE_THREE 2.45f
+#define PLAYER_DRILL_WIDTH_BOOST 2.00f
+
+/* The shove the engine gives the moment it lights, in cells per second. It is
+   what makes engaging the boost a decision the player feels rather than a
+   number quietly changing: the ceiling alone would be reached a third of a
+   second later and read as the same flight, slightly faster. */
+#define PLAYER_BOOST_ENGAGE_IMPULSE 86.0f
+/* How long the ring behind the character lasts after the engine lights. Shared
+   with the renderer, which draws the ring's progress from it: two copies of one
+   duration is a ring that finishes before or after the burst it belongs to. */
+#define PLAYER_BOOST_BURST_TIME 0.34f
 
 typedef struct Player {
     Vector2 position;
@@ -46,27 +48,24 @@ typedef struct Player {
     CellMaterial drillMaterial;
     float acceleration;
     float maxSpeed;
+    /* One boost, one speed.
+     *
+     * The flight used to climb through three tiers, each with its own
+     * acceleration, ceiling and drag, reached by holding a straight line for
+     * long enough. It meant the same key did three different things depending
+     * on how long ago it was pressed, and the tier the player actually flew in
+     * was whichever one the last corner had knocked them back to. What is left
+     * is the middle tier, entered the moment boost is held: the speed is
+     * whatever the player asks for, immediately, every time. */
     float boostAcceleration;
-    float boostStageTwoAcceleration;
-    float boostStageThreeAcceleration;
-    float boostStageOneSpeed;
-    float boostStageTwoSpeed;
-    float boostMaxSpeed;
+    float boostSpeed;
     float boostDrag;
-    float boostStageTwoDrag;
-    float boostStageThreeDrag;
+    /* Where the flight starts drawing a shock cone. Just under the boost
+       ceiling, so it is the reward for a clean straight run rather than a
+       fourth tier by another name. */
     float sonicSpeed;
-    float boostStageTwoDelay;
-    float boostStageThreeDelay;
-    float boostStageTime;
     float boostGrace;
     float drillSpeed;
-    /* Speed shed per cell of travel through material, before the boost stage
-       and the material's own weight scale it. Measured per distance rather
-       than per cell removed: a wider tunnel destroys far more cells for the
-       same journey, and charging for those would mean every widening of the
-       drill silently slowed the player down. */
-    float drillResistance;
     /* Fraction of a material's own phase threshold the tunnel wall is heated
        to, at the centre of the cut. Expressed as a fraction rather than a
        temperature so that rock and dirt glow alike without either being pushed
@@ -104,12 +103,9 @@ typedef struct Player {
     float boostTrailTimer;
     float boostBurstTimer;
     int drilledCells;
-    PlayerBoostStage boostStage;
-    /* One-frame event consumed by main for particles, audio and camera kick. */
-    PlayerBoostStage boostStageChanged;
-    /* Presentation reads this while boostBurstTimer is active to animate the
-       stage ring without feeding visual state back into simulation. */
-    PlayerBoostStage boostBurstStage;
+    /* One-frame event consumed by main for particles, audio and camera kick:
+       the boost has just been engaged from rest. */
+    bool boostEngaged;
     bool facingRight;
     bool thrusting;
     bool boosting;
@@ -129,7 +125,7 @@ void PlayerApplyImpulse(Player *player, Vector2 impulse);
    world: a slab that stopped a player who is boring through bedrock beside it
    would be the odd one out, not the rule. */
 bool PlayerIsDrilling(const Player *player);
-/* Radius of the tunnel the current boost stage cuts. */
+/* Radius of the tunnel the boost cuts. */
 float PlayerDrillRadius(const Player *player);
 
 /* Where a beam leaves the character: the eye, pushed just clear of the collider

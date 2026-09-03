@@ -148,16 +148,14 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
 {
     Player *player = &game->player;
 
-    if (player->boostStageChanged != PLAYER_BOOST_NONE) {
+    if (player->boostEngaged) {
         (void)GameEventsPush(events, (GameEvent){
-            .type = GAME_EVENT_BOOST_STAGE,
+            .type = GAME_EVENT_BOOST_ENGAGED,
             .position = player->position,
             .direction = player->velocity,
-            .count = (int)player->boostStageChanged,
         });
         ParticlesSpawnBoostBurst(&game->particles, player->position,
-                                 player->velocity,
-                                 (int)player->boostStageChanged);
+                                 player->velocity);
     }
     if (player->impactStrength >= 14.0f) {
         (void)GameEventsPush(events, (GameEvent){
@@ -171,7 +169,7 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
     }
     if (player->boostTrailEmitted) {
         ParticlesSpawnBoostTrail(&game->particles, player->position,
-                                 player->velocity, (int)player->boostStage);
+                                 player->velocity);
     }
     if (player->drilledCells > 0) {
         (void)GameEventsPush(events, (GameEvent){

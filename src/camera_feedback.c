@@ -134,21 +134,14 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
             impulse.zoomStrength = 0.072f;
             impulse.duration = 0.34f;
             break;
-        case GAME_EVENT_BOOST_STAGE: {
-            int stage = event->count < 1 ? 1 :
-                        (event->count > 3 ? 3 : event->count);
-
+        case GAME_EVENT_BOOST_ENGAGED:
             impulse.direction = Vector2Negate(CameraFeedbackDirection(
                 event->direction, (Vector2){1.0f, 0.0f}));
-            impulse.positionStrength = stage == 1 ? 0.75f :
-                                       (stage == 2 ? 1.5f : 2.7f);
-            impulse.rotationStrength = stage == 1 ? 0.10f :
-                                       (stage == 2 ? 0.22f : 0.40f);
-            impulse.zoomStrength = stage == 1 ? 0.010f :
-                                   (stage == 2 ? 0.026f : 0.050f);
-            impulse.duration = stage == 3 ? 0.34f : 0.22f;
+            impulse.positionStrength = 1.5f;
+            impulse.rotationStrength = 0.22f;
+            impulse.zoomStrength = 0.026f;
+            impulse.duration = 0.22f;
             break;
-        }
         case GAME_EVENT_PLAYER_IMPACT:
             if (event->strength < 14.0f) {
                 relevant = false;

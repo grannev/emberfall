@@ -317,9 +317,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
         }
     }
 
-    wave = sinf(player->animationTime *
-                (player->boosting ? 11.0f + (float)player->boostStage * 2.0f
-                                  : 5.0f));
+    wave = sinf(player->animationTime * (player->boosting ? 15.0f : 5.0f));
     bob = (1.0f - lean) * sinf(player->animationTime * 2.4f) * 0.7f;
     frame.origin = (Vector2){player->position.x + frame.up.x * bob,
                              player->position.y + frame.up.y * bob};
@@ -339,40 +337,27 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     }
 
     /* A compact sharp exhaust anchors the longer particle/FX trail to the
-       character. It grows by stage, while the separate emissive pass supplies
-       the soft halo without blurring this core. */
-    if (player->boosting && player->boostStage != PLAYER_BOOST_NONE) {
-        float stage = (float)player->boostStage;
+       character, while the separate emissive pass supplies the soft halo
+       without blurring this core. */
+    if (player->boosting) {
         Vector2 nozzle = Vector2Add(player->position,
                                     Vector2Scale(travel, BODY(-3.5f)));
-        Vector2 tail = Vector2Add(
-            nozzle, Vector2Scale(travel, BODY(-(5.0f + stage * 4.5f))));
-        Color exhaust = player->boostStage == PLAYER_BOOST_STAGE_THREE
-                            ? (Color){255, 224, 151, 230}
-                            : (Color){104, 222, 255, 215};
+        Vector2 tail = Vector2Add(nozzle, Vector2Scale(travel, BODY(-14.0f)));
+        Color exhaust = (Color){104, 222, 255, 215};
 
-        DrawLineEx(nozzle, tail, BODY(1.45f + stage * 0.24f),
-                   Fade(exhaust, 0.48f));
+        DrawLineEx(nozzle, tail, BODY(1.93f), Fade(exhaust, 0.48f));
         DrawLineEx(nozzle, tail, BODY(0.55f), exhaust);
     }
 
     /* ---- acceleration burst, behind the body ---- */
-    if (player->boostBurstTimer > 0.0f &&
-        player->boostBurstStage != PLAYER_BOOST_NONE) {
-        float duration = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
-                             ? 0.52f
-                             : 0.30f;
-        float progress = 1.0f - player->boostBurstTimer / duration;
-        float radius = BODY(3.0f + progress *
-                                       (8.0f +
-                                        (float)player->boostBurstStage * 5.0f));
+    if (player->boostBurstTimer > 0.0f) {
+        float progress = 1.0f - player->boostBurstTimer / PLAYER_BOOST_BURST_TIME;
+        float radius = BODY(3.0f + progress * 18.0f);
         float alpha = (1.0f - progress) * 0.8f;
-        Color ring = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
-                         ? (Color){255, 239, 190, 255}
-                         : (Color){137, 224, 255, 255};
+        Color ring = (Color){137, 224, 255, 255};
         int ringIndex;
 
-        for (ringIndex = 0; ringIndex < (int)player->boostBurstStage; ++ringIndex) {
+        for (ringIndex = 0; ringIndex < 2; ++ringIndex) {
             float ringRadius = radius - BODY((float)ringIndex * 3.0f);
 
             if (ringRadius > 1.0f) {
@@ -404,10 +389,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
                         back.y * (0.3f + 0.7f * lean) -
                             frame.up.y * (1.0f - lean) * 0.95f};
         float flowLength = sqrtf(flow.x * flow.x + flow.y * flow.y);
-        float length = BODY(8.0f + 4.0f * lean +
-                            (player->boosting
-                                 ? 1.2f + (float)player->boostStage * 1.4f
-                                 : 0.0f));
+        float length = BODY(8.0f + 4.0f * lean + (player->boosting ? 4.0f : 0.0f));
         int steps = 24;
 
         if (flowLength > 0.001f) {
@@ -553,21 +535,21 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     /* ---- speed streaks ---- */
     if (speed > player->maxSpeed * 0.8f) {
         float intensity = Clamp((speed - player->maxSpeed * 0.8f) /
-                                    (player->boostMaxSpeed - player->maxSpeed * 0.8f),
+                                    (player->boostSpeed - player->maxSpeed * 0.8f),
                                 0.0f, 1.0f);
         Vector2 across = {-travel.y, travel.x};
-        int streakCount = 4 + (int)player->boostStage * 2;
+        int streakCount = 8;
         int streak;
 
         if (player->boosting) {
-            intensity = fmaxf(intensity, 0.18f + (float)player->boostStage * 0.18f);
+            intensity = fmaxf(intensity, 0.54f);
         }
 
         for (streak = 0; streak < streakCount; ++streak) {
             float streakBack = BODY(8.0f + (float)streak * 4.0f);
             float offset = sinf(player->animationTime * 11.0f +
                                 (float)streak) * BODY(3.4f);
-            int length = 3 + (int)player->boostStage - streak / 2;
+            int length = 5 - streak / 2;
             int cell;
 
             if (length < 1) length = 1;
@@ -586,8 +568,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
             }
         }
 
-        if (player->boostStage == PLAYER_BOOST_STAGE_THREE &&
-            speed >= player->sonicSpeed) {
+        if (player->boosting && speed >= player->sonicSpeed) {
             float pulse = BODY(10.0f +
                                sinf(player->animationTime * 18.0f) * 1.8f);
             Vector2 coneStart = {player->position.x - travel.x * BODY(3.5f),
@@ -639,38 +620,26 @@ void PlayerRendererDrawEmissive(const Player *player)
                               player->velocity.y / speed};
     }
 
-    if (player->boosting || player->boostStage != PLAYER_BOOST_NONE) {
-        float stage = (float)player->boostStage;
+    if (player->boosting) {
         Vector2 normal = {-direction.y, direction.x};
-        Vector2 trail = {
-            player->position.x - direction.x * BODY(6.0f + stage * 3.0f),
-            player->position.y - direction.y * BODY(6.0f + stage * 3.0f)};
-        Color color = player->boostStage == PLAYER_BOOST_STAGE_THREE
-                          ? (Color){255, 233, 178, 220}
-                          : (Color){93, 216, 255, 185};
+        Vector2 trail = {player->position.x - direction.x * BODY(12.0f),
+                         player->position.y - direction.y * BODY(12.0f)};
+        Color color = (Color){93, 216, 255, 185};
 
-        DrawLineEx(player->position, trail, BODY(1.2f + stage * 0.45f), color);
-        PlayerFxBlob(player->position, BODY(1.2f + stage * 0.5f), 1.0f, color);
-        if (player->boostStage >= PLAYER_BOOST_STAGE_TWO) {
-            DrawLineEx(Vector2Add(player->position,
-                                  Vector2Scale(normal, BODY(1.8f))),
-                       Vector2Add(trail, Vector2Scale(normal, BODY(3.2f))),
-                       BODY(0.65f), Fade(color, 0.66f));
-            DrawLineEx(Vector2Add(player->position,
-                                  Vector2Scale(normal, BODY(-1.8f))),
-                       Vector2Add(trail, Vector2Scale(normal, BODY(-3.2f))),
-                       BODY(0.65f), Fade(color, 0.66f));
-        }
+        DrawLineEx(player->position, trail, BODY(2.1f), color);
+        PlayerFxBlob(player->position, BODY(2.2f), 1.0f, color);
+        DrawLineEx(Vector2Add(player->position,
+                              Vector2Scale(normal, BODY(1.8f))),
+                   Vector2Add(trail, Vector2Scale(normal, BODY(3.2f))),
+                   BODY(0.65f), Fade(color, 0.66f));
+        DrawLineEx(Vector2Add(player->position,
+                              Vector2Scale(normal, BODY(-1.8f))),
+                   Vector2Add(trail, Vector2Scale(normal, BODY(-3.2f))),
+                   BODY(0.65f), Fade(color, 0.66f));
     }
-    if (player->boostBurstTimer > 0.0f &&
-        player->boostBurstStage != PLAYER_BOOST_NONE) {
-        float duration = player->boostBurstStage == PLAYER_BOOST_STAGE_THREE
-                             ? 0.52f
-                             : 0.30f;
-        float progress = 1.0f - player->boostBurstTimer / duration;
-        float radius = BODY(3.0f + progress *
-                                       (8.0f +
-                                        (float)player->boostBurstStage * 5.0f));
+    if (player->boostBurstTimer > 0.0f) {
+        float progress = 1.0f - player->boostBurstTimer / PLAYER_BOOST_BURST_TIME;
+        float radius = BODY(3.0f + progress * 18.0f);
 
         PlayerFxRing(player->position, radius, fmaxf(1.0f, BODY(1.5f)),
                      Fade((Color){150, 224, 255, 255},

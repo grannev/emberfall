@@ -273,12 +273,11 @@ void ParticlesSpawnImpact(ParticleSystem *system, Vector2 position, Vector2 norm
 }
 
 void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, int stage)
+                              Vector2 velocity)
 {
     float speed = sqrtf(velocity.x * velocity.x + velocity.y * velocity.y);
     Vector2 direction;
     Vector2 tangent;
-    int count;
     int i;
 
     if (system == NULL || speed < 1.0f) {
@@ -287,25 +286,13 @@ void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
 
     direction = (Vector2){velocity.x / speed, velocity.y / speed};
     tangent = (Vector2){-direction.y, direction.x};
-    stage = stage < 1 ? 1 : (stage > 3 ? 3 : stage);
-    position.x -= direction.x * (3.0f + (float)stage);
-    position.y -= direction.y * (3.0f + (float)stage);
-    count = 1 + stage * 2;
-    for (i = 0; i < count; ++i) {
-        float spread = (RandomUnit(system) - 0.5f) * (4.0f + (float)stage * 2.0f);
-        float backward = 14.0f + RandomUnit(system) * (20.0f + (float)stage * 18.0f);
-        Color color;
-
-        if (stage == 3) {
-            color = i % 3 == 0 ? (Color){255, 244, 205, 240}
-                               : (Color){119, 205, 255, 210};
-        } else if (stage == 2) {
-            color = i % 2 == 0 ? (Color){170, 226, 255, 225}
-                               : (Color){104, 238, 244, 190};
-        } else {
-            color = i == 0 ? (Color){113, 229, 234, 220}
-                           : (Color){210, 241, 238, 175};
-        }
+    position.x -= direction.x * 5.0f;
+    position.y -= direction.y * 5.0f;
+    for (i = 0; i < 5; ++i) {
+        float spread = (RandomUnit(system) - 0.5f) * 8.0f;
+        float backward = 14.0f + RandomUnit(system) * 56.0f;
+        Color color = i % 2 == 0 ? (Color){170, 226, 255, 225}
+                                 : (Color){104, 238, 244, 190};
 
         Particle *particle =
             ParticlesSpawnOne(
@@ -314,52 +301,43 @@ void ParticlesSpawnBoostTrail(ParticleSystem *system, Vector2 position,
                           position.y + tangent.y * spread},
                 (Vector2){-direction.x * backward + tangent.x * spread,
                           -direction.y * backward + tangent.y * spread},
-                color,
-                0.12f + RandomUnit(system) * (0.12f + (float)stage * 0.04f),
-                0.35f + RandomUnit(system) * (0.45f + (float)stage * 0.22f),
-                0.0f);
+                color, 0.12f + RandomUnit(system) * 0.20f,
+                0.35f + RandomUnit(system) * 0.89f, 0.0f);
 
-        particle->emission = 0.72f + (float)stage * 0.08f;
+        particle->emission = 0.88f;
     }
 }
 
 void ParticlesSpawnBoostBurst(ParticleSystem *system, Vector2 position,
-                              Vector2 velocity, int stage)
+                              Vector2 velocity)
 {
     float speed = sqrtf(velocity.x * velocity.x + velocity.y * velocity.y);
     Vector2 direction;
-    int count;
+    const int count = 38;
     int i;
 
     if (system == NULL || speed < 1.0f) {
         return;
     }
 
-    stage = stage < 1 ? 1 : (stage > 3 ? 3 : stage);
     direction = (Vector2){velocity.x / speed, velocity.y / speed};
-    count = 14 + stage * 12;
     for (i = 0; i < count; ++i) {
         float angle = (float)i / (float)count * 2.0f * PI;
         Vector2 radial = {cosf(angle), sinf(angle)};
-        float outward = 28.0f + (float)stage * 22.0f + RandomUnit(system) * 45.0f;
-        float wake = 18.0f + (float)stage * 28.0f;
-        Color color = stage == 3
-                          ? (i % 3 == 0 ? (Color){255, 236, 180, 250}
-                                        : (Color){177, 226, 255, 225})
-                          : (stage == 2 ? (Color){134, 221, 255, 225}
-                                        : (Color){111, 239, 235, 210});
+        float outward = 72.0f + RandomUnit(system) * 45.0f;
+        float wake = 74.0f;
+        Color color = i % 2 == 0 ? (Color){134, 221, 255, 225}
+                                 : (Color){111, 239, 235, 210};
 
         Particle *particle =
             ParticlesSpawnOne(
                 system, position,
                 (Vector2){radial.x * outward - direction.x * wake,
                           radial.y * outward - direction.y * wake},
-                color,
-                0.2f + (float)stage * 0.08f + RandomUnit(system) * 0.18f,
-                0.7f + RandomUnit(system) * (0.7f + (float)stage * 0.35f),
-                0.0f);
+                color, 0.36f + RandomUnit(system) * 0.18f,
+                0.7f + RandomUnit(system) * 1.4f, 0.0f);
 
-        particle->emission = 0.84f + (float)stage * 0.05f;
+        particle->emission = 0.94f;
     }
 }
 

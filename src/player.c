@@ -21,26 +21,16 @@ void PlayerInit(Player *player, Vector2 position)
     player->drillMaterial = MATERIAL_EMPTY;
     player->acceleration = 250.0f;
     player->maxSpeed = 118.0f;
-    player->boostAcceleration = 540.0f;
-    player->boostStageTwoAcceleration = 720.0f;
-    player->boostStageThreeAcceleration = 980.0f;
-    player->boostStageOneSpeed = 235.0f;
-    player->boostStageTwoSpeed = 380.0f;
-    player->boostMaxSpeed = 620.0f;
-    player->boostDrag = 0.38f;
-    player->boostStageTwoDrag = 0.24f;
-    player->boostStageThreeDrag = 0.12f;
-    player->sonicSpeed = 520.0f;
-    player->boostStageTwoDelay = 1.0f;
-    player->boostStageThreeDelay = 1.4f;
-    player->boostStageTime = 0.0f;
+    player->boostAcceleration = 720.0f;
+    player->boostSpeed = 380.0f;
+    player->boostDrag = 0.24f;
+    player->sonicSpeed = 352.0f;
     player->boostGrace = 0.0f;
     player->drillSpeed = 92.0f;
-    player->drillResistance = 0.010f;
     player->drillHeat = 0.72f;
     /* A third of the steering left at top speed. Enough to pick a line through
-       a cavern at six hundred cells a second, not enough to turn a corner: the
-       cost of going that fast is that the world has to be read further ahead. */
+       a cavern at the boost ceiling, not enough to turn a corner: the cost of
+       going that fast is that the world has to be read further ahead. */
     player->turnAuthorityAtHighSpeed = 0.34f;
     /* Braking beats accelerating, which is what makes committing to speed feel
        safe rather than reckless. */
@@ -61,9 +51,7 @@ void PlayerInit(Player *player, Vector2 position)
     player->boostTrailTimer = 0.0f;
     player->boostBurstTimer = 0.0f;
     player->drilledCells = 0;
-    player->boostStage = PLAYER_BOOST_NONE;
-    player->boostStageChanged = PLAYER_BOOST_NONE;
-    player->boostBurstStage = PLAYER_BOOST_NONE;
+    player->boostEngaged = false;
     player->facingRight = true;
     player->thrusting = false;
     player->boosting = false;
@@ -318,15 +306,8 @@ bool PlayerIsDrilling(const Player *player)
 
 float PlayerDrillRadius(const Player *player)
 {
-    float scale;
-
-    switch (player->boostStage) {
-    case PLAYER_BOOST_STAGE_THREE: scale = PLAYER_DRILL_WIDTH_STAGE_THREE; break;
-    case PLAYER_BOOST_STAGE_TWO: scale = PLAYER_DRILL_WIDTH_STAGE_TWO; break;
-    case PLAYER_BOOST_STAGE_ONE: scale = PLAYER_DRILL_WIDTH_STAGE_ONE; break;
-    default: scale = PLAYER_DRILL_WIDTH_IDLE; break;
-    }
-    return player->radius * scale;
+    return player->radius * (player->boosting ? PLAYER_DRILL_WIDTH_BOOST
+                                              : PLAYER_DRILL_WIDTH_IDLE);
 }
 
 /* Leaves the tunnel wall glowing.
@@ -423,26 +404,6 @@ static int PlayerCarveSweep(Player *player, World *world, Vector2 from,
     return removed;
 }
 
-/* The speed a cut costs, per cell of travel through material.
-
-   Charged by distance rather than by cells removed. The tunnel is far wider
-   than it was, so a cell count would make every widening of the drill a
-   slowdown — and the player would feel the upgrade as a punishment. What
-   actually resists is the material being pushed aside, so the weight of it is
-   the multiplier, and the stage is the divisor: the harder the boost, the less
-   of its speed the ground takes. */
-static float PlayerDrillDrag(const Player *player, CellMaterial material)
-{
-    float drag = player->drillResistance * MaterialAt(material)->density;
-
-    switch (player->boostStage) {
-    case PLAYER_BOOST_STAGE_THREE: return drag * 0.18f;
-    case PLAYER_BOOST_STAGE_TWO: return drag * 0.34f;
-    case PLAYER_BOOST_STAGE_ONE: return drag * 0.60f;
-    default: return drag;
-    }
-}
-
 /* The slow half of the drill: only where the player is actually pressed into
    material, cutting around the collider rather than ahead of it.
 
@@ -486,7 +447,6 @@ static void PlayerDrillPath(Player *player, World *world, float deltaTime)
     Vector2 direction;
     Vector2 lead;
     float radius;
-    float travelled;
     int destroyed;
 
     if (!player->boosting || speed < player->drillSpeed) {
@@ -507,44 +467,16 @@ static void PlayerDrillPath(Player *player, World *world, float deltaTime)
     PlayerRecordDrillMaterial(player, world, lead);
     destroyed = PlayerCarveSweep(player, world, player->position, lead, radius,
                                  player->drillHeat);
+    /* Rock costs nothing.
+     *
+     * The cut used to shed speed in proportion to the weight of what it went
+     * through, and the effect of it was that the one thing the boost exists for
+     * — going through the world rather than around it — was also the one thing
+     * that took the boost away. Flight through open air and flight through
+     * bedrock are now the same flight, which is what the drill was always
+     * meant to promise. */
     if (destroyed > 0) {
-        /* Cutting terrain costs speed, but never enough to fall under the drill
-           threshold: a boost that stalls would leave the player buried. */
-        float floorSpeed = player->drillSpeed * 1.05f;
-        float slowed;
-        float scale;
-
-        if (player->boostStage == PLAYER_BOOST_STAGE_TWO) {
-            floorSpeed = fmaxf(floorSpeed, player->boostStageOneSpeed * 0.72f);
-        } else if (player->boostStage == PLAYER_BOOST_STAGE_THREE) {
-            floorSpeed = fmaxf(floorSpeed, player->sonicSpeed * 0.70f);
-        }
-        travelled = sqrtf((lead.x - player->position.x) *
-                              (lead.x - player->position.x) +
-                          (lead.y - player->position.y) *
-                              (lead.y - player->position.y));
-        slowed = speed * expf(-PlayerDrillDrag(player, player->drillMaterial) *
-                              travelled);
-
-        if (slowed < floorSpeed) {
-            slowed = fminf(speed, floorSpeed);
-        }
-        scale = slowed / speed;
-        player->velocity.x *= scale;
-        player->velocity.y *= scale;
         player->drilledCells += destroyed;
-    }
-}
-
-static float PlayerBoostStageSpeed(const Player *player)
-{
-    switch (player->boostStage) {
-    case PLAYER_BOOST_STAGE_TWO:
-        return player->boostStageTwoSpeed;
-    case PLAYER_BOOST_STAGE_THREE:
-        return player->boostMaxSpeed;
-    default:
-        return player->boostStageOneSpeed;
     }
 }
 
@@ -581,8 +513,8 @@ static void PlayerApplyThrust(Player *player, Vector2 input, float acceleration,
 
     /* Full steering at rest, `turnAuthorityAtHighSpeed` of it at the top of the
        boost range, straight line between. */
-    authority = player->boostMaxSpeed > 0.001f
-                    ? Clamp(speed / player->boostMaxSpeed, 0.0f, 1.0f)
+    authority = player->boostSpeed > 0.001f
+                    ? Clamp(speed / player->boostSpeed, 0.0f, 1.0f)
                     : 0.0f;
     authority = 1.0f + (player->turnAuthorityAtHighSpeed - 1.0f) * authority;
 
@@ -623,64 +555,23 @@ static void PlayerApplyFluidDrag(Player *player, const World *world,
     player->velocity.y *= damping;
 }
 
-static void PlayerUpdateBoostStage(Player *player, Vector2 input, float speed,
-                                   float deltaTime)
+/* The one moment the flight still has: engaging the boost.
+ *
+ * What used to live here was the tier machine — a timer that had to be fed a
+ * straight line for a second before the next ceiling unlocked, and that a
+ * single corner emptied again. With one speed there is nothing to climb, so all
+ * that is left is the kick the engine gives when it lights, which is what the
+ * particles, the camera and the sound all key off. */
+static void PlayerUpdateBoostEngagement(Player *player, Vector2 input,
+                                        bool wasBoosting)
 {
-    float alignment = 0.0f;
-    float requiredSpeed;
-    float delay;
-
-    if (!player->boosting) {
-        player->boostStage = PLAYER_BOOST_NONE;
-        player->boostStageTime = 0.0f;
+    if (!player->boosting || wasBoosting) {
         return;
     }
-
-    if (player->boostStage == PLAYER_BOOST_NONE) {
-        player->boostStage = PLAYER_BOOST_STAGE_ONE;
-        player->boostStageChanged = PLAYER_BOOST_STAGE_ONE;
-        player->boostStageTime = 0.0f;
-    }
-
-    if (player->thrusting && speed > 0.001f) {
-        alignment = (player->velocity.x * input.x + player->velocity.y * input.y) /
-                    speed;
-    }
-    requiredSpeed = PlayerBoostStageSpeed(player) * 0.86f;
-    if (player->thrusting && alignment >= 0.88f && speed >= requiredSpeed) {
-        player->boostStageTime += deltaTime;
-    } else {
-        /* A brief correction does not erase a long run, but turning around or
-           grinding through a wall cannot charge the next stage. */
-        player->boostStageTime =
-            fmaxf(0.0f, player->boostStageTime - deltaTime * 1.5f);
-    }
-
-    delay = player->boostStage == PLAYER_BOOST_STAGE_ONE
-                ? player->boostStageTwoDelay
-                : player->boostStageThreeDelay;
-    if ((player->boostStage == PLAYER_BOOST_STAGE_ONE ||
-         player->boostStage == PLAYER_BOOST_STAGE_TWO) &&
-        player->boostStageTime >= delay) {
-        player->boostStage = (PlayerBoostStage)((int)player->boostStage + 1);
-        player->boostStageChanged = player->boostStage;
-        player->boostStageTime = 0.0f;
-    }
-
-    if (player->boostStageChanged != PLAYER_BOOST_NONE) {
-        float impulse = player->boostStageChanged == PLAYER_BOOST_STAGE_ONE
-                            ? 34.0f
-                            : (player->boostStageChanged == PLAYER_BOOST_STAGE_TWO
-                                   ? 86.0f
-                                   : 180.0f);
-
-        player->velocity.x += input.x * impulse;
-        player->velocity.y += input.y * impulse;
-        player->boostBurstStage = player->boostStageChanged;
-        player->boostBurstTimer = player->boostStageChanged == PLAYER_BOOST_STAGE_THREE
-                                      ? 0.52f
-                                      : 0.30f;
-    }
+    player->boostEngaged = true;
+    player->velocity.x += input.x * PLAYER_BOOST_ENGAGE_IMPULSE;
+    player->velocity.y += input.y * PLAYER_BOOST_ENGAGE_IMPULSE;
+    player->boostBurstTimer = PLAYER_BOOST_BURST_TIME;
 }
 
 void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
@@ -706,7 +597,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->impactTimer = fmaxf(0.0f, player->impactTimer - deltaTime);
     player->drilledCells = 0;
     player->boostTrailEmitted = false;
-    player->boostStageChanged = PLAYER_BOOST_NONE;
+    player->boostEngaged = false;
     player->boostBurstTimer = fmaxf(0.0f, player->boostBurstTimer - deltaTime);
     player->thrusting = false;
     inputLength = sqrtf(input.x * input.x + input.y * input.y);
@@ -722,32 +613,19 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     } else {
         player->boostGrace = fmaxf(0.0f, player->boostGrace - deltaTime);
     }
-    player->boosting = boostHeld && (player->thrusting || player->boostGrace > 0.0f);
+    {
+        bool wasBoosting = player->boosting;
+
+        player->boosting =
+            boostHeld && (player->thrusting || player->boostGrace > 0.0f);
+        PlayerUpdateBoostEngagement(player, input, wasBoosting);
+    }
     velocityLength = sqrtf(player->velocity.x * player->velocity.x +
                            player->velocity.y * player->velocity.y);
-    PlayerUpdateBoostStage(player, input, velocityLength, deltaTime);
-    acceleration = player->acceleration;
-    speedLimit = player->maxSpeed;
-    damping = player->drag;
-    if (player->boosting) {
-        switch (player->boostStage) {
-        case PLAYER_BOOST_STAGE_TWO:
-            acceleration = player->boostStageTwoAcceleration;
-            speedLimit = player->boostStageTwoSpeed;
-            damping = player->boostStageTwoDrag;
-            break;
-        case PLAYER_BOOST_STAGE_THREE:
-            acceleration = player->boostStageThreeAcceleration;
-            speedLimit = player->boostMaxSpeed;
-            damping = player->boostStageThreeDrag;
-            break;
-        default:
-            acceleration = player->boostAcceleration;
-            speedLimit = player->boostStageOneSpeed;
-            damping = player->boostDrag;
-            break;
-        }
-    }
+    acceleration = player->boosting ? player->boostAcceleration
+                                    : player->acceleration;
+    speedLimit = player->boosting ? player->boostSpeed : player->maxSpeed;
+    damping = player->boosting ? player->boostDrag : player->drag;
     if (player->thrusting) {
         PlayerApplyThrust(player, input, acceleration, velocityLength, deltaTime);
     }
@@ -786,7 +664,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         float target = cruise * maximumHoverLean;
 
         if (player->boosting && velocityLength > player->drillSpeed * 0.5f) {
-            float boostSpan = player->boostMaxSpeed - player->drillSpeed * 0.5f;
+            float boostSpan = player->boostSpeed - player->drillSpeed * 0.5f;
             float boostProgress = boostSpan > 0.001f
                                       ? Clamp((velocityLength -
                                                player->drillSpeed * 0.5f) /
@@ -807,11 +685,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         player->boostTrailTimer -= deltaTime;
         if (player->boostTrailTimer <= 0.0f) {
             player->boostTrailEmitted = true;
-            player->boostTrailTimer = player->boostStage == PLAYER_BOOST_STAGE_THREE
-                                          ? 0.009f
-                                          : (player->boostStage == PLAYER_BOOST_STAGE_TWO
-                                                 ? 0.016f
-                                                 : 0.025f);
+            player->boostTrailTimer = 0.016f;
         }
     } else {
         player->boostTrailTimer = 0.0f;

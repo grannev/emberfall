@@ -344,17 +344,14 @@ void GameAudioPlayForce(GameAudio *audio)
     }
 }
 
-void GameAudioPlayBoost(GameAudio *audio, int stage)
+void GameAudioPlayBoost(GameAudio *audio)
 {
     if (audio == NULL || !audio->ready || !IsSoundValid(audio->boost)) {
         return;
     }
 
-    stage = stage < 1 ? 1 : (stage > 3 ? 3 : stage);
-    SetSoundPitch(audio->boost,
-                  (stage == 1 ? 1.16f : (stage == 2 ? 0.94f : 0.72f)) *
-                      GameAudioRandomRange(audio, 0.97f, 1.03f));
-    SetSoundVolume(audio->boost, stage == 1 ? 0.42f : (stage == 2 ? 0.58f : 0.82f));
+    SetSoundPitch(audio->boost, 0.94f * GameAudioRandomRange(audio, 0.97f, 1.03f));
+    SetSoundVolume(audio->boost, 0.62f);
     PlaySound(audio->boost);
 }
 

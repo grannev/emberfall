@@ -280,7 +280,7 @@ static void test_particle_emission_is_explicit_per_effect(void)
     ParticlesSpawnLaserSparks(&particles, (Vector2){10.0f, 10.0f},
                               (Vector2){1.0f, 0.0f});
     ParticlesSpawnBoostTrail(&particles, (Vector2){12.0f, 10.0f},
-                             (Vector2){120.0f, 0.0f}, 2);
+                             (Vector2){120.0f, 0.0f});
     for (i = 0; i < MAX_PARTICLES; ++i) {
         const Particle *particle = &particles.particles[i];
 
@@ -526,10 +526,9 @@ static void test_presentation_fx_maps_every_combat_event_with_bounded_rates(void
         .radius = 84.0f,
     };
     events.events[events.count++] = (GameEvent){
-        .type = GAME_EVENT_BOOST_STAGE,
+        .type = GAME_EVENT_BOOST_ENGAGED,
         .position = {10.0f, 20.0f},
         .direction = {160.0f, 0.0f},
-        .count = 3,
     };
     events.events[events.count++] = (GameEvent){
         .type = GAME_EVENT_PLAYER_DRILL,
@@ -1308,9 +1307,6 @@ static void test_flora_grows_on_the_biome_it_belongs_to(void)
        its trunk height before the canopy is hung on their ends. Foliage further
        than this from another biome cannot have come from one. */
     const int reach = 48;
-    CellMaterial firstLoneMaterial = MATERIAL_EMPTY;
-    int firstLoneX = 0;
-    int firstLoneY = 0;
     Vector2 spawn;
     int biome;
     int x;
@@ -2200,9 +2196,9 @@ static void test_visual_particles_never_change_the_world(void)
     ParticlesSpawnImpact(&particles, (Vector2){64.0f, 58.0f},
                          (Vector2){0.0f, -1.0f}, 120.0f);
     ParticlesSpawnBoostTrail(&particles, (Vector2){64.0f, 30.0f},
-                             (Vector2){200.0f, 0.0f}, 2);
+                             (Vector2){200.0f, 0.0f});
     ParticlesSpawnBoostBurst(&particles, (Vector2){64.0f, 30.0f},
-                             (Vector2){200.0f, 0.0f}, 2);
+                             (Vector2){200.0f, 0.0f});
     ParticlesSpawnForceBlast(&particles, (Vector2){64.0f, 40.0f},
                              (Vector2){0.0f, 1.0f});
     ParticlesSpawnSteam(&particles, (Vector2){64.0f, 50.0f});
@@ -8114,7 +8110,7 @@ static void test_a_reversal_brakes_through_zero(void)
     PlayerInit(&player, (Vector2){60.0f, 64.0f});
     FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 300);
     top = player.velocity.x;
-    CHECK(top > player.boostStageOneSpeed,
+    CHECK(top > player.maxSpeed,
           "the fixture never got up to speed: %.2f", (double)top);
 
     previous = top;
@@ -8257,30 +8253,39 @@ static void test_steering_is_weaker_at_speed_but_never_gone(void)
     WorldUnload(&world);
 }
 
-static void test_boost_stages_are_reached_and_survive_release(void)
+/* The flight has one speed, and holding Shift is the whole of reaching it. */
+static void test_the_boost_has_one_speed_and_reaches_it_at_once(void)
 {
     World world;
     Player player;
+    float early;
     float top;
 
     CHECK(WorldInit(&world, 2048, 256), "world allocation failed");
     PlayerInit(&player, (Vector2){60.0f, 128.0f});
 
-    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 30);
-    CHECK(player.boostStage == PLAYER_BOOST_STAGE_ONE, "stage one was not entered");
-    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 90);
-    CHECK(player.boostStage == PLAYER_BOOST_STAGE_TWO, "stage two was not reached");
-    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 140);
-    CHECK(player.boostStage == PLAYER_BOOST_STAGE_THREE,
-          "stage three was not reached");
-    top = PlayerSpeed(&player);
-    CHECK(top > player.boostStageTwoSpeed,
-          "stage three tops out at %.1f, below stage two's %.1f", (double)top,
-          (double)player.boostStageTwoSpeed);
+    /* A third of a second in, the flight is already most of the way there:
+       there is no tier left to unlock and nothing to hold a straight line
+       for. */
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 20);
+    early = PlayerSpeed(&player);
+    CHECK(early > player.boostSpeed * 0.8f,
+          "a third of a second of boost reached only %.1f of %.1f",
+          (double)early, (double)player.boostSpeed);
 
-    /* Letting go drops the stage but not the momentum. */
+    /* And ten more seconds of it change nothing: the ceiling is the ceiling. */
+    FlyPlayer(&player, &world, (Vector2){1.0f, 0.0f}, true, 600);
+    top = PlayerSpeed(&player);
+    CHECK(top <= player.boostSpeed + 0.5f,
+          "a long boost climbed past its own ceiling: %.1f over %.1f",
+          (double)top, (double)player.boostSpeed);
+    CHECK(top > player.boostSpeed * 0.95f,
+          "a long boost settled at %.1f, short of %.1f", (double)top,
+          (double)player.boostSpeed);
+
+    /* Letting go drops the boost but not the momentum. */
     FlyPlayer(&player, &world, (Vector2){0.0f, 0.0f}, false, 1);
-    CHECK(player.boostStage == PLAYER_BOOST_NONE, "the stage survived release");
+    CHECK(!player.boosting, "the boost survived release");
     CHECK(PlayerSpeed(&player) > top * 0.9f,
           "releasing boost threw away the speed: %.1f of %.1f",
           (double)PlayerSpeed(&player), (double)top);
@@ -8304,12 +8309,12 @@ static void test_a_fast_player_cannot_cross_a_thin_wall(void)
     /* Two cells thick, floor to ceiling. */
     FillRect(&world, 300, 0, 301, 127, MATERIAL_ROCK);
     PlayerInit(&player, (Vector2){60.0f, 64.0f});
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
 
     for (step = 0; step < 60; ++step) {
         /* No boost: the drill is what is allowed through a wall, and it is not
            running. */
-        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.velocity.x = fmaxf(player.velocity.x, player.boostSpeed);
         PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false,
                      MOVEMENT_STEP);
         CHECK(player.position.x < 300.0f + player.radius + 1.0f,
@@ -8388,7 +8393,7 @@ static void test_the_same_flight_replays_identically(void)
           (double)b.position.y);
     CHECK(a.velocity.x == b.velocity.x && a.velocity.y == b.velocity.y,
           "two identical flights ended at different velocities");
-    CHECK(a.boostStage == b.boostStage, "the two runs reached different stages");
+    CHECK(a.boosting == b.boosting, "the two runs ended in different states");
     CHECK(WorldDigest(&first) == WorldDigest(&second),
           "two identical flights carved different tunnels");
     WorldUnload(&first);
@@ -8422,7 +8427,7 @@ static void test_movement_survives_an_absurd_velocity(void)
               "the player left the world at (%.2f, %.2f)",
               (double)player.position.x, (double)player.position.y);
     }
-    CHECK(PlayerSpeed(&player) <= player.boostMaxSpeed + 1.0f,
+    CHECK(PlayerSpeed(&player) <= player.boostSpeed + 1.0f,
           "an absurd velocity survived as %.1f", (double)PlayerSpeed(&player));
     WorldUnload(&world);
 }
@@ -8477,15 +8482,13 @@ static void test_a_boosting_player_drills_through_a_terrain_body(void)
     startX = player.position.x;
     /* Boosting well above the drill threshold: the state in which the world's
        own rock gives way. */
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
     player.boosting = true;
-    player.boostStage = PLAYER_BOOST_STAGE_THREE;
     CHECK(PlayerIsDrilling(&player), "the fixture is not in a drilling state");
 
     for (step = 0; step < 30; ++step) {
-        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.velocity.x = fmaxf(player.velocity.x, player.boostSpeed);
         player.boosting = true;
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
         player.position.x += player.velocity.x * MOVEMENT_STEP;
         TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
                                  (Vector2){400.0f, 100.0f}, false,
@@ -8527,12 +8530,11 @@ static void test_drilling_through_a_slab_can_split_it(void)
     /* Tall and thin, so a corridor across its waist severs it. */
     (void)MakeRockBlock(&terrain, 10, 60, (Vector2){200.0f, 100.0f});
     PlayerInit(&player, (Vector2){160.0f, 100.0f});
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
 
     for (step = 0; step < 30; ++step) {
-        player.velocity.x = fmaxf(player.velocity.x, player.boostMaxSpeed);
+        player.velocity.x = fmaxf(player.velocity.x, player.boostSpeed);
         player.boosting = true;
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
         player.position.x += player.velocity.x * MOVEMENT_STEP;
         TerrainInteractionUpdate(&interaction, &player, &terrain, &damage,
                                  (Vector2){400.0f, 100.0f}, false,
@@ -8579,30 +8581,22 @@ static void test_a_coasting_player_still_stops_on_a_body(void)
 
 /* --- drilling polish ------------------------------------------------------ */
 
-/* The corridor a stage-three boost cuts has to be comfortably wider than the
-   one an idle drill leaves, or the drill reads the same at every speed. */
-static void test_the_tunnel_widens_with_the_boost_stage(void)
+/* The corridor the boost cuts has to be comfortably wider than the collider
+   travelling down it, or the drill reads as a worm hole rather than as a
+   tunnel. */
+static void test_the_boosted_drill_cuts_a_corridor_wider_than_the_collider(void)
 {
-    World narrow;
-    World wide;
-    Player slow;
-    Player fast;
+    World world;
+    Player player;
     int step;
 
-    CHECK(WorldInit(&narrow, 400, 200) && WorldInit(&wide, 400, 200),
-          "world allocation failed");
-    FillRect(&narrow, 0, 0, 399, 199, MATERIAL_ROCK);
-    FillRect(&wide, 0, 0, 399, 199, MATERIAL_ROCK);
-    PlayerInit(&slow, (Vector2){40.0f, 100.0f});
-    PlayerInit(&fast, (Vector2){40.0f, 100.0f});
+    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    FillRect(&world, 0, 0, 399, 199, MATERIAL_ROCK);
+    PlayerInit(&player, (Vector2){40.0f, 100.0f});
 
-    for (step = 0; step < 39; ++step) {
-        slow.boostStage = PLAYER_BOOST_STAGE_ONE;
-        fast.boostStage = PLAYER_BOOST_STAGE_THREE;
-        slow.velocity = (Vector2){slow.drillSpeed * 1.4f, 0.0f};
-        fast.velocity = (Vector2){fast.drillSpeed * 1.4f, 0.0f};
-        PlayerUpdate(&slow, &narrow, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
-        PlayerUpdate(&fast, &wide, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+    for (step = 0; step < 40; ++step) {
+        player.velocity = (Vector2){player.drillSpeed * 1.4f, 0.0f};
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
     }
 
     /* Measured as cells removed per cell of travel on one frame of a corridor
@@ -8611,42 +8605,31 @@ static void test_the_tunnel_widens_with_the_boost_stage(void)
      * The height of the hole at a single column was the obvious measure and was
      * a poor one: the character bobs as it flies, so a column samples the union
      * of several bites at slightly different heights, and the widening the
-     * fallback cut does when the collider is stuck adds to it as well. Between
-     * them they swamped the stage at a small character size, and the test read
-     * nine against nine for drills half again apart. */
+     * fallback cut does when the collider is stuck adds to it as well. */
     {
-        float slowFrom = slow.position.x;
-        float fastFrom = fast.position.x;
-        float slowRate;
-        float fastRate;
+        float from = player.position.x;
+        float rate;
 
-        slow.boostStage = PLAYER_BOOST_STAGE_ONE;
-        fast.boostStage = PLAYER_BOOST_STAGE_THREE;
-        slow.velocity = (Vector2){slow.drillSpeed * 1.4f, 0.0f};
-        fast.velocity = (Vector2){fast.drillSpeed * 1.4f, 0.0f};
-        PlayerUpdate(&slow, &narrow, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
-        PlayerUpdate(&fast, &wide, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+        player.velocity = (Vector2){player.drillSpeed * 1.4f, 0.0f};
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
 
-        CHECK(slow.position.x > slowFrom + 0.5f &&
-                  fast.position.x > fastFrom + 0.5f,
-              "neither drill was still travelling on the sampled frame");
-        CHECK(slow.drilledCells > 0 && fast.drilledCells > 0,
-              "neither drill cut anything on the sampled frame");
-        slowRate = (float)slow.drilledCells / (slow.position.x - slowFrom);
-        fastRate = (float)fast.drilledCells / (fast.position.x - fastFrom);
+        CHECK(player.position.x > from + 0.5f,
+              "the drill was not still travelling on the sampled frame");
+        CHECK(player.drilledCells > 0,
+              "the drill cut nothing on the sampled frame");
+        rate = (float)player.drilledCells / (player.position.x - from);
 
-        CHECK(fastRate > slowRate * 1.35f,
-              "stage three cut %.2f cells per cell of travel against stage "
-              "one's %.2f",
-              (double)fastRate, (double)slowRate);
-        /* And the corridor is a corridor, not a slot the character squeezes
-           along: both stages cut wider than the collider itself. */
-        CHECK(PlayerDrillRadius(&slow) > slow.radius * 1.1f,
-              "the stage-one drill is %.2f for a collider of %.2f",
-              (double)PlayerDrillRadius(&slow), (double)slow.radius);
+        /* A corridor at least as tall as the drill is wide, allowing for the
+           broken rim the sweep leaves. */
+        CHECK(rate > PlayerDrillRadius(&player) * 1.5f,
+              "the boost cut %.2f cells per cell of travel for a drill of "
+              "radius %.2f",
+              (double)rate, (double)PlayerDrillRadius(&player));
+        CHECK(PlayerDrillRadius(&player) > player.radius * 1.5f,
+              "the boosted drill is %.2f for a collider of %.2f",
+              (double)PlayerDrillRadius(&player), (double)player.radius);
     }
-    WorldUnload(&narrow);
-    WorldUnload(&wide);
+    WorldUnload(&world);
 }
 
 /* Flying down a tunnel the drill is cutting must not read as a series of
@@ -8662,10 +8645,9 @@ static void test_high_speed_drilling_does_not_bounce_off_its_own_tunnel(void)
     CHECK(WorldInit(&world, 900, 200), "world allocation failed");
     FillRect(&world, 0, 0, 899, 199, MATERIAL_ROCK);
     PlayerInit(&player, (Vector2){40.0f, 100.0f});
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
 
     for (step = 0; step < 90; ++step) {
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
         PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
                      MOVEMENT_STEP);
         if (player.impactStrength > 0.0f) {
@@ -8695,16 +8677,15 @@ static void test_a_curving_drill_stays_smooth(void)
     Player player;
     int step;
 
-    CHECK(WorldInit(&world, 600, 400), "world allocation failed");
-    FillRect(&world, 0, 0, 599, 399, MATERIAL_ROCK);
+    CHECK(WorldInit(&world, 1200, 400), "world allocation failed");
+    FillRect(&world, 0, 0, 1199, 399, MATERIAL_ROCK);
     PlayerInit(&player, (Vector2){40.0f, 200.0f});
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
 
     for (step = 0; step < 90; ++step) {
         /* Steering the whole way, so the tunnel bends. */
         Vector2 input = {1.0f, step < 45 ? 0.7f : -0.7f};
 
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
         PlayerUpdate(&player, &world, input, true, MOVEMENT_STEP);
         CHECK(player.impactStrength == 0.0f,
               "a curving drill hit its own wall at step %d", step);
@@ -8729,8 +8710,7 @@ static void test_drilling_leaves_a_hot_tunnel_wall(void)
     PlayerInit(&player, (Vector2){40.0f, 100.0f});
 
     for (step = 0; step < 40; ++step) {
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
-        player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+        player.velocity = (Vector2){player.boostSpeed, 0.0f};
         PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
                      MOVEMENT_STEP);
     }
@@ -8753,8 +8733,13 @@ static void test_drilling_leaves_a_hot_tunnel_wall(void)
     WorldUnload(&world);
 }
 
-/* Terrain has to cost speed, but a stage-three boost has to keep most of it. */
-static void test_a_stage_three_boost_keeps_its_momentum_through_rock(void)
+/* Rock costs the flight nothing.
+ *
+ * The drill used to shed speed in proportion to the weight of what it went
+ * through, which meant the one thing the boost exists for was also the one
+ * thing that took the boost away. Flying into a wall of rock now looks exactly
+ * like flying through open sky. */
+static void test_rock_costs_the_boost_no_speed(void)
 {
     World world;
     Player player;
@@ -8764,21 +8749,23 @@ static void test_a_stage_three_boost_keeps_its_momentum_through_rock(void)
     CHECK(WorldInit(&world, 900, 200), "world allocation failed");
     FillRect(&world, 100, 0, 899, 199, MATERIAL_ROCK);
     PlayerInit(&player, (Vector2){40.0f, 100.0f});
-    player.velocity = (Vector2){player.boostMaxSpeed, 0.0f};
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
 
     for (step = 0; step < 90; ++step) {
-        player.boostStage = PLAYER_BOOST_STAGE_THREE;
         PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
                      MOVEMENT_STEP);
         if (step > 10 && player.velocity.x < lowest) {
             lowest = player.velocity.x;
         }
     }
-    CHECK(lowest > player.boostMaxSpeed * 0.5f,
-          "rock took the boost down to %.0f from %.0f", (double)lowest,
-          (double)player.boostMaxSpeed);
-    CHECK(lowest < player.boostMaxSpeed,
-          "rock cost the boost nothing at all: %.0f", (double)lowest);
+    CHECK(lowest > player.boostSpeed * 0.98f,
+          "rock took the boost down to %.1f from %.1f", (double)lowest,
+          (double)player.boostSpeed);
+    /* And it really was inside rock the whole way, rather than having stopped
+       at the face of it. */
+    CHECK(player.position.x > 500.0f,
+          "the flight only reached x=%.0f, so it never crossed the rock",
+          (double)player.position.x);
     WorldUnload(&world);
 }
 
@@ -10120,7 +10107,10 @@ static void test_normal_flight_keeps_a_hover_pose(void)
     Player player;
     int frame;
 
-    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    /* Wide enough that a second and a half at the boost ceiling never reaches
+       the far wall: what is being measured is the pose in free flight, and a
+       collision would answer a different question. */
+    CHECK(WorldInit(&world, 2048, 128), "world allocation failed");
     PlayerInit(&player, (Vector2){48.0f, 64.0f});
 
     for (frame = 0; frame < 180; ++frame) {
@@ -10143,7 +10133,10 @@ static void test_boost_flight_reaches_a_head_first_pose(void)
     Player player;
     int frame;
 
-    CHECK(WorldInit(&world, 512, 128), "world allocation failed");
+    /* Wide enough that a second and a half at the boost ceiling never reaches
+       the far wall: what is being measured is the pose in free flight, and a
+       collision would answer a different question. */
+    CHECK(WorldInit(&world, 2048, 128), "world allocation failed");
     PlayerInit(&player, (Vector2){48.0f, 64.0f});
 
     for (frame = 0; frame < 180; ++frame) {
@@ -10157,20 +10150,19 @@ static void test_boost_flight_reaches_a_head_first_pose(void)
     WorldUnload(&world);
 }
 
-static void test_long_boost_climbs_three_stages_into_supersonic(void)
+static void test_the_boost_kicks_once_and_runs_supersonic(void)
 {
     World world;
     Player player;
-    int expectedStage = 1;
-    int transitions = 0;
-    int stageThreeFrame = -1;
+    int kicks = 0;
+    int kickFrame = -1;
     int sonicFrame = -1;
     int frame;
 
     CHECK(WorldInit(&world, 4096, 128), "world allocation failed");
     PlayerInit(&player, (Vector2){128.0f, 64.0f});
 
-    for (frame = 0; frame < 960 && sonicFrame < 0; ++frame) {
+    for (frame = 0; frame < 960; ++frame) {
         float before = sqrtf(player.velocity.x * player.velocity.x +
                              player.velocity.y * player.velocity.y);
         float after;
@@ -10179,66 +10171,65 @@ static void test_long_boost_climbs_three_stages_into_supersonic(void)
                      1.0f / 120.0f);
         after = sqrtf(player.velocity.x * player.velocity.x +
                       player.velocity.y * player.velocity.y);
-        if (player.boostStageChanged != PLAYER_BOOST_NONE) {
-            CHECK((int)player.boostStageChanged == expectedStage,
-                  "boost skipped or reordered a stage: expected %d, got %d",
-                  expectedStage, (int)player.boostStageChanged);
-            if (player.boostStageChanged == PLAYER_BOOST_STAGE_TWO) {
-                CHECK(after - before > 70.0f,
-                      "stage II had no real kick: %.1f -> %.1f", before, after);
-            } else if (player.boostStageChanged == PLAYER_BOOST_STAGE_THREE) {
-                CHECK(after - before > 150.0f,
-                      "stage III had no real kick: %.1f -> %.1f", before, after);
-                stageThreeFrame = frame;
-            }
-            ++expectedStage;
-            ++transitions;
+        if (player.boostEngaged) {
+            CHECK(after - before > 70.0f,
+                  "engaging the boost had no real kick: %.1f -> %.1f", before,
+                  after);
+            kickFrame = frame;
+            ++kicks;
         }
-        if (player.boostStage == PLAYER_BOOST_STAGE_THREE &&
-            after >= player.sonicSpeed) {
+        if (sonicFrame < 0 && after >= player.sonicSpeed) {
             sonicFrame = frame;
         }
     }
 
-    CHECK(transitions == 3, "long boost emitted %d stage kicks instead of 3",
-          transitions);
-    CHECK(player.boostStage == PLAYER_BOOST_STAGE_THREE,
-          "long boost stopped at stage %d", (int)player.boostStage);
-    CHECK(sonicFrame >= 0, "stage III never crossed sonic speed %.1f",
+    /* One press, one kick. However long the key is held, nothing else fires:
+       there is no second tier waiting to be earned. */
+    CHECK(kicks == 1, "a single boost press emitted %d kicks", kicks);
+    CHECK(kickFrame == 0, "the kick landed on frame %d rather than at once",
+          kickFrame);
+    CHECK(sonicFrame >= 0, "the boost never crossed sonic speed %.1f",
           player.sonicSpeed);
-    CHECK(sonicFrame - stageThreeFrame <= 30,
-          "stage III needed %.2fs to reach sonic speed instead of one kick",
-          (float)(sonicFrame - stageThreeFrame) / 120.0f);
+    CHECK(sonicFrame - kickFrame <= 60,
+          "the boost needed %.2fs to reach sonic speed",
+          (float)(sonicFrame - kickFrame) / 120.0f);
 
     PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, false, 1.0f / 120.0f);
-    CHECK(player.boostStage == PLAYER_BOOST_NONE,
-          "releasing Shift left boost stage %d armed", (int)player.boostStage);
+    CHECK(!player.boosting, "releasing Shift left the boost armed");
     WorldUnload(&world);
 }
 
-static void test_stalled_boost_cannot_charge_a_later_stage(void)
+/* Releasing and pressing again is a new press, and a new press is a new kick.
+   The grace period that lets a tunnel run coast through a moment without WASD
+   must not turn one long press into a burst of them. */
+static void test_the_boost_kick_belongs_to_the_press_and_not_the_frame(void)
 {
     World world;
     Player player;
+    int kicks = 0;
     int frame;
 
-    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
-    PlayerInit(&player, (Vector2){124.0f, 48.0f});
+    CHECK(WorldInit(&world, 1024, 128), "world allocation failed");
+    PlayerInit(&player, (Vector2){128.0f, 64.0f});
 
-    /* The outside of the simulation is indestructible rock. Holding thrust into
-       it exercises a long Shift press with neither sustained speed nor aligned
-       travel; elapsed key time alone must never unlock Stage II. */
-    for (frame = 0; frame < 600; ++frame) {
-        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
-                     1.0f / 120.0f);
+    for (frame = 0; frame < 240; ++frame) {
+        /* Held throughout; the directional input drops out for a handful of
+           frames in the middle, which is exactly what the grace period is
+           for. */
+        Vector2 move = (frame >= 100 && frame < 106) ? (Vector2){0.0f, 0.0f}
+                                                     : (Vector2){1.0f, 0.0f};
+
+        PlayerUpdate(&player, &world, move, true, 1.0f / 120.0f);
+        if (player.boostEngaged) {
+            ++kicks;
+        }
     }
+    CHECK(kicks == 1, "one held press produced %d kicks", kicks);
 
-    CHECK(player.boostStage == PLAYER_BOOST_STAGE_ONE,
-          "stalled boost charged stage %d at the world boundary",
-          (int)player.boostStage);
-    CHECK(player.boostStageTime < 0.01f,
-          "stalled boost retained %.3fs of false stage progress",
-          player.boostStageTime);
+    /* Let go for long enough to outlast the grace, then press again. */
+    FlyPlayer(&player, &world, (Vector2){0.0f, 0.0f}, false, 60);
+    PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, 1.0f / 120.0f);
+    CHECK(player.boostEngaged, "a fresh press did not light the engine again");
     WorldUnload(&world);
 }
 
@@ -10493,7 +10484,7 @@ int main(void)
     RUN(test_braking_is_stronger_than_letting_go);
     RUN(test_braking_cannot_overshoot_into_reverse);
     RUN(test_steering_is_weaker_at_speed_but_never_gone);
-    RUN(test_boost_stages_are_reached_and_survive_release);
+    RUN(test_the_boost_has_one_speed_and_reaches_it_at_once);
     RUN(test_a_fast_player_cannot_cross_a_thin_wall);
     RUN(test_a_diagonal_drill_does_not_stall);
     RUN(test_the_same_flight_replays_identically);
@@ -10502,11 +10493,11 @@ int main(void)
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
     RUN(test_drilling_through_a_slab_can_split_it);
     RUN(test_a_coasting_player_still_stops_on_a_body);
-    RUN(test_the_tunnel_widens_with_the_boost_stage);
+    RUN(test_the_boosted_drill_cuts_a_corridor_wider_than_the_collider);
     RUN(test_high_speed_drilling_does_not_bounce_off_its_own_tunnel);
     RUN(test_a_curving_drill_stays_smooth);
     RUN(test_drilling_leaves_a_hot_tunnel_wall);
-    RUN(test_a_stage_three_boost_keeps_its_momentum_through_rock);
+    RUN(test_rock_costs_the_boost_no_speed);
     RUN(test_the_punch_digs_a_crater_and_cracks_it);
     RUN(test_the_punch_leaves_loose_material_to_be_thrown);
     RUN(test_cryo_chills_ordinary_terrain_and_still_freezes_water);
@@ -10544,8 +10535,8 @@ int main(void)
     RUN(test_drill_resistance_never_stalls_the_boost);
     RUN(test_normal_flight_keeps_a_hover_pose);
     RUN(test_boost_flight_reaches_a_head_first_pose);
-    RUN(test_long_boost_climbs_three_stages_into_supersonic);
-    RUN(test_stalled_boost_cannot_charge_a_later_stage);
+    RUN(test_the_boost_kicks_once_and_runs_supersonic);
+    RUN(test_the_boost_kick_belongs_to_the_press_and_not_the_frame);
     RUN(test_cryo_does_not_destroy_solid_terrain);
     RUN(test_no_material_evaporates_when_merely_cooled);
     RUN(test_cryo_snuffs_fire_into_smoke);

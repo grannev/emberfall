@@ -65,16 +65,10 @@ static Rectangle VisibleWorldRectangle(Camera2D camera)
 
 static const char *PlayerBoostLabel(const Player *player, float speed)
 {
-    if (player->boostStage == PLAYER_BOOST_STAGE_THREE) {
-        return speed >= player->sonicSpeed ? "MACH" : "BOOST III";
+    if (!player->boosting) {
+        return "HOVER";
     }
-    if (player->boostStage == PLAYER_BOOST_STAGE_TWO) {
-        return "BOOST II";
-    }
-    if (player->boostStage == PLAYER_BOOST_STAGE_ONE) {
-        return "BOOST I";
-    }
-    return "HOVER";
+    return speed >= player->sonicSpeed ? "MACH" : "BOOST";
 }
 
 static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
@@ -293,8 +287,7 @@ static void RunSmokePlayerProbe(World *world, ParticleSystem *particles,
         /* Drive the same feedback the frame loop does, so the boost trail and
            drill debris paths stay covered without steering the live player. */
         if (probe.boostTrailEmitted) {
-            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity,
-                                     (int)probe.boostStage);
+            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity);
         }
         if (probe.drilledCells > 0) {
             ParticlesSpawnDrillDebris(particles, probe.drillPosition,
@@ -668,11 +661,19 @@ static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
     if (frame >= ACCEPT_PUSH && frame < ACCEPT_GRAB) {
         /* Walked into the side of the slab. Placed rather than flown so the
            contact happens at a known moment; everything the contact then does
-           is the production path. */
+           is the production path.
+         *
+           The height is held level with the body every frame rather than only
+           on the first. The slab is still falling when this phase opens, and a
+           player placed level with it once walked straight over the top of it
+           as it dropped eleven cells away — which is why the phase stopped
+           registering a contact at all when the world grew taller. Only the
+           starting distance is fixed; the approach itself is the production
+           path. */
         if (frame == ACCEPT_PUSH) {
-            game->player.position = (Vector2){body->position.x - 24.0f,
-                                              body->position.y};
+            game->player.position.x = body->position.x - 24.0f;
         }
+        game->player.position.y = body->position.y;
         game->player.velocity = (Vector2){52.0f, 0.0f};
         input->move = (Vector2){1.0f, 0.0f};
         if (game->interaction.stats.contacts > 0 && !state->pushed) {
@@ -771,16 +772,19 @@ static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
 typedef struct SmokeMovement {
     Vector2 origin;
     float cruiseSpeed;
-    float stageOneSpeed;
-    float stageTwoSpeed;
+    float boostSpeed;
     float peakSpeed;
     float turnLateral;
     float brakeFrom;
     float reverseSpeed;
     float finalSpeed;
+    /* Speed on the frame the wall goes up, and the slowest the flight ever got
+       while it was inside it. Rock no longer costs the boost anything, and the
+       only honest way to say so is to measure it going in and coming out. */
+    float drillEntrySpeed;
+    float drillLowSpeed;
     int drilled;
     int brakeFrames;
-    PlayerBoostStage topStage;
     bool turned;
     bool reversed;
     bool stopped;
@@ -861,15 +865,7 @@ static void RunSmokeMovement(GameState *game, SmokeMovement *state, int frame,
     if (frame < MOVE_TURN) {
         input->move = (Vector2){1.0f, 0.0f};
         input->boostHeld = true;
-        if (game->player.boostStage > state->topStage) {
-            state->topStage = game->player.boostStage;
-        }
-        if (game->player.boostStage == PLAYER_BOOST_STAGE_ONE) {
-            state->stageOneSpeed = speed;
-        }
-        if (game->player.boostStage == PLAYER_BOOST_STAGE_TWO) {
-            state->stageTwoSpeed = speed;
-        }
+        state->boostSpeed = speed;
         if (speed > state->peakSpeed) {
             state->peakSpeed = speed;
         }
@@ -899,6 +895,10 @@ static void RunSmokeMovement(GameState *game, SmokeMovement *state, int frame,
             game->player.position.y = state->origin.y;
             SetupSmokeMovementSupport(&game->world, game->player.position,
                                       game->player.velocity);
+            state->drillEntrySpeed = speed;
+            state->drillLowSpeed = speed;
+        } else if (speed < state->drillLowSpeed) {
+            state->drillLowSpeed = speed;
         }
         input->move = (Vector2){1.0f, 0.0f};
         input->boostHeld = true;
@@ -1002,11 +1002,9 @@ static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
         const GameEvent *event = &events->events[index];
 
         switch (event->type) {
-        case GAME_EVENT_BOOST_STAGE: {
-            int stage = event->count;
-            GameAudioPlayBoost(audio, stage);
+        case GAME_EVENT_BOOST_ENGAGED:
+            GameAudioPlayBoost(audio);
             break;
-        }
         case GAME_EVENT_PLAYER_IMPACT:
             GameAudioPlayImpact(audio, event->strength);
             break;
@@ -1101,8 +1099,7 @@ int main(int argc, char **argv)
     /* The gameplay acceptance run's progress. Zeroed at setup rather than here
        so the whole struct is cleared in one place. */
     SmokeMovement movement = {{0.0f, 0.0f}, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-                              0.0f, 0.0f, 0, 0, PLAYER_BOOST_NONE, false, false,
-                              false};
+                              0.0f, 0.0f, 0.0f, 0, 0, false, false, false};
     SmokeAcceptance acceptance = {{0.0f, 0.0f}, {0.0f, 0.0f}, false, false,
                                   false, false, false, false, false, false,
                                   false, 0.0f, 0.0f, 0.0f, 0, {0.0f, 0.0f}};
@@ -1494,7 +1491,7 @@ int main(int argc, char **argv)
                                 EventsContain(&events, GAME_EVENT_CRYO_HIT);
             smokeBoostObserved = smokeBoostObserved ||
                                  EventsContain(&events,
-                                               GAME_EVENT_BOOST_STAGE);
+                                               GAME_EVENT_BOOST_ENGAGED);
         }
 
         cameraOutput = CameraFeedbackUpdate(
@@ -1502,7 +1499,7 @@ int main(int argc, char **argv)
             (CameraFeedbackMotion){
                 .velocity = game.player.velocity,
                 .normalSpeed = game.player.maxSpeed,
-                .maximumSpeed = game.player.boostMaxSpeed,
+                .maximumSpeed = game.player.boostSpeed,
                 .viewWidth = VIEW_WIDTH,
                 .viewHeight = VIEW_HEIGHT,
             },
@@ -1545,8 +1542,8 @@ int main(int argc, char **argv)
            the drill would be a way to blind yourself. It brightens with the
            boost, so the fastest flight also lights the furthest. */
         WorldSetPointLight(&game.world, game.player.position,
-                           52.0f + (float)game.player.boostStage * 22.0f,
-                           0.72f + (float)game.player.boostStage * 0.09f);
+                           game.player.boosting ? 96.0f : 52.0f,
+                           game.player.boosting ? 0.90f : 0.72f);
 
         RendererRenderScene(&renderer, &game, presentationCamera, aimCamera,
                             aimPosition,
@@ -1774,8 +1771,8 @@ int main(int argc, char **argv)
                "play_detached=%d play_pushed=%d(%.1f) play_grabbed=%d "
                "play_dragged=%d(%.1f) play_threw=%d(%.1f) play_carved=%d "
                "play_split=%d play_fragments=%d play_fx=%d play_camera=%d "
-               "move_cruise=%.1f move_s1=%.1f move_s2=%.1f move_peak=%.1f "
-               "move_stage=%d move_turn=%.1f move_drilled=%d "
+               "move_cruise=%.1f move_boost=%.1f move_peak=%.1f "
+               "move_drill=%.1f->%.1f move_turn=%.1f move_drilled=%d "
                "move_brake=%.1f->%.1f in %d frames move_reverse=%.1f "
                "move_final=%.1f\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
@@ -1817,9 +1814,9 @@ int main(int argc, char **argv)
                (double)acceptance.throwSpeed, acceptance.carved, acceptance.split,
                acceptance.fragments, acceptance.fxDuringPlay,
                acceptance.cameraFeedbackDuringPlay,
-               (double)movement.cruiseSpeed, (double)movement.stageOneSpeed,
-               (double)movement.stageTwoSpeed, (double)movement.peakSpeed,
-               (int)movement.topStage, (double)movement.turnLateral,
+               (double)movement.cruiseSpeed, (double)movement.boostSpeed,
+               (double)movement.peakSpeed, (double)movement.drillEntrySpeed,
+               (double)movement.drillLowSpeed, (double)movement.turnLateral,
                movement.drilled, (double)movement.brakeFrom,
                (double)movement.finalSpeed, movement.brakeFrames,
                (double)movement.reverseSpeed, (double)movement.finalSpeed);
@@ -1851,9 +1848,14 @@ int main(int argc, char **argv)
                       !acceptance.split || acceptance.fragments < 2 ||
                       !acceptance.fxDuringPlay ||
                       !acceptance.cameraFeedbackDuringPlay ||
-                      movement.topStage != PLAYER_BOOST_STAGE_THREE ||
                       movement.cruiseSpeed < 40.0f ||
-                      movement.peakSpeed < movement.stageTwoSpeed ||
+                      movement.boostSpeed < movement.cruiseSpeed * 1.5f ||
+                      movement.peakSpeed < movement.boostSpeed ||
+                      /* Rock is free: the flight leaves the wall no slower
+                         than it entered it, give or take the frame the impulse
+                         landed on. */
+                      movement.drillLowSpeed <
+                          movement.drillEntrySpeed * 0.92f ||
                       !movement.turned || movement.drilled <= 0 ||
                       !movement.reversed || !movement.stopped ||
                       fabsf(smokeThrownSpin) <= 0.0f ||
@@ -1875,7 +1877,8 @@ int main(int argc, char **argv)
                 "auto_detach_event=%d mass_matters=%d force_moved=%d spin=%.3f "
                 "env=%d/valid%d/camera%d/zoom%d/palettes0x%x "
                 "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
-                "move=cruise%.0f/peak%.0f/stage%d/turn%.0f/drill%d/rev%d/stop%d "
+                "move=cruise%.0f/boost%.0f/peak%.0f/drill%.0f->%.0f/turn%.0f/"
+                "drilled%d/rev%d/stop%d "
                 "updates=%u chunks=%d/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved,
                 smokeExplosionObserved, smokeForceObserved,
@@ -1898,8 +1901,9 @@ int main(int argc, char **argv)
                 acceptance.grabbed, acceptance.dragged, acceptance.threw,
                 acceptance.carved, acceptance.split, acceptance.fragments,
                 acceptance.fxDuringPlay, acceptance.cameraFeedbackDuringPlay,
-                (double)movement.cruiseSpeed, (double)movement.peakSpeed,
-                (int)movement.topStage, (double)movement.turnLateral,
+                (double)movement.cruiseSpeed, (double)movement.boostSpeed,
+                (double)movement.peakSpeed, (double)movement.drillEntrySpeed,
+                (double)movement.drillLowSpeed, (double)movement.turnLateral,
                 movement.drilled, movement.reversed, movement.stopped,
                 smokeTerrainTextureUpdates,
                 game.world.activeChunkCount,

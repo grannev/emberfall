@@ -232,18 +232,9 @@ const char *WorldMaterialName(CellMaterial material);
 
 ## Player API
 
-```c
-typedef enum PlayerBoostStage {
-    PLAYER_BOOST_NONE = 0,
-    PLAYER_BOOST_STAGE_ONE,
-    PLAYER_BOOST_STAGE_TWO,
-    PLAYER_BOOST_STAGE_THREE
-} PlayerBoostStage;
-```
-
-`boostStageChanged` живёт один frame; `GameUpdate` преобразует его в
-`GAME_EVENT_BOOST_STAGE`. `boostBurstStage` сохраняется до окончания визуального
-кольца.
+`boostEngaged` живёт один frame; `GameUpdate` преобразует его в
+`GAME_EVENT_BOOST_ENGAGED`. `boostBurstTimer` отсчитывает визуальное кольцо, а
+его длительность `PLAYER_BOOST_BURST_TIME` разделена с рендерером.
 
 ```c
 void PlayerInit(Player *player, Vector2 position);
@@ -618,8 +609,8 @@ void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
 ```
 
-`stage` в boost-функциях принимает `PlayerBoostStage`: с каждой ступенью шлейф
-становится плотнее и быстрее, а burst крупнее. `ParticlesInit` полностью очищает
+У boost-функций нет параметра интенсивности: у полёта одна скорость, поэтому
+шлейф и burst — одна фиксированная форма. `ParticlesInit` полностью очищает
 pool и используется также при полном reset. Все spawn-функции работают только с
 фиксированным массивом.
 `ParticleRendererDraw` и `ParticleRendererDrawEmissive` объявлены отдельно и не
@@ -636,12 +627,12 @@ void GameAudioPlayExplosion(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioPlayImpact(GameAudio *audio, float strength);
 void GameAudioPlayForce(GameAudio *audio);
-void GameAudioPlayBoost(GameAudio *audio, int stage);
+void GameAudioPlayBoost(GameAudio *audio);
 void GameAudioUnload(GameAudio *audio);
 ```
 
 `GameAudioState` объединяет held-состояния лазера, бура и криолуча и материал,
-который сейчас режет бур. `GameAudioPlayBoost` играет отдельный one-shot на
-границе ступени; номер меняет высоту и громкость. `GameAudioInit` вызывается
+который сейчас режет бур. `GameAudioPlayBoost` играет отдельный one-shot в
+момент включения буста. `GameAudioInit` вызывается
 после `InitWindow`, а `GameAudioUnload` — до `CloseWindow`. Возвращаемое false
 означает silent mode, а не ошибку всего приложения.

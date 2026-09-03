@@ -51,7 +51,7 @@ void GameAudioPlayChillImpact(GameAudio *audio);
 void GameAudioPlayReaction(GameAudio *audio);
 void GameAudioPlayImpact(GameAudio *audio, float strength);
 void GameAudioPlayForce(GameAudio *audio);
-void GameAudioPlayBoost(GameAudio *audio, int stage);
+void GameAudioPlayBoost(GameAudio *audio);
 void GameAudioUnload(GameAudio *audio);
 
 #endif
