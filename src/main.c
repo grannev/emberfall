@@ -225,7 +225,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
    appears in the hint the moment it is defined and bound. */
 static void DrawControlsHint(void)
 {
-    const char *hint = "WASD fly  |  Shift staged boost/drill";
+    const char *hint = "WASD fly  |  Shift boost/drill";
     int fontSize = 18;
     int id;
     int width;
