@@ -23,6 +23,11 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .accent = {255, 113, 42, 255},
         .profile = {1.00f, 0.86f, 1.18f, 0.75f, 0.00f, 0.85f},
     },
+    /* The sea's horizon, and now the ocean biome's own backdrop. It used to
+       carry eight towers and a real ridge, which is the one silhouette a sea
+       cannot have: what stands at the far edge of open water is a flat line
+       with haze over it. Wide, low and unbroken, so that arriving at the coast
+       reads as the land running out. */
     [ENVIRONMENT_PALETTE_ABYSSAL_BLUE] = {
         .name = "ABYSSAL BLUE",
         .cliName = "abyss",
@@ -34,7 +39,7 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {5, 20, 35, 255},
         .haze = {55, 129, 151, 255},
         .accent = {80, 216, 243, 255},
-        .profile = {0.55f, 1.00f, 0.92f, 1.00f, 0.10f, 0.20f},
+        .profile = {0.05f, 1.62f, 0.24f, 0.00f, 0.00f, 0.45f},
     },
     [ENVIRONMENT_PALETTE_VERDIGRIS_STORM] = {
         .name = "VERDIGRIS STORM",

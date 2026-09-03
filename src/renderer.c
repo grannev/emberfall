@@ -332,6 +332,7 @@ static EnvironmentPalette RendererPaletteForBiome(WorldBiome biome)
         case WORLD_BIOME_DUNES: return ENVIRONMENT_PALETTE_AMBER_DUNES;
         case WORLD_BIOME_FROST: return ENVIRONMENT_PALETTE_GLACIER_SHELF;
         case WORLD_BIOME_VOLCANIC: return ENVIRONMENT_PALETTE_EMBER_WASTE;
+        case WORLD_BIOME_OCEAN: return ENVIRONMENT_PALETTE_ABYSSAL_BLUE;
         case WORLD_BIOME_COUNT: break;
     }
     return ENVIRONMENT_PALETTE_ABYSSAL_BLUE;

@@ -1223,21 +1223,31 @@ static void test_biome_boundaries_and_spawn_are_coherent(void)
     WorldUnload(&world);
 }
 
-static void test_every_biome_can_host_the_protected_spawn(void)
+/* Every biome the spawn can land in has to be one the player can stand in.
+ *
+ * The ocean is deliberately not one of them: the rotation that lays the regions
+ * out draws the middle one from the land biomes only, because a spawn on the
+ * sea floor is a spawn a hundred cells under water. That exclusion is part of
+ * the claim here rather than an exception to it. */
+static void test_every_land_biome_can_host_the_protected_spawn(void)
 {
     World world;
     bool checked[WORLD_BIOME_COUNT] = {false};
+    const int landBiomes = WORLD_BIOME_COUNT - 1;
     int checkedCount = 0;
     uint64_t seed;
 
     CHECK(WorldInit(&world, 256, 144), "world allocation failed");
-    for (seed = 1u; seed <= 128u && checkedCount < WORLD_BIOME_COUNT; ++seed) {
+    for (seed = 1u; seed <= 128u && checkedCount < landBiomes; ++seed) {
         WorldBiome biome;
         Vector2 spawn;
         int floorY;
 
         WorldGenerate(&world, seed);
         biome = WorldBiomeAt(&world, world.width / 2);
+        CHECK(biome != WORLD_BIOME_OCEAN,
+              "seed 0x%llx put the spawn region out at sea",
+              (unsigned long long)seed);
         if (checked[biome]) continue;
 
         spawn = WorldPlayerSpawn(&world);
@@ -1249,9 +1259,9 @@ static void test_every_biome_can_host_the_protected_spawn(void)
         checked[biome] = true;
         ++checkedCount;
     }
-    CHECK(checkedCount == WORLD_BIOME_COUNT,
-          "seeded spawn cycle exposed only %d/%d biomes", checkedCount,
-          WORLD_BIOME_COUNT);
+    CHECK(checkedCount == landBiomes,
+          "seeded spawn cycle exposed only %d/%d land biomes", checkedCount,
+          landBiomes);
     WorldUnload(&world);
 }
 
@@ -1291,6 +1301,71 @@ static int BuriedColumn(const World *world, int depth)
         if (solid) return x;
     }
     return -1;
+}
+
+/* There is a sea, and there is standing water on the land around it.
+ *
+ * The sea is one level for the whole map poured after every feature that could
+ * change the shape of the ground: the ocean biome's surface lies well below it,
+ * every land biome's lies above it, and the blend band between them is the
+ * coastline. The ponds are a second, much denser grid of small basins, because
+ * one lake every thousand cells is a landmark rather than standing water. */
+static void test_the_world_holds_a_sea_and_ponds_on_the_land(void)
+{
+    World world;
+    int seaLevel;
+    int oceanColumns = 0;
+    int deepColumns = 0;
+    int deepest = 0;
+    int landSurfaceWater = 0;
+    int x;
+
+    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    WorldGenerate(&world, 0x1A4E5u);
+    seaLevel = (int)WorldSeaLevelY(&world);
+
+    for (x = 0; x < world.width; ++x) {
+        WorldBiome biome = WorldBiomeAt(&world, x);
+        CellMaterial top = MATERIAL_EMPTY;
+        int depth = 0;
+        int y;
+
+        if (biome == WORLD_BIOME_OCEAN) ++oceanColumns;
+        for (y = 0; y < world.height; ++y) {
+            top = WorldGetCell(&world, x, y);
+            if (top != MATERIAL_EMPTY) break;
+        }
+        if (top != MATERIAL_WATER && top != MATERIAL_ICE) continue;
+        if (biome != WORLD_BIOME_OCEAN) ++landSurfaceWater;
+        while (y < world.height &&
+               WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+            ++depth;
+            ++y;
+        }
+        if (depth > deepest) deepest = depth;
+        if (depth >= 20) ++deepColumns;
+    }
+
+    CHECK(oceanColumns > world.width / 16,
+          "the map holds only %d columns of ocean biome", oceanColumns);
+    /* Deep, wide open water: a sea rather than a chain of ponds. The depth is a
+       fraction of the world's height, because that is what the sea level and
+       the shelf are both written as. */
+    CHECK(deepest > world.height / 16,
+          "the deepest standing water is %d cells in a world %d tall", deepest,
+          world.height);
+    CHECK(deepColumns > 400,
+          "only %d columns hold water twenty cells deep", deepColumns);
+    /* And ponds, spread over the land rather than gathered at the coast. */
+    CHECK(landSurfaceWater > 400,
+          "only %d columns away from the ocean hold standing water",
+          landSurfaceWater);
+
+    /* The spawn is on dry ground: the region layout draws the middle from the
+       land biomes precisely so it cannot be the sea floor. */
+    CHECK(WorldGetCell(&world, world.width / 2, seaLevel) != MATERIAL_WATER,
+          "the spawn column stands under water");
+    WorldUnload(&world);
 }
 
 /* Everything the generator pours is held by something.
@@ -10509,12 +10584,13 @@ int main(void)
     RUN(test_biome_layout_is_seeded_complete_and_bounded);
     RUN(test_generated_biomes_have_distinct_material_identity);
     RUN(test_biome_boundaries_and_spawn_are_coherent);
-    RUN(test_every_biome_can_host_the_protected_spawn);
+    RUN(test_every_land_biome_can_host_the_protected_spawn);
     RUN(test_the_air_thins_to_nothing_between_the_clouds_and_space);
     RUN(test_gravity_fades_out_between_the_clouds_and_space);
     RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
     RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
     RUN(test_a_cloud_is_never_culled_while_part_of_it_shows);
+    RUN(test_the_world_holds_a_sea_and_ponds_on_the_land);
     RUN(test_generated_liquid_is_held_by_the_ground);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
     RUN(test_a_cactus_is_thick_and_carries_arms);

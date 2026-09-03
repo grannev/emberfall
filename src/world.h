@@ -48,6 +48,7 @@ typedef enum WorldBiome {
     WORLD_BIOME_DUNES,
     WORLD_BIOME_FROST,
     WORLD_BIOME_VOLCANIC,
+    WORLD_BIOME_OCEAN,
     WORLD_BIOME_COUNT
 } WorldBiome;
 
@@ -266,6 +267,21 @@ void WorldSetDaylight(World *world, float daylight);
  */
 #define WORLD_SPACE_LINE 0.09f
 #define WORLD_CLOUD_LINE 0.30f
+
+/* Where the sea stands, as a fraction of the world's height.
+ *
+ * One number for the whole map rather than a property of the ocean biome: the
+ * sea is the same sea wherever the coast is, and a level that varied by region
+ * would put a step in the water at every boundary. It sits below the lowest
+ * point any land biome's surface can reach, so a valley inland stays a valley;
+ * only ground that is genuinely under it — the ocean floor and the shelf either
+ * side of it — is flooded. */
+#define WORLD_SEA_LEVEL 0.62f
+
+static inline float WorldSeaLevelY(const World *world)
+{
+    return (float)world->height * WORLD_SEA_LEVEL;
+}
 
 static inline float WorldSpaceLineY(const World *world)
 {

@@ -10,7 +10,7 @@
 | Preset | CLI | Характер |
 |---|---|---|
 | Ember Waste | `ember` | грязно-тёплый горизонт, холодные тени, orange accents |
-| Abyssal Blue | `abyss` | тёмно-синий простор, cyan haze и distant lights |
+| Abyssal Blue | `abyss` | тёмно-синий простор, cyan haze, плоский морской горизонт |
 | Verdigris Storm | `storm` | muted green/grey atmosphere и pale energy accents |
 
 По умолчанию preset выбирается чистой hash-функцией от world seed. Одинаковый
@@ -106,7 +106,11 @@ FX и detached terrain остаются визуально согласован�
 
 **Задники.** У каждого биома свой задник: `TEMPERATE BASIN` — `VERDIGRIS
 STORM`, `SHATTERED DUNES` — `AMBER DUNES`, `FROST SHELF` — `GLACIER SHELF`,
-`EMBER WASTES` — `EMBER WASTE`. Соответствие живёт в `renderer.c`, потому что
+`EMBER WASTES` — `EMBER WASTE`, `SUNKEN SHELF` — `ABYSSAL BLUE`. У последней
+профиль переписан под море: ни башен, ни линии леса, очень широкий и очень
+низкий хребет. Восемь башен на горизонте — единственный силуэт, которого у моря
+быть не может; на дальнем краю открытой воды стоит плоская линия с дымкой над
+ней, и приход к берегу должен читаться как то, что земля кончилась. Соответствие живёт в `renderer.c`, потому что
 это не свойство ни одного из модулей: мир не знает, как он выглядит издали, а
 окружение не знает, что такое биом. `EnvironmentRenderer` по-прежнему никогда не
 получает `World` — ему сообщают, какой задник и сколько дневного света, а не где

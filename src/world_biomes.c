@@ -36,6 +36,10 @@
 #define CAVE_FEATURE_SPACING 64
 #define HYDROLOGY_FEATURE_SPACING 256
 #define SURFACE_FEATURE_SPACING 512
+/* Ponds have their own, much denser grid than the landmark features do. Making
+   the landmark grid denser instead would have multiplied the mounds as well,
+   and a world with a hill every two hundred cells is a different world. */
+#define POND_FEATURE_SPACING 224
 #define SPAWN_PLATEAU_INNER 48
 #define SPAWN_PLATEAU_OUTER 144
 #define SPAWN_FEATURE_CLEARANCE 176
@@ -51,7 +55,8 @@ enum GenerationChannel {
     GENERATION_CAVES = 7,
     GENERATION_HYDROLOGY = 8,
     GENERATION_SURFACE_FEATURES = 9,
-    GENERATION_BIOME_WARP = 10
+    GENERATION_BIOME_WARP = 10,
+    GENERATION_PONDS = 11
 };
 
 typedef struct BiomeSurfaceShape {
@@ -83,6 +88,13 @@ static const BiomeSurfaceShape BIOME_SURFACES[WORLD_BIOME_COUNT] = {
     [WORLD_BIOME_DUNES] = {0.555f, 0.0180f, 0.0264f, 0.0072f},
     [WORLD_BIOME_FROST] = {0.495f, 0.0312f, 0.0216f, 0.0060f},
     [WORLD_BIOME_VOLCANIC] = {0.465f, 0.0360f, 0.0360f, 0.0108f},
+    /* Well below WORLD_SEA_LEVEL, and with the gentlest relief of any biome: a
+       sea floor is the one landscape the player looks at through a hundred
+       cells of water, and every ridge on it is a ridge the light has to reach
+       through them. The blend band either side does the coastline for free —
+       the base height crosses the sea level somewhere inside it, and wherever
+       it does is a shore. */
+    [WORLD_BIOME_OCEAN] = {0.700f, 0.0120f, 0.0090f, 0.0030f},
 };
 
 _Static_assert(sizeof(BIOME_SURFACES) / sizeof(BIOME_SURFACES[0]) ==
@@ -253,18 +265,24 @@ static float BiomeBlendAt(const BiomeBlendColumn *column, uint64_t seed, int x,
 
 static WorldBiome BiomeForRegion(const World *world, int region)
 {
+    /* The ocean is last, and the rotation is drawn from the entries before it,
+       so the region the player starts in is never open water. Everything else
+       about the cycle is unchanged: whichever land biome the middle draws, the
+       ocean is still four regions away in one direction and one in the
+       other. */
     static const WorldBiome order[WORLD_BIOME_COUNT] = {
         WORLD_BIOME_TEMPERATE,
         WORLD_BIOME_DUNES,
         WORLD_BIOME_FROST,
         WORLD_BIOME_VOLCANIC,
+        WORLD_BIOME_OCEAN,
     };
     uint64_t layout = GenerationHash(world->seed, 0, 0,
                                      GENERATION_BIOME_ORDER);
     int centerRegion = (world->width / 2) / BIOME_REGION_WIDTH;
     int relative = region - centerRegion;
     int direction = (layout & 4ull) != 0ull ? -1 : 1;
-    int rotation = (int)(layout % (uint64_t)WORLD_BIOME_COUNT);
+    int rotation = (int)(layout % (uint64_t)(WORLD_BIOME_COUNT - 1));
     int index = PositiveModulo(rotation + relative * direction,
                                WORLD_BIOME_COUNT);
 
@@ -287,6 +305,7 @@ const char *WorldBiomeName(WorldBiome biome)
         [WORLD_BIOME_DUNES] = "SHATTERED DUNES",
         [WORLD_BIOME_FROST] = "FROST SHELF",
         [WORLD_BIOME_VOLCANIC] = "EMBER WASTES",
+        [WORLD_BIOME_OCEAN] = "SUNKEN SHELF",
     };
 
     if (biome < 0 || biome >= WORLD_BIOME_COUNT) return "UNKNOWN";
@@ -414,6 +433,16 @@ static CellMaterial BiomeMaterialAt(const World *world, WorldBiome biome,
         }
         case WORLD_BIOME_VOLCANIC:
             return MATERIAL_ROCK;
+        case WORLD_BIOME_OCEAN: {
+            /* Sand on top of the shelf, then the same soil and rock as
+               anywhere else. What makes it read as a sea floor is that it is
+               under water, not that it is made of something exotic. */
+            int sandDepth = height / 40 + 8 + (int)(strata % 11ull);
+            int siltDepth = sandDepth + height / 26 + 8;
+
+            if (depth < sandDepth) return MATERIAL_SAND;
+            return depth < siltDepth ? MATERIAL_DIRT : MATERIAL_ROCK;
+        }
         case WORLD_BIOME_COUNT:
             break;
     }
@@ -824,8 +853,105 @@ static void GenerateSurfaceFeatures(World *world)
                                     MATERIAL_ROCK);
                 }
                 break;
+            case WORLD_BIOME_OCEAN:
+                /* No landmarks on the shelf. A mound under a hundred cells of
+                   water is an island nobody asked for, and a basin cut into a
+                   sea floor is a hole in the bottom of the sea. */
+                break;
             case WORLD_BIOME_COUNT:
                 break;
+        }
+    }
+}
+
+/* Small ponds, on their own much denser grid than the landmarks.
+ *
+ * Standing water is what a landscape looks lived-in for, and one lake every
+ * thousand cells is not standing water, it is a landmark. These are small
+ * enough to sit in an ordinary dip and frequent enough that a screen of
+ * temperate ground usually holds one. Everything about where they may go is
+ * WorldPlaceSurfaceBasin's own decision — a pond that cannot be held by the
+ * ground it is offered is simply not placed. */
+static void GenerateSurfacePonds(World *world)
+{
+    int featureCount = (world->width + POND_FEATURE_SPACING - 1) /
+                       POND_FEATURE_SPACING;
+    int feature;
+
+    if (world->height < 96 || world->width < 26) return;
+    for (feature = 0; feature < featureCount; ++feature) {
+        Rng rng = GenerationFeatureRng(world->seed, feature, GENERATION_PONDS);
+        int centerX = feature * POND_FEATURE_SPACING +
+                      POND_FEATURE_SPACING / 2 + RngRange(&rng, -60, 60);
+        WorldBiome biome;
+
+        centerX = ClampInt(centerX, 12, world->width - 13);
+        if (IsNearSpawn(world, centerX)) continue;
+        biome = WorldBiomeAt(world, centerX);
+        if (biome == WORLD_BIOME_OCEAN) continue;
+        if (RngRange(&rng, 0, 99) >= 64) continue;
+
+        WorldPlaceSurfaceBasin(world, centerX, RngRange(&rng, 15, 31),
+                               RngRange(&rng, 7, 14),
+                               biome == WORLD_BIOME_VOLCANIC ? MATERIAL_LAVA
+                                                             : MATERIAL_WATER,
+                               biome == WORLD_BIOME_FROST);
+    }
+}
+
+/* The sea.
+ *
+ * One level for the whole map, poured after every feature that could change the
+ * shape of the ground and before anything grows on it. Each column is filled
+ * from the sea level down until it meets something, so land columns take
+ * nothing at all and a cave under the shelf stays dry until the player opens
+ * it — the fill follows the open water, it does not flood the map. */
+static void GenerateSea(World *world)
+{
+    int seaLevel = (int)WorldSeaLevelY(world);
+    int x;
+
+    if (world->height < 96) return;
+    for (x = 0; x < world->width; ++x) {
+        int y;
+
+        for (y = seaLevel; y < world->height; ++y) {
+            if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) break;
+            WorldSetGeneratedCell(world, x, y, MATERIAL_WATER);
+        }
+    }
+
+    /* Then the bed it stands in.
+     *
+     * Caves are dug long before the sea is poured and they reach close under
+     * the shelf, so a cave mouth in the sea floor is a hole in the bottom of
+     * the ocean: the whole sea drains into the cave system on the first tick,
+     * which on a map this size means most of the water in the world going
+     * somewhere the player will never look. Every empty cell touching the sea
+     * from below or from the side becomes rock, exactly the way an underground
+     * pocket is lined. Nothing above the water line is touched, so the surface
+     * is still open sky.
+     *
+     * A second pass rather than part of the fill: the column to the right has
+     * not been poured yet while the first pass is walking left to right, and
+     * sealing it would wall off the sea from its own next column. */
+    for (x = 0; x < world->width; ++x) {
+        int y;
+
+        for (y = seaLevel; y < world->height; ++y) {
+            if (WorldMaterialAt(world, x, y) != MATERIAL_WATER) break;
+            if (WorldInBounds(world, x - 1, y) &&
+                WorldMaterialAt(world, x - 1, y) == MATERIAL_EMPTY) {
+                WorldSetGeneratedCell(world, x - 1, y, MATERIAL_ROCK);
+            }
+            if (WorldInBounds(world, x + 1, y) &&
+                WorldMaterialAt(world, x + 1, y) == MATERIAL_EMPTY) {
+                WorldSetGeneratedCell(world, x + 1, y, MATERIAL_ROCK);
+            }
+            if (WorldInBounds(world, x, y + 1) &&
+                WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
+                WorldSetGeneratedCell(world, x, y + 1, MATERIAL_ROCK);
+            }
         }
     }
 }
@@ -1288,6 +1414,13 @@ static void GenerateFlora(World *world)
                                         MATERIAL_EMPTY);
                 }
                 break;
+            case WORLD_BIOME_OCEAN:
+                /* Nothing grows on the shelf. Every plant here is placed into
+                   empty air above the ground it stands on, and there is no
+                   empty air under the sea — the clearance test rejects the
+                   water, so this is a statement of intent rather than a
+                   guard. */
+                break;
             case WORLD_BIOME_COUNT:
                 break;
         }
@@ -1300,6 +1433,10 @@ void WorldGenerateBiomeTerrain(World *world)
     GenerateCaves(world);
     GenerateUndergroundFluids(world);
     GenerateSurfaceFeatures(world);
+    GenerateSurfacePonds(world);
+    /* After every feature that could change the shape of the ground, so the
+       coastline is the coastline the world actually ended up with. */
+    GenerateSea(world);
     /* Last, so that every plant grows on the surface as it finally is rather
        than on one a later feature was going to bury. */
     GenerateFlora(world);
