@@ -91,6 +91,73 @@ static void SkyCloudAt(uint64_t seed, int slot, int worldHeight, float time,
     *radiusY = *radiusX * (0.24f + SkyUnit(seed, slot, 0, 13) * 0.16f);
 }
 
+void SkyRendererCloudLump(const SkyRenderer *sky, int slot, int worldHeight,
+                          float time, int lump, Vector2 *centre,
+                          Vector2 *radius)
+{
+    float cloudX;
+    float cloudY;
+    float cloudRadiusX;
+    float cloudRadiusY;
+    float spread;
+    float scale;
+
+    if (sky == NULL || centre == NULL || radius == NULL) {
+        return;
+    }
+    if (lump < 0) lump = 0;
+    if (lump >= SKY_CLOUD_LUMPS) lump = SKY_CLOUD_LUMPS - 1;
+    SkyCloudAt(sky->seed, slot, worldHeight, time, &cloudX, &cloudY,
+               &cloudRadiusX, &cloudRadiusY);
+    spread = ((float)lump / (float)(SKY_CLOUD_LUMPS - 1)) - 0.5f;
+    scale = 0.62f + SkyUnit(sky->seed, slot, lump, 19) * 0.5f;
+    centre->x = cloudX + spread * cloudRadiusX * 1.15f;
+    centre->y = cloudY + (SkyUnit(sky->seed, slot, lump, 17) - 0.5f) *
+                             cloudRadiusY * 0.7f;
+    radius->x = cloudRadiusX * 0.62f * scale;
+    radius->y = cloudRadiusY * scale;
+}
+
+Rectangle SkyRendererCloudBounds(const SkyRenderer *sky, int slot,
+                                 int worldHeight, float time)
+{
+    /* One block of slack on every side: the blocks a lump is made of are
+       snapped to a world grid, so the last rank of one can sit a block past the
+       ellipse it came from, and the emissive pass draws in two-cell blocks. */
+    const float slack = 2.0f;
+    float minimumX = 0.0f;
+    float minimumY = 0.0f;
+    float maximumX = 0.0f;
+    float maximumY = 0.0f;
+    int lump;
+
+    if (sky == NULL) {
+        return (Rectangle){0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
+        Vector2 centre = {0.0f, 0.0f};
+        Vector2 radius = {0.0f, 0.0f};
+
+        SkyRendererCloudLump(sky, slot, worldHeight, time, lump, &centre,
+                             &radius);
+        if (lump == 0 || centre.x - radius.x < minimumX) {
+            minimumX = centre.x - radius.x;
+        }
+        if (lump == 0 || centre.y - radius.y < minimumY) {
+            minimumY = centre.y - radius.y;
+        }
+        if (lump == 0 || centre.x + radius.x > maximumX) {
+            maximumX = centre.x + radius.x;
+        }
+        if (lump == 0 || centre.y + radius.y > maximumY) {
+            maximumY = centre.y + radius.y;
+        }
+    }
+    return (Rectangle){minimumX - slack, minimumY - slack,
+                       (maximumX - minimumX) + slack * 2.0f,
+                       (maximumY - minimumY) + slack * 2.0f};
+}
+
 static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
                           float daylight, float time, bool emissive)
 {
@@ -105,23 +172,20 @@ static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
     int slot;
 
     for (slot = firstSlot; slot <= lastSlot; ++slot) {
-        float x;
-        float y;
-        float radiusX;
-        float radiusY;
+        Rectangle bounds = SkyRendererCloudBounds(sky, slot, worldHeight, time);
         Color body;
         Color lit;
         int lump;
-        int lumps;
 
-        SkyCloudAt(sky->seed, slot, worldHeight, time, &x, &y, &radiusX,
-                   &radiusY);
-        if (x + radiusX * 2.0f < visible.x ||
-            x - radiusX * 2.0f > visible.x + visible.width) {
-            continue;
-        }
-        if (y + radiusY < visible.y ||
-            y - radiusY > visible.y + visible.height) {
+        /* Culled against what the cloud actually covers rather than against the
+           radius of the slot it came from. The two are not the same shape, and
+           using the smaller one meant a cloud vanished while part of it was
+           still on screen — which is what the player saw as clouds winking out
+           as they flew up to them. */
+        if (bounds.x + bounds.width < visible.x ||
+            bounds.x > visible.x + visible.width ||
+            bounds.y + bounds.height < visible.y ||
+            bounds.y > visible.y + visible.height) {
             continue;
         }
 
@@ -148,18 +212,14 @@ static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
                           (unsigned char)(255.0f * level), 252};
         }
 
-        /* Three overlapping lumps, so a cloud has a silhouette rather than an
-           outline. */
-        lumps = 3;
-        for (lump = 0; lump < lumps; ++lump) {
-            float spread = ((float)lump / (float)(lumps - 1)) - 0.5f;
-            float lumpX = x + spread * radiusX * 1.15f;
-            float lumpY = y + (SkyUnit(sky->seed, slot, lump, 17) - 0.5f) *
-                                  radiusY * 0.7f;
-            float scale = 0.62f + SkyUnit(sky->seed, slot, lump, 19) * 0.5f;
+        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
+            Vector2 centre = {0.0f, 0.0f};
+            Vector2 radius = {0.0f, 0.0f};
 
-            SkyCloudLump(sky->seed, lumpX, lumpY, radiusX * 0.62f * scale,
-                         radiusY * scale, slot * 7 + lump, body, lit, block);
+            SkyRendererCloudLump(sky, slot, worldHeight, time, lump, &centre,
+                                 &radius);
+            SkyCloudLump(sky->seed, centre.x, centre.y, radius.x, radius.y,
+                         slot * 7 + lump, body, lit, block);
         }
         ++sky->stats.cloudsDrawn;
     }

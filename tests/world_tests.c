@@ -1697,6 +1697,73 @@ static void test_the_sky_is_the_same_sky_for_the_same_seed(void)
           "statistics for no sky are not empty");
 }
 
+/* A cloud must never be culled while part of it is still on screen.
+ *
+ * A cloud is three lumps, each offset from the centre of its slot and each
+ * drawn at up to a ninth again its nominal size, so what ends up on screen is
+ * half as tall again as the radius the slot describes. The cull used to test
+ * that radius, and the difference was a cloud winking out as the player climbed
+ * toward it. The invariant is that the bounds the cull asks for contain every
+ * lump that will be drawn inside them. */
+static void test_a_cloud_is_never_culled_while_part_of_it_shows(void)
+{
+    SkyRenderer sky;
+    const int worldHeight = 1440;
+    int slot;
+
+    SkyRendererInit(&sky, 0x5C1Fu);
+
+    for (slot = -40; slot <= 400; ++slot) {
+        float time = (float)slot * 0.37f;
+        Rectangle bounds = SkyRendererCloudBounds(&sky, slot, worldHeight, time);
+        int lump;
+
+        CHECK(bounds.width > 0.0f && bounds.height > 0.0f,
+              "slot %d reported an empty cloud: %.1fx%.1f", slot,
+              (double)bounds.width, (double)bounds.height);
+        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
+            Vector2 centre = {0.0f, 0.0f};
+            Vector2 radius = {0.0f, 0.0f};
+
+            SkyRendererCloudLump(&sky, slot, worldHeight, time, lump, &centre,
+                                 &radius);
+            CHECK(centre.x - radius.x >= bounds.x &&
+                      centre.x + radius.x <= bounds.x + bounds.width,
+                  "lump %d of slot %d runs from %.1f to %.1f, outside bounds "
+                  "%.1f..%.1f",
+                  lump, slot, (double)(centre.x - radius.x),
+                  (double)(centre.x + radius.x), (double)bounds.x,
+                  (double)(bounds.x + bounds.width));
+            CHECK(centre.y - radius.y >= bounds.y &&
+                      centre.y + radius.y <= bounds.y + bounds.height,
+                  "lump %d of slot %d runs from %.1f to %.1f, outside bounds "
+                  "%.1f..%.1f",
+                  lump, slot, (double)(centre.y - radius.y),
+                  (double)(centre.y + radius.y), (double)bounds.y,
+                  (double)(bounds.y + bounds.height));
+        }
+    }
+
+    /* And the shape really is taller than the slot's own radius, or the check
+       above would hold for a cull that was never wrong in the first place. */
+    {
+        Rectangle bounds = SkyRendererCloudBounds(&sky, 3, worldHeight, 0.0f);
+        Vector2 centre = {0.0f, 0.0f};
+        Vector2 radius = {0.0f, 0.0f};
+        float tallest = 0.0f;
+        int lump;
+
+        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
+            SkyRendererCloudLump(&sky, 3, worldHeight, 0.0f, lump, &centre,
+                                 &radius);
+            if (radius.y > tallest) tallest = radius.y;
+        }
+        CHECK(bounds.height > tallest * 2.4f,
+              "the cloud is only %.1f tall against a lump radius of %.1f",
+              (double)bounds.height, (double)tallest);
+    }
+}
+
 static void test_the_day_turns_and_takes_the_sky_with_it(void)
 {
     World world;
@@ -10311,6 +10378,7 @@ int main(void)
     RUN(test_gravity_fades_out_between_the_clouds_and_space);
     RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
     RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
+    RUN(test_a_cloud_is_never_culled_while_part_of_it_shows);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
     RUN(test_a_cactus_is_thick_and_carries_arms);
     RUN(test_flora_is_solid_but_is_never_the_ground);

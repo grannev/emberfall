@@ -29,6 +29,9 @@
    cloud, and its size and offset within the slot come from the seed, so the
    spacing is a rhythm rather than a grid. */
 #define SKY_CLOUD_SPACING 150
+/* Overlapping lumps per cloud, so a cloud has a silhouette rather than an
+   outline. */
+#define SKY_CLOUD_LUMPS 3
 
 typedef struct SkyRendererStats {
     uint16_t cloudsDrawn;
@@ -55,6 +58,24 @@ void SkyRendererDraw(SkyRenderer *sky, Rectangle visible, int worldHeight,
    the lit upper edge of a cloud. */
 void SkyRendererDrawEmissive(SkyRenderer *sky, Rectangle visible,
                              int worldHeight, float daylight, float time);
+
+/* Everything one cloud actually covers, in world cells.
+ *
+ * A cloud is drawn as three lumps, each offset from the slot's centre and each
+ * drawn at up to a ninth again its nominal size, so the shape on screen is half
+ * as tall again as the radius the slot describes. Culling against that radius
+ * is what made a cloud wink out as the player climbed toward it: the slot was
+ * rejected while a third of its own body was still on screen. The cull now asks
+ * this, and so can a test — the invariant is that no lump ever reaches outside
+ * what this returns. */
+Rectangle SkyRendererCloudBounds(const SkyRenderer *sky, int slot,
+                                 int worldHeight, float time);
+/* One lump of one cloud, as centre and radii. Exposed alongside the bounds so a
+   test can check the two against each other rather than against a constant
+   copied out of the drawing code. */
+void SkyRendererCloudLump(const SkyRenderer *sky, int slot, int worldHeight,
+                          float time, int lump, Vector2 *centre,
+                          Vector2 *radius);
 
 const SkyRendererStats *SkyRendererStatistics(const SkyRenderer *sky);
 
