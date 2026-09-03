@@ -37,6 +37,11 @@ static void AbilityBlock(float x, float y, float block, Color color)
 }
 
 /* A ragged cluster of blocks: what a beam actually leaves where it lands. */
+/* Cells per effect unit, as the figure has. Every width here is written in the
+   units the effects were designed in and turned into cells by this, so the
+   beams shrink with the character rather than beside him. */
+#define FX(units) ((units) * ABILITY_EFFECT_SCALE)
+
 static void AbilityContactBlocks(Vector2 at, float radius, float block,
                                  Color color)
 {
@@ -170,12 +175,13 @@ static void DrawCryoEdge(const AbilityState *state, Vector2 start)
         float side = (shard & 1) == 0 ? 1.0f : -1.0f;
         Vector2 point = Vector2Add(start, Vector2Scale(delta, amount));
         Vector2 tip = Vector2Add(
-            Vector2Add(point, Vector2Scale(normal, side * 1.6f)),
-            Vector2Scale(direction, -1.2f));
+            Vector2Add(point, Vector2Scale(normal, side * FX(1.6f))),
+            Vector2Scale(direction, FX(-1.2f)));
 
         /* Frost growing off the beam, in blocks like everything else: a hairline
            vector spike was the last smooth line left in the picture. */
-        BeamStrand(point, tip, 0.6f, 0.6f, shard, (Color){200, 244, 255, 190},
+        BeamStrand(point, tip, FX(0.6f), FX(0.6f), shard,
+                   (Color){200, 244, 255, 190},
                    (Color){236, 253, 255, 220}, 1.0f, shard * 7);
     }
 }
@@ -203,24 +209,24 @@ void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
         /* Narrow and hot, tapering to a point where it bites. The eye end is
            the wide end so the beam reads as leaving the face rather than as
            being aimed at it. */
-        BeamStrand(start, laser->endpoint, 1.9f, 1.0f, frame,
+        BeamStrand(start, laser->endpoint, FX(1.9f), FX(1.0f), frame,
                    (Color){255, 96, 34, 210}, (Color){255, 238, 186, 240},
                    1.0f, 3);
         if (laser->hit) {
-            AbilityContactBlocks(laser->endpoint, 4.2f, 1.0f,
+            AbilityContactBlocks(laser->endpoint, FX(4.2f), 1.0f,
                                  (Color){255, 74, 24, 62});
-            AbilityContactBlocks(laser->endpoint, 2.5f, 1.0f,
+            AbilityContactBlocks(laser->endpoint, FX(2.5f), 1.0f,
                                  (Color){255, 161, 43, 205});
-            AbilityContactBlocks(laser->endpoint, 1.1f, 1.0f,
+            AbilityContactBlocks(laser->endpoint, FX(1.1f), 1.0f,
                                  (Color){255, 248, 203, 255});
-            BeamRings(laser->endpoint, time, 2, 3.4f, 2.6f,
+            BeamRings(laser->endpoint, time, 2, FX(3.4f), FX(2.6f),
                       (Color){255, 156, 62, 200}, 1.0f);
             /* Thrown back out of the cut, which is the direction sparks
                actually leave a hole being burned. */
-            BeamSparks(laser->endpoint, start, time, 8, 4.0f, true,
+            BeamSparks(laser->endpoint, start, time, 8, FX(4.0f), true,
                        (Color){255, 214, 130, 225}, 1.0f);
         } else {
-            AbilityContactBlocks(laser->endpoint, 0.9f, 1.0f,
+            AbilityContactBlocks(laser->endpoint, FX(0.9f), 1.0f,
                                  (Color){255, 198, 88, 180});
         }
     }
@@ -230,16 +236,16 @@ void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
 
         /* Wider and softer than the laser, and it does not taper: a freezing
            cone spreads where a cutting beam narrows. */
-        BeamStrand(start, cryo->endpoint, 1.5f, 2.1f, frame,
+        BeamStrand(start, cryo->endpoint, FX(1.5f), FX(2.1f), frame,
                    (Color){104, 194, 240, 190}, (Color){228, 249, 255, 235},
                    1.0f, 11);
         DrawCryoEdge(cryo, start);
         if (cryo->hit) {
-            AbilityContactBlocks(cryo->endpoint, 3.8f, 1.0f,
+            AbilityContactBlocks(cryo->endpoint, FX(3.8f), 1.0f,
                                  (Color){88, 196, 244, 120});
-            AbilityContactBlocks(cryo->endpoint, 1.8f, 1.0f,
+            AbilityContactBlocks(cryo->endpoint, FX(1.8f), 1.0f,
                                  (Color){236, 253, 255, 235});
-            BeamRings(cryo->endpoint, time, 2, 4.0f, 3.0f,
+            BeamRings(cryo->endpoint, time, 2, FX(4.0f), FX(3.0f),
                       (Color){170, 232, 255, 190}, 1.0f);
         }
     }
@@ -305,19 +311,20 @@ void AbilityRendererDrawEmissive(const AbilitySystem *abilities,
     if (laser->active) {
         Vector2 start = BeamStart(laser, player);
 
-        BeamStrand(start, laser->endpoint, 2.0f, 1.1f, frame,
+        BeamStrand(start, laser->endpoint, FX(2.0f), FX(1.1f), frame,
                    (Color){168, 54, 18, 255}, (Color){255, 214, 150, 255},
                    2.0f, 3);
-        AbilityContactBlocks(laser->endpoint, laser->hit ? 3.0f : 1.0f, 1.0f,
+        AbilityContactBlocks(laser->endpoint, FX(laser->hit ? 3.0f : 1.0f),
+                             1.0f,
                              (Color){255, 126, 34, laser->hit ? 230 : 150});
     }
     if (cryo->active) {
         Vector2 start = BeamStart(cryo, player);
 
-        BeamStrand(start, cryo->endpoint, 1.6f, 2.2f, frame,
+        BeamStrand(start, cryo->endpoint, FX(1.6f), FX(2.2f), frame,
                    (Color){48, 118, 168, 255}, (Color){160, 216, 246, 255},
                    2.0f, 11);
-        AbilityContactBlocks(cryo->endpoint, cryo->hit ? 2.4f : 0.8f, 1.0f,
+        AbilityContactBlocks(cryo->endpoint, FX(cryo->hit ? 2.4f : 0.8f), 1.0f,
                              (Color){167, 232, 255, 130});
     }
 }

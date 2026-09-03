@@ -45,11 +45,24 @@ typedef enum AbilityTrigger {
     ABILITY_TRIGGER_PRESSED
 } AbilityTrigger;
 
+/* Cells per effect unit.
+ *
+ * The same job PLAYER_BODY_SCALE does for the figure, and deliberately the same
+ * number. Every beam, ring and spark in the game was drawn against a character
+ * thirteen cells tall; he is now eight, and a laser as thick as his chest reads
+ * as a power holding onto him rather than one he is aiming. It is one shared
+ * constant rather than a factor folded into each number so that resizing the
+ * hero again moves his powers with him — which is the failure this is fixing.
+ *
+ * It scales widths, not reaches. How far a beam carries is a decision about the
+ * world; how thick it is, is a decision about the body it comes out of. */
+#define ABILITY_EFFECT_SCALE 0.62f
+
 /* Tuning shared by an ability's simulation and its drawing. One definition
    each, because a cone drawn at a different angle from the one that was
    applied is a bug nobody sees until they look closely. */
 #define ABILITY_LASER_RANGE 280.0f
-#define ABILITY_LASER_RADIUS 2.25f
+#define ABILITY_LASER_RADIUS (2.25f * ABILITY_EFFECT_SCALE)
 /* Holding the beam on one spot builds toward a detonation. The beam is a
    cutting tool, not a gun, and a tool held against rock long enough should do
    something the rock cannot absorb: the heat has to go somewhere, and after
@@ -70,7 +83,7 @@ typedef enum AbilityTrigger {
 #define ABILITY_LASER_BURST_SHOCK 26
 #define ABILITY_LASER_BURST_IMPULSE 16000.0f
 #define ABILITY_CRYO_RANGE 190.0f
-#define ABILITY_CRYO_RADIUS 2.6f
+#define ABILITY_CRYO_RADIUS (2.6f * ABILITY_EFFECT_SCALE)
 #define ABILITY_FORCE_LENGTH 84.0f
 #define ABILITY_FORCE_SPREAD_COSINE 0.78f
 #define ABILITY_FORCE_REACH 54

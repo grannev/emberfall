@@ -14,12 +14,19 @@
  */
 #include "terrain_grab_renderer.h"
 
+#include "abilities.h"
 #include "beam_render.h"
 
 #include <math.h>
 #include <stddef.h>
 
 #include <raymath.h>
+
+/* Cells per effect unit, shared with every other beam in the game. The hold was
+   drawn against a character thirteen cells tall and is now held by one of
+   eight: two strands as thick as his forearms reach across a rock the size of
+   his head. See ABILITY_EFFECT_SCALE. */
+#define FX(units) ((units) * ABILITY_EFFECT_SCALE)
 
 /* Everything the hold draws, in one place so the scene and emissive passes
    cannot drift apart: they differ only in the colours they are handed. */
@@ -62,19 +69,19 @@ static void GrabDraw(const TerrainInteractionSystem *system,
        moment always draws the same beam. */
     frame = (int)(time * 18.0f);
 
-    BeamStrand(from, to, 2.4f, 0.9f, frame, beam, edge, block, 5);
-    BeamStrand(PlayerHandOrigin(player, to, true), to, 2.4f, 0.9f, frame, beam,
-               edge, block, 23);
+    BeamStrand(from, to, FX(2.4f), FX(0.9f), frame, beam, edge, block, 5);
+    BeamStrand(PlayerHandOrigin(player, to, true), to, FX(2.4f), FX(0.9f), frame,
+               beam, edge, block, 23);
 
     /* The grip itself: a hard white core. */
     BeamBlock(to.x, to.y, block * 1.5f, edge);
 
     /* Rings turning around the grip, off centre and gappy. */
-    BeamRings(to, time, 2, 4.5f, 3.0f, ring, block);
+    BeamRings(to, time, 2, FX(4.5f), FX(3.0f), ring, block);
 
     /* Sparks drifting in toward the grip, so the hold looks like it is pulling
        rather than merely touching. */
-    BeamSparks(from, to, time, 10, 4.5f, false, spark, block);
+    BeamSparks(from, to, time, 10, FX(4.5f), false, spark, block);
 }
 
 void TerrainGrabRendererDrawScene(const TerrainInteractionSystem *system,
