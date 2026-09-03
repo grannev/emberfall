@@ -15,6 +15,7 @@ void PlayerInit(Player *player, Vector2 position)
 
     player->position = position;
     player->velocity = (Vector2){0.0f, 0.0f};
+    player->thrust = (Vector2){0.0f, 0.0f};
     player->impactPosition = position;
     player->impactNormal = (Vector2){0.0f, 0.0f};
     player->drillPosition = position;
@@ -600,11 +601,13 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->boostEngaged = false;
     player->boostBurstTimer = fmaxf(0.0f, player->boostBurstTimer - deltaTime);
     player->thrusting = false;
+    player->thrust = (Vector2){0.0f, 0.0f};
     inputLength = sqrtf(input.x * input.x + input.y * input.y);
     if (inputLength > 0.0f) {
         input.x /= inputLength;
         input.y /= inputLength;
         player->thrusting = true;
+        player->thrust = input;
     }
     /* Boost outlives the directional input for a moment, so letting go of WASD
        inside a tunnel coasts out instead of dropping the drill into a wall. */

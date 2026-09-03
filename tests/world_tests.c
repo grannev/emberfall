@@ -2661,8 +2661,16 @@ static void test_the_manager_refuses_work_past_its_budgets(void)
                             DynamicTerrainAllocBody(&terrain,
                                                     TERRAIN_BODY_MAX_SPAN + 1, 1)) == NULL,
           "a body wider than the span limit was accepted");
-    CHECK(DynamicTerrainGet(&terrain,
-                            DynamicTerrainAllocBody(&terrain, 128, 128)) == NULL,
+    /* Both sides inside the span limit, so what refuses it is the raster
+       capacity and not the span. Written from the constants, because a
+       hard-coded shape stops testing the rule the moment either is
+       retuned. */
+    CHECK(DynamicTerrainGet(
+              &terrain,
+              DynamicTerrainAllocBody(
+                  &terrain, TERRAIN_BODY_MAX_SPAN,
+                  TERRAIN_BODY_RASTER_CAPACITY / TERRAIN_BODY_MAX_SPAN + 1)) ==
+              NULL,
           "a raster larger than the per-body capacity was accepted");
     CHECK(DynamicTerrainGet(&terrain,
                             DynamicTerrainAllocBody(&terrain, 0, 4)) == NULL,
@@ -3912,22 +3920,36 @@ static void test_a_component_too_wide_for_a_body_changes_nothing(void)
 {
     World world;
     WorldComponentResult component;
-    Rectangle region = {30.0f, 20.0f, 128.0f, 128.0f};
+    /* As wide as a body may be and one row taller than its raster can hold, so
+       what refuses it is the bounding box and not the span. Written from the
+       constants: a hard-coded 128x128 stopped exceeding anything the moment the
+       budgets were raised, and a test that no longer tests its own rule fails
+       silently in the useful direction. */
+    const int ringWidth = TERRAIN_BODY_MAX_SPAN;
+    const int ringHeight = TERRAIN_BODY_RASTER_CAPACITY / TERRAIN_BODY_MAX_SPAN + 1;
+    const int firstX = 30;
+    const int firstY = 20;
+    const int lastX = firstX + ringWidth - 1;
+    const int lastY = firstY + ringHeight - 1;
+    Rectangle region = {(float)firstX, (float)firstY, (float)ringWidth,
+                        (float)ringHeight};
     uint64_t before;
 
-    CHECK(WorldInit(&world, 200, 180), "world allocation failed");
+    CHECK(ringHeight <= WORLD_COMPONENT_MAX_SPAN,
+          "the fixture needs a search region %d cells tall", ringHeight);
+    CHECK(WorldInit(&world, lastX + 40, lastY + 40), "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
-    /* A hollow square the full width and height of a search region: 128x128 of
-       bounding box around a few hundred cells of wall. It is the shape that
-       separates the two capacity rules, because a body is refused on the box it
-       needs and not on the material in it. */
-    FillRect(&world, 30, 20, 157, 20, MATERIAL_ROCK);
-    FillRect(&world, 30, 147, 157, 147, MATERIAL_ROCK);
-    FillRect(&world, 30, 20, 30, 147, MATERIAL_ROCK);
-    FillRect(&world, 157, 20, 157, 147, MATERIAL_ROCK);
+    /* A hollow square: a large bounding box around a few hundred cells of wall.
+       It is the shape that separates the two capacity rules, because a body is
+       refused on the box it needs and not on the material in it. */
+    FillRect(&world, firstX, firstY, lastX, firstY, MATERIAL_ROCK);
+    FillRect(&world, firstX, lastY, lastX, lastY, MATERIAL_ROCK);
+    FillRect(&world, firstX, firstY, firstX, lastY, MATERIAL_ROCK);
+    FillRect(&world, lastX, firstY, lastX, lastY, MATERIAL_ROCK);
     before = WorldDigest(&world);
 
-    component = WorldFindComponent(&world, &componentWorkspace, region, 60, 20,
+    component = WorldFindComponent(&world, &componentWorkspace, region,
+                                   firstX + 30, firstY,
                                    WORLD_COMPONENT_MAX_CELLS);
     CHECK(component.status == WORLD_COMPONENT_DETACHED,
           "the ring fixture reported %s", ComponentStatusName(component.status));
@@ -5939,23 +5961,92 @@ static void test_a_fragment_below_the_minimum_size_stays_static(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* A slab the size of a building comes loose in one piece.
+ *
+ * The ceiling exists so that a search cannot wander into the landmass, not to
+ * keep pieces small, and it was low enough that most of what a blast actually
+ * cuts free was refused — and a refused piece does not stay put, it hangs in
+ * the air. This is the other side of the previous test: the same rule, at a
+ * size the player would call an object rather than a rock. */
+static void test_a_building_sized_slab_becomes_one_body(void)
+{
+    World world;
+    const int blockWidth = 90;
+    const int blockHeight = 90;
+    const int blockLeft = 20;
+    const int blockTop = 24;
+    const int pillarX = blockLeft + blockWidth / 2;
+    const int groundTop = blockTop + blockHeight + 20;
+    const TerrainBody *body = NULL;
+    int blockCells;
+    int slot;
+
+    CHECK(WorldInit(&world, blockLeft + blockWidth + 20, groundTop + 20),
+          "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    blockCells = BuildPillarScene(&world, blockLeft, blockLeft + blockWidth - 1,
+                                  blockTop, blockTop + blockHeight - 1, pillarX,
+                                  groundTop);
+
+    WorldDestroyCircle(&world, pillarX, groundTop - 10, 4, 0.0f);
+    CHECK(RunDetach(&world, &terrain) == 1,
+          "a %d-cell slab did not become exactly one body", blockCells);
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        if (terrain.bodies[slot].active) {
+            body = &terrain.bodies[slot];
+            break;
+        }
+    }
+    CHECK(body != NULL, "no body was created");
+    /* At least the slab: what is left of the pillar above the blast comes away
+       attached to it, which is right. */
+    CHECK(body->cellCount >= blockCells,
+          "the body holds %d of the slab's %d cells", body->cellCount,
+          blockCells);
+    /* And it weighs what a slab that size should, which is the whole reason the
+       hold cannot lift it and the hands have to push it. */
+    CHECK(body->mass > 20000.0f, "the slab weighs only %.0f",
+          (double)body->mass);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_fragment_above_the_maximum_size_stays_static(void)
 {
     World world;
+    /* Derived from the shipped ceiling rather than written out, so this keeps
+       testing the default the day the default moves — which it has, twice. Both
+       sides stay inside the detector's own span so the refusal below belongs to
+       this module's policy and not to the detector. */
+    const TerrainDetachConfig defaults = TerrainDetachDefaultConfig();
+    const int blockWidth = WORLD_COMPONENT_MAX_SPAN - 8;
+    const int blockHeight = defaults.maximumBodyCells / blockWidth + 2;
+    const int blockLeft = 20;
+    const int blockTop = 24;
+    const int pillarX = blockLeft + blockWidth / 2;
+    const int groundTop = blockTop + blockHeight + 20;
+    int blockCells;
 
-    CHECK(WorldInit(&world, 160, 140), "world allocation failed");
+    CHECK(WorldInit(&world, blockLeft + blockWidth + 20, groundTop + 20),
+          "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainDetachInit(&detach);
-    /* 64x49 is 3136 cells, past the default ceiling of 3072 and still inside
-       what the detector itself will report, so the refusal below belongs to
-       this module's policy. */
-    (void)BuildPillarScene(&world, 20, 83, 30, 78, 60, 100);
+    blockCells = BuildPillarScene(&world, blockLeft,
+                                  blockLeft + blockWidth - 1, blockTop,
+                                  blockTop + blockHeight - 1, pillarX,
+                                  groundTop);
+    CHECK(blockCells > defaults.maximumBodyCells,
+          "the fixture is %d cells, inside the ceiling of %d", blockCells,
+          defaults.maximumBodyCells);
+    CHECK(blockCells <= WORLD_COMPONENT_MAX_CELLS,
+          "the fixture is larger than the detector can report at all");
 
-    WorldDestroyCircle(&world, 60, 90, 4, 0.0f);
+    WorldDestroyCircle(&world, pillarX, groundTop - 10, 4, 0.0f);
     CHECK(RunDetach(&world, &terrain) == 0, "an oversized slab became a body");
     CHECK(detach.stats.autoDetachRejectedTooLarge > 0,
           "the slab was not rejected for its size");
-    CHECK(CountMaterial(&world, MATERIAL_ROCK) > 3000,
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) > blockCells,
           "the slab left the static world");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
@@ -7901,6 +7992,126 @@ static void test_a_small_body_is_shoved_more_easily_than_a_huge_one(void)
     CHECK(player.velocity.x < playerAfterSmall,
           "the player left the huge body at %.3f and the small one at %.3f",
           (double)player.velocity.x, (double)playerAfterSmall);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Bracing against a slab and walking it along the ground.
+ *
+ * This is the half of moving terrain the telekinetic hold cannot do. The hold
+ * has to fight gravity, so it stops working once its force divided by the
+ * body's mass falls under it; the hands never lift anything, so the only thing
+ * in their way is friction. The fixture is deliberately a body the hold could
+ * not raise, and the test says so in the same terms the hold is configured
+ * in. */
+static void test_bracing_pushes_a_body_the_hold_could_not_lift(void)
+{
+    World world;
+    Player player;
+    TerrainBodyHandle slab;
+    const TerrainBody *body;
+    TerrainInteractionConfig interactionDefaults =
+        TerrainInteractionDefaultConfig();
+    DynamicTerrainConfig terrainDefaults = DynamicTerrainDefaultConfig();
+    float startX;
+    bool sawPushPose = false;
+    int frame;
+
+    CHECK(WorldInit(&world, 480, 220), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    /* Ground for the slab to rest on: friction is the whole of what a push has
+       to beat, and a body floating in a void would move for any force at
+       all. */
+    FillRect(&world, 0, 150, 479, 219, MATERIAL_ROCK);
+
+    slab = MakeRockBlock(&terrain, 60, 60, (Vector2){200.0f, 119.0f});
+    body = DynamicTerrainGetConst(&terrain, slab);
+    CHECK(body != NULL, "the slab was not created");
+    CHECK(interactionDefaults.maxPullForce / body->mass <
+              terrainDefaults.gravity,
+          "the fixture weighs %.0f, which the hold could lift at %.1f against "
+          "gravity %.1f — it is not the case this test is for",
+          (double)body->mass,
+          (double)(interactionDefaults.maxPullForce / body->mass),
+          (double)terrainDefaults.gravity);
+
+    PlayerInit(&player, (Vector2){120.0f, 119.0f});
+    startX = body->position.x;
+
+    /* Two seconds of ordinary flight into the slab's left face. Nothing here
+       reaches past the production path: the player flies, the interaction
+       resolves, the body integrates. */
+    for (frame = 0; frame < 120; ++frame) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, false,
+                     KINEMATIC_STEP);
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
+                                 (Vector2){400.0f, 119.0f}, false,
+                                 KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+        sawPushPose = sawPushPose || player.pose == PLAYER_POSE_PUSH;
+    }
+
+    CHECK(interaction.stats.braceFrames > 10,
+          "the player braced on only %d frames of two seconds against the slab",
+          interaction.stats.braceFrames);
+    /* Well past what the collision alone would have done: a body of this mass
+       barely registers being run into at the player's own cruising speed. */
+    CHECK(body->position.x > startX + 20.0f,
+          "the slab moved %.1f cells", (double)(body->position.x - startX));
+    CHECK(sawPushPose,
+          "the character never took the bracing pose while pushing");
+
+    /* Hands off. The slab keeps whatever momentum it had and friction takes it
+       back; what must stop at once is the pushing. */
+    {
+        int braceBefore = interaction.stats.braceFrames;
+
+        for (frame = 0; frame < 30; ++frame) {
+            PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false,
+                         KINEMATIC_STEP);
+            TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
+                                     (Vector2){400.0f, 119.0f}, false,
+                                     KINEMATIC_STEP);
+            TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+        }
+        CHECK(interaction.stats.braceFrames == braceBefore,
+              "a player with no thrust pushed on %d further frames",
+              interaction.stats.braceFrames - braceBefore);
+    }
+
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* The boost is a different answer to the same obstacle: at speed it cuts
+   through a body rather than leaning on it, and the two must not both run. */
+static void test_a_boosting_player_does_not_brace(void)
+{
+    World world;
+    Player player;
+    int frame;
+
+    CHECK(WorldInit(&world, 480, 220), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainInteractionInit(&interaction);
+    FillRect(&world, 0, 150, 479, 219, MATERIAL_ROCK);
+    (void)MakeRockBlock(&terrain, 60, 60, (Vector2){200.0f, 119.0f});
+    PlayerInit(&player, (Vector2){120.0f, 119.0f});
+
+    for (frame = 0; frame < 120; ++frame) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true,
+                     KINEMATIC_STEP);
+        TerrainInteractionUpdate(&interaction, &player, &terrain, NULL,
+                                 (Vector2){400.0f, 119.0f}, false,
+                                 KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+    }
+    CHECK(interaction.stats.contacts > 0,
+          "the fixture never reached the slab at all");
+    CHECK(interaction.stats.braceFrames == 0,
+          "a boosting player braced on %d frames",
+          interaction.stats.braceFrames);
+    WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
 
@@ -10838,6 +11049,7 @@ int main(void)
     RUN(test_drilling_through_a_support_detaches_the_section_above);
     RUN(test_a_fragment_that_escapes_the_search_window_stays_static);
     RUN(test_a_fragment_below_the_minimum_size_stays_static);
+    RUN(test_a_building_sized_slab_becomes_one_body);
     RUN(test_a_fragment_above_the_maximum_size_stays_static);
     RUN(test_rubble_that_lies_still_long_enough_becomes_ground_again);
     RUN(test_a_hold_snaps_when_the_slab_is_out_of_reach);
@@ -10883,6 +11095,8 @@ int main(void)
     RUN(test_a_chip_too_small_to_be_a_body_is_dropped);
     RUN(test_the_player_cannot_stay_inside_a_body);
     RUN(test_a_small_body_is_shoved_more_easily_than_a_huge_one);
+    RUN(test_bracing_pushes_a_body_the_hold_could_not_lift);
+    RUN(test_a_boosting_player_does_not_brace);
     RUN(test_grab_only_takes_a_body_within_reach);
     RUN(test_a_held_body_is_pulled_rather_than_placed);
     RUN(test_releasing_throws_a_light_body_further_than_a_heavy_one);

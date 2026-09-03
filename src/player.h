@@ -11,7 +11,10 @@ typedef enum PlayerPose {
     PLAYER_POSE_FLY = 0,
     PLAYER_POSE_LASER,
     PLAYER_POSE_CHILL,
-    PLAYER_POSE_BLAST
+    PLAYER_POSE_BLAST,
+    /* Both palms flat on something solid, shoulder-width apart, leaning into
+       it. Held by whatever is being pushed rather than by an ability. */
+    PLAYER_POSE_PUSH
 } PlayerPose;
 
 /* Most pieces one frame of movement is ever broken into. The step is half a
@@ -40,6 +43,13 @@ typedef enum PlayerPose {
 typedef struct Player {
     Vector2 position;
     Vector2 velocity;
+    /* This frame's movement input, normalised, or zero when there is none.
+       Kept because it is the one thing that says which way the character is
+       *pushing* as opposed to which way they happen to be drifting — and a
+       body braced against needs exactly that. Velocity is no substitute: the
+       moment the player is pressed against a rock, the collision has taken
+       their velocity away and the thrust is all that is left. */
+    Vector2 thrust;
     Vector2 impactPosition;
     Vector2 impactNormal;
     Vector2 drillPosition;

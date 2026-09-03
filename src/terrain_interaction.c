@@ -26,6 +26,20 @@ TerrainInteractionConfig TerrainInteractionDefaultConfig(void)
     config.contactRestitution = 0.05f;
     config.maxContactImpulse = 9000.0f;
 
+    /* Chosen against friction rather than against the hold. A body resting on
+       the ground loses on the order of sixty cells per second squared to
+       friction whatever it weighs, so this is what decides which bodies move at
+       all: a slab of ten thousand cells weighs about twenty-six thousand, gets
+       roughly a hundred cells per second squared out of this, and creeps once
+       friction has taken its share. Half that weight and it walks briskly; a
+       chip is at the speed ceiling within a frame. */
+    config.pushForce = 2600000.0f;
+    /* About forty-five degrees off the surface. */
+    config.pushAlignment = 0.35f;
+    /* A brisk walking shove. Well under the body speed limit, so what the hands
+       do never looks like what a blast does. */
+    config.pushSpeed = 46.0f;
+
     /* Reach across a good part of the screen. The power is telekinesis: having
        to stand next to a slab to lift it makes it a pair of hands instead. */
     config.grabDistance = 180.0f;
@@ -68,7 +82,7 @@ void TerrainInteractionResetStats(TerrainInteractionSystem *system)
         return;
     }
     {
-        TerrainInteractionStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainInteractionStats empty = {0};
 
         system->stats = empty;
     }
@@ -232,11 +246,62 @@ static bool TerrainInteractionDrill(TerrainInteractionSystem *system,
     return true;
 }
 
+/* Bracing against a body and driving it.
+ *
+ * The contact response is an exchange of momentum: it says what happens when
+ * the player runs into a rock. This is the other thing someone pressed against
+ * a rock can do — keep pushing. Their thrust is transmitted into the body for
+ * as long as they hold it there, so a slab far too heavy for the telekinetic
+ * hold to lift can still be walked along the ground.
+ *
+ * Along the surface normal rather than along the thrust, scaled by how squarely
+ * the two line up. Hands do not grip: pressing on a face at an angle moves it
+ * away from you, not sideways, and taking the direction from the surface is
+ * also what stops a push sliding a slab along its own edge.
+ *
+ * The reaction is one-way on purpose. It goes into the character's own engine,
+ * which is what bracing means for someone who flies; a push that shoved him
+ * backwards as hard as it shoved the rock would be a push that never moved
+ * anything. What keeps it honest is that it costs the thrust he is already
+ * spending — he cannot push and go anywhere else at the same time.
+ *
+ * Not while boosting: at speed the drill cuts the body instead, and the boost
+ * is a different answer to the same obstacle. */
+static void TerrainInteractionBrace(TerrainInteractionSystem *system,
+                                    Player *player,
+                                    DynamicTerrainSystem *terrain,
+                                    TerrainBodyHandle handle,
+                                    const TerrainBody *body, Vector2 normal,
+                                    Vector2 contact, float deltaTime)
+{
+    /* `normal` points out of the body toward the player, so pressing into it is
+       thrust against the normal. */
+    float into = -(player->thrust.x * normal.x + player->thrust.y * normal.y);
+    float along;
+    float impulse;
+
+    if (player->boosting || into < system->config.pushAlignment) {
+        return;
+    }
+    along = -(body->velocity.x * normal.x + body->velocity.y * normal.y);
+    if (along >= system->config.pushSpeed) {
+        return;
+    }
+    impulse = system->config.pushForce * into * deltaTime;
+    DynamicTerrainApplyImpulse(terrain, handle,
+                               (Vector2){-normal.x * impulse,
+                                         -normal.y * impulse},
+                               contact);
+    PlayerSetPose(player, PLAYER_POSE_PUSH, 0.12f);
+    ++system->stats.braceFrames;
+}
+
 /* One body against the player: separate them, then trade momentum. */
 static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
                                       Player *player,
                                       DynamicTerrainSystem *terrain,
-                                      TerrainDamageSystem *damage, int slot)
+                                      TerrainDamageSystem *damage, int slot,
+                                      float deltaTime)
 {
     TerrainBody *body = &terrain->bodies[slot];
     TerrainBodyHandle handle = {(uint16_t)slot, body->generation};
@@ -288,6 +353,8 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     normal = TerrainInteractionRotate(body, localNormal);
     contact = TerrainBodyLocalToWorld(body, localContact.x, localContact.y);
     ++system->stats.contacts;
+    TerrainInteractionBrace(system, player, terrain, handle, body, normal,
+                            contact, deltaTime);
 
     /* The player moves out, never the body. A slab the player is standing on
        must not be shoved aside to make room for them. */
@@ -380,7 +447,8 @@ static bool TerrainInteractionGrabPoint(const DynamicTerrainSystem *terrain,
 static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
                                          Player *player,
                                          DynamicTerrainSystem *terrain,
-                                         TerrainDamageSystem *damage)
+                                         TerrainDamageSystem *damage,
+                                         float deltaTime)
 {
     bool touched = false;
     int slot;
@@ -400,7 +468,8 @@ static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
             system->held.generation == terrain->bodies[slot].generation) {
             continue;
         }
-        if (TerrainInteractionResolve(system, player, terrain, damage, slot)) {
+        if (TerrainInteractionResolve(system, player, terrain, damage, slot,
+                                      deltaTime)) {
             touched = true;
         }
     }
@@ -423,7 +492,8 @@ static bool TerrainInteractionResolveAll(TerrainInteractionSystem *system,
 static void TerrainInteractionSweep(TerrainInteractionSystem *system,
                                     Player *player,
                                     DynamicTerrainSystem *terrain,
-                                    TerrainDamageSystem *damage)
+                                    TerrainDamageSystem *damage,
+                                    float deltaTime)
 {
     Vector2 target = player->position;
     float deltaX;
@@ -433,7 +503,8 @@ static void TerrainInteractionSweep(TerrainInteractionSystem *system,
     int substep;
 
     if (!system->hasPreviousPosition) {
-        (void)TerrainInteractionResolveAll(system, player, terrain, damage);
+        (void)TerrainInteractionResolveAll(system, player, terrain, damage,
+                                           deltaTime);
         system->previousPosition = player->position;
         system->hasPreviousPosition = true;
         return;
@@ -460,7 +531,8 @@ static void TerrainInteractionSweep(TerrainInteractionSystem *system,
         player->position = (Vector2){
             system->previousPosition.x + deltaX * amount,
             system->previousPosition.y + deltaY * amount};
-        if (TerrainInteractionResolveAll(system, player, terrain, damage)) {
+        if (TerrainInteractionResolveAll(system, player, terrain, damage,
+                                         deltaTime)) {
             /* Stopped here. The resolve has already moved them clear and taken
                its share of the momentum; carrying on to the end of the path
                would undo both. */
@@ -734,7 +806,7 @@ void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
 
     /* Contact first: the hold should pull against a body that is already where
        the player will find it this frame. */
-    TerrainInteractionSweep(system, player, terrain, damage);
+    TerrainInteractionSweep(system, player, terrain, damage, deltaTime);
 
     system->hovered = TerrainInteractionPick(terrain, &system->config,
                                              player->position, aimWorld,

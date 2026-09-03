@@ -181,7 +181,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     /* What the player can take hold of, and what they have. Read from the
        simulation's own state — nothing here writes back into it, and the
        simulation draws nothing. */
-    DrawText(TextFormat("HOLD: %s | CUT %d CELLS %d SPLITS",
+    DrawText(TextFormat("HOLD: %s | PUSH %d | CUT %d CELLS %d SPLITS",
                         TerrainInteractionIsHolding(&game->interaction,
                                                     &game->dynamicTerrain)
                             ? "CARRYING (F)"
@@ -190,6 +190,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                                        NULL
                                    ? "READY (F)"
                                    : "-"),
+                        game->interaction.stats.braceFrames,
                         game->damage.stats.cellsCarved,
                         game->damage.stats.fractureSplits),
              24, 243, 14, (Color){228, 208, 140, 255});
@@ -349,7 +350,10 @@ static void SetupSmokeTarget(World *world, Vector2 aim)
 static TerrainBodyHandle SetupSmokeTerrainBody(GameState *game, Vector2 aim,
                                                bool *worldCellsCleared)
 {
-    WorldComponentWorkspace workspace;
+    /* Static rather than automatic: the workspace is a hundred kilobytes, which
+       is more than belongs on a stack frame even in a setup path that runs
+       once. */
+    static WorldComponentWorkspace workspace;
     TerrainExtractResult extracted;
     WorldComponentResult component;
     TerrainBodyHandle invalid = TerrainBodyInvalidHandle();

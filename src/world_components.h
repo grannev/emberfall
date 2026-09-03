@@ -33,14 +33,20 @@
    query a compile-time bound rather than a function of the world. A region
    larger than this is rejected rather than silently clipped, because silently
    shrinking a caller's region is exactly how a "detached" answer stops meaning
-   what the caller thought it meant. */
-#define WORLD_COMPONENT_MAX_SPAN 128
+   what the caller thought it meant.
+
+   192 rather than 128 so that the region can hold the largest body the terrain
+   system can now carry. The visited bitmap grows with the square of this and is
+   4.6 KiB at 192, which is nothing beside the component's own cell list. */
+#define WORLD_COMPONENT_MAX_SPAN 192
 
 /* The largest component the workspace can hold. A component that would exceed
-   it stops the search and reports WORLD_COMPONENT_TOO_LARGE. 4096 cells is a
-   64x64 block of rock, far larger than anything a single blast is expected to
-   sever. */
-#define WORLD_COMPONENT_MAX_CELLS 4096
+   it stops the search and reports WORLD_COMPONENT_TOO_LARGE. 12288 cells is a
+   110x110 block of rock — a slab the size of a building rather than the 64x64
+   this used to allow, which is what a player who wants to move a piece of
+   cliff was running into. The two coordinate arrays are the cost: 96 KiB of
+   workspace, held once by the detach system rather than on anyone's stack. */
+#define WORLD_COMPONENT_MAX_CELLS 12288
 
 typedef enum WorldComponentStatus {
     /* Proven free: the component was explored to completion inside the query

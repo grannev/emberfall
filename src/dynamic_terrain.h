@@ -47,23 +47,23 @@
 
 /* Raster slots reserved for each body. A body's bounding box must fit in this
    many cells — not in a square, so a long thin slab is as welcome as a
-   compact lump. 12288 holds a 96x128 shard, which is what lets a body be a
-   slab worth calling one rather than a chip. */
-#define TERRAIN_BODY_RASTER_CAPACITY 12288
+   compact lump. 27648 holds a 144x192 shard, which is what lets a body be a
+   piece of cliff rather than a boulder. */
+#define TERRAIN_BODY_RASTER_CAPACITY 27648
 
 /* Longest side of a body's bounding box, matching the detector's own region
    limit so that anything WorldFindComponent can report as detached is a shape
    this can hold. */
-#define TERRAIN_BODY_MAX_SPAN 128
+#define TERRAIN_BODY_MAX_SPAN 192
 
 /* Occupied cells in one body, inherited from WORLD_COMPONENT_MAX_CELLS: a body
    can only ever be built from a component the detector proved free. It is also
    the cap on a body's surface list, because a filigree body can have every one
    of its cells on the surface. */
-#define MAX_TERRAIN_BODY_CELLS 4096
+#define MAX_TERRAIN_BODY_CELLS 12288
 
 /* Total material/temperature raster storage:
-   64 x 12288 x (1 byte material + 4 bytes temperature) = 3.75 MiB, allocated
+   64 x 27648 x (1 byte material + 4 bytes temperature) = 8.4 MiB, allocated
    once and never resized. Collision also owns a fixed surface list. */
 #define MAX_TERRAIN_RASTER_CELLS (MAX_TERRAIN_BODIES * TERRAIN_BODY_RASTER_CAPACITY)
 
@@ -71,10 +71,10 @@
    rather than memory: the raster arena above is allocated once whatever
    happens, but every occupied cell is a cell collision may test and a cell the
    renderer will eventually draw, so a long series of explosions must not be
-   able to accumulate them without limit. Half the theoretical maximum
-   (64 x 4096) buys either forty of the largest bodies the detector hands over
-   or every slot filled with an ordinary one. */
-#define MAX_TERRAIN_DYNAMIC_CELLS 131072
+   able to accumulate them without limit. A quarter of the theoretical maximum
+   (64 x 12288) buys either sixteen of the largest bodies the detector can now
+   hand over or every slot filled with an ordinary one. */
+#define MAX_TERRAIN_DYNAMIC_CELLS 196608
 
 /* ---- handles ------------------------------------------------------------
  *

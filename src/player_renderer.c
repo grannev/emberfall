@@ -153,8 +153,9 @@ static void DrawLimb(Vector2 from, Vector2 to, int thickness, Color color)
    from the hips toward the head. Absolute rather than relative to some offset,
    because a hand placed by an unexplained constant is a hand nobody can move
    with confidence later. */
-static void PlayerHandTargets(const Player *player, Vector2 aimLocal, float lean,
-                              float wave, Vector2 *lead, Vector2 *trail)
+static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
+                              Vector2 pushLocal, float lean, float wave,
+                              Vector2 *lead, Vector2 *trail)
 {
     /* Hanging at rest — the hands sit below the shoulders — and thrown out past
        the head at speed, along the body axis, which at full lean is the
@@ -185,6 +186,20 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal, float lean
         trail->x = aimLocal.x * (reach - 0.8f) - 0.8f;
         trail->y = SHOULDER_UP + aimLocal.y * (reach - 0.8f) - 2.2f;
         return;
+    case PLAYER_POSE_PUSH: {
+        /* Both palms flat on the rock, shoulder-width apart across the
+           direction of the push. Short reach and no animation: he is leaning
+           on it, not striking it, and the arms are what the weight goes
+           through. */
+        float brace = PLAYER_TWO_HAND_REACH - 1.0f;
+        Vector2 across = {-pushLocal.y, pushLocal.x};
+
+        lead->x = pushLocal.x * brace + across.x * 1.6f;
+        lead->y = SHOULDER_UP + pushLocal.y * brace + across.y * 1.6f;
+        trail->x = pushLocal.x * brace - across.x * 1.6f;
+        trail->y = SHOULDER_UP + pushLocal.y * brace - across.y * 1.6f;
+        return;
+    }
     case PLAYER_POSE_BLAST: {
         /* A punch: both arms drive out along the aim and recover. */
         float punch = Clamp(player->poseTimer / 0.28f, 0.0f, 1.0f);
@@ -234,6 +249,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     Color dark = suitDark;
     BodyFrame frame;
     Vector2 aimLocal;
+    Vector2 pushLocal;
     Vector2 travel = {0.0f, -1.0f};
     Vector2 leadHand;
     Vector2 trailHand;
@@ -300,6 +316,13 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     frame.side.x *= sideSign;
     frame.side.y *= sideSign;
     aimLocal.x *= sideSign;
+    /* The push expressed in the same frame. Taken from the thrust rather than
+       from the cursor: the hands go where the character is leaning, and the
+       cursor is free to be somewhere else entirely. */
+    pushLocal = (Vector2){player->thrust.x * frame.side.x +
+                              player->thrust.y * frame.side.y,
+                          player->thrust.x * frame.up.x +
+                              player->thrust.y * frame.up.y};
 
     /* Which way is "behind the character". Standing still there is no direction
        of travel to use, and taking one anyway tucks the feet upward; behind is
@@ -463,7 +486,8 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     /* ---- arms ---- */
     shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.2f);
     shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.2f);
-    PlayerHandTargets(player, aimLocal, lean, wave, &leadHand, &trailHand);
+    PlayerHandTargets(player, aimLocal, pushLocal, lean, wave, &leadHand,
+                      &trailHand);
     {
         Vector2 leadPoint = BodyPoint(&frame, leadHand.y, leadHand.x);
         Vector2 trailPoint = BodyPoint(&frame, trailHand.y, trailHand.x);

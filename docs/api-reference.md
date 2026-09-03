@@ -319,16 +319,24 @@ TerrainInteractionConfig TerrainInteractionDefaultConfig(void);
 void TerrainInteractionInit(TerrainInteractionSystem *system);
 void TerrainInteractionResetStats(TerrainInteractionSystem *system);
 void TerrainInteractionUpdate(TerrainInteractionSystem *system, Player *player,
-                              DynamicTerrainSystem *terrain, Vector2 aimWorld,
+                              DynamicTerrainSystem *terrain,
+                              TerrainDamageSystem *damage, Vector2 aimWorld,
                               bool grabHeld, float deltaTime);
 bool TerrainInteractionIsHolding(const TerrainInteractionSystem *system,
                                  const DynamicTerrainSystem *terrain);
 ```
 
 Объявлено в `terrain_interaction.h`, вызывается из `GameUpdate` последним. Из
-перекрытия выталкивается игрок, никогда не тело. Толчок выпадает из обмена
+перекрытия выталкивается игрок, никогда не тело. Удар выпадает из обмена
 импульсом в контакте, поэтому маленькое тело отлетает, а большое нет — разница
 из деления на массу.
+
+Прижатый к телу игрок, который **не разогнан** и продолжает держать направление
+в него, вдобавок толкает: его тяга передаётся телу вдоль нормали поверхности с
+силой `pushForce`, пока тело не идёт быстрее `pushSpeed`. Это то, чем двигают
+плиту, которую захват не поднимет, — и `Player.thrust`, нормированный ввод
+кадра, существует именно для этого: в момент упора скорость у игрока уже
+отобрана столкновением, и тяга — единственное, что говорит, куда он давит.
 
 Столкновение проверяет путь игрока за кадр, а не только его конец: движение
 разбивается на шаги не длиннее половины радиуса игрока, максимум

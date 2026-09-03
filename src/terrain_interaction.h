@@ -40,6 +40,37 @@ typedef struct TerrainInteractionConfig {
        at full speed cannot launch a body across the map. */
     float maxContactImpulse;
 
+    /* ---- bracing --------------------------------------------------------
+     *
+     * The contact above says what happens when the player runs into a rock.
+     * This says what happens when they stay there and keep pushing.
+     *
+     * It is the counterpart to the telekinetic hold, and the two divide the
+     * work by weight. The hold has to fight gravity, so it stops working once
+     * its force divided by mass falls under it — a few thousand cells of rock
+     * and no more. The hands never lift anything: they walk a slab along the
+     * ground, and the only thing in their way is friction.
+     *
+     * Friction is what shapes the feel. A body resting on the ground sheds
+     * roughly a fixed amount of speed per tick whatever it weighs, so a push
+     * has to beat a fixed *acceleration* rather than a fixed force. Force
+     * divided by mass is enormous for a chip and barely over the line for a
+     * slab the size of a building, and that difference — not a rule about what
+     * may be pushed — is the whole curve.
+     */
+    /* Absolute force units, delivered for as long as the player is braced.
+       Scaled by how squarely they are pressed into the surface: leaning on a
+       face at an angle transmits less, as it should. */
+    float pushForce;
+    /* How closely the thrust has to line up with the surface before it counts
+       as a push at all. Below this the player is sliding along the face rather
+       than pushing on it. */
+    float pushAlignment;
+    /* The push stops adding speed once the body is already moving this fast
+       along the surface normal. Hands are not a catapult, and without a ceiling
+       a light body would be walked up to the body speed limit. */
+    float pushSpeed;
+
     /* How far from the player a body may be taken hold of, measured to the
        nearest point of its world box. */
     float grabDistance;
@@ -76,6 +107,8 @@ typedef struct TerrainInteractionConfig {
 typedef struct TerrainInteractionStats {
     int contacts;
     int pushImpulses;
+    /* Frames the player spent braced against a body and driving it. */
+    int braceFrames;
     /* Frames whose movement was long enough to need breaking up, and the most
        pieces any one of them needed. */
     int sweptFrames;

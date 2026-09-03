@@ -35,19 +35,26 @@
 #define TERRAIN_COLLISION_SUBSTEP_DISTANCE 0.5f
 /* Ceiling on substeps, and therefore on cost. Beyond the motion this covers a
    body may tunnel; the envelope is stated rather than hidden, and
-   TerrainPhysicsConfigIsSafe checks that the shipped defaults stay inside it. */
-#define TERRAIN_MAX_SUBSTEPS 16
+   TerrainPhysicsConfigIsSafe checks that the shipped defaults stay inside it.
+
+   Raised from sixteen with the body size: a bigger body has a longer bounding
+   radius, its edge travels further for the same spin, and the budget has to
+   cover that. Raising it rather than slowing every body's spin is the cheaper
+   trade — substeps are taken from the motion a body actually has, so an
+   ordinary one still takes one or two, and only the largest, fastest, fastest
+   spinning body ever reaches the ceiling. */
+#define TERRAIN_MAX_SUBSTEPS 24
 /* Contacts kept per body per substep. A body resting on a long floor generates
    one per surface cell in touch; the deepest few are what the response needs,
    and keeping all of them would buy nothing. */
 #define MAX_TERRAIN_CONTACTS_PER_BODY 16
 /* The largest bounding radius any body can have. A raster is at most
    TERRAIN_BODY_RASTER_CAPACITY cells with neither side over
-   TERRAIN_BODY_MAX_SPAN, so the widest it can be is 128x64 and the farthest a
-   corner can sit from the centre is sqrt(64^2 + 32^2). Rounded up, this is what
+   TERRAIN_BODY_MAX_SPAN, so the widest it can be is 192x144 and the farthest a
+   corner can sit from the centre is sqrt(96^2 + 72^2). Rounded up, this is what
    the speed ceilings are chosen against, which is why no body can tunnel rather
    than merely no body anyone has tried. */
-#define TERRAIN_BODY_MAX_BOUNDING_RADIUS 72.0f
+#define TERRAIN_BODY_MAX_BOUNDING_RADIUS 120.0f
 
 /* Velocity solver passes over the contact set. Enough for a body to settle on
    a floor without the unbounded "repeat until no overlap" loop that would make
