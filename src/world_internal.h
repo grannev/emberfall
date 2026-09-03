@@ -30,6 +30,16 @@
 /* Friction heat left on a drilled tunnel wall. Deliberately below the water
    steam point (108) and far below the dirt ignition point (175). */
 #define DRILL_WALL_TEMPERATURE 96.0f
+/* How far a liquid may run sideways in one tick.
+ *
+ * One cell a tick is the default a falling-sand liquid gets, and it is why
+ * water here settled into standing wedges and sloped surfaces instead of a
+ * level one: displacement crosses a pool at one cell per tick, and a pool is
+ * hundreds of cells wide. Six is enough that a surface flattens within a moment
+ * of being disturbed, which is the only thing a player reads as water. Lava
+ * keeps a short run on purpose — it is supposed to crawl. */
+#define WORLD_WATER_DISPERSION 16
+#define WORLD_LAVA_DISPERSION 2
 
 static inline bool WorldInBounds(const World *world, int x, int y)
 {

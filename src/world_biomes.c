@@ -468,12 +468,36 @@ static void WorldFillEllipse(World *world, int centerX, int centerY,
 static void WorldPlacePocket(World *world, int centerX, int centerY,
                              int radiusX, int radiusY, CellMaterial fill)
 {
+    int waterLine = centerY + 2;
+    int lastY = centerY + radiusY;
+    int x;
+
     WorldFillEllipse(world, centerX, centerY, radiusX + 4, radiusY + 4,
                      MATERIAL_ROCK);
     WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
                      MATERIAL_EMPTY);
-    WorldFillEllipse(world, centerX, centerY + 2, radiusX - 2, radiusY - 2,
-                     fill);
+    /* Filled to a level line rather than as a smaller ellipse inside the
+       cavity. An ellipse of liquid has a curved underside, so its rim hangs
+       over the empty floor beneath it — a lens of water in mid air, which the
+       simulation then has to drop. A pool has a flat top and rests on the
+       floor it is standing in. */
+    for (x = centerX - radiusX; x <= centerX + radiusX; ++x) {
+        float dx = (float)(x - centerX) / (float)radiusX;
+        int y;
+
+        for (y = waterLine; y <= lastY; ++y) {
+            /* Inside the cavity, not merely inside the box around it. A cave
+               dug earlier can lie right outside the pocket's rock lining, and
+               a fill that only asked whether a cell was empty poured the
+               pocket's water into it. */
+            float dy = (float)(y - centerY) / (float)radiusY;
+
+            if (dx * dx + dy * dy > 1.0f) continue;
+            if (!WorldInBounds(world, x, y)) continue;
+            if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) continue;
+            WorldSetGeneratedCell(world, x, y, fill);
+        }
+    }
 }
 
 static void GenerateBaseTerrain(World *world)
@@ -644,17 +668,73 @@ static void WorldPlaceMound(World *world, int centerX, int halfWidth,
     }
 }
 
+/* Whether the ground the basin is about to be cut into can hold water.
+ *
+ * Caves are dug before surface features are placed, and they reach close enough
+ * to the surface to undercut a lake. A basin carved over one is a lake with a
+ * hole in the bottom: it drains into the cavern the moment the simulation
+ * starts, and what the player finds is a bowl-shaped scar with water running
+ * out of it. Checking first is cheaper than sealing afterwards, and a lake that
+ * is simply not there is invisible where a draining one is not. */
+static bool BasinBedIsSolid(const World *world, int firstX, int lastX,
+                            int waterLine, int depth)
+{
+    int x;
+
+    for (x = firstX; x <= lastX; ++x) {
+        int surface = SurfaceHeightAt(world, x);
+        int y;
+
+        for (y = surface; y <= waterLine + depth + 2; ++y) {
+            if (!WorldInBounds(world, x, y)) return false;
+            if (!MaterialIsSolid(WorldMaterialAt(world, x, y))) return false;
+        }
+    }
+    return true;
+}
+
+/* Smallest lake worth digging. Anything narrower than this reads as a puddle in
+   a scar rather than as water, and the excavation is more visible than the
+   liquid in it. */
+#define BASIN_MINIMUM_WIDTH 14
+
 static void WorldPlaceSurfaceBasin(World *world, int centerX, int radiusX,
                                    int depth, CellMaterial liquid,
                                    bool frozen)
 {
     int centerSurface = SurfaceHeightAt(world, centerX);
     int waterLine = centerSurface + 4;
-    int firstX = ClampInt(centerX - radiusX, 0, world->width - 1);
-    int lastX = ClampInt(centerX + radiusX, 0, world->width - 1);
+    int firstX = ClampInt(centerX, 0, world->width - 1);
+    int lastX = ClampInt(centerX, 0, world->width - 1);
     int x;
 
     if (radiusX <= 0 || depth <= 0) return;
+
+    /* The shore is where the ground stops being able to hold the water.
+     *
+     * Filling to a fixed level across a fixed radius said nothing about the
+     * terrain at the edges of that radius: wherever the natural surface ran
+     * lower than the water line, the fill began above the ground and left a
+     * slab of water — or, in the frost, a lid of ice — hanging in open air over
+     * the slope beyond. A lake spills at its lowest rim, so the span is walked
+     * outward from the centre and stopped at the first column that cannot hold
+     * the level. */
+    while (firstX > centerX - radiusX && firstX > 0 &&
+           SurfaceHeightAt(world, firstX - 1) <= waterLine) {
+        --firstX;
+    }
+    while (lastX < centerX + radiusX && lastX < world->width - 1 &&
+           SurfaceHeightAt(world, lastX + 1) <= waterLine) {
+        ++lastX;
+    }
+    /* The outermost column of the span is the rim, and is left untouched: it is
+       ground that reaches at least to the water line, and the water needs a
+       wall there or it simply runs out of the end of the basin. */
+    ++firstX;
+    --lastX;
+    if (lastX - firstX + 1 < BASIN_MINIMUM_WIDTH) return;
+    if (!BasinBedIsSolid(world, firstX, lastX, waterLine, depth)) return;
+
     for (x = firstX; x <= lastX; ++x) {
         float dx = (float)(x - centerX) / (float)radiusX;
         float bowl = 1.0f - dx * dx;

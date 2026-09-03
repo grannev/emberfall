@@ -56,7 +56,43 @@ static void WorldUpdateSand(World *world, int x, int y, int direction)
     (void)WorldTryMoveInto(world, x, y, x - direction, y + 1, true);
 }
 
-static void WorldUpdateLiquid(World *world, int x, int y, int direction, bool viscous)
+/* One sideways run, up to `reach` cells, ending at the furthest clear cell or at
+   the first one with a drop under it.
+
+   A liquid that may only step one cell a tick does not level. A pool a hundred
+   cells wide needs a hundred ticks to carry one cell of displacement from one
+   end to the other, and by then more has arrived — so what stood there was a
+   wedge that never flattened. Running several cells at once is what lets a
+   surface find its level, which is the only thing a player reads as water.
+
+   The run stops at a hole rather than passing over it: falling beats spreading,
+   and a cell that skipped a gap would drain a pool from its middle instead of
+   from its edge. */
+static bool WorldFlowSideways(World *world, int x, int y, int direction,
+                              int reach)
+{
+    int furthest = 0;
+    int step;
+
+    for (step = 1; step <= reach; ++step) {
+        int probeX = x + direction * step;
+
+        if (!WorldInBounds(world, probeX, y)) break;
+        if (WorldMaterialAt(world, probeX, y) != MATERIAL_EMPTY) break;
+        furthest = step;
+        if (WorldInBounds(world, probeX, y + 1) &&
+            WorldMaterialAt(world, probeX, y + 1) == MATERIAL_EMPTY) {
+            break;
+        }
+    }
+    if (furthest == 0) {
+        return false;
+    }
+    return WorldTryMoveInto(world, x, y, x + direction * furthest, y, false);
+}
+
+static void WorldUpdateLiquid(World *world, int x, int y, int direction,
+                              int reach, bool viscous)
 {
     if (viscous && ((world->tick + (uint32_t)x + (uint32_t)y) % 3u != 0u)) {
         return;
@@ -71,10 +107,10 @@ static void WorldUpdateLiquid(World *world, int x, int y, int direction, bool vi
     if (WorldTryMoveInto(world, x, y, x - direction, y + 1, false)) {
         return;
     }
-    if (WorldTryMoveInto(world, x, y, x + direction, y, false)) {
+    if (WorldFlowSideways(world, x, y, direction, reach)) {
         return;
     }
-    (void)WorldTryMoveInto(world, x, y, x - direction, y, false);
+    (void)WorldFlowSideways(world, x, y, -direction, reach);
 }
 
 static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool slow)
@@ -178,7 +214,8 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             break;
         case MATERIAL_WATER:
             if (!WorldTryMaterialReaction(world, x, y)) {
-                WorldUpdateLiquid(world, x, y, direction, false);
+                WorldUpdateLiquid(world, x, y, direction,
+                                  WORLD_WATER_DISPERSION, false);
             }
             break;
         case MATERIAL_LAVA:
@@ -186,7 +223,8 @@ static void WorldUpdateCellAt(World *world, int x, int y)
                 WorldHeatNeighbors(world, x, y, LAVA_NEIGHBOR_HEAT_PER_TICK,
                                    LAVA_PASSIVE_HEAT_CAP);
                 WorldBurnDirt(world, x, y);
-                WorldUpdateLiquid(world, x, y, direction, true);
+                WorldUpdateLiquid(world, x, y, direction,
+                                  WORLD_LAVA_DISPERSION, true);
             }
             break;
         case MATERIAL_STEAM:

@@ -1293,6 +1293,81 @@ static int BuriedColumn(const World *world, int depth)
     return -1;
 }
 
+/* Everything the generator pours is held by something.
+ *
+ * A surface basin filled to a fixed level across a fixed radius says nothing
+ * about the ground at the edges of that radius. Wherever the natural surface
+ * ran below the water line the fill simply ran out of the end of the basin, and
+ * what the player saw was water spilling down a hillside from nowhere and, in
+ * the frost, the lid of ice left standing in the air once it had drained. The
+ * invariant is the one a lake has by construction: every run of liquid ends
+ * against something solid, and every liquid cell rests on something. */
+static void test_generated_liquid_is_held_by_the_ground(void)
+{
+    static const uint64_t seeds[] = {0x1A4E5u, 0xF10A5u, 0x51EEDu};
+    World world;
+    size_t index;
+
+    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    for (index = 0; index < sizeof(seeds) / sizeof(seeds[0]); ++index) {
+    int unheld = 0;
+    int unsupported = 0;
+    int firstX = -1;
+    int firstY = -1;
+    int x;
+    int y;
+
+    WorldGenerate(&world, seeds[index]);
+
+    for (y = 0; y < world.height - 1; ++y) {
+        int runStart = -1;
+
+        for (x = 0; x <= world.width; ++x) {
+            CellMaterial material = x < world.width
+                                        ? WorldGetCell(&world, x, y)
+                                        : MATERIAL_ROCK;
+            bool liquid = material == MATERIAL_WATER || material == MATERIAL_LAVA;
+
+            if (liquid) {
+                if (runStart < 0) runStart = x;
+                if (WorldGetCell(&world, x, y + 1) == MATERIAL_EMPTY) {
+                    ++unsupported;
+                    if (firstX < 0) {
+                        firstX = x;
+                        firstY = y;
+                    }
+                }
+                continue;
+            }
+            if (runStart < 0) continue;
+            /* Both ends of the run. Out of bounds counts as held: the edge of
+               the array is the indestructible edge of the world. */
+            if ((runStart > 0 &&
+                 WorldGetCell(&world, runStart - 1, y) == MATERIAL_EMPTY) ||
+                (x < world.width &&
+                 WorldGetCell(&world, x, y) == MATERIAL_EMPTY)) {
+                ++unheld;
+                if (firstX < 0) {
+                    firstX = runStart;
+                    firstY = y;
+                }
+            }
+            runStart = -1;
+        }
+    }
+
+    CHECK(unheld == 0,
+          "seed %llu: %d generated runs of liquid end in open air, the first "
+          "at (%d, %d)",
+          (unsigned long long)seeds[index], unheld, firstX, firstY);
+    CHECK(unsupported == 0,
+          "seed %llu: %d generated liquid cells stand over open air, the "
+          "first at (%d, %d)",
+          (unsigned long long)seeds[index], unsupported, firstX, firstY);
+    }
+    WorldUnload(&world);
+}
+
 static void test_flora_grows_on_the_biome_it_belongs_to(void)
 {
     World world;
@@ -9248,6 +9323,67 @@ static void test_water_spreads_sideways_and_is_conserved(void)
     WorldUnload(&world);
 }
 
+/* Water has to find its own level, and find it quickly.
+ *
+ * A liquid that may step one cell a tick does not level: displacement crosses a
+ * pool at one cell per tick, so a hundred-cell pool needs a hundred ticks to
+ * pass a single cell of it from one end to the other, and what stands there in
+ * the meantime is a wedge. This is the behaviour the player named as liquids
+ * pouring wrongly, and the only honest way to state it is a flat surface within
+ * a bounded number of ticks. */
+static void test_water_levels_its_surface_in_a_tub(void)
+{
+    World world;
+    const int floorY = 60;
+    const int firstX = 4;
+    const int lastX = 123;
+    int surfaceLow = 0;
+    int surfaceHigh = 1 << 30;
+    int filledColumns = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 128, 72), "world allocation failed");
+    /* A tub: a floor and two walls, so nothing can leave and the only thing
+       being measured is how the water arranges itself inside it. */
+    FillRect(&world, 0, floorY, 127, floorY, MATERIAL_ROCK);
+    FillRect(&world, 0, 0, firstX - 1, floorY, MATERIAL_ROCK);
+    FillRect(&world, lastX + 1, 0, 127, floorY, MATERIAL_ROCK);
+    /* All of it poured in at one end. */
+    FillRect(&world, firstX, floorY - 40, firstX + 11, floorY - 1,
+             MATERIAL_WATER);
+
+    Tick(&world, 300);
+
+    for (x = firstX; x <= lastX; ++x) {
+        int top = -1;
+
+        for (y = 0; y < floorY; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                top = y;
+                break;
+            }
+        }
+        if (top < 0) continue;
+        ++filledColumns;
+        if (top > surfaceLow) surfaceLow = top;
+        if (top < surfaceHigh) surfaceHigh = top;
+    }
+
+    /* It reached the far wall rather than standing in a heap at the near
+       one. */
+    CHECK(filledColumns >= (lastX - firstX + 1) - 2,
+          "water filled only %d of %d columns", filledColumns,
+          lastX - firstX + 1);
+    /* And the surface is flat. Two cells of slack: a run is bounded by
+       WORLD_WATER_DISPERSION, so a purely local rule settles at a residual
+       slope of about one cell per run length, and the last cells to arrive are
+       allowed to still be sitting on the rank below. */
+    CHECK(surfaceLow - surfaceHigh <= 2,
+          "the surface runs from row %d to row %d", surfaceHigh, surfaceLow);
+    WorldUnload(&world);
+}
+
 /* --- thermal ----------------------------------------------------------- */
 
 static void test_rock_becomes_lava_above_its_threshold(void)
@@ -10379,6 +10515,7 @@ int main(void)
     RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
     RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
     RUN(test_a_cloud_is_never_culled_while_part_of_it_shows);
+    RUN(test_generated_liquid_is_held_by_the_ground);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);
     RUN(test_a_cactus_is_thick_and_carries_arms);
     RUN(test_flora_is_solid_but_is_never_the_ground);
@@ -10582,6 +10719,7 @@ int main(void)
     RUN(test_sand_falls_to_the_floor_and_is_conserved);
     RUN(test_sand_falls_at_most_one_cell_per_tick);
     RUN(test_water_spreads_sideways_and_is_conserved);
+    RUN(test_water_levels_its_surface_in_a_tub);
     RUN(test_rock_becomes_lava_above_its_threshold);
     RUN(test_water_becomes_steam_above_its_threshold);
     RUN(test_water_and_lava_react_into_steam_and_rock);
