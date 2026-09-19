@@ -7,9 +7,11 @@
 
 #include "world.h"
 
-/* Resting temperature of every cell. A cell more than half a degree away from
-   it counts as thermally active and keeps its chunk awake, so fresh storage
-   must start here — zeroed cells would read as hot and never let chunks sleep. */
+/* Resting temperature of every material. A cell more than half a degree away
+   from its material's rest counts as thermally active and keeps its chunk
+   awake. Empty cells have no temperature at all — the field is ignored for
+   them and reads back as ambient — which is what lets fresh storage stay
+   untouched: a zeroed cell is an empty cell at rest. */
 #define AMBIENT_TEMPERATURE 20.0f
 
 /* Everything a material *is* lives in this one table; only what a material

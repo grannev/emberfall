@@ -192,13 +192,10 @@ bool WorldInit(World *world, int width, int height)
         memset(world->lightDirtyChunks, 1,
                chunkCount * sizeof(*world->lightDirtyChunks));
     }
-    if (world->cells != NULL) {
-        size_t cellIndex;
-
-        for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
-            world->cells[cellIndex].temperature = AMBIENT_TEMPERATURE;
-        }
-    }
+    /* The cells are deliberately not touched here. A zeroed cell is an empty
+       cell at rest — empty has no temperature — so the pages of a sky that is
+       never written are never materialised, and the world costs what the
+       ground in it costs. See WORLD_GROUND_ROWS. */
 
     if (world->cells == NULL || world->activeChunks == NULL ||
         world->nextActiveChunks == NULL || world->activeRowColumns == NULL ||
@@ -306,6 +303,10 @@ void WorldActivateRegion(World *world, Rectangle region)
                     const Cell *cell = WorldCellConst(world, x, y);
                     CellMaterial material = (CellMaterial)cell->material;
 
+                    /* Empty has no temperature to be away from. */
+                    if (material == MATERIAL_EMPTY) {
+                        continue;
+                    }
                     if (MaterialIsDynamic(material) ||
                         fabsf(cell->temperature -
                               MaterialInitialTemperature(material)) > 0.05f) {
@@ -373,10 +374,14 @@ CellMaterial WorldGetCell(const World *world, int x, int y)
 
 float WorldGetTemperature(const World *world, int x, int y)
 {
+    const Cell *cell;
+
     if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
-        return 20.0f;
+        return AMBIENT_TEMPERATURE;
     }
-    return WorldCellConst(world, x, y)->temperature;
+    cell = WorldCellConst(world, x, y);
+    return cell->material == MATERIAL_EMPTY ? AMBIENT_TEMPERATURE
+                                            : cell->temperature;
 }
 
 void WorldSetTemperature(World *world, int x, int y, float temperature)

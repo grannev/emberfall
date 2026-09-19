@@ -24,7 +24,17 @@
 /* Tracks the production map. A benchmark measuring a world the game no longer
    ships is a benchmark of nothing: the height decides how much sky the light
    field has to fill and how deep the ground the simulation walks is. */
-#define BENCH_WORLD_HEIGHT 1440
+#define BENCH_WORLD_HEIGHT 2048
+/* Every scenario lays its fixtures out in ground-band rows, the coordinates
+   they were tuned in when the band was the whole world; the sky the world has
+   grown above the band is added here, so the fixtures stay where they were
+   relative to the ground and its gravity. Set once the world exists. */
+static int benchSkyRows;
+
+static float BenchY(float bandY)
+{
+    return bandY + (float)benchSkyRows;
+}
 #define BENCH_DEFAULT_TICKS 180
 #define BENCH_SEED 0x00e6be11u
 
@@ -135,6 +145,8 @@ static void FillRectangle(World *world, int firstX, int firstY, int lastX,
 {
     int y;
 
+    firstY += benchSkyRows;
+    lastY += benchSkyRows;
     for (y = firstY; y <= lastY; ++y) {
         int x;
 
@@ -199,8 +211,10 @@ static void SetupExplosion(BenchContext *context)
 static void StepExplosion(BenchContext *context, int tick)
 {
     if (tick == 0 || tick == context->ticks / 2) {
-        WorldDestroyCircle(context->world, context->centerX, 360, 72, 0.38f);
-        WorldApplyShockwave(context->world, context->centerX, 360, 72, 118);
+        WorldDestroyCircle(context->world, context->centerX, benchSkyRows + 360,
+                           72, 0.38f);
+        WorldApplyShockwave(context->world, context->centerX, benchSkyRows + 360,
+                            72, 118);
     }
 }
 
@@ -215,7 +229,7 @@ static void StepDestruction(BenchContext *context, int tick)
 {
     if (tick < 24) {
         int x = context->centerX - 150 + (tick % 8) * 92;
-        int y = 250 + (tick / 8) * 96;
+        int y = benchSkyRows + 250 + (tick / 8) * 96;
 
         WorldDestroyCircle(context->world, x, y, 38, 0.12f);
     }
@@ -227,7 +241,7 @@ static void SetupDrilling(BenchContext *context)
     FillRectangle(context->world, context->centerX, 270,
                   context->centerX + 700, 330, MATERIAL_ROCK);
     PlayerInit(&context->player,
-               (Vector2){(float)context->centerX - 35.0f, 300.0f});
+               (Vector2){(float)context->centerX - 35.0f, BenchY(300.0f)});
 }
 
 static void StepDrilling(BenchContext *context, int tick)
@@ -250,7 +264,7 @@ static void StepForce(BenchContext *context, int tick)
 {
     if (tick % 30 == 0) {
         WorldApplyForceBlast(context->world,
-                             (Vector2){(float)context->centerX, 300.0f},
+                             (Vector2){(float)context->centerX, BenchY(300.0f)},
                              (Vector2){1.0f, 0.0f}, 84.0f, 0.78f, 54);
     }
 }
@@ -269,9 +283,9 @@ static void StepCryo(BenchContext *context, int tick)
     float verticalOffset = (float)(tick % 80) - 40.0f;
 
     (void)WorldApplyChill(context->world,
-                          (Vector2){(float)context->centerX, 325.0f + verticalOffset},
+                          (Vector2){(float)context->centerX, BenchY(325.0f + verticalOffset)},
                           (Vector2){(float)context->centerX + 320.0f,
-                                    325.0f + verticalOffset},
+                                    BenchY(325.0f + verticalOffset)},
                           2.6f, 1.0f / 60.0f);
 }
 
@@ -295,17 +309,17 @@ static void StepMixed(BenchContext *context, int tick)
     if (tick % 45 == 0) {
         int x = context->centerX + 300 + (tick / 45) * 24;
 
-        WorldDestroyCircle(context->world, x, 380, 24, 0.2f);
-        WorldApplyShockwave(context->world, x, 380, 24, 52);
+        WorldDestroyCircle(context->world, x, benchSkyRows + 380, 24, 0.2f);
+        WorldApplyShockwave(context->world, x, benchSkyRows + 380, 24, 52);
     }
     if (tick % 30 == 0) {
         WorldApplyForceBlast(context->world,
-                             (Vector2){(float)context->centerX - 190.0f, 300.0f},
+                             (Vector2){(float)context->centerX - 190.0f, BenchY(300.0f)},
                              (Vector2){1.0f, 0.0f}, 84.0f, 0.78f, 54);
     }
     (void)WorldApplyLaser(context->world,
-                          (Vector2){(float)context->centerX + 250.0f, 360.0f},
-                          (Vector2){(float)context->centerX + 470.0f, 420.0f},
+                          (Vector2){(float)context->centerX + 250.0f, BenchY(360.0f)},
+                          (Vector2){(float)context->centerX + 470.0f, BenchY(420.0f)},
                           2.25f, 1.0f / 60.0f);
 }
 
@@ -363,7 +377,7 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
 {
     World *world = context->world;
     /* A 640x360 view, the widest the camera reaches at full boost. */
-    Rectangle lightView = {(float)context->centerX - 320.0f, 100.0f, 640.0f, 360.0f};
+    Rectangle lightView = {(float)context->centerX - 320.0f, BenchY(100.0f), 640.0f, 360.0f};
     double still;
     double moving;
     double disturbed;
@@ -372,7 +386,7 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
 
     PrepareScenario(context);
     /* Warm: the first solve always runs, because nothing has been solved yet. */
-    WorldSetPointLight(world, (Vector2){(float)context->centerX, 200.0f}, 60.0f,
+    WorldSetPointLight(world, (Vector2){(float)context->centerX, BenchY(200.0f)}, 60.0f,
                        0.8f);
     WorldUpdateLighting(world, lightView);
 
@@ -393,7 +407,7 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
 
         WorldSetPointLight(world,
                            (Vector2){(float)context->centerX + (float)frame * 8.0f,
-                                     200.0f},
+                                     BenchY(200.0f)},
                            60.0f, 0.8f);
         lightView.x = (float)context->centerX + (float)frame * 8.0f - 320.0f;
         start = NowSeconds();
@@ -408,7 +422,7 @@ static void RunLightingBenchmark(BenchContext *context, double *samples)
     for (frame = 0; frame < context->ticks; ++frame) {
         double start;
 
-        WorldDrillCircle(world, context->centerX + frame, 300, 6);
+        WorldDrillCircle(world, context->centerX + frame, benchSkyRows + 300, 6);
         WorldUpdate(world);
         start = NowSeconds();
         WorldUpdateLighting(world, lightView);
@@ -479,7 +493,7 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
             break;
         }
         body->position = (Vector2){(float)(context->centerX - 200 + index * 26),
-                                   120.0f};
+                                   BenchY(120.0f)};
         if (scenario.asleep) {
             /* Settled in place, holding a slot and its cells but asking for no
                work. This is the state most rubble spends its life in. The quiet
@@ -599,7 +613,8 @@ static void RunDetachBenchmark(BenchContext *context, double *samples,
 
         if (scenario.destroy) {
             BuildDetachScene(context, &scenario);
-            WorldDestroyCircle(world, context->centerX, scenario.blastY,
+            WorldDestroyCircle(world, context->centerX,
+                               benchSkyRows + scenario.blastY,
                                scenario.blastRadius, 0.0f);
         }
 
@@ -661,7 +676,7 @@ static void RunImpulseBenchmark(BenchContext *context, double *samples,
     }
     TerrainImpulseInit(&impulses);
     PrepareScenario(context);
-    origin = (Vector2){(float)context->centerX, (float)DETACH_BENCH_GROUND};
+    origin = (Vector2){(float)context->centerX, BenchY((float)DETACH_BENCH_GROUND)};
 
     /* Open ground around the blast. The generated world is solid here, and a
        cone blast fired from inside rock is occluded before it starts — a
@@ -772,16 +787,17 @@ static void RunTraversalBenchmark(double *samples, int ticks)
         return;
     }
     centre = game.world.width / 2;
+    benchSkyRows = WorldSkyRows(&game.world);
 
     /* Open sky to build speed in, then a wall of rock to spend it on. */
     for (y = TRAVERSAL_ALTITUDE - 90; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
         for (x = centre - 80; x <= centre + 600; ++x) {
-            WorldSetCell(&game.world, x, y, MATERIAL_EMPTY);
+            WorldSetCell(&game.world, x, y + benchSkyRows, MATERIAL_EMPTY);
         }
     }
     for (y = TRAVERSAL_ALTITUDE - 90; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
         for (x = centre + 600; x <= centre + TRAVERSAL_LENGTH; ++x) {
-            WorldSetCell(&game.world, x, y, MATERIAL_ROCK);
+            WorldSetCell(&game.world, x, y + benchSkyRows, MATERIAL_ROCK);
         }
     }
     /* A slab on a thin support, right in the flight path, so detachment and a
@@ -791,11 +807,11 @@ static void RunTraversalBenchmark(double *samples, int ticks)
        nothing about detachment at all. */
     for (y = TRAVERSAL_ALTITUDE - 40; y <= TRAVERSAL_ALTITUDE - 29; ++y) {
         for (x = centre + 320; x <= centre + 360; ++x) {
-            WorldSetCell(&game.world, x, y, MATERIAL_ROCK);
+            WorldSetCell(&game.world, x, y + benchSkyRows, MATERIAL_ROCK);
         }
     }
     for (y = TRAVERSAL_ALTITUDE - 28; y <= TRAVERSAL_ALTITUDE + 90; ++y) {
-        WorldSetCell(&game.world, centre + 340, y, MATERIAL_ROCK);
+        WorldSetCell(&game.world, centre + 340, y + benchSkyRows, MATERIAL_ROCK);
     }
 
     /* A slab placed straight in the flight path as a body, not left to chance.
@@ -816,7 +832,7 @@ static void RunTraversalBenchmark(double *samples, int ticks)
         }
         DynamicTerrainFinalizeBody(&game.dynamicTerrain, slab);
         DynamicTerrainGet(&game.dynamicTerrain, slab)->position =
-            (Vector2){(float)(centre + 480), (float)TRAVERSAL_ALTITUDE};
+            (Vector2){(float)(centre + 480), BenchY((float)TRAVERSAL_ALTITUDE)};
         /* Settled, or gravity carries it out of the flight path long before the
            player gets there and the scenario quietly stops measuring the thing
            it was built to measure. */
@@ -831,7 +847,7 @@ static void RunTraversalBenchmark(double *samples, int ticks)
     }
 
     game.player.position = (Vector2){(float)(centre - 60),
-                                     (float)TRAVERSAL_ALTITUDE};
+                                     BenchY((float)TRAVERSAL_ALTITUDE)};
     game.player.velocity = (Vector2){0.0f, 0.0f};
     memset(&input, 0, sizeof(input));
     input.move = (Vector2){1.0f, 0.0f};
@@ -960,6 +976,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "benchmark: WorldInit failed\n");
         return 1;
     }
+    benchSkyRows = WorldSkyRows(&world);
     initialized = NowSeconds();
     WorldGenerate(&world, BENCH_SEED);
     generated = NowSeconds();

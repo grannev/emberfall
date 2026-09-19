@@ -234,7 +234,10 @@ static void BiomeBlendColumnInit(BiomeBlendColumn *column, const World *world,
     int latticeX = x / BIOME_BLEND_PATCH;
     float alongX = SmoothStep((float)(x % BIOME_BLEND_PATCH) /
                               (float)BIOME_BLEND_PATCH);
-    int rows = world->height / BIOME_BLEND_PATCH + 2;
+    /* Rows of the ground band, not of the world: the sky above the band is
+       never interleaved, and indexing the lattice from the top of the band
+       keeps the ground the same ground however tall the sky is. */
+    int rows = WorldGroundRows(world) / BIOME_BLEND_PATCH + 2;
     int row;
 
     if (rows > BIOME_BLEND_ROWS_MAX) rows = BIOME_BLEND_ROWS_MAX;
@@ -370,15 +373,15 @@ static float SurfaceHeightRaw(const World *world, int x)
 {
     BiomeSample sample = BiomeSampleAt(world, x);
     BiomeSurfaceShape shape = BlendedSurfaceShape(&sample);
-    float worldHeight = (float)world->height;
 
-    return worldHeight * shape.baseHeight +
-           ValueNoise1D(world->seed, x, 1200, GENERATION_CONTINENT) *
-               worldHeight * shape.continentAmplitude +
-           ValueNoise1D(world->seed, x, 260, GENERATION_HILLS) * worldHeight *
-               shape.hillAmplitude +
-           ValueNoise1D(world->seed, x, 52, GENERATION_DETAIL) * worldHeight *
-               shape.detailAmplitude;
+    return WorldGroundY(
+        world, shape.baseHeight +
+                   ValueNoise1D(world->seed, x, 1200, GENERATION_CONTINENT) *
+                       shape.continentAmplitude +
+                   ValueNoise1D(world->seed, x, 260, GENERATION_HILLS) *
+                       shape.hillAmplitude +
+                   ValueNoise1D(world->seed, x, 52, GENERATION_DETAIL) *
+                       shape.detailAmplitude);
 }
 
 static int SurfaceHeightAt(const World *world, int x)
@@ -409,7 +412,8 @@ static int SurfaceHeightAt(const World *world, int x)
 static CellMaterial BiomeMaterialAt(const World *world, WorldBiome biome,
                                     uint64_t strata, int depth)
 {
-    int height = world->height;
+    /* Strata are fractions of the ground band, never of the sky above it. */
+    int height = WorldGroundRows(world);
 
     switch (biome) {
         case WORLD_BIOME_TEMPERATE: {
@@ -457,7 +461,8 @@ static CellMaterial BaseMaterialAt(const World *world,
     WorldBiome biome = sample->first;
 
     if (sample->first != sample->second) {
-        if (BiomeBlendAt(blend, world->seed, x, y) < sample->mix) {
+        if (BiomeBlendAt(blend, world->seed, x, y - WorldSkyRows(world)) <
+            sample->mix) {
             biome = sample->second;
         }
     }
@@ -577,11 +582,11 @@ static void GenerateCaves(World *world)
 
         centerX = ClampInt(centerX, 4, world->width - 5);
         surfaceY = SurfaceHeightAt(world, centerX);
-        minimumY = surfaceY + (world->height / 18 > 18
-                                   ? world->height / 18
+        minimumY = surfaceY + (WorldGroundRows(world) / 18 > 18
+                                   ? WorldGroundRows(world) / 18
                                    : 18);
-        maximumY = world->height - (world->height / 24 > 14
-                                        ? world->height / 24
+        maximumY = world->height - (WorldGroundRows(world) / 24 > 14
+                                        ? WorldGroundRows(world) / 24
                                         : 14);
         if (minimumY >= maximumY) continue;
         centerY = RngRange(&rng, minimumY, maximumY);
@@ -655,7 +660,7 @@ static void GenerateUndergroundFluids(World *world)
         surfaceY = SurfaceHeightAt(world, centerX);
         biome = WorldBiomeAt(world, centerX);
         liquid = biome == WORLD_BIOME_VOLCANIC ? MATERIAL_LAVA : MATERIAL_WATER;
-        minimumY = surfaceY + world->height /
+        minimumY = surfaceY + WorldGroundRows(world) /
                                    (biome == WORLD_BIOME_DUNES ? 4 : 6);
         maximumY = world->height - 24;
         if (minimumY >= maximumY) continue;

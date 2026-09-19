@@ -57,6 +57,11 @@ typedef enum WorldBiome {
    else. Fields are ordered widest first so the struct packs to 12 bytes with a
    single byte of tail padding. */
 typedef struct Cell {
+    /* Meaningful only for a material. An empty cell has no temperature: the
+       field is whatever it was, usually zero, and every reader treats empty as
+       ambient. That is deliberate — it is what lets an untouched sky cost
+       nothing, because a zeroed cell is then an empty cell at rest and never
+       has to be written to become one. */
     float temperature;
     /* Both stamps are compared for equality against a world counter and are
        therefore only meaningful modulo their own width. Sixteen bits cost 8 MiB
@@ -291,7 +296,46 @@ void WorldSetDaylight(World *world, float daylight);
 #define WORLD_SPACE_LINE 0.09f
 #define WORLD_CLOUD_LINE 0.30f
 
-/* Where the sea stands, as a fraction of the world's height.
+/* ---- the ground band ----------------------------------------------------
+ *
+ * Everything the generator lays out — surfaces, strata, caves, pockets, the
+ * sea — lives in a band of at most this many rows at the bottom of the world,
+ * and is described as fractions of that band. Whatever height the world has
+ * above the band is sky, and only sky.
+ *
+ * This is what lets the world grow upward without the ground moving: raising
+ * the height used to scale every surface fraction with it, so a taller world
+ * was a world with deeper soil and taller hills as well as a taller sky, and
+ * the previous raise had to rescale every amplitude by hand to keep a hill the
+ * size it was. Now the ground is the same ground at any height at or above
+ * the band, and a test world shorter than the band is simply all band, which
+ * is what the tests were written against.
+ *
+ * The rows above the band cost nothing while they stay empty: the cell array
+ * is never written there — generation writes from the surface down and an
+ * empty cell has no temperature to initialise — so the pages the sky would
+ * occupy are never materialised. */
+#define WORLD_GROUND_ROWS 1440
+
+static inline int WorldGroundRows(const World *world)
+{
+    return world->height < WORLD_GROUND_ROWS ? world->height : WORLD_GROUND_ROWS;
+}
+
+/* Rows of pure sky above the ground band: zero on a world no taller than
+   the band, the whole of the extra height otherwise. */
+static inline int WorldSkyRows(const World *world)
+{
+    return world->height - WorldGroundRows(world);
+}
+
+/* A fraction of the ground band, as a world row. */
+static inline float WorldGroundY(const World *world, float fraction)
+{
+    return (float)WorldSkyRows(world) + (float)WorldGroundRows(world) * fraction;
+}
+
+/* Where the sea stands, as a fraction of the ground band.
  *
  * One number for the whole map rather than a property of the ocean biome: the
  * sea is the same sea wherever the coast is, and a level that varied by region
@@ -303,7 +347,7 @@ void WorldSetDaylight(World *world, float daylight);
 
 static inline float WorldSeaLevelY(const World *world)
 {
-    return (float)world->height * WORLD_SEA_LEVEL;
+    return WorldGroundY(world, WORLD_SEA_LEVEL);
 }
 
 static inline float WorldSpaceLineY(const World *world)

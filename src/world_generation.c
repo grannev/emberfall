@@ -3,6 +3,7 @@
    state return to one well-defined baseline before terrain is written. */
 #include "world_internal.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* Generation draws from a stream of its own rather than from World.rng, so
@@ -11,7 +12,6 @@
 
 void WorldGenerate(World *world, uint64_t seed)
 {
-    size_t cellIndex;
     size_t cellCount;
     size_t chunkCount;
 
@@ -23,7 +23,22 @@ void WorldGenerate(World *world, uint64_t seed)
     RngSeed(&world->rng, RngStreamSeed(seed, WORLD_RNG_STREAM_EFFECTS));
     cellCount = (size_t)world->width * (size_t)world->height;
     chunkCount = (size_t)world->chunkColumns * (size_t)world->chunkRows;
-    memset(world->cells, 0, cellCount * sizeof(*world->cells));
+    /* A fresh zeroed array rather than a memset of the old one. Clearing the
+       cells by hand would write every page of the sky, and the sky's whole
+       economy is that its pages are never written; a new allocation is zero
+       pages the kernel hands out only where something is later stored. The
+       first generation after WorldInit swaps one untouched array for
+       another, which costs nothing. */
+    {
+        Cell *fresh = calloc(cellCount, sizeof(*fresh));
+
+        if (fresh != NULL) {
+            free(world->cells);
+            world->cells = fresh;
+        } else {
+            memset(world->cells, 0, cellCount * sizeof(*world->cells));
+        }
+    }
     memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     memset(world->activeRowCount, 0,
@@ -34,9 +49,6 @@ void WorldGenerate(World *world, uint64_t seed)
     memset(world->dirtyChunks, 1, chunkCount * sizeof(*world->dirtyChunks));
     memset(world->lightDirtyChunks, 1,
            chunkCount * sizeof(*world->lightDirtyChunks));
-    for (cellIndex = 0; cellIndex < cellCount; ++cellIndex) {
-        world->cells[cellIndex].temperature = AMBIENT_TEMPERATURE;
-    }
     world->tick = 0;
     world->effectSerial = 0;
     world->lastTickStats = (WorldTickStats){0};

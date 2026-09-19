@@ -12,12 +12,14 @@
 #include "terrain_weld.h"
 
 #define DEFAULT_WORLD_WIDTH 16384
-/* The sky is most of what this number buys. Space sits at a fixed fraction of
-   the world's height, so raising the height raises the ceiling; the surface is
-   then pushed further down than the height grew (see BIOME_SURFACES), which is
-   what turns the climb to space from a couple of seconds of boost into a real
-   ascent. Ground gains depth too, but the sky gains more. */
-#define DEFAULT_WORLD_HEIGHT 1440
+/* All of what this buys above WORLD_GROUND_ROWS is sky. The ground is laid out
+   in a band of that many rows at the bottom whatever the height, so raising
+   this raises the ceiling and lengthens the climb to space without deepening
+   the soil or growing the hills, and the rows of sky it adds cost no memory
+   until something is written into them. At 2048 the surface sits some 1200
+   cells under the space line, twice what it was at 1440, with 180 cells of
+   space above the line to fly in. */
+#define DEFAULT_WORLD_HEIGHT 2048
 #define DEFAULT_FIXED_STEP (1.0f / 60.0f)
 #define DEFAULT_ACTIVE_RADIUS_X 480.0f
 #define DEFAULT_ACTIVE_RADIUS_Y 288.0f
