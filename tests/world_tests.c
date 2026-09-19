@@ -2049,69 +2049,212 @@ static void test_the_sky_is_the_same_sky_for_the_same_seed(void)
 
 /* A cloud must never be culled while part of it is still on screen.
  *
- * A cloud is three lumps, each offset from the centre of its slot and each
- * drawn at up to a ninth again its nominal size, so what ends up on screen is
- * half as tall again as the radius the slot describes. The cull used to test
- * that radius, and the difference was a cloud winking out as the player climbed
- * toward it. The invariant is that the bounds the cull asks for contain every
- * lump that will be drawn inside them. */
+ * Two things have to hold. The bounds the cull asks for must contain every
+ * puff that will be drawn — a cull that tested the slot's nominal radius made
+ * clouds wink out as the player climbed toward them — and the range of slots
+ * the cull looks at must contain every cloud whose bounds meet the view. The
+ * second is the one that failed for a long time: a cloud drifts, the slot it
+ * came from does not, and after a minute of play the clouds on screen belonged
+ * to slots the cull never visited. They vanished in front of the player. */
 static void test_a_cloud_is_never_culled_while_part_of_it_shows(void)
 {
     SkyRenderer sky;
     const int worldHeight = 1440;
-    int slot;
+    const Rectangle view = {8000.0f, 200.0f, 426.0f, 240.0f};
+    int layer;
 
     SkyRendererInit(&sky, 0x5C1Fu);
 
-    for (slot = -40; slot <= 400; ++slot) {
-        float time = (float)slot * 0.37f;
-        Rectangle bounds = SkyRendererCloudBounds(&sky, slot, worldHeight, time);
-        int lump;
+    for (layer = 0; layer < SKY_CLOUD_LAYERS; ++layer) {
+        int slot;
 
-        CHECK(bounds.width > 0.0f && bounds.height > 0.0f,
-              "slot %d reported an empty cloud: %.1fx%.1f", slot,
-              (double)bounds.width, (double)bounds.height);
-        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
-            Vector2 centre = {0.0f, 0.0f};
-            Vector2 radius = {0.0f, 0.0f};
+        CHECK(SkyRendererLayer(layer) != NULL, "layer %d has no shape", layer);
+        for (slot = -40; slot <= 400; ++slot) {
+            float time = (float)slot * 0.37f;
+            Rectangle bounds = SkyRendererCloudBounds(&sky, layer, slot,
+                                                      worldHeight, time, view);
+            int puff;
 
-            SkyRendererCloudLump(&sky, slot, worldHeight, time, lump, &centre,
-                                 &radius);
-            CHECK(centre.x - radius.x >= bounds.x &&
-                      centre.x + radius.x <= bounds.x + bounds.width,
-                  "lump %d of slot %d runs from %.1f to %.1f, outside bounds "
-                  "%.1f..%.1f",
-                  lump, slot, (double)(centre.x - radius.x),
-                  (double)(centre.x + radius.x), (double)bounds.x,
-                  (double)(bounds.x + bounds.width));
-            CHECK(centre.y - radius.y >= bounds.y &&
-                      centre.y + radius.y <= bounds.y + bounds.height,
-                  "lump %d of slot %d runs from %.1f to %.1f, outside bounds "
-                  "%.1f..%.1f",
-                  lump, slot, (double)(centre.y - radius.y),
-                  (double)(centre.y + radius.y), (double)bounds.y,
-                  (double)(bounds.y + bounds.height));
+            CHECK(bounds.width > 0.0f && bounds.height > 0.0f,
+                  "slot %d of layer %d reported an empty cloud: %.1fx%.1f", slot,
+                  layer, (double)bounds.width, (double)bounds.height);
+            for (puff = 0; puff < SKY_CLOUD_PUFFS; ++puff) {
+                Vector2 centre = {0.0f, 0.0f};
+                float radius = 0.0f;
+
+                SkyRendererCloudPuff(&sky, layer, slot, worldHeight, time, view,
+                                     puff, &centre, &radius);
+                CHECK(radius > 0.0f, "puff %d of slot %d has no size", puff, slot);
+                CHECK(centre.x - radius >= bounds.x &&
+                          centre.x + radius <= bounds.x + bounds.width &&
+                          centre.y - radius >= bounds.y &&
+                          centre.y + radius <= bounds.y + bounds.height,
+                      "puff %d of slot %d (layer %d) at %.1f,%.1f r=%.1f is "
+                      "outside bounds %.1f,%.1f %.1fx%.1f",
+                      puff, slot, layer, (double)centre.x, (double)centre.y,
+                      (double)radius, (double)bounds.x, (double)bounds.y,
+                      (double)bounds.width, (double)bounds.height);
+            }
         }
     }
 
-    /* And the shape really is taller than the slot's own radius, or the check
-       above would hold for a cull that was never wrong in the first place. */
+    /* The drift, the parallax and the offset inside the slot all move a cloud
+       away from where its slot index says it is. Whatever they add up to, at
+       any time and from any view, every cloud that meets the view is inside
+       the slot range the cull walks. Brute force over a wide range of slots,
+       against the range the sky reports. */
+    for (layer = 0; layer < SKY_CLOUD_LAYERS; ++layer) {
+        int sample;
+
+        for (sample = 0; sample < 48; ++sample) {
+            /* Views scattered along the map and times from a fresh session
+               to the better part of an hour in. */
+            Rectangle visible = {(float)(sample * 397) - 500.0f,
+                                 (float)(150 + (sample % 5) * 40),
+                                 300.0f + (float)(sample % 3) * 150.0f, 240.0f};
+            float time = (float)sample * 61.7f;
+            int firstSlot;
+            int lastSlot;
+            int slot;
+
+            SkyRendererVisibleSlots(&sky, layer, visible, time, &firstSlot,
+                                    &lastSlot);
+            CHECK(firstSlot <= lastSlot, "layer %d has no visible slots at all",
+                  layer);
+            for (slot = firstSlot - 60; slot <= lastSlot + 60; ++slot) {
+                Rectangle bounds = SkyRendererCloudBounds(
+                    &sky, layer, slot, worldHeight, time, visible);
+                bool meets = bounds.x + bounds.width >= visible.x &&
+                             bounds.x <= visible.x + visible.width;
+
+                CHECK(!meets || (slot >= firstSlot && slot <= lastSlot),
+                      "slot %d of layer %d reaches the view at time %.1f but "
+                      "the cull walks only %d..%d",
+                      slot, layer, (double)time, firstSlot, lastSlot);
+            }
+        }
+    }
+}
+
+/* The shape a cloud is rasterised into is what the player sees, so it is
+   checked as a picture: made of a few levels of translucency and nothing in
+   between, empty along its whole border so the texture's edge never shows,
+   dense somewhere in the middle, and lit on top rather than underneath. */
+static void test_a_cloud_rasterises_as_a_dithered_pixel_shape(void)
+{
+    static Color texels[SKY_CLOUD_TEXTURE_WIDTH * SKY_CLOUD_TEXTURE_HEIGHT];
+    SkyRenderer sky;
+    int layer;
+
+    SkyRendererInit(&sky, 0x5C1Fu);
+    for (layer = 0; layer < SKY_CLOUD_LAYERS; ++layer) {
+        const SkyCloudLayer *shape = SkyRendererLayer(layer);
+        int slot;
+
+        for (slot = 0; slot < 24; ++slot) {
+            unsigned char densest = 0;
+            int levelsSeen[SKY_CLOUD_LEVELS + 1] = {0};
+            long litTop = 0;
+            long litBottom = 0;
+            int row;
+
+            SkyRendererBuildCloud(&sky, layer, slot, texels);
+            for (row = 0; row < SKY_CLOUD_TEXTURE_HEIGHT; ++row) {
+                int column;
+
+                for (column = 0; column < SKY_CLOUD_TEXTURE_WIDTH; ++column) {
+                    Color texel = texels[row * SKY_CLOUD_TEXTURE_WIDTH + column];
+                    bool border = row == 0 || column == 0 ||
+                                  row == SKY_CLOUD_TEXTURE_HEIGHT - 1 ||
+                                  column == SKY_CLOUD_TEXTURE_WIDTH - 1;
+                    int level;
+
+                    CHECK(!border || texel.a == 0u,
+                          "layer %d slot %d reaches its texture's edge at %d,%d",
+                          layer, slot, column, row);
+                    if (texel.a > densest) densest = texel.a;
+                    /* Every alpha is one of the levels, exactly. */
+                    for (level = 0; level <= SKY_CLOUD_LEVELS; ++level) {
+                        unsigned char expected = (unsigned char)(
+                            255.0f * shape->alpha * (float)level /
+                            (float)SKY_CLOUD_LEVELS);
+
+                        if (texel.a == expected) {
+                            ++levelsSeen[level];
+                            break;
+                        }
+                    }
+                    CHECK(level <= SKY_CLOUD_LEVELS,
+                          "layer %d slot %d has an alpha of %u between levels",
+                          layer, slot, (unsigned int)texel.a);
+                    if (texel.a > 0u) {
+                        if (row < SKY_CLOUD_TEXTURE_HEIGHT / 2) {
+                            litTop += texel.r;
+                        } else {
+                            litBottom += texel.r;
+                        }
+                    }
+                }
+            }
+            CHECK(densest >= (unsigned char)(255.0f * shape->alpha) - 1u,
+                  "layer %d slot %d never reaches its full density (%u)", layer,
+                  slot, (unsigned int)densest);
+            CHECK(levelsSeen[1] > 0 && levelsSeen[SKY_CLOUD_LEVELS] > 0,
+                  "layer %d slot %d is not dithered across its levels", layer,
+                  slot);
+            CHECK(litTop > 0 && litBottom > 0,
+                  "layer %d slot %d has no blocks above or below its centre",
+                  layer, slot);
+        }
+    }
+    /* And the picture does not depend on when or where the cloud is seen:
+       the same slot rasterises the same way, which is what lets it be cached
+       by slot alone. */
     {
-        Rectangle bounds = SkyRendererCloudBounds(&sky, 3, worldHeight, 0.0f);
-        Vector2 centre = {0.0f, 0.0f};
-        Vector2 radius = {0.0f, 0.0f};
-        float tallest = 0.0f;
-        int lump;
+        static Color again[SKY_CLOUD_TEXTURE_WIDTH * SKY_CLOUD_TEXTURE_HEIGHT];
 
-        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
-            SkyRendererCloudLump(&sky, 3, worldHeight, 0.0f, lump, &centre,
-                                 &radius);
-            if (radius.y > tallest) tallest = radius.y;
-        }
-        CHECK(bounds.height > tallest * 2.4f,
-              "the cloud is only %.1f tall against a lump radius of %.1f",
-              (double)bounds.height, (double)tallest);
+        SkyRendererBuildCloud(&sky, 1, 7, texels);
+        SkyRendererBuildCloud(&sky, 1, 7, again);
+        CHECK(memcmp(texels, again, sizeof(texels)) == 0,
+              "the same cloud rasterised two different pictures");
     }
+}
+
+/* A layer that follows the camera less than the ground does is further
+   away: as the view moves, a cloud in it slides across the screen more slowly
+   than the terrain. The far layer must move less than the near one, and both
+   less than the ground, or the depth reads backwards. */
+static void test_far_clouds_move_less_than_near_ones(void)
+{
+    SkyRenderer sky;
+    const int worldHeight = 1440;
+    const Rectangle before = {8000.0f, 200.0f, 426.0f, 240.0f};
+    const Rectangle after = {8100.0f, 200.0f, 426.0f, 240.0f};
+    float travel[SKY_CLOUD_LAYERS];
+    int layer;
+
+    SkyRendererInit(&sky, 0x5C1Fu);
+    for (layer = 0; layer < SKY_CLOUD_LAYERS; ++layer) {
+        Vector2 first = {0.0f, 0.0f};
+        Vector2 second = {0.0f, 0.0f};
+        float radius = 0.0f;
+
+        SkyRendererCloudPuff(&sky, layer, 40, worldHeight, 0.0f, before, 0,
+                             &first, &radius);
+        SkyRendererCloudPuff(&sky, layer, 40, worldHeight, 0.0f, after, 0,
+                             &second, &radius);
+        /* On screen the cloud moved against the camera by less than the
+           ground did; in world terms it followed the camera part of the way. */
+        travel[layer] = 100.0f - (second.x - first.x);
+        CHECK(travel[layer] > 0.0f && travel[layer] < 100.0f,
+              "layer %d moved %.1f cells across the screen for 100 of camera",
+              layer, (double)travel[layer]);
+        CHECK(second.y == first.y,
+              "the camera moving sideways changed a cloud's altitude");
+    }
+    CHECK(travel[0] < travel[1],
+          "the far layer (%.1f) moved more than the near one (%.1f)",
+          (double)travel[0], (double)travel[1]);
 }
 
 static void test_the_day_turns_and_takes_the_sky_with_it(void)
@@ -11091,6 +11234,8 @@ int main(void)
     RUN(test_a_body_in_space_drifts_and_one_on_the_ground_falls);
     RUN(test_the_sky_is_the_same_sky_for_the_same_seed);
     RUN(test_a_cloud_is_never_culled_while_part_of_it_shows);
+    RUN(test_a_cloud_rasterises_as_a_dithered_pixel_shape);
+    RUN(test_far_clouds_move_less_than_near_ones);
     RUN(test_the_world_holds_a_sea_and_ponds_on_the_land);
     RUN(test_generated_liquid_is_held_by_the_ground);
     RUN(test_flora_grows_on_the_biome_it_belongs_to);

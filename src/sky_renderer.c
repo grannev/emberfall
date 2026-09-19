@@ -17,21 +17,112 @@ static float SkyUnit(uint64_t seed, int a, int b, int salt)
     return BeamNoise((int)((unsigned int)a * 2654435761u + mixed), b, salt);
 }
 
+/* Far and near. The far layer is the weather on the horizon's side of the
+   sky: small, faint, high, and barely moving against the camera. The near one
+   is the cloud the player flies through. The radii are bounded by the
+   texture: a cloud reaches 2.6 radii sideways and 1.65 up from its centre, and
+   both must stay inside SKY_CLOUD_TEXTURE_* blocks of SKY_CLOUD_BLOCK cells. */
+static const SkyCloudLayer LAYERS[SKY_CLOUD_LAYERS] = {
+    {
+        .spacing = 200.0f,
+        .drift = 2.5f,
+        .parallax = 0.55f,
+        .radius = 15.0f,
+        .bandLow = 0.18f,
+        .bandHigh = 0.55f,
+        .alpha = 0.42f,
+    },
+    {
+        .spacing = 170.0f,
+        .drift = 5.0f,
+        .parallax = 0.78f,
+        .radius = 23.0f,
+        .bandLow = 0.30f,
+        .bandHigh = 0.82f,
+        .alpha = 0.62f,
+    },
+};
+
+/* A cloud's offset inside its slot never reaches the next slot, so the slot
+   order is the left-to-right order and the range of slots that can reach a
+   view is exact. */
+#define SKY_SLOT_OFFSET_FRACTION 0.6f
+#define SKY_CLOUD_HALF_WIDTH \
+    ((float)(SKY_CLOUD_TEXTURE_WIDTH * SKY_CLOUD_BLOCK) * 0.5f)
+#define SKY_CLOUD_HALF_HEIGHT \
+    ((float)(SKY_CLOUD_TEXTURE_HEIGHT * SKY_CLOUD_BLOCK) * 0.5f)
+
 void SkyRendererInit(SkyRenderer *sky, uint64_t seed)
 {
+    int index;
+
     if (sky == NULL) {
         return;
     }
     memset(sky, 0, sizeof(*sky));
     sky->seed = seed;
+    for (index = 0; index < SKY_CLOUD_CACHE; ++index) {
+        sky->clouds[index].layer = -1;
+    }
 }
 
 void SkyRendererSyncSeed(SkyRenderer *sky, uint64_t seed)
 {
-    if (sky == NULL) {
+    int index;
+
+    if (sky == NULL || sky->seed == seed) {
         return;
     }
     sky->seed = seed;
+    /* Every cached shape belonged to the old sky. */
+    for (index = 0; index < sky->cloudCapacity; ++index) {
+        sky->clouds[index].bound = false;
+    }
+}
+
+bool SkyRendererLoad(SkyRenderer *sky)
+{
+    Image blank;
+    int index;
+
+    if (sky == NULL) {
+        return false;
+    }
+    SkyRendererUnload(sky);
+    blank = GenImageColor(SKY_CLOUD_TEXTURE_WIDTH, SKY_CLOUD_TEXTURE_HEIGHT, BLANK);
+    for (index = 0; index < SKY_CLOUD_CACHE; ++index) {
+        SkyCloudTexture *entry = &sky->clouds[index];
+
+        entry->texture = LoadTextureFromImage(blank);
+        if (entry->texture.id == 0u) {
+            break;
+        }
+        /* Point filtered: a block is a block at every zoom. */
+        SetTextureFilter(entry->texture, TEXTURE_FILTER_POINT);
+        SetTextureWrap(entry->texture, TEXTURE_WRAP_CLAMP);
+        entry->bound = false;
+        entry->layer = -1;
+    }
+    UnloadImage(blank);
+    sky->cloudCapacity = index;
+    return sky->cloudCapacity > 0;
+}
+
+void SkyRendererUnload(SkyRenderer *sky)
+{
+    int index;
+
+    if (sky == NULL) {
+        return;
+    }
+    for (index = 0; index < sky->cloudCapacity; ++index) {
+        if (sky->clouds[index].texture.id != 0u) {
+            UnloadTexture(sky->clouds[index].texture);
+        }
+        sky->clouds[index] = (SkyCloudTexture){0};
+        sky->clouds[index].layer = -1;
+    }
+    sky->cloudCapacity = 0;
 }
 
 const SkyRendererStats *SkyRendererStatistics(const SkyRenderer *sky)
@@ -41,187 +132,295 @@ const SkyRendererStats *SkyRendererStatistics(const SkyRenderer *sky)
     return sky != NULL ? &sky->stats : &empty;
 }
 
-/* One lump of a cloud: a squashed disc of blocks with its edge eaten away, and
-   a brighter rank along the top where the light lands. */
-static void SkyCloudLump(uint64_t seed, float centreX, float centreY,
-                         float radiusX, float radiusY, int salt, Color body,
-                         Color lit, float block)
+const SkyCloudLayer *SkyRendererLayer(int layer)
 {
-    float y;
-
-    for (y = -radiusY; y <= radiusY; y += block) {
-        float x;
-
-        for (x = -radiusX; x <= radiusX; x += block) {
-            float unitX = x / radiusX;
-            float unitY = y / radiusY;
-            float distance = unitX * unitX + unitY * unitY;
-            bool top;
-
-            if (distance > 1.0f) continue;
-            /* A ragged edge rather than an ellipse: the outer third is eaten
-               away by the hash, which is what stops a cloud reading as a
-               drawn shape. */
-            if (distance > 0.42f &&
-                SkyUnit(seed, (int)(x / block), (int)(y / block), salt) <
-                    (distance - 0.42f) * 1.5f) {
-                continue;
-            }
-            top = y < -radiusY * 0.45f;
-            BeamBlock(centreX + x, centreY + y, block, top ? lit : body);
-        }
+    if (layer < 0 || layer >= SKY_CLOUD_LAYERS) {
+        return NULL;
     }
+    return &LAYERS[layer];
 }
 
-/* Where a cloud slot's cloud is and how big it is. Everything about a cloud is
-   derived here so the scene and emissive passes cannot disagree about it. */
-static void SkyCloudAt(uint64_t seed, int slot, int worldHeight, float time,
-                       float *x, float *y, float *radiusX, float *radiusY)
+/* How far the layer's field is shifted for this view: a fraction of the
+   camera's position, so the layer scrolls slower than the ground. */
+static float SkyLayerShift(const SkyCloudLayer *layer, Rectangle visible)
+{
+    return (visible.x + visible.width * 0.5f) * (1.0f - layer->parallax);
+}
+
+/* A cloud's body radius, from the seed alone. */
+static float SkyCloudRadius(uint64_t seed, const SkyCloudLayer *layer,
+                            int layerIndex, int slot)
+{
+    return layer->radius * (0.6f + 0.4f * SkyUnit(seed, slot, layerIndex, 11));
+}
+
+/* Where a slot's cloud is. Everything about a cloud's place is derived here so
+   the scene and emissive passes cannot disagree about it; its shape is
+   derived in SkyCloudPuffLocal, relative to this point, so it is the same
+   shape wherever the cloud has drifted to. */
+static void SkyCloudAt(uint64_t seed, const SkyCloudLayer *layer, int layerIndex,
+                       int slot, int worldHeight, float time, Rectangle visible,
+                       float *x, float *y)
 {
     float band = (float)worldHeight * (WORLD_CLOUD_LINE - WORLD_SPACE_LINE);
-    float drift = 4.0f + SkyUnit(seed, slot, 0, 3) * 9.0f;
-    float offset = SkyUnit(seed, slot, 0, 5) * (float)SKY_CLOUD_SPACING;
 
-    *x = (float)slot * (float)SKY_CLOUD_SPACING + offset + time * drift;
+    *x = (float)slot * layer->spacing +
+         SkyUnit(seed, slot, layerIndex, 5) * layer->spacing *
+             SKY_SLOT_OFFSET_FRACTION +
+         time * layer->drift + SkyLayerShift(layer, visible);
     /* Kept inside the band, and never quite touching its edges: a cloud sitting
        on the space line would read as the ceiling of the world. */
-    *y = (float)worldHeight * WORLD_SPACE_LINE + band * 0.2f +
-         SkyUnit(seed, slot, 0, 7) * band * 0.62f;
-    *radiusX = 30.0f + SkyUnit(seed, slot, 0, 11) * 52.0f;
-    *radiusY = *radiusX * (0.24f + SkyUnit(seed, slot, 0, 13) * 0.16f);
+    *y = (float)worldHeight * WORLD_SPACE_LINE +
+         band * (layer->bandLow +
+                 SkyUnit(seed, slot, layerIndex, 7 + layerIndex * 100) *
+                     (layer->bandHigh - layer->bandLow));
 }
 
-void SkyRendererCloudLump(const SkyRenderer *sky, int slot, int worldHeight,
-                          float time, int lump, Vector2 *centre,
-                          Vector2 *radius)
+/* One puff relative to the cloud's centre. Puffs are strung along the cloud,
+   and the ones in the middle sit higher and grow larger: a cumulus is a dome
+   on a flat base, not a row of balls. */
+static void SkyCloudPuffLocal(uint64_t seed, int layerIndex, int slot,
+                              float cloudRadius, int puff, Vector2 *offset,
+                              float *radius)
+{
+    float along = ((float)puff / (float)(SKY_CLOUD_PUFFS - 1)) * 2.0f - 1.0f;
+    float dome = 1.0f - along * along;
+    int salt = puff + layerIndex * 32;
+
+    offset->x = along * cloudRadius * 1.3f +
+                (SkyUnit(seed, slot, salt, 17) - 0.5f) * cloudRadius * 0.3f;
+    offset->y = (SkyUnit(seed, slot, salt, 19) - 0.5f) * cloudRadius * 0.5f -
+                dome * cloudRadius * 0.25f;
+    *radius = cloudRadius * (0.55f + 0.45f * dome) *
+              (0.85f + 0.3f * SkyUnit(seed, slot, salt, 23));
+}
+
+void SkyRendererCloudPuff(const SkyRenderer *sky, int layer, int slot,
+                          int worldHeight, float time, Rectangle visible,
+                          int puff, Vector2 *centre, float *radius)
+{
+    const SkyCloudLayer *shape;
+    Vector2 offset;
+    float cloudX;
+    float cloudY;
+
+    if (sky == NULL || centre == NULL || radius == NULL || layer < 0 ||
+        layer >= SKY_CLOUD_LAYERS) {
+        return;
+    }
+    if (puff < 0) puff = 0;
+    if (puff >= SKY_CLOUD_PUFFS) puff = SKY_CLOUD_PUFFS - 1;
+    shape = &LAYERS[layer];
+    SkyCloudAt(sky->seed, shape, layer, slot, worldHeight, time, visible, &cloudX,
+               &cloudY);
+    SkyCloudPuffLocal(sky->seed, layer, slot,
+                      SkyCloudRadius(sky->seed, shape, layer, slot), puff,
+                      &offset, radius);
+    centre->x = floorf(cloudX) + offset.x;
+    centre->y = floorf(cloudY) + offset.y;
+}
+
+Rectangle SkyRendererCloudBounds(const SkyRenderer *sky, int layer, int slot,
+                                 int worldHeight, float time, Rectangle visible)
 {
     float cloudX;
     float cloudY;
-    float cloudRadiusX;
-    float cloudRadiusY;
-    float spread;
-    float scale;
 
-    if (sky == NULL || centre == NULL || radius == NULL) {
-        return;
-    }
-    if (lump < 0) lump = 0;
-    if (lump >= SKY_CLOUD_LUMPS) lump = SKY_CLOUD_LUMPS - 1;
-    SkyCloudAt(sky->seed, slot, worldHeight, time, &cloudX, &cloudY,
-               &cloudRadiusX, &cloudRadiusY);
-    spread = ((float)lump / (float)(SKY_CLOUD_LUMPS - 1)) - 0.5f;
-    scale = 0.62f + SkyUnit(sky->seed, slot, lump, 19) * 0.5f;
-    centre->x = cloudX + spread * cloudRadiusX * 1.15f;
-    centre->y = cloudY + (SkyUnit(sky->seed, slot, lump, 17) - 0.5f) *
-                             cloudRadiusY * 0.7f;
-    radius->x = cloudRadiusX * 0.62f * scale;
-    radius->y = cloudRadiusY * scale;
-}
-
-Rectangle SkyRendererCloudBounds(const SkyRenderer *sky, int slot,
-                                 int worldHeight, float time)
-{
-    /* One block of slack on every side: the blocks a lump is made of are
-       snapped to a world grid, so the last rank of one can sit a block past the
-       ellipse it came from, and the emissive pass draws in two-cell blocks. */
-    const float slack = 2.0f;
-    float minimumX = 0.0f;
-    float minimumY = 0.0f;
-    float maximumX = 0.0f;
-    float maximumY = 0.0f;
-    int lump;
-
-    if (sky == NULL) {
+    if (sky == NULL || layer < 0 || layer >= SKY_CLOUD_LAYERS) {
         return (Rectangle){0.0f, 0.0f, 0.0f, 0.0f};
     }
-    for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
-        Vector2 centre = {0.0f, 0.0f};
-        Vector2 radius = {0.0f, 0.0f};
+    SkyCloudAt(sky->seed, &LAYERS[layer], layer, slot, worldHeight, time, visible,
+               &cloudX, &cloudY);
+    /* Whole cells, like everything else that moves through the world. */
+    return (Rectangle){floorf(cloudX) - SKY_CLOUD_HALF_WIDTH,
+                       floorf(cloudY) - SKY_CLOUD_HALF_HEIGHT,
+                       SKY_CLOUD_HALF_WIDTH * 2.0f, SKY_CLOUD_HALF_HEIGHT * 2.0f};
+}
 
-        SkyRendererCloudLump(sky, slot, worldHeight, time, lump, &centre,
-                             &radius);
-        if (lump == 0 || centre.x - radius.x < minimumX) {
-            minimumX = centre.x - radius.x;
-        }
-        if (lump == 0 || centre.y - radius.y < minimumY) {
-            minimumY = centre.y - radius.y;
-        }
-        if (lump == 0 || centre.x + radius.x > maximumX) {
-            maximumX = centre.x + radius.x;
-        }
-        if (lump == 0 || centre.y + radius.y > maximumY) {
-            maximumY = centre.y + radius.y;
+void SkyRendererVisibleSlots(const SkyRenderer *sky, int layer, Rectangle visible,
+                             float time, int *firstSlot, int *lastSlot)
+{
+    const SkyCloudLayer *shape;
+    float reach;
+    float shift;
+    float lowest;
+    float highest;
+
+    if (firstSlot == NULL || lastSlot == NULL) {
+        return;
+    }
+    *firstSlot = 0;
+    *lastSlot = -1;
+    if (sky == NULL || layer < 0 || layer >= SKY_CLOUD_LAYERS) {
+        return;
+    }
+    shape = &LAYERS[layer];
+    reach = SKY_CLOUD_HALF_WIDTH + 2.0f;
+    shift = time * shape->drift + SkyLayerShift(shape, visible);
+    /* The slot's own coordinate is its drawn position with the drift and the
+       parallax taken back off; an extra slot below covers the offset a cloud
+       sits at inside its slot. */
+    lowest = visible.x - reach - shift;
+    highest = visible.x + visible.width + reach - shift;
+    *firstSlot = (int)floorf(lowest / shape->spacing) - 1;
+    *lastSlot = (int)floorf(highest / shape->spacing);
+}
+
+void SkyRendererBuildCloud(const SkyRenderer *sky, int layer, int slot,
+                           Color *texels)
+{
+    const SkyCloudLayer *shape;
+    Vector2 offsets[SKY_CLOUD_PUFFS];
+    float radii[SKY_CLOUD_PUFFS];
+    float weights[SKY_CLOUD_PUFFS];
+    float cloudRadius;
+    int puff;
+    int row;
+
+    if (sky == NULL || texels == NULL || layer < 0 || layer >= SKY_CLOUD_LAYERS) {
+        return;
+    }
+    shape = &LAYERS[layer];
+    cloudRadius = SkyCloudRadius(sky->seed, shape, layer, slot);
+    for (puff = 0; puff < SKY_CLOUD_PUFFS; ++puff) {
+        SkyCloudPuffLocal(sky->seed, layer, slot, cloudRadius, puff, &offsets[puff],
+                          &radii[puff]);
+        weights[puff] = 0.7f + 0.3f * SkyUnit(sky->seed, slot, puff + layer * 32, 29);
+    }
+
+    for (row = 0; row < SKY_CLOUD_TEXTURE_HEIGHT; ++row) {
+        float y = ((float)row + 0.5f) * (float)SKY_CLOUD_BLOCK - SKY_CLOUD_HALF_HEIGHT;
+        int column;
+
+        for (column = 0; column < SKY_CLOUD_TEXTURE_WIDTH; ++column) {
+            float x = ((float)column + 0.5f) * (float)SKY_CLOUD_BLOCK -
+                      SKY_CLOUD_HALF_WIDTH;
+            float density = 0.0f;
+            float lit;
+            float dither;
+            int level;
+            Color *texel = &texels[row * SKY_CLOUD_TEXTURE_WIDTH + column];
+
+            for (puff = 0; puff < SKY_CLOUD_PUFFS; ++puff) {
+                float dx = (x - offsets[puff].x) / radii[puff];
+                float dy = (y - offsets[puff].y) / radii[puff];
+                float distance = dx * dx + dy * dy;
+
+                if (distance < 1.0f) {
+                    /* A soft bell: full in the middle, gone at the rim, and
+                       flat at both ends so neither shows as a ring. */
+                    float fall = 1.0f - distance;
+
+                    density += weights[puff] * fall * fall;
+                }
+            }
+            if (density > 1.0f) density = 1.0f;
+            /* Quantised to a few levels, and dithered along the edge of each
+               level by the block's own hash, which is what turns a smooth
+               gradient into a ragged pixel edge. */
+            dither = SkyUnit(sky->seed, column + slot * 131, row + layer * 61, 37);
+            level = (int)(density * (float)SKY_CLOUD_LEVELS + dither);
+            if (level > SKY_CLOUD_LEVELS) level = SKY_CLOUD_LEVELS;
+            if (density <= 0.0f) level = 0;
+            /* The top of the cloud catches the light and the underside does
+               not, which is most of what makes a soft blob read as a cloud. */
+            lit = -y / (cloudRadius > 0.0f ? cloudRadius : 1.0f);
+            if (lit < 0.0f) lit = 0.0f;
+            if (lit > 1.0f) lit = 1.0f;
+            texel->r = (unsigned char)(188.0f + 58.0f * lit);
+            texel->g = (unsigned char)(200.0f + 50.0f * lit);
+            texel->b = (unsigned char)(226.0f + 29.0f * lit);
+            texel->a = (unsigned char)(255.0f * shape->alpha * (float)level /
+                                       (float)SKY_CLOUD_LEVELS);
         }
     }
-    return (Rectangle){minimumX - slack, minimumY - slack,
-                       (maximumX - minimumX) + slack * 2.0f,
-                       (maximumY - minimumY) + slack * 2.0f};
+}
+
+/* The cached texture for a cloud, rasterising it if it is not resident. A
+   slot claimed this frame is never evicted; otherwise the least recently seen
+   one goes. */
+static SkyCloudTexture *SkyAcquireCloud(SkyRenderer *sky, int layer, int slot)
+{
+    SkyCloudTexture *oldest = NULL;
+    int index;
+
+    for (index = 0; index < sky->cloudCapacity; ++index) {
+        SkyCloudTexture *entry = &sky->clouds[index];
+
+        if (entry->bound && entry->layer == layer && entry->slot == slot) {
+            entry->lastUsedFrame = sky->frame;
+            return entry;
+        }
+        if (entry->bound && entry->lastUsedFrame == sky->frame) {
+            continue;
+        }
+        if (oldest == NULL || !entry->bound ||
+            (oldest->bound && entry->lastUsedFrame < oldest->lastUsedFrame)) {
+            oldest = entry;
+        }
+    }
+    if (oldest == NULL) {
+        return NULL;
+    }
+    {
+        Color texels[SKY_CLOUD_TEXTURE_WIDTH * SKY_CLOUD_TEXTURE_HEIGHT];
+
+        SkyRendererBuildCloud(sky, layer, slot, texels);
+        UpdateTexture(oldest->texture, texels);
+    }
+    oldest->bound = true;
+    oldest->layer = layer;
+    oldest->slot = slot;
+    oldest->lastUsedFrame = sky->frame;
+    ++sky->stats.cloudsBuilt;
+    return oldest;
 }
 
 static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
-                          float daylight, float time, bool emissive)
+                          float daylight, float time, bool occluder)
 {
-    /* The drift carries a cloud out of its own slot, so the range is widened by
-       the widest a cloud can be plus the furthest it can have drifted. */
-    int margin = SKY_CLOUD_SPACING * 2;
-    int firstSlot = (int)floorf((visible.x - (float)margin) /
-                                (float)SKY_CLOUD_SPACING);
-    int lastSlot = (int)floorf((visible.x + visible.width + (float)margin) /
-                               (float)SKY_CLOUD_SPACING);
-    float block = emissive ? 2.0f : 1.0f;
-    int slot;
+    /* Bright enough to survive the air veil the world draws over everything
+       above ground: a cloud behind half an atmosphere of dark blue loses most
+       of its contrast, and one that reads as storm-grey at noon reads as
+       nothing at dusk. */
+    unsigned char level = (unsigned char)(255.0f * (0.24f + 0.76f * daylight));
+    Color tint = occluder ? BLACK : (Color){level, level, level, 255};
+    int layer;
 
-    for (slot = firstSlot; slot <= lastSlot; ++slot) {
-        Rectangle bounds = SkyRendererCloudBounds(sky, slot, worldHeight, time);
-        Color body;
-        Color lit;
-        int lump;
+    if (sky->cloudCapacity <= 0) {
+        return;
+    }
+    for (layer = 0; layer < SKY_CLOUD_LAYERS; ++layer) {
+        int firstSlot;
+        int lastSlot;
+        int slot;
 
-        /* Culled against what the cloud actually covers rather than against the
-           radius of the slot it came from. The two are not the same shape, and
-           using the smaller one meant a cloud vanished while part of it was
-           still on screen — which is what the player saw as clouds winking out
-           as they flew up to them. */
-        if (bounds.x + bounds.width < visible.x ||
-            bounds.x > visible.x + visible.width ||
-            bounds.y + bounds.height < visible.y ||
-            bounds.y > visible.y + visible.height) {
-            continue;
+        SkyRendererVisibleSlots(sky, layer, visible, time, &firstSlot, &lastSlot);
+        for (slot = firstSlot; slot <= lastSlot; ++slot) {
+            Rectangle bounds = SkyRendererCloudBounds(sky, layer, slot, worldHeight,
+                                                      time, visible);
+            SkyCloudTexture *cloud;
+
+            /* Culled against what the cloud actually covers, never against
+               the slot it came from: the two are not the same shape. */
+            if (bounds.x + bounds.width < visible.x ||
+                bounds.x > visible.x + visible.width ||
+                bounds.y + bounds.height < visible.y ||
+                bounds.y > visible.y + visible.height) {
+                continue;
+            }
+            cloud = SkyAcquireCloud(sky, layer, slot);
+            if (cloud == NULL) {
+                continue;
+            }
+            DrawTexturePro(cloud->texture,
+                           (Rectangle){0.0f, 0.0f, (float)SKY_CLOUD_TEXTURE_WIDTH,
+                                       (float)SKY_CLOUD_TEXTURE_HEIGHT},
+                           bounds, (Vector2){0.0f, 0.0f}, 0.0f, tint);
+            if (!occluder) {
+                ++sky->stats.cloudsDrawn;
+            }
         }
-
-        if (emissive) {
-            /* Only the lit rank contributes to the glow: a whole cloud in the
-               emissive pass turns into a white smear once the bloom has been
-               over it. */
-            unsigned char level = (unsigned char)(40.0f + 130.0f * daylight);
-
-            body = (Color){0, 0, 0, 0};
-            lit = (Color){level, level, (unsigned char)(level + 20u), 255};
-        } else {
-            float level = 0.24f + 0.76f * daylight;
-
-            /* Bright enough to survive the air veil the world draws over
-               everything above ground: a cloud behind half an atmosphere of
-               dark blue loses most of its contrast, and one that reads as
-               storm-grey at noon reads as nothing at dusk. */
-            body = (Color){(unsigned char)(196.0f * level),
-                           (unsigned char)(206.0f * level),
-                           (unsigned char)(228.0f * level), 250};
-            lit = (Color){(unsigned char)(246.0f * level),
-                          (unsigned char)(250.0f * level),
-                          (unsigned char)(255.0f * level), 252};
-        }
-
-        for (lump = 0; lump < SKY_CLOUD_LUMPS; ++lump) {
-            Vector2 centre = {0.0f, 0.0f};
-            Vector2 radius = {0.0f, 0.0f};
-
-            SkyRendererCloudLump(sky, slot, worldHeight, time, lump, &centre,
-                                 &radius);
-            SkyCloudLump(sky->seed, centre.x, centre.y, radius.x, radius.y,
-                         slot * 7 + lump, body, lit, block);
-        }
-        ++sky->stats.cloudsDrawn;
     }
 }
 
@@ -321,7 +520,9 @@ static void SkyDrawSpace(SkyRenderer *sky, Rectangle visible, int worldHeight,
                                   (unsigned char)(level > 235u ? 255u
                                                               : level + 20u),
                                   255});
-                ++sky->stats.starsDrawn;
+                if (!emissive) {
+                    ++sky->stats.starsDrawn;
+                }
             }
         }
     }
@@ -335,6 +536,7 @@ void SkyRendererDraw(SkyRenderer *sky, Rectangle visible, int worldHeight,
         return;
     }
     sky->stats = (SkyRendererStats){0};
+    ++sky->frame;
     SkyDrawSpace(sky, visible, worldHeight, daylight, false);
     SkyDrawClouds(sky, visible, worldHeight, daylight, time, false);
 }

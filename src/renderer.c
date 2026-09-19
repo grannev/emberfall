@@ -308,6 +308,9 @@ bool RendererInit(Renderer *renderer, const GameState *game,
     }
     *renderer = (Renderer){0};
     SkyRendererInit(&renderer->sky, game->worldSeed);
+    if (!SkyRendererLoad(&renderer->sky)) {
+        TraceLog(LOG_WARNING, "RENDER: Cloud textures unavailable; the sky has no clouds");
+    }
     EnvironmentRendererInit(&renderer->environment, game->worldSeed,
                             environmentPalette);
     PresentationFxInit(&renderer->effects);
@@ -586,5 +589,6 @@ void RendererUnload(Renderer *renderer)
     TerrainBodyRendererUnload(&renderer->terrainBodies);
     LightRendererUnload(&renderer->light);
     WorldRendererUnload(&renderer->world);
+    SkyRendererUnload(&renderer->sky);
     *renderer = (Renderer){0};
 }
