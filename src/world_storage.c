@@ -179,6 +179,8 @@ bool WorldInit(World *world, int width, int height)
     world->lightEmber = calloc(lightCount, sizeof(*world->lightEmber));
     world->lightEmission = calloc(lightCount, sizeof(*world->lightEmission));
     world->lightOpacity = calloc(lightCount, sizeof(*world->lightOpacity));
+    world->lightScratch = calloc((size_t)world->lightColumns,
+                                 sizeof(*world->lightScratch));
     world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
     world->lightDirtyChunks = malloc(chunkCount * sizeof(*world->lightDirtyChunks));
     if (world->dirtyChunks != NULL) {
@@ -204,7 +206,8 @@ bool WorldInit(World *world, int width, int height)
         world->nextRowCount == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
-        world->lightEmission == NULL || world->lightOpacity == NULL) {
+        world->lightEmission == NULL || world->lightOpacity == NULL ||
+        world->lightScratch == NULL) {
         WorldUnload(world);
         return false;
     }
@@ -231,6 +234,7 @@ void WorldUnload(World *world)
     free(world->lightEmber);
     free(world->lightEmission);
     free(world->lightOpacity);
+    free(world->lightScratch);
     memset(world, 0, sizeof(*world));
 }
 

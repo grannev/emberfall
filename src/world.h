@@ -223,6 +223,9 @@ typedef struct World {
     float *lightEmber;
     float *lightEmission;
     float *lightOpacity;
+    /* One row of light cells, for the solve to resolve a row's transmission
+       into once and read for both channels. */
+    float *lightScratch;
     /* Counts solves. The renderer keeps the revision its light texture was
        uploaded from, so a frame in which nothing was re-solved uploads
        nothing. */

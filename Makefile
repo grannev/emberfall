@@ -49,6 +49,10 @@ BENCH_TARGET := $(BUILD_DIR)/$(BENCH_APP)
 
 CPPFLAGS += $(shell $(PKG_CONFIG) --cflags raylib 2>/dev/null)
 CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wformat=2 -Wconversion
+# -O2 vectorises only loops that need no epilogue, which is none of the light
+# solver's. Allowing the cheap cost model halves the solve (1.17 -> 0.54 ms on
+# the production window) at no cost to correctness; it stays well short of -O3.
+CFLAGS_VECTORIZE := -fvect-cost-model=cheap
 LDLIBS += $(shell $(PKG_CONFIG) --libs raylib 2>/dev/null) -lm
 
 ifeq ($(CONFIG),debug)
@@ -60,10 +64,10 @@ else ifeq ($(CONFIG),ubsan)
     CFLAGS += $(CFLAGS_COMMON) -g -O1 -fsanitize=undefined -fno-omit-frame-pointer
     LDFLAGS += -fsanitize=undefined
 else ifeq ($(CONFIG),profile)
-    CFLAGS += $(CFLAGS_COMMON) -g -O2 -pg
+    CFLAGS += $(CFLAGS_COMMON) -g -O2 $(CFLAGS_VECTORIZE) -pg
     LDFLAGS += -pg
 else
-    CFLAGS += $(CFLAGS_COMMON) -O2
+    CFLAGS += $(CFLAGS_COMMON) -O2 $(CFLAGS_VECTORIZE)
 endif
 
 .PHONY: all run debug clean check-raylib test bench asan ubsan profile \

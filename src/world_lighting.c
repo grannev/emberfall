@@ -98,28 +98,35 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
     return changed;
 }
 
-/* Sky light: fill each column from the top while it stays open. Doing this as
-   a column walk rather than as propagation is what lets open air stay at full
-   brightness however deep the world is, and it is also why the solve window
-   costs sky nothing — a column is solved independently of its neighbours.
+/* Sky light: a column is open from the top down to the first block that is
+   mostly solid, and open air is seeded at one. Walked row by row rather than
+   column by column — the field is row-major, and a column walk touched a new
+   cache line for every sample — using the row above as the record of whether
+   the column is still open: at seed time it holds nothing but the seed.
 
    Seeded at one, not at the daylight: the channel is how much of the day
-   reaches a sample, and the day itself is applied where the light is drawn. */
+   reaches a sample, and the day itself is applied where the light is drawn.
+   Doing it per column rather than by propagation is what lets open air stay
+   at full brightness however deep the world is, and why the solve window
+   costs the sky nothing: a column is seeded independently of its neighbours. */
 static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
 {
+    const int columns = world->lightColumns;
+    float *sky = world->lightSky;
+    const float *opacity = world->lightOpacity;
+    int lightY;
     int lightX;
 
     for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
-        int lightY;
-        bool open = true;
+        sky[lightX] = opacity[lightX] > 0.35f ? 0.0f : 1.0f;
+    }
+    for (lightY = 1; lightY < world->lightRows; ++lightY) {
+        const float *above = sky + (size_t)(lightY - 1) * (size_t)columns;
+        const float *blocks = opacity + (size_t)lightY * (size_t)columns;
+        float *row = sky + (size_t)lightY * (size_t)columns;
 
-        for (lightY = 0; lightY < world->lightRows; ++lightY) {
-            int index = WorldLightIndex(world, lightX, lightY);
-
-            if (open && world->lightOpacity[index] > 0.35f) {
-                open = false;
-            }
-            world->lightSky[index] = open ? 1.0f : 0.0f;
+        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+            row[lightX] = blocks[lightX] > 0.35f ? 0.0f : above[lightX];
         }
     }
 }
@@ -171,28 +178,88 @@ static void WorldSeedEmber(World *world, int firstColumn, int lastColumn)
     }
 }
 
-static inline float WorldLightTransmission(const World *world, int index)
+static inline float WorldMaximum(float a, float b)
 {
-    float opacity = world->lightOpacity[index];
-
-    return WORLD_LIGHT_OPEN_TRANSMISSION +
-           (WORLD_LIGHT_SOLID_TRANSMISSION - WORLD_LIGHT_OPEN_TRANSMISSION) * opacity;
+    return a > b ? a : b;
 }
 
-/* Carries both channels across one edge. They share the geometry, so solving
-   them together costs far less than two separate sweeps. */
-static inline void WorldSpreadLight(const float *sky, const float *ember,
-                                    int sourceIndex, float transmission,
-                                    float *bestSky, float *bestEmber)
-{
-    float spreadSky = sky[sourceIndex] * transmission;
-    float spreadEmber = ember[sourceIndex] * transmission;
+/* One row of one sweep, both channels: each row receives what its
+   already-swept neighbour row `beside` carries into it, then the light runs
+   along the row in `direction`.
 
-    if (spreadSky > *bestSky) {
-        *bestSky = spreadSky;
+   Written as two passes over the row rather than one because the two do
+   different kinds of work. Everything that comes from the neighbouring row is
+   independent from sample to sample and vectorises; what comes from the
+   previous sample in the same row is a dependency chain, a decayed running
+   maximum, which is one multiply and one compare per sample and runs at the
+   speed of the chain rather than of the memory. The two channels are carried
+   through that chain side by side on purpose: they are independent, so the
+   processor overlaps them, and two chains cost little more than one. */
+/* What one channel of `row` receives from the neighbouring row, straight
+   across and from both diagonals. The edges of the window are peeled off so
+   that the interior loop has no condition in it and vectorises. */
+static void WorldReceiveRow(float *restrict row, const float *restrict beside,
+                            const float *restrict transmission, int firstColumn,
+                            int lastColumn, float diagonal)
+{
+    int lightX;
+
+    if (firstColumn == lastColumn) {
+        row[firstColumn] = WorldMaximum(
+            row[firstColumn], transmission[firstColumn] * beside[firstColumn]);
+        return;
     }
-    if (spreadEmber > *bestEmber) {
-        *bestEmber = spreadEmber;
+    row[firstColumn] = WorldMaximum(
+        row[firstColumn],
+        transmission[firstColumn] *
+            WorldMaximum(beside[firstColumn], diagonal * beside[firstColumn + 1]));
+    for (lightX = firstColumn + 1; lightX < lastColumn; ++lightX) {
+        float across = WorldMaximum(
+            beside[lightX],
+            WorldMaximum(diagonal * beside[lightX - 1],
+                         diagonal * beside[lightX + 1]));
+
+        row[lightX] = WorldMaximum(row[lightX], transmission[lightX] * across);
+    }
+    row[lastColumn] = WorldMaximum(
+        row[lastColumn],
+        transmission[lastColumn] *
+            WorldMaximum(beside[lastColumn], diagonal * beside[lastColumn - 1]));
+}
+
+static void WorldSweepRow(float *restrict sky, float *restrict ember,
+                          const float *skyBeside, const float *emberBeside,
+                          const float *restrict transmission, int firstColumn,
+                          int lastColumn, int direction, float diagonal)
+{
+    int lightX;
+    float carrySky = 0.0f;
+    float carryEmber = 0.0f;
+
+    if (skyBeside != NULL) {
+        WorldReceiveRow(sky, skyBeside, transmission, firstColumn, lastColumn,
+                        diagonal);
+        WorldReceiveRow(ember, emberBeside, transmission, firstColumn, lastColumn,
+                        diagonal);
+    }
+    if (direction > 0) {
+        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+            float through = transmission[lightX];
+
+            carrySky = WorldMaximum(sky[lightX], carrySky * through);
+            carryEmber = WorldMaximum(ember[lightX], carryEmber * through);
+            sky[lightX] = carrySky;
+            ember[lightX] = carryEmber;
+        }
+    } else {
+        for (lightX = lastColumn; lightX >= firstColumn; --lightX) {
+            float through = transmission[lightX];
+
+            carrySky = WorldMaximum(sky[lightX], carrySky * through);
+            carryEmber = WorldMaximum(ember[lightX], carryEmber * through);
+            sky[lightX] = carrySky;
+            ember[lightX] = carryEmber;
+        }
     }
 }
 
@@ -201,20 +268,38 @@ static inline void WorldSpreadLight(const float *sky, const float *ember,
    corridor, but they are stable, allocation-free, and close enough that the
    error is invisible at eight cells per sample.
 
-   Both channels are carried in the same pass. Solving them separately was
+   Both channels are carried in the same sweep. Solving them separately was
    tried — sky only changes when the terrain does, so a lamp moving every frame
    could in principle have skipped it — and measured worse: the two channels
    share the transmission lookup and the whole index calculation, and in a game
    whose core verb is digging, the terrain changes often enough that the second
    pass costs more than the skipped one saves. Digging went from 1.6 ms to
-   3.2 ms per frame; flying gained 0.2 ms. */
+   3.2 ms per frame; flying gained 0.2 ms.
+
+   The transmission of a row is resolved once per row into a scratch row the
+   world owns, and read by both channels; that is the shared opacity lookup
+   the paragraph above is about. */
+static void WorldRowTransmission(const World *world, int lightY, int firstColumn,
+                                 int lastColumn)
+{
+    const float *opacity = world->lightOpacity +
+                           (size_t)lightY * (size_t)world->lightColumns;
+    float *through = world->lightScratch;
+    int lightX;
+
+    for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+        through[lightX] =
+            WORLD_LIGHT_OPEN_TRANSMISSION +
+            (WORLD_LIGHT_SOLID_TRANSMISSION - WORLD_LIGHT_OPEN_TRANSMISSION) *
+                opacity[lightX];
+    }
+}
+
 static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
 {
-    float *sky = world->lightSky;
-    float *ember = world->lightEmber;
     const int columns = world->lightColumns;
     const int rows = world->lightRows;
-    int lightX;
+    const float *through = world->lightScratch;
     int lightY;
     /* Diagonal neighbours are one and a half cells away, near enough; the exact
        root of two costs a call and changes nothing visible. */
@@ -224,73 +309,25 @@ static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
     WorldSeedEmber(world, firstColumn, lastColumn);
 
     for (lightY = 0; lightY < rows; ++lightY) {
-        int rowIndex = lightY * columns;
-        int aboveIndex = rowIndex - columns;
+        size_t rowOffset = (size_t)lightY * (size_t)columns;
+        size_t aboveOffset = rowOffset - (size_t)columns;
 
-        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
-            int index = rowIndex + lightX;
-            float transmission = WorldLightTransmission(world, index);
-            float bestSky = sky[index];
-            float bestEmber = ember[index];
-
-            if (lightX > firstColumn) {
-                WorldSpreadLight(sky, ember, index - 1, transmission, &bestSky,
-                                 &bestEmber);
-            }
-            if (lightY > 0) {
-                int above = aboveIndex + lightX;
-
-                WorldSpreadLight(sky, ember, above, transmission, &bestSky,
-                                 &bestEmber);
-                if (lightX > firstColumn) {
-                    WorldSpreadLight(sky, ember, above - 1,
-                                     transmission * diagonal, &bestSky,
-                                     &bestEmber);
-                }
-                if (lightX < lastColumn) {
-                    WorldSpreadLight(sky, ember, above + 1,
-                                     transmission * diagonal, &bestSky,
-                                     &bestEmber);
-                }
-            }
-            sky[index] = bestSky;
-            ember[index] = bestEmber;
-        }
+        WorldRowTransmission(world, lightY, firstColumn, lastColumn);
+        WorldSweepRow(world->lightSky + rowOffset, world->lightEmber + rowOffset,
+                      lightY > 0 ? world->lightSky + aboveOffset : NULL,
+                      lightY > 0 ? world->lightEmber + aboveOffset : NULL,
+                      through, firstColumn, lastColumn, 1, diagonal);
     }
 
     for (lightY = rows - 1; lightY >= 0; --lightY) {
-        int rowIndex = lightY * columns;
-        int belowIndex = rowIndex + columns;
+        size_t rowOffset = (size_t)lightY * (size_t)columns;
+        size_t belowOffset = rowOffset + (size_t)columns;
 
-        for (lightX = lastColumn; lightX >= firstColumn; --lightX) {
-            int index = rowIndex + lightX;
-            float transmission = WorldLightTransmission(world, index);
-            float bestSky = sky[index];
-            float bestEmber = ember[index];
-
-            if (lightX < lastColumn) {
-                WorldSpreadLight(sky, ember, index + 1, transmission, &bestSky,
-                                 &bestEmber);
-            }
-            if (lightY + 1 < rows) {
-                int below = belowIndex + lightX;
-
-                WorldSpreadLight(sky, ember, below, transmission, &bestSky,
-                                 &bestEmber);
-                if (lightX > firstColumn) {
-                    WorldSpreadLight(sky, ember, below - 1,
-                                     transmission * diagonal, &bestSky,
-                                     &bestEmber);
-                }
-                if (lightX < lastColumn) {
-                    WorldSpreadLight(sky, ember, below + 1,
-                                     transmission * diagonal, &bestSky,
-                                     &bestEmber);
-                }
-            }
-            sky[index] = bestSky;
-            ember[index] = bestEmber;
-        }
+        WorldRowTransmission(world, lightY, firstColumn, lastColumn);
+        WorldSweepRow(world->lightSky + rowOffset, world->lightEmber + rowOffset,
+                      lightY + 1 < rows ? world->lightSky + belowOffset : NULL,
+                      lightY + 1 < rows ? world->lightEmber + belowOffset : NULL,
+                      through, firstColumn, lastColumn, -1, diagonal);
     }
 }
 
