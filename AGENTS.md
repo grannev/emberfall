@@ -135,6 +135,18 @@ coherent phase with an explanatory message.
   solids enter bloom, ordinary bright terrain does not. Particle emission is
   explicit presentation metadata and must be reset whenever a pool slot is
   reused.
+- Page pixels are unlit. `LightRenderer` uploads the world's coarse light
+  field into a small texture and its shader lights pages and terrain bodies by
+  world position, so a moving lamp or a turning day never rebuilds a chunk.
+  Do not bake light back into pixels: that was 7.6 ms of every frame in
+  flight. `WorldLightTint`/`WorldAirVeilAlpha` are the reference the shader
+  mirrors; change both or neither. The world's sky channel is the fraction of
+  full daylight; `daylight` is a uniform.
+- The emissive plane occludes exactly where the scene plane does: a material
+  that does not glow is opaque black there, air carries the same veil, and the
+  character draws its silhouette. Anything drawn transparent in the emissive
+  pass lets whatever glows behind it bloom through — that is how stars shone
+  through the hero and through slabs thrown into space.
 - `Renderer` also owns the fixed-capacity `PresentationFxSystem`: selected
   `GameEvent` values spawn short-lived world-space primitives, which update and
   draw in scene/emissive passes but can never read or mutate `World`. The pool

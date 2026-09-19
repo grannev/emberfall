@@ -15,6 +15,7 @@
 
 #include "camera_feedback.h"
 #include "game.h"
+#include "material_render.h"
 #include "materials.h"
 #include "particles.h"
 #include "player.h"
@@ -168,7 +169,11 @@ static void test_world_render_preparation_is_headless_and_incremental(void)
 }
 
 typedef struct EmptyRenderProbe {
-    bool sawTranslucentAir;
+    int airPixels;
+    int markedInBothPlanes;
+    int litGlow;
+    unsigned char topGlow;
+    unsigned char bottomGlow;
 } EmptyRenderProbe;
 
 static bool CaptureEmptyRenderData(void *context, Rectangle bounds,
@@ -176,20 +181,37 @@ static bool CaptureEmptyRenderData(void *context, Rectangle bounds,
                                    const Color *emissivePixels)
 {
     EmptyRenderProbe *probe = context;
+    int width = (int)bounds.width;
     int count = (int)(bounds.width * bounds.height);
     int index;
 
     for (index = 0; index < count; ++index) {
-        if (pixels[index].a > 0u && pixels[index].a < 255u &&
-            emissivePixels[index].a == 0u) {
-            probe->sawTranslucentAir = true;
-            break;
+        ++probe->airPixels;
+        if (pixels[index].a == MATERIAL_RENDER_AIR_ALPHA &&
+            emissivePixels[index].a == MATERIAL_RENDER_AIR_ALPHA &&
+            emissivePixels[index].r == 0u && emissivePixels[index].g == 0u &&
+            emissivePixels[index].b == 0u) {
+            ++probe->markedInBothPlanes;
+        }
+        if (pixels[index].g > 0u) {
+            ++probe->litGlow;
+        }
+        if (bounds.y == 0.0f && index < width) {
+            probe->topGlow = pixels[index].g;
+        }
+        if (bounds.y + bounds.height >= 32.0f && index >= count - width) {
+            probe->bottomGlow = pixels[index].g;
         }
     }
     return true;
 }
 
-static void test_empty_world_render_data_preserves_background_depth(void)
+/* Air is not a colour the page can decide on its own: whether it is a window
+   onto the backdrop or the sealed inside of the ground depends on the sky
+   light reaching it, and the light lives on the GPU. So the page marks air —
+   in both planes, since sealed air has to hide a glow exactly as it hides the
+   backdrop — and keeps the depth gradient the shader tints. */
+static void test_empty_world_render_data_marks_air_for_the_shader(void)
 {
     World world;
     EmptyRenderProbe probe = {0};
@@ -197,9 +219,49 @@ static void test_empty_world_render_data_preserves_background_depth(void)
     CHECK(WorldInit(&world, 32, 32), "world allocation failed");
     WorldPrepareVisible(&world, (Rectangle){0.0f, 0.0f, 32.0f, 32.0f},
                         CaptureEmptyRenderData, &probe);
-    CHECK(probe.sawTranslucentAir,
-          "empty world pixels still fully hide the environment background");
+    CHECK(probe.airPixels == 32 * 32, "staged %d of 1024 pixels",
+          probe.airPixels);
+    CHECK(probe.markedInBothPlanes == probe.airPixels,
+          "%d of %d air pixels were not marked as air in both planes",
+          probe.airPixels - probe.markedInBothPlanes, probe.airPixels);
+    CHECK(probe.litGlow == probe.airPixels,
+          "air lost its depth colour: %d of %d pixels are black",
+          probe.airPixels - probe.litGlow, probe.airPixels);
+    CHECK(probe.bottomGlow > probe.topGlow,
+          "the depth gradient runs the wrong way: top %u, bottom %u",
+          (unsigned int)probe.topGlow, (unsigned int)probe.bottomGlow);
     WorldUnload(&world);
+}
+
+/* The shader is what turns light into colour; the C side keeps the reference
+   formulas and the constants it sets as uniforms. Nothing headless can run the
+   GLSL, but it can at least refuse to let the two lists of names drift apart:
+   a uniform the renderer sets that the shader no longer declares is a shader
+   the renderer silently refuses to load, and a world drawn flat and unlit. */
+static void test_the_light_shader_declares_what_the_renderer_sets(void)
+{
+    static const char *uniforms[] = {
+        "uniform sampler2D lightMap;", "uniform vec2 lightTexel;",
+        "uniform float lightScale;", "uniform float daylight;",
+        "uniform float minimumLight;", "uniform vec3 warmth;",
+        "uniform vec2 veil;", "uniform vec2 veilAlpha;",
+        "uniform float airAlpha;", "uniform int emissivePass;",
+    };
+    char *fragment = LoadFileText("assets/shaders/world_light.fs");
+    char *vertex = LoadFileText("assets/shaders/world_light.vs");
+    size_t index;
+
+    CHECK(fragment != NULL, "assets/shaders/world_light.fs is missing");
+    CHECK(vertex != NULL, "assets/shaders/world_light.vs is missing");
+    for (index = 0; index < sizeof(uniforms) / sizeof(uniforms[0]); ++index) {
+        CHECK(strstr(fragment, uniforms[index]) != NULL,
+              "the fragment shader no longer declares `%s`", uniforms[index]);
+    }
+    CHECK(strstr(vertex, "out vec2 fragWorld;") != NULL &&
+              strstr(fragment, "in vec2 fragWorld;") != NULL,
+          "the world position no longer crosses from the vertex shader");
+    UnloadFileText(fragment);
+    UnloadFileText(vertex);
 }
 
 /* A chunk the renderer cannot place must keep its dirty flag. Dropping it
@@ -244,8 +306,10 @@ static bool CaptureMaterialEmission(void *context, Rectangle bounds,
                            (lava.r != 0u || lava.g != 0u || lava.b != 0u);
         probe->fireEmits = fire.a == 255u &&
                            (fire.r != 0u || fire.g != 0u || fire.b != 0u);
+        /* Dark, and opaque: what does not glow still has to hide what glows
+           behind it. */
         probe->sandStaysDark = sand.r == 0u && sand.g == 0u &&
-                               sand.b == 0u && sand.a == 0u;
+                               sand.b == 0u && sand.a == 255u;
     }
     return true;
 }
@@ -1267,11 +1331,14 @@ static void test_every_land_biome_can_host_the_protected_spawn(void)
 
 /* Coarse light cell under a world cell, which is what the tests below assert
    about: the field is solved eight cells at a time, so this is the finest
-   question that can be asked of it. */
+   question that can be asked of it. The sky channel is solved for full day and
+   scaled by the daylight where it is drawn, so this returns what the shader
+   would: the fraction reaching the sample times the day. */
 static float SkyLightAt(const World *world, int x, int y)
 {
     return world->lightSky[(y / WORLD_LIGHT_SCALE) * world->lightColumns +
-                           x / WORLD_LIGHT_SCALE];
+                           x / WORLD_LIGHT_SCALE] *
+           WorldShownDaylight(world);
 }
 
 static float EmberLightAt(const World *world, int x, int y)
@@ -10993,7 +11060,8 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
 int main(void)
 {
     RUN(test_world_render_preparation_is_headless_and_incremental);
-    RUN(test_empty_world_render_data_preserves_background_depth);
+    RUN(test_empty_world_render_data_marks_air_for_the_shader);
+    RUN(test_the_light_shader_declares_what_the_renderer_sets);
     RUN(test_a_refused_chunk_keeps_its_dirty_flag);
     RUN(test_emissive_render_data_selects_emitters_not_bright_terrain);
     RUN(test_particle_emission_is_explicit_per_effect);

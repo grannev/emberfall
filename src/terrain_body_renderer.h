@@ -29,7 +29,6 @@ typedef struct TerrainBodyTextureSlot {
     Texture2D emissiveTexture;
     TerrainBodyRenderKey key;
     uint16_t retryFrames;
-    bool hasEmission;
 } TerrainBodyTextureSlot;
 
 typedef struct TerrainBodyRenderer {

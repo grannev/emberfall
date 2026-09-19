@@ -223,30 +223,110 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
     *trail = restTrail;
 }
 
-void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
+/* Every tone the figure is painted in. One struct rather than a dozen locals
+   so the same figure can be drawn twice: in colour for the scene, and in
+   solid black for the emissive plane, where it has to occlude whatever glows
+   behind it. */
+typedef struct PlayerPalette {
+    Color dark;
+    Color mid;
+    Color lit;
+    Color capeCore;
+    Color capeEdge;
+    Color capeShade;
+    Color skin;
+    Color limbDark;
+    Color limbMid;
+    Color trim;
+    Color accent;
+    Color glowLaser;
+    Color glowChill;
+    Color glowBlast;
+} PlayerPalette;
+
+static PlayerPalette PlayerPaletteFor(const Player *player)
 {
     /* Limbs get their own darker tone and the boots and gloves a bright one.
        Without that separation every part is the same blue and the figure reads
        as one shape however carefully the joints are placed. */
-    const Color suitDark = (Color){40, 52, 86, 255};
-    const Color suitMid = (Color){84, 108, 162, 255};
-    const Color suitLit = (Color){152, 184, 236, 255};
-    const Color capeCore = (Color){228, 88, 38, 255};
-    const Color capeEdge = (Color){255, 156, 72, 255};
-    const Color capeShade = (Color){140, 44, 28, 255};
-    const Color skin = (Color){236, 190, 146, 255};
-    /* The far-side limbs sit in a much darker tone than the torso. That
-       separation, not an outline, is what puts them behind the body. */
-    /* Dark enough to sit behind the body, light enough to still be a limb: at
-       the value of the background the far leg disappears and only its boot
-       remains, reading as a square floating beside the character. */
-    Color limbDark = (Color){50, 64, 104, 255};
-    Color limbMid = (Color){70, 92, 142, 255};
-    Color trim = (Color){206, 146, 58, 255};
-    Color accent = (Color){104, 232, 236, 255};
-    Color lit = suitLit;
-    Color mid = suitMid;
-    Color dark = suitDark;
+    PlayerPalette palette = {
+        .dark = {40, 52, 86, 255},
+        .mid = {84, 108, 162, 255},
+        .lit = {152, 184, 236, 255},
+        .capeCore = {228, 88, 38, 255},
+        .capeEdge = {255, 156, 72, 255},
+        .capeShade = {140, 44, 28, 255},
+        .skin = {236, 190, 146, 255},
+        /* The far-side limbs sit in a much darker tone than the torso. That
+           separation, not an outline, is what puts them behind the body. Dark
+           enough to sit behind the body, light enough to still be a limb: at
+           the value of the background the far leg disappears and only its
+           boot remains, reading as a square floating beside the character. */
+        .limbDark = {50, 64, 104, 255},
+        .limbMid = {70, 92, 142, 255},
+        .trim = {206, 146, 58, 255},
+        .accent = {104, 232, 236, 255},
+        .glowLaser = {255, 224, 168, 235},
+        .glowChill = {206, 244, 255, 235},
+        .glowBlast = {196, 222, 255, 235},
+    };
+
+    if (player->impactTimer > 0.0f) {
+        /* Flash the fills, not a rim: the model has no outline to recolour, and
+           brightening the whole body is what sells the hit. Pale gold rather
+           than orange: an orange flash is the colour of the cape, and the two
+           merge into one blob at the moment of the hit. */
+        palette.dark = (Color){186, 154, 96, 255};
+        palette.mid = (Color){245, 226, 168, 255};
+        palette.lit = (Color){255, 252, 232, 255};
+        palette.limbDark = (Color){170, 138, 84, 255};
+        palette.limbMid = (Color){228, 202, 142, 255};
+        palette.trim = (Color){255, 250, 226, 255};
+        palette.accent = (Color){255, 255, 255, 255};
+    }
+    return palette;
+}
+
+static PlayerPalette PlayerPaletteSilhouette(void)
+{
+    const Color black = {0, 0, 0, 255};
+    PlayerPalette palette;
+
+    palette.dark = black;
+    palette.mid = black;
+    palette.lit = black;
+    palette.capeCore = black;
+    palette.capeEdge = black;
+    palette.capeShade = black;
+    palette.skin = black;
+    palette.limbDark = black;
+    palette.limbMid = black;
+    palette.trim = black;
+    palette.accent = black;
+    palette.glowLaser = black;
+    palette.glowChill = black;
+    palette.glowBlast = black;
+    return palette;
+}
+
+/* The figure itself. `silhouette` draws only what has a body — cape, limbs,
+   torso, head — and none of the exhaust, streaks and sparks around it, which
+   are light rather than matter and must not occlude anything. */
+static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
+                                     const PlayerPalette *palette,
+                                     bool silhouette)
+{
+    const Color capeCore = palette->capeCore;
+    const Color capeEdge = palette->capeEdge;
+    const Color capeShade = palette->capeShade;
+    const Color skin = palette->skin;
+    const Color limbDark = palette->limbDark;
+    const Color limbMid = palette->limbMid;
+    const Color trim = palette->trim;
+    const Color accent = palette->accent;
+    const Color lit = palette->lit;
+    const Color mid = palette->mid;
+    const Color dark = palette->dark;
     BodyFrame frame;
     Vector2 aimLocal;
     Vector2 pushLocal;
@@ -345,24 +425,10 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     frame.origin = (Vector2){player->position.x + frame.up.x * bob,
                              player->position.y + frame.up.y * bob};
 
-    if (player->impactTimer > 0.0f) {
-        /* Flash the fills, not a rim: the model has no outline to recolour, and
-           brightening the whole body is what sells the hit. */
-        /* Pale gold rather than orange: an orange flash is the colour of the
-           cape, and the two merge into one blob at the moment of the hit. */
-        dark = (Color){186, 154, 96, 255};
-        mid = (Color){245, 226, 168, 255};
-        lit = (Color){255, 252, 232, 255};
-        limbDark = (Color){170, 138, 84, 255};
-        limbMid = (Color){228, 202, 142, 255};
-        trim = (Color){255, 250, 226, 255};
-        accent = (Color){255, 255, 255, 255};
-    }
-
     /* A compact sharp exhaust anchors the longer particle/FX trail to the
        character, while the separate emissive pass supplies the soft halo
        without blurring this core. */
-    if (player->boosting) {
+    if (player->boosting && !silhouette) {
         Vector2 nozzle = Vector2Add(player->position,
                                     Vector2Scale(travel, BODY(-3.5f)));
         Vector2 tail = Vector2Add(nozzle, Vector2Scale(travel, BODY(-14.0f)));
@@ -373,7 +439,7 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
     }
 
     /* ---- acceleration burst, behind the body ---- */
-    if (player->boostBurstTimer > 0.0f) {
+    if (player->boostBurstTimer > 0.0f && !silhouette) {
         float progress = 1.0f - player->boostBurstTimer / PLAYER_BOOST_BURST_TIME;
         float radius = BODY(3.0f + progress * 18.0f);
         float alpha = (1.0f - progress) * 0.8f;
@@ -515,10 +581,10 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
             player->pose == PLAYER_POSE_CHILL ||
             player->pose == PLAYER_POSE_BLAST) {
             Color glow = player->pose == PLAYER_POSE_CHILL
-                             ? (Color){206, 244, 255, 235}
+                             ? palette->glowChill
                              : (player->pose == PLAYER_POSE_BLAST
-                                    ? (Color){196, 222, 255, 235}
-                                    : (Color){255, 224, 168, 235});
+                                    ? palette->glowBlast
+                                    : palette->glowLaser);
 
             DrawBodyCell(leadPoint, 2, glow);
             if (player->pose != PLAYER_POSE_LASER) {
@@ -554,6 +620,10 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
                                visor.y + frame.up.y * BODY(0.6f)},
                      1, accent);
         DrawBodyCell(BodyPoint(&frame, 5.4f, -0.9f), 1, skin);
+    }
+
+    if (silhouette) {
+        return;
     }
 
     /* ---- speed streaks ---- */
@@ -625,6 +695,28 @@ void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
                          spark == 0 ? (Color){255, 214, 96, 245} : accent);
         }
     }
+}
+
+void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
+{
+    PlayerPalette palette;
+
+    if (player == NULL) {
+        return;
+    }
+    palette = PlayerPaletteFor(player);
+    PlayerRendererDrawFigure(player, aimPosition, &palette, false);
+}
+
+void PlayerRendererDrawSilhouette(const Player *player, Vector2 aimPosition)
+{
+    PlayerPalette palette;
+
+    if (player == NULL) {
+        return;
+    }
+    palette = PlayerPaletteSilhouette();
+    PlayerRendererDrawFigure(player, aimPosition, &palette, true);
 }
 
 void PlayerRendererDrawEmissive(const Player *player)

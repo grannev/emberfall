@@ -110,7 +110,9 @@ void RendererUnload(Renderer *renderer);
 
 `Renderer` владеет presentation lifecycle. Его `WorldRenderer` создаёт и
 освобождает `Texture2D`, принимает CPU staging blocks 32×32 и выполняет
-`UpdateTextureRec`. Persistent full-world `Color` buffer отсутствует.
+`UpdateTextureRec`; его `LightRenderer` держит текстуру светового поля и
+шейдер, под которым рисуются страницы и тела (`LightRendererSync`,
+`LightRendererBegin`/`End`). Persistent full-world `Color` buffer отсутствует.
 `RendererRenderScene` компонует резкую scene, затем explicit emissive mask,
 half-resolution downsample и separable horizontal/vertical blur. Scene не
 проходит через blur. `RendererComposite` выводит scene в текущий backbuffer и
@@ -164,10 +166,11 @@ mask. Модуль принимает `const GameEventBuffer *`, не входи
 никогда не получает `World *`: visual FX не способны повлиять на simulation.
 
 Внутренний `WorldPrepareVisible` не является gameplay API. Он синхронно
-передаёт renderer-у scene и emissive staging только для видимых dirty chunks;
-невидимые сохраняют флаг до попадания в кадр. Headless tests проверяют первый
-полный build, нулевую работу settled кадра, локальное изменение и то, что
-lava/fire входят в mask, а bright sand — нет.
+передаёт renderer-у неосвещённые scene и emissive staging только для видимых
+dirty chunks; невидимые сохраняют флаг до попадания в кадр. Headless tests
+проверяют первый полный build, нулевую работу settled кадра, локальное
+изменение, маркировку воздуха в обеих плоскостях и то, что lava/fire входят в
+mask, а bright sand в ней чёрный и непрозрачный.
 
 ### Cell access
 

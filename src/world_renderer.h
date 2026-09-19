@@ -61,7 +61,14 @@ typedef struct WorldRenderer {
 } WorldRenderer;
 
 bool WorldRendererInit(WorldRenderer *renderer, const World *world);
-void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible);
+/* Binds the pages `visible` needs and rebuilds every dirty chunk on them.
+   Once per frame, before either draw; the pages hold unlit pixels, so this
+   costs only what changed in the world, never what changed in the light. */
+void WorldRendererPrepare(WorldRenderer *renderer, World *world, Rectangle visible);
+/* Draw the resident pages. Both expect to be called inside the camera
+   transform and inside the light renderer's pass, which is what lights them. */
+void WorldRendererDrawScene(WorldRenderer *renderer, const World *world,
+                            Rectangle visible);
 void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
                                Rectangle visible);
 void WorldRendererUnload(WorldRenderer *renderer);

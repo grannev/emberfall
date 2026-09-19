@@ -217,7 +217,7 @@ bool WorldRendererInit(WorldRenderer *renderer, const World *world)
     return WorldRendererGrow(renderer, 12);
 }
 
-void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
+void WorldRendererPrepare(WorldRenderer *renderer, World *world, Rectangle visible)
 {
     PageUploadContext upload;
     double started;
@@ -291,8 +291,16 @@ void WorldRendererDraw(WorldRenderer *renderer, World *world, Rectangle visible)
     upload.renderer = renderer;
     WorldPrepareVisible(world, visible, WorldRendererUploadChunk, &upload);
     renderer->lastFrame.preparationMilliseconds = (GetTime() - started) * 1000.0;
-    WorldRendererDrawLayer(renderer, world, visible, false);
     renderer->lastFrame.residentPages = (uint32_t)renderer->pageCapacity;
+}
+
+void WorldRendererDrawScene(WorldRenderer *renderer, const World *world,
+                            Rectangle visible)
+{
+    if (renderer == NULL || world == NULL || renderer->pages == NULL) {
+        return;
+    }
+    WorldRendererDrawLayer(renderer, world, visible, false);
 }
 
 void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,

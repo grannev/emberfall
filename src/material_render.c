@@ -84,8 +84,7 @@ static Color MaterialHeatTint(Color base, const MaterialInfo *info,
 
 MaterialRenderSample MaterialRenderCell(CellMaterial material,
                                         float temperature,
-                                        int variationX, int variationY,
-                                        float red, float green, float blue)
+                                        int variationX, int variationY)
 {
     const MaterialInfo *info = MaterialAt(material);
     MaterialRenderSample sample = {BLANK, BLANK};
@@ -105,34 +104,38 @@ MaterialRenderSample MaterialRenderCell(CellMaterial material,
     color.b = ChannelWithVariation(color.b, info->variationB, variation);
     color = MaterialHeatTint(color, info, temperature);
     color = MaterialFrostTint(color, info, temperature);
-
-    /* An emitter lights itself. This retains the old world-page behaviour and
-       prevents lava from becoming darker in its own emissive centre. */
-    if (info->emission < 0.999f) {
-        float channel = red * (float)color.r;
-
-        color.r = (unsigned char)(channel > 255.0f ? 255.0f : channel);
-        channel = green * (float)color.g;
-        color.g = (unsigned char)(channel > 255.0f ? 255.0f : channel);
-        channel = blue * (float)color.b;
-        color.b = (unsigned char)(channel > 255.0f ? 255.0f : channel);
-    }
     sample.scene = color;
 
     /* Explicit emission, never brightness extraction: ordinary bright sand
-       remains sharp while emissive materials and heated solids enter bloom. */
+       remains sharp while emissive materials and heated solids enter bloom.
+       What does not glow is opaque black here, not transparent: the emissive
+       plane has to occlude exactly where the scene plane does, or whatever
+       glows behind a wall blooms through it. */
     strength = info->emission;
     heat = MaterialHeatAmount(info, temperature) * 0.72f;
     if (heat > strength) {
         strength = heat;
     }
+    sample.emissive = (Color){0, 0, 0, 255};
     if (strength > 0.001f) {
-        sample.emissive = (Color){
-            (unsigned char)((float)color.r * strength),
-            (unsigned char)((float)color.g * strength),
-            (unsigned char)((float)color.b * strength),
-            255u,
-        };
+        sample.emissive.r = (unsigned char)((float)color.r * strength);
+        sample.emissive.g = (unsigned char)((float)color.g * strength);
+        sample.emissive.b = (unsigned char)((float)color.b * strength);
     }
+    return sample;
+}
+
+MaterialRenderSample MaterialRenderAir(int y, int height)
+{
+    MaterialRenderSample sample;
+    /* Empty space is a depth gradient rather than a flat colour. */
+    unsigned char glow = (unsigned char)(10 + (y * 10) / (height > 0 ? height : 1));
+
+    sample.scene = (Color){5, glow, (unsigned char)(18 + glow),
+                           MATERIAL_RENDER_AIR_ALPHA};
+    /* Marked in both planes: sealed air has to hide a glow behind it exactly
+       as it hides the backdrop, and the shader can only do that for a texel
+       it can tell from "nothing here". */
+    sample.emissive = (Color){0, 0, 0, MATERIAL_RENDER_AIR_ALPHA};
     return sample;
 }

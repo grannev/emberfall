@@ -207,36 +207,38 @@ typedef struct World {
        makes the light refresh re-scan every off-screen chunk every frame. */
     uint8_t *lightDirtyChunks;
     /* Coarse light field. `emission` and `opacity` are derived from the cells and
-       refreshed only where chunks are dirty; `light` is solved from them every
-       draw; `lightShown` is the copy the current texture was built from, so a
-       chunk can be re-lit without anything in it having changed. */
+       refreshed only where chunks are dirty; `light` is solved from them when
+       something that can change it has, and the renderer uploads the solved
+       window to the GPU, where a shader lights every pixel from it. Nothing
+       here is baked into a page: a lamp moving or a day turning rebuilds no
+       chunk. */
     int lightColumns;
     int lightRows;
     /* Two channels, not one. A single intensity can darken but cannot colour,
-       so a lava lake lit its own cavern in grey. `lightSky` is daylight reaching
-       down from the surface, `lightEmber` is everything that burns, and the
-       difference between them is what warms the light near a fire. */
+       so a lava lake lit its own cavern in grey. `lightSky` is the fraction of
+       full daylight reaching down from the surface, `lightEmber` is everything
+       that burns, and the difference between them is what warms the light near
+       a fire. */
     float *lightSky;
     float *lightEmber;
-    float *lightShownSky;
-    float *lightShownEmber;
     float *lightEmission;
     float *lightOpacity;
-    /* How much daylight the sky is giving, 0 at midnight and 1 at noon. Sky
-       light is seeded per column from the top, so scaling the seed is the whole
-       of night: a column open to the sky simply receives less, the two sweeps
-       carry less into every overhang, and the ground the sun was reaching goes
-       as dark as the ground it never reached. Nothing else in the simulation
-       reads it — night changes what can be seen, not what happens. */
+    /* Counts solves. The renderer keeps the revision its light texture was
+       uploaded from, so a frame in which nothing was re-solved uploads
+       nothing. */
+    uint32_t lightRevision;
+    /* How much daylight the sky is giving, 0 at midnight and 1 at noon. The sky
+       channel is solved for full day and scaled by this where it is drawn, so
+       night costs no solve: a column open to the sky simply shows less, every
+       overhang with it, and the ground the sun was reaching goes as dark as the
+       ground it never reached. Nothing in the simulation reads it — night
+       changes what can be seen, not what happens. */
     float daylight;
     /* One movable light the caller owns, so the player can carry their own glow
        into a tunnel that has no other source. */
     Vector2 pointLight;
     float pointLightRadius;
     float pointLightStrength;
-    /* Daylight the last solve used, so a sky that is still brightening or
-       dimming re-solves and a sky that has settled does not. */
-    float solvedDaylight;
     /* State of the light the last solve was run for, so a still scene can skip
        the solve entirely. */
     Vector2 solvedPointLight;

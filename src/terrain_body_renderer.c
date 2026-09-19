@@ -5,11 +5,9 @@
 
 #include "material_render.h"
 
-/* Moving bodies do not yet sample the world's coarse light field: that would
-   introduce a World dependency into this renderer. A stable neutral factor
-   keeps the shared palette readable while hot/emissive cells still light
-   themselves through the explicit emissive layer. */
-#define TERRAIN_BODY_AMBIENT_LIGHT 0.72f
+/* Body pixels are unlit, like the world's pages: the light renderer's shader
+   lights them by where they are, so a slab carried into a cave goes dark in
+   it, and this module still never sees a World. */
 #define TERRAIN_BODY_TEXTURE_RETRY_FRAMES 120u
 
 _Static_assert(sizeof(Color) == 4u,
@@ -37,7 +35,6 @@ static void TerrainBodyRendererUnloadTextures(TerrainBodyTextureSlot *slot)
     }
     slot->sceneTexture = (Texture2D){0};
     slot->emissiveTexture = (Texture2D){0};
-    slot->hasEmission = false;
 }
 
 static void TerrainBodyRendererResetSlot(TerrainBodyTextureSlot *slot)
@@ -56,7 +53,7 @@ static bool TerrainBodyRendererSameIdentity(TerrainBodyRenderKey a,
 
 static bool TerrainBodyRendererBuildPixels(
     TerrainBodyRenderer *renderer, const DynamicTerrainSystem *terrain,
-    TerrainBodyRenderKey key, bool *hasEmission)
+    TerrainBodyRenderKey key)
 {
     const TerrainBody *body = DynamicTerrainGetConst(terrain, key.handle);
     int cellCount;
@@ -71,7 +68,6 @@ static bool TerrainBodyRendererBuildPixels(
         return false;
     }
 
-    *hasEmission = false;
     for (localY = 0; localY < body->height; ++localY) {
         int localX;
 
@@ -88,16 +84,10 @@ static bool TerrainBodyRendererBuildPixels(
                     material,
                     DynamicTerrainTemperatureAt(terrain, key.handle,
                                                 localX, localY),
-                    body->sourceX + localX, body->sourceY + localY,
-                    TERRAIN_BODY_AMBIENT_LIGHT,
-                    TERRAIN_BODY_AMBIENT_LIGHT,
-                    TERRAIN_BODY_AMBIENT_LIGHT);
+                    body->sourceX + localX, body->sourceY + localY);
 
                 renderer->sceneStaging[index] = sample.scene;
                 renderer->emissiveStaging[index] = sample.emissive;
-                if (sample.emissive.a != 0u) {
-                    *hasEmission = true;
-                }
             }
         }
     }
@@ -112,10 +102,7 @@ static bool TerrainBodyRendererCreateTextures(
     Image emissiveImage;
     Texture2D scene;
     Texture2D emissive;
-    bool hasEmission;
-
-    if (!TerrainBodyRendererBuildPixels(renderer, terrain, key,
-                                        &hasEmission)) {
+    if (!TerrainBodyRendererBuildPixels(renderer, terrain, key)) {
         return false;
     }
     sceneImage = (Image){renderer->sceneStaging, key.width, key.height, 1,
@@ -141,7 +128,6 @@ static bool TerrainBodyRendererCreateTextures(
     SetTextureWrap(emissive, TEXTURE_WRAP_CLAMP);
     slot->sceneTexture = scene;
     slot->emissiveTexture = emissive;
-    slot->hasEmission = hasEmission;
     slot->key = key;
     renderer->lastFrame.textureUpdates += 2u;
     return true;
@@ -151,15 +137,11 @@ static bool TerrainBodyRendererUpdateTextures(
     TerrainBodyRenderer *renderer, TerrainBodyTextureSlot *slot,
     const DynamicTerrainSystem *terrain, TerrainBodyRenderKey key)
 {
-    bool hasEmission;
-
-    if (!TerrainBodyRendererBuildPixels(renderer, terrain, key,
-                                        &hasEmission)) {
+    if (!TerrainBodyRendererBuildPixels(renderer, terrain, key)) {
         return false;
     }
     UpdateTexture(slot->sceneTexture, renderer->sceneStaging);
     UpdateTexture(slot->emissiveTexture, renderer->emissiveStaging);
-    slot->hasEmission = hasEmission;
     slot->key = key;
     renderer->lastFrame.textureUpdates += 2u;
     return true;
@@ -310,7 +292,10 @@ void TerrainBodyRendererDrawEmissive(TerrainBodyRenderer *renderer,
         const TerrainBody *body = DynamicTerrainGetConst(terrain,
                                                          slot->key.handle);
 
-        if (body == NULL || !slot->hasEmission ||
+        /* Every body, glowing or not: in the emissive plane a body that does
+           not glow is opaque black, and it has to be, or a star behind a slab
+           thrown into space blooms straight through the slab. */
+        if (body == NULL ||
             slot->key.rasterRevision != body->rasterRevision ||
             !TerrainBodyTextureIsValid(slot->emissiveTexture) ||
             !TerrainBodyRenderIntersects(body, visible)) {

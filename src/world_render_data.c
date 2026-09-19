@@ -1,10 +1,10 @@
 /* The bridge from simulation state to dirty pixel regions.
  *
- * This module owns world-specific light sampling and dirty-chunk traversal,
- * then delegates material/temperature conversion to material_render so static
- * pages and detached bodies share one palette path. What it hands the renderer
- * is a plain rectangle of pixels, so the renderer stays free to decide how
- * those pixels reach the GPU.
+ * This module owns dirty-chunk traversal and delegates material/temperature
+ * conversion to material_render so static pages and detached bodies share one
+ * palette path. What it hands the renderer is a plain rectangle of unlit
+ * pixels, so the renderer stays free to decide how those pixels reach the GPU
+ * and how they are lit once there.
  */
 #include "world_render_data.h"
 
@@ -14,40 +14,6 @@
 
 #include "material_render.h"
 #include "world_internal.h"
-#include "world_lighting.h"
-
-/* Takes the light level rather than sampling it: this runs for every cell of
-   every dirty chunk, and doing the bilinear lookup here — with its floor and its
-   clamps — cost more than the rest of drawing put together. The caller walks a
-   chunk in order and can hoist all of that out of the loop. */
-static MaterialRenderSample MaterialPixel(const World *world, const Cell *cell,
-                                          int x, int y, float sky, float red,
-                                          float green, float blue)
-{
-    MaterialRenderSample sample;
-
-    if (cell->material == MATERIAL_EMPTY) {
-        /* Empty space is a depth gradient rather than a flat colour. */
-        unsigned char glow = (unsigned char)(10 + (y * 10) / world->height);
-        /* How much of the procedural environment shows through this air. Sky
-           light rather than depth decides it, so the world closes over the
-           background where the ground actually begins — under an overhang, at
-           the roof of a cavern, a few cells into a bore — instead of at a fixed
-           height that a tall mountain or a deep canyon would contradict. */
-        unsigned char depthAlpha = WorldAirVeilAlpha(sky);
-        Color color =
-            (Color){5, glow, (unsigned char)(18 + glow), depthAlpha};
-
-        color.r = (unsigned char)(red * (float)color.r);
-        color.g = (unsigned char)(green * (float)color.g);
-        color.b = (unsigned char)(blue * (float)color.b);
-        sample.scene = color;
-        sample.emissive = BLANK;
-        return sample;
-    }
-    return MaterialRenderCell((CellMaterial)cell->material, cell->temperature,
-                              x, y, red, green, blue);
-}
 
 void WorldMarkRegionDirty(World *world, Rectangle region)
 {
@@ -118,10 +84,6 @@ void WorldPrepareVisible(World *world, Rectangle visible,
         lastVisibleRow = world->chunkRows - 1;
     }
 
-    /* Light first: the solve is global and can dirty chunks that were only
-       re-lit, so it must finish before any pixel is built. */
-    WorldUpdateLighting(world, visible);
-
     /* Rebuild only the chunks that changed. The simulation sleeps on a settled
        world, and so must the renderer. */
     for (chunkY = firstVisibleRow; chunkY <= lastVisibleRow; ++chunkY) {
@@ -134,10 +96,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             int maximumX;
             int minimumY;
             int maximumY;
-            int columnLow[WORLD_CHUNK_SIZE];
-            int columnHigh[WORLD_CHUNK_SIZE];
-            float columnBlend[WORLD_CHUNK_SIZE];
-            int x;
+            int width;
             int y;
 
             if (world->dirtyChunks[chunkIndex] == 0u) {
@@ -149,66 +108,27 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             maximumY = minimumY + WORLD_CHUNK_SIZE;
             if (maximumX > world->width) maximumX = world->width;
             if (maximumY > world->height) maximumY = world->height;
-
-            /* Bilinear light weights are the same for every row of the chunk,
-               so they are resolved once here instead of per pixel. */
-            for (x = minimumX; x < maximumX; ++x) {
-                WorldLightAxis(world->lightColumns, x, &columnLow[x - minimumX],
-                               &columnHigh[x - minimumX],
-                               &columnBlend[x - minimumX]);
-            }
+            width = maximumX - minimumX;
 
             for (y = minimumY; y < maximumY; ++y) {
-                int rowLow;
-                int rowHigh;
-                float rowBlend;
-                const float *skyLow;
-                const float *skyHigh;
-                const float *emberLow;
-                const float *emberHigh;
+                const Cell *row = WorldCellConst(world, minimumX, y);
+                Color *scene = uploadPixels + (size_t)(y - minimumY) * (size_t)width;
+                Color *emissive =
+                    emissivePixels + (size_t)(y - minimumY) * (size_t)width;
+                MaterialRenderSample air = MaterialRenderAir(y, world->height);
+                int x;
 
-                WorldLightAxis(world->lightRows, y, &rowLow, &rowHigh, &rowBlend);
-                skyLow = world->lightSky +
-                         (size_t)rowLow * (size_t)world->lightColumns;
-                skyHigh = world->lightSky +
-                          (size_t)rowHigh * (size_t)world->lightColumns;
-                emberLow = world->lightEmber +
-                           (size_t)rowLow * (size_t)world->lightColumns;
-                emberHigh = world->lightEmber +
-                            (size_t)rowHigh * (size_t)world->lightColumns;
-
-                for (x = minimumX; x < maximumX; ++x) {
-                    int slot = x - minimumX;
-                    int lowX = columnLow[slot];
-                    int highX = columnHigh[slot];
-                    float blend = columnBlend[slot];
-                    float topSky = skyLow[lowX] +
-                                   (skyLow[highX] - skyLow[lowX]) * blend;
-                    float bottomSky = skyHigh[lowX] +
-                                      (skyHigh[highX] - skyHigh[lowX]) * blend;
-                    float topEmber = emberLow[lowX] +
-                                     (emberLow[highX] - emberLow[lowX]) * blend;
-                    float bottomEmber = emberHigh[lowX] +
-                                        (emberHigh[highX] - emberHigh[lowX]) * blend;
-                    float cellSky = topSky + (bottomSky - topSky) * rowBlend;
-                    float red;
-                    float green;
-                    float blue;
-
-                    WorldLightTint(cellSky,
-                                   topEmber + (bottomEmber - topEmber) * rowBlend,
-                                   &red, &green, &blue);
+                for (x = 0; x < width; ++x) {
+                    const Cell *cell = &row[x];
                     MaterialRenderSample sample =
-                        MaterialPixel(world, WorldCellConst(world, x, y),
-                                      x, y, cellSky, red, green, blue);
+                        cell->material == MATERIAL_EMPTY
+                            ? air
+                            : MaterialRenderCell((CellMaterial)cell->material,
+                                                 cell->temperature,
+                                                 minimumX + x, y);
 
-                    size_t pixelIndex =
-                        (size_t)(y - minimumY) *
-                            (size_t)(maximumX - minimumX) +
-                        (size_t)(x - minimumX);
-
-                    uploadPixels[pixelIndex] = sample.scene;
-                    emissivePixels[pixelIndex] = sample.emissive;
+                    scene[x] = sample.scene;
+                    emissive[x] = sample.emissive;
                 }
             }
             /* At 16384 cells wide, uploading one full-width band for a local
@@ -217,8 +137,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                the chunk that was rebuilt. */
             if (visitor(context,
                         (Rectangle){(float)minimumX, (float)minimumY,
-                                    (float)(maximumX - minimumX),
-                                    (float)(maximumY - minimumY)},
+                                    (float)width, (float)(maximumY - minimumY)},
                         uploadPixels, emissivePixels)) {
                 world->dirtyChunks[chunkIndex] = 0u;
             }

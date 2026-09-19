@@ -177,8 +177,6 @@ bool WorldInit(World *world, int width, int height)
     lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
     world->lightSky = calloc(lightCount, sizeof(*world->lightSky));
     world->lightEmber = calloc(lightCount, sizeof(*world->lightEmber));
-    world->lightShownSky = calloc(lightCount, sizeof(*world->lightShownSky));
-    world->lightShownEmber = calloc(lightCount, sizeof(*world->lightShownEmber));
     world->lightEmission = calloc(lightCount, sizeof(*world->lightEmission));
     world->lightOpacity = calloc(lightCount, sizeof(*world->lightOpacity));
     world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
@@ -206,21 +204,9 @@ bool WorldInit(World *world, int width, int height)
         world->nextRowCount == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
-        world->lightShownSky == NULL || world->lightShownEmber == NULL ||
         world->lightEmission == NULL || world->lightOpacity == NULL) {
         WorldUnload(world);
         return false;
-    }
-
-    /* The shown copies start impossible so the first draw re-lights every
-       chunk. */
-    {
-        size_t lightIndex;
-
-        for (lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
-            world->lightShownSky[lightIndex] = -1.0f;
-            world->lightShownEmber[lightIndex] = -1.0f;
-        }
     }
 
     return true;
@@ -243,8 +229,6 @@ void WorldUnload(World *world)
     free(world->lightDirtyChunks);
     free(world->lightSky);
     free(world->lightEmber);
-    free(world->lightShownSky);
-    free(world->lightShownEmber);
     free(world->lightEmission);
     free(world->lightOpacity);
     memset(world, 0, sizeof(*world));

@@ -304,10 +304,15 @@ simulation digest.
 - `EnvironmentRenderer` — seed-derived фиксированные descriptors sky details,
   far peaks, ruined structures, near spires и haze. Он рисует фон прямо в уже
   существующие scene/emissive targets и не имеет доступа к `GameState`/`World`;
-- `WorldRenderer` — единственный владелец GPU-состояния мира: кэш страниц
-  256×256 cells, по scene и emissive texture на слот, dirty uploads и renderer
-  counters. Резидентны только видимые страницы, поэтому размер мира больше не
-  ограничен `GL_MAX_TEXTURE_SIZE`;
+- `WorldRenderer` — единственный владелец GPU-состояния страниц мира: кэш
+  страниц 256×256 cells, по scene и emissive texture на слот, dirty uploads и
+  renderer counters. Резидентны только видимые страницы, поэтому размер мира
+  больше не ограничен `GL_MAX_TEXTURE_SIZE`;
+- `LightRenderer` — GPU-половина освещения: текстура коарсного светового поля
+  и шейдер `world_light.vs/.fs`, который освещает страницы мира и отделённые
+  тела по мировой позиции фрагмента. Страницы неосвещённые, поэтому лампа и
+  время суток не перестраивают chunks. Без шейдера мир рисуется плоско и
+  неосвещённо;
 - `player_renderer` — процедурную модель героя и speed/impact effects;
 - `ability_renderer` — непрерывные beams, force cone и прицел;
 - `particle_renderer` — чтение фиксированного particle pool.
@@ -325,9 +330,9 @@ faces попадают в mask. Visitor
 возвращает `bool`: chunk, который renderer не смог разместить (его страница не
 резидентна), сохраняет dirty flag и перестраивается позже, а не теряется.
 GPU calls, `Draw*` и texture lifecycle в `World` отсутствуют. Persistent
-full-world `Color` buffer удалён. Pixels `MATERIAL_EMPTY` сохраняют прежний
-depth tint, но с alpha 150..220 по глубине: environment виден через воздух, а
-глубокие cave не становятся плоско яркими.
+full-world `Color` buffer удалён. Pixels `MATERIAL_EMPTY` несут depth tint и
+маркер воздуха (`MATERIAL_RENDER_AIR_ALPHA`), а их фактическую прозрачность —
+окно в фон над землёй, стена под ней — вычисляет шейдер из светового поля.
 
 `EnvironmentRenderer` принадлежит `Renderer` и синхронизирует только числовой
 world seed. Одинаковый seed даёт одинаковые descriptors и palette; CLI/debug
@@ -338,8 +343,10 @@ columns и окна повторяются в explicit emissive target; brightne
 новый pass не добавляются. Подробнее — [представление мира](world-presentation.md).
 
 `TerrainBodyRenderer` использует ту же `MaterialRenderCell`, что и world pages,
-но не получает `World`: moving body пока освещается постоянным neutral ambient,
-а material emission и heat формируют explicit emissive texture. Каждый cache
+и по-прежнему не получает `World`: тело рисуется под шейдером `LightRenderer`
+и освещается по тому месту мира, где оно находится, — плита, унесённая в
+пещеру, темнеет в ней; material emission и heat формируют explicit emissive
+texture, а негорящие клетки в ней непрозрачно чёрные. Каждый cache
 slot соответствует simulation slot и проверяет и generation handle, и
 `rasterRevision`, поэтому reuse не показывает старую texture, а изменение
 материала/температуры делает два `UpdateTexture` без пересоздания GPU objects.

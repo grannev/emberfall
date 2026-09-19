@@ -284,11 +284,14 @@ loop.
 
 Цвет строит общая `MaterialRenderCell`, которой пользуются и static world
 pages. Variation привязана к `sourceX/sourceY`, поэтому рисунок материала не
-перепрыгивает при движении. Moving body пока не читает world lighting grid и
-получает стабильный neutral ambient multiplier; это намеренная approximation,
-сохраняющая одностороннюю зависимость. `MaterialInfo.emission` и heat уже
-формируют вторую texture, поэтому горячий rock, lava/fire внутри смешанного
-body и будущие emissive solids входят в тот же bloom, что static terrain.
+перепрыгивает при движении. Пиксели тела неосвещённые, как и у страниц: тело
+рисуется под шейдером `LightRenderer` и получает свет того места мира, где
+находится, — при этом сам renderer тел по-прежнему не получает `World`, потому
+что свет он берёт из текстуры, а не из симуляции. `MaterialInfo.emission` и
+heat формируют вторую texture, поэтому горячий rock, lava/fire внутри
+смешанного body и будущие emissive solids входят в тот же bloom, что static
+terrain; негорящие клетки в ней непрозрачно чёрные и перекрывают свечение
+позади тела.
 
 Draw использует simulation transform без повторного вывода:
 

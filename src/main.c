@@ -135,13 +135,16 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (unsigned int)events->count,
                         (unsigned int)events->dropped),
              24, 135, 14, (Color){150, 205, 178, 255});
-    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u"
-,
+    DrawText(TextFormat("RENDER: %u UPLOADS  %.1f KiB  %.2f ms | PAGES: %u/%u +%u "
+                        "| LIGHT: %s %.2f ms %u UP",
                         renderStats->textureUploads,
                         (double)renderStats->uploadedBytes / 1024.0,
                         renderStats->preparationMilliseconds,
                         renderStats->visiblePages, renderStats->residentPages,
-                        renderStats->pageBinds),
+                        renderStats->pageBinds,
+                        frameStats->lightingEnabled ? "GPU" : "OFF",
+                        frameStats->lightMilliseconds,
+                        frameStats->lightUploads),
              24, 153, 14, (Color){166, 183, 223, 255});
     DrawText(TextFormat("POST: %s %dx%d | %u PASSES %u TARGETS | %.2f ms",
                         frameStats->bloomEnabled ? "BLOOM" : "SHARP",
@@ -1124,7 +1127,14 @@ int main(int argc, char **argv)
     Vector2 smokeGroundVelocity = {0.0f, 0.0f};
     double smokePrepareTotal = 0.0;
     double smokePrepareMaximum = 0.0;
+    double smokeLightTotal = 0.0;
+    double smokeLightMaximum = 0.0;
     int smokePrepareFrames = 0;
+    /* The busiest the scheduler got. Checked instead of the count at the end
+       of the run, because a world that has been left alone is supposed to have
+       gone entirely to sleep by then. */
+    int smokeMostActiveChunks = 0;
+    bool smokeLightingObserved = false;
     int smokeBloomFrames = 0;
     int exitCode = 0;
 
@@ -1418,6 +1428,9 @@ int main(int argc, char **argv)
         }
 
         GameUpdate(&game, &input.game, deltaTime, &events);
+        if (game.world.activeChunkCount > smokeMostActiveChunks) {
+            smokeMostActiveChunks = game.world.activeChunkCount;
+        }
         if (input.game.regeneratePressed) {
             cameraFocus = game.player.position;
             CameraFeedbackClear(&cameraFeedback);
@@ -1679,9 +1692,15 @@ int main(int argc, char **argv)
                     smokePrepareTotal += worldStats->preparationMilliseconds;
                     smokePrepareMaximum = fmax(smokePrepareMaximum,
                                                worldStats->preparationMilliseconds);
+                    smokeLightTotal += frameStats->lightMilliseconds;
+                    smokeLightMaximum = fmax(smokeLightMaximum,
+                                             frameStats->lightMilliseconds);
                     ++smokePrepareFrames;
                 }
             }
+            smokeLightingObserved = smokeLightingObserved ||
+                                    (frameStats->lightingEnabled &&
+                                     frameStats->lightUploads > 0u);
             smokeResizeObserved = smokeResizeObserved ||
                                   (frameStats->targetWidth == WINDOW_WIDTH - 320 &&
                                    frameStats->targetHeight == WINDOW_HEIGHT - 180);
@@ -1762,6 +1781,7 @@ int main(int argc, char **argv)
         printf("Smoke render: bloom=%dx%d passes=%u targets=%u "
                "submit_avg=%.3fms submit_max=%.3fms "
                "prepare_avg=%.3fms prepare_max=%.3fms "
+               "light_avg=%.3fms light_max=%.3fms light_uploads=%u "
                "resize=%d restored=%d bloom_resize=%d bloom_restored=%d "
                "target_sync=%d fx_peak=%u fx_dropped=%u "
                "body_draws=%u body_updates=%u body_kib=%.1f "
@@ -1786,7 +1806,12 @@ int main(int argc, char **argv)
                smokePrepareFrames > 0
                    ? smokePrepareTotal / (double)smokePrepareFrames
                    : 0.0,
-               smokePrepareMaximum, smokeResizeObserved,
+               smokePrepareMaximum,
+               smokePrepareFrames > 0
+                   ? smokeLightTotal / (double)smokePrepareFrames
+                   : 0.0,
+               smokeLightMaximum, frameStats->lightUploads,
+               smokeResizeObserved,
                smokeResizeRestored, smokeBloomResized, smokeBloomRestored,
                smokeTargetsSynchronized, (unsigned int)frameStats->peakFx,
                (unsigned int)frameStats->droppedFx,
@@ -1868,8 +1893,9 @@ int main(int argc, char **argv)
                          never changes must not be re-uploaded per frame. */
                       smokeTerrainTextureUpdates !=
                           2u * (1u + (unsigned int)smokeRenderDetaches) ||
-                      game.world.activeChunkCount <= 0 ||
-                      game.world.activeChunkCount >=
+                      !smokeLightingObserved ||
+                      smokeMostActiveChunks <= 0 ||
+                      smokeMostActiveChunks >=
                           game.world.chunkColumns * game.world.chunkRows)) {
         fprintf(stderr,
                 "Smoke test failed: reaction=%d laser=%d explosion=%d force=%d "
@@ -1883,7 +1909,7 @@ int main(int argc, char **argv)
                 "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
                 "move=cruise%.0f/boost%.0f/peak%.0f/drill%.0f->%.0f/turn%.0f/"
                 "drilled%d/rev%d/stop%d "
-                "updates=%u chunks=%d/%d\n",
+                "updates=%u lighting=%d chunks=%d(peak)/%d\n",
                 smokeReactionObserved, smokeLaserHitObserved,
                 smokeExplosionObserved, smokeForceObserved,
                 smokeCryoObserved, smokeBoostObserved,
@@ -1909,8 +1935,8 @@ int main(int argc, char **argv)
                 (double)movement.peakSpeed, (double)movement.drillEntrySpeed,
                 (double)movement.drillLowSpeed, (double)movement.turnLateral,
                 movement.drilled, movement.reversed, movement.stopped,
-                smokeTerrainTextureUpdates,
-                game.world.activeChunkCount,
+                smokeTerrainTextureUpdates, smokeLightingObserved,
+                smokeMostActiveChunks,
                 game.world.chunkColumns * game.world.chunkRows);
         exitCode = 2;
     }

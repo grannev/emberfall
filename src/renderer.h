@@ -9,6 +9,7 @@
 #include "environment_renderer.h"
 #include "sky_renderer.h"
 #include "game.h"
+#include "light_renderer.h"
 #include "presentation_fx.h"
 #include "terrain_body_renderer.h"
 #include "world_renderer.h"
@@ -38,10 +39,17 @@ typedef struct RendererFrameStats {
     uint16_t skyStars;
     bool skySpaceVisible;
     bool bloomEnabled;
+    bool lightingEnabled;
+    uint32_t lightUploads;
+    uint64_t lightUploadedBytes;
+    /* CPU time of the light solve and its upload, which is the other half of
+       what the world costs to keep on screen. */
+    double lightMilliseconds;
 } RendererFrameStats;
 
 typedef struct Renderer {
     WorldRenderer world;
+    LightRenderer light;
     EnvironmentRenderer environment;
     SkyRenderer sky;
     PresentationFxSystem effects;

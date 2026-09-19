@@ -314,6 +314,7 @@ bool RendererInit(Renderer *renderer, const GameState *game,
     TerrainBodyRendererInit(&renderer->terrainBodies);
     (void)RendererLoadBloomShaders(renderer);
     if (!WorldRendererInit(&renderer->world, &game->world) ||
+        !LightRendererInit(&renderer->light, &game->world) ||
         !RendererEnsureTargets(renderer, GetScreenWidth(), GetScreenHeight())) {
         RendererUnload(renderer);
         return false;
@@ -378,6 +379,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     const PresentationFxStats *fxStats;
     const TerrainBodyRendererStats *terrainStats;
     const EnvironmentRendererStats *environmentStats;
+    const LightRendererStats *lightStats;
 
     if (renderer == NULL || game == NULL) {
         return;
@@ -429,6 +431,12 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         &renderer->environment,
         WorldAirFractionAt(&game->world, game->player.position.y));
 
+    /* The world's CPU work for the frame, before any target is bound: pages
+       for what the camera sees, the light solved and uploaded for the same
+       region. Neither draws anything. */
+    WorldRendererPrepare(&renderer->world, &game->world, visible);
+    LightRendererSync(&renderer->light, &game->world, visible);
+
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
     EnvironmentRendererDrawScene(&renderer->environment, presentationCamera,
@@ -441,13 +449,17 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         SkyRendererDraw(&renderer->sky, visible, game->world.height,
                         GameDaylightAt(game->dayPhase),
                         renderer->presentationTime);
-        WorldRendererDraw(&renderer->world, &game->world, visible);
         renderer->lastFrame.skyClouds = SkyRendererStatistics(&renderer->sky)->cloudsDrawn;
         renderer->lastFrame.skyStars = SkyRendererStatistics(&renderer->sky)->starsDrawn;
         renderer->lastFrame.skySpaceVisible =
             SkyRendererStatistics(&renderer->sky)->spaceVisible;
-        TerrainBodyRendererDrawScene(&renderer->terrainBodies,
-                                     &game->dynamicTerrain, visible);
+        /* The world and whatever was torn out of it, lit by the same field:
+           a slab is as dark as the cave it is carried into. */
+        LightRendererBegin(&renderer->light, &game->world, LIGHT_PASS_SCENE);
+            WorldRendererDrawScene(&renderer->world, &game->world, visible);
+            TerrainBodyRendererDrawScene(&renderer->terrainBodies,
+                                         &game->dynamicTerrain, visible);
+        LightRendererEnd(&renderer->light);
         DrawRectangleLines(0, 0, game->world.width, game->world.height,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
@@ -481,9 +493,16 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             SkyRendererDrawEmissive(&renderer->sky, visible, game->world.height,
                                     GameDaylightAt(game->dayPhase),
                                     renderer->presentationTime);
-            WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
-            TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
-                                            &game->dynamicTerrain, visible);
+            /* Occluders first. The world and the bodies are opaque black
+               wherever they do not glow, and the character draws its own
+               silhouette, so nothing behind any of them can bloom through. */
+            LightRendererBegin(&renderer->light, &game->world,
+                               LIGHT_PASS_EMISSIVE);
+                WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
+                TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
+                                                &game->dynamicTerrain, visible);
+            LightRendererEnd(&renderer->light);
+            PlayerRendererDrawSilhouette(&game->player, aimPosition);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
             AbilityRendererDrawEmissive(&game->abilities, &game->player,
@@ -508,6 +527,11 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     renderer->lastFrame.terrainBodyTextureUpdates = terrainStats->textureUpdates;
     renderer->lastFrame.terrainBodyTextureMemoryBytes =
         terrainStats->textureMemoryBytes;
+    lightStats = LightRendererStatistics(&renderer->light);
+    renderer->lastFrame.lightingEnabled = lightStats->enabled;
+    renderer->lastFrame.lightUploads = lightStats->uploads;
+    renderer->lastFrame.lightUploadedBytes = lightStats->uploadedBytes;
+    renderer->lastFrame.lightMilliseconds = lightStats->syncMilliseconds;
     environmentStats =
         EnvironmentRendererStatistics(&renderer->environment);
     renderer->lastFrame.environmentSceneDrawCalls =
@@ -560,6 +584,7 @@ void RendererUnload(Renderer *renderer)
     RendererUnloadShader(&renderer->bloomDownsampleShader);
     RendererUnloadShader(&renderer->bloomBlurShader);
     TerrainBodyRendererUnload(&renderer->terrainBodies);
+    LightRendererUnload(&renderer->light);
     WorldRendererUnload(&renderer->world);
     *renderer = (Renderer){0};
 }

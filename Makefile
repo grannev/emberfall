@@ -8,7 +8,7 @@ WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
 	src/world_components.c
 SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
-	src/renderer.c src/environment_renderer.c src/world_renderer.c \
+	src/renderer.c src/environment_renderer.c src/world_renderer.c src/light_renderer.c \
 	src/presentation_fx.c src/camera_feedback.c \
 	src/presentation_fx_renderer.c src/beam_render.c src/sky_renderer.c src/terrain_grab_renderer.c \
 	src/terrain_body_render_data.c \

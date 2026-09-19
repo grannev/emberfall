@@ -15,6 +15,14 @@
  * by whatever it passes through. Two sweeps are not an exact flood fill around
  * a hairpin corridor, but they are stable, allocation-free, and close enough
  * that the error is invisible at four cells per sample.
+ *
+ * The field is consumed on the GPU: the renderer uploads the solved window
+ * into a small texture and a shader lights every world pixel from it. That is
+ * why the sky channel is the fraction of *full* daylight reaching a sample and
+ * not the daylight itself — the time of day is a shader uniform, and a sunset
+ * costs no solve and no upload at all. Everything below that turns light into
+ * a colour (the tint, the air veil) is therefore mirrored in
+ * assets/shaders/world_light.fs, and the two must be changed together.
  */
 
 #include <math.h>
@@ -44,11 +52,10 @@
    between a sunlit surface and a black interior is a few body lengths deep
    instead of most of the way to the bottom of the world. */
 #define WORLD_LIGHT_SOLID_TRANSMISSION 0.66f
-/* The solved light is quantised to this many steps. A pixel channel is one byte,
-   so a finer change cannot alter the image; quantising lets the renderer compare
-   light exactly instead of against a tolerance. A tolerance drifts: a sample
-   that moves less than it each frame is never rebuilt, and the texture wanders
-   arbitrarily far from the light it should be showing. */
+/* The daylight is quantised to this many steps before it reaches the shader:
+   a pixel channel is one byte, so a finer change cannot alter the image, and
+   quantising is what keeps a slowly turning day from being a new value every
+   frame. */
 #define WORLD_LIGHT_STEPS 512.0f
 /* Temperature at which material starts to glow on its own, and the span over
    which that glow reaches full strength. */
@@ -58,35 +65,20 @@
 /* Light outside the visible region is still solved, but only out to this many
    light cells beyond it. Open air transmits 0.97 per light cell, so a source
    this far outside the window arrives at the visible edge at 0.97^128 = 2% of
-   its strength — below what a byte-per-channel image can show and below the
-   quantisation step the renderer compares against. Sky light is unaffected by
-   the window at all: it is filled per column from the top, and a column is
-   solved independently of its neighbours. */
+   its strength — below what a byte-per-channel image can show. Sky light is
+   unaffected by the window at all: it is filled per column from the top, and a
+   column is solved independently of its neighbours. */
 #define WORLD_LIGHT_WINDOW_MARGIN 128
 
 /* Refreshes the light inputs of every dirty chunk and re-solves the field when
-   something that can change it has moved. Dirties any chunk whose light changed
-   even though its cells did not, so the incremental renderer never shows a
-   shaft that has been carved but not lit.
+   something that can change it has moved: the terrain under a refreshed block,
+   the caller's lamp, or the window itself. Bumps `World.lightRevision` on
+   every solve, which is how the renderer knows the texture it holds is stale.
 
    `visible` is the region that must be correct, in cells. Solving the whole
    16384-wide field cost 10 ms every time the player's own lamp moved far enough
    to matter, which at flying speed is every single frame. */
 void WorldUpdateLighting(World *world, Rectangle visible);
-
-/* Resolves one axis of the bilinear sample: the two light rows or columns a cell
-   falls between, and how far it sits between them. */
-static inline void WorldLightAxis(int samples, int coordinate, int *low, int *high,
-                                  float *blend)
-{
-    float position = ((float)coordinate + 0.5f) / (float)WORLD_LIGHT_SCALE - 0.5f;
-    int floored = (int)floorf(position);
-
-    *blend = position - (float)floored;
-    *low = floored < 0 ? 0 : (floored > samples - 1 ? samples - 1 : floored);
-    *high = floored + 1 < 0 ? 0
-                            : (floored + 1 > samples - 1 ? samples - 1 : floored + 1);
-}
 
 /* How opaque the air itself is drawn, from the sky light reaching it.
  *
@@ -107,7 +99,10 @@ static inline void WorldLightAxis(int samples, int coordinate, int *low, int *hi
  * backdrop its whole purpose: a noon sky with a painted horizon behind it,
  * clouds drifting through it and space above them was drawn under a dark
  * rectangle, and every biome read as dusk. The floor was what the surface line
- * needed, not what open air needs, so the closing lives in the curve instead. */
+ * needed, not what open air needs, so the closing lives in the curve instead.
+ *
+ * The shader is what draws it; this is the reference the shader and the tests
+ * share. `sky` is the daylight-scaled sky light. */
 
 /* Sky light at and above which air is a window, and at and below which it is
    ground. The band between them is the surface line; it is narrow because the
@@ -115,6 +110,8 @@ static inline void WorldLightAxis(int samples, int coordinate, int *low, int *hi
    cave mouths. */
 #define WORLD_AIR_VEIL_OPEN 0.85f
 #define WORLD_AIR_VEIL_SEALED 0.35f
+#define WORLD_AIR_VEIL_MINIMUM_ALPHA 18.0f
+#define WORLD_AIR_VEIL_ALPHA_SPAN 237.0f
 
 static inline unsigned char WorldAirVeilAlpha(float sky)
 {
@@ -128,13 +125,18 @@ static inline unsigned char WorldAirVeilAlpha(float sky)
     /* Smoothed rather than linear, so neither end of the band is a visible
        crease across the ground. */
     shaped = closing * closing * (3.0f - 2.0f * closing);
-    return (unsigned char)(18.0f + 237.0f * shaped);
+    return (unsigned char)(WORLD_AIR_VEIL_MINIMUM_ALPHA +
+                           WORLD_AIR_VEIL_ALPHA_SPAN * shaped);
 }
 
 /* Turns the two light channels into a multiplier per colour channel. Light that
    is mostly ember rather than sky is warmed, so a lava cavern glows orange
-   instead of merely being less dark. Inline because the renderer calls it once
-   per cell of every rebuilt chunk. */
+   instead of merely being less dark. The shader draws it; this is the reference
+   the tests check the shader's constants against. `sky` is daylight-scaled. */
+#define WORLD_LIGHT_WARMTH_RED 0.42f
+#define WORLD_LIGHT_WARMTH_GREEN 0.06f
+#define WORLD_LIGHT_WARMTH_BLUE 0.44f
+
 static inline void WorldLightTint(float sky, float ember, float *red, float *green,
                                   float *blue)
 {
@@ -142,11 +144,20 @@ static inline void WorldLightTint(float sky, float ember, float *red, float *gre
     float level = WORLD_MINIMUM_LIGHT + (1.0f - WORLD_MINIMUM_LIGHT) * brightest;
     float warmth = ember > sky ? ember - sky : 0.0f;
 
-    /* Plain comparisons rather than fmaxf: this runs for every cell of every
-       dirty chunk, and a libm call per pixel is not free at that rate. */
-    *red = level * (1.0f + 0.42f * warmth);
-    *green = level * (1.0f - 0.06f * warmth);
-    *blue = level * (1.0f - 0.44f * warmth);
+    *red = level * (1.0f + WORLD_LIGHT_WARMTH_RED * warmth);
+    *green = level * (1.0f - WORLD_LIGHT_WARMTH_GREEN * warmth);
+    *blue = level * (1.0f - WORLD_LIGHT_WARMTH_BLUE * warmth);
+}
+
+/* The daylight as the shader receives it: quantised, so that a day that turns
+   a little every tick is not a new uniform every frame. */
+static inline float WorldShownDaylight(const World *world)
+{
+    float daylight = world->daylight < 0.0f ? 0.0f
+                                            : (world->daylight > 1.0f ? 1.0f
+                                                                      : world->daylight);
+
+    return floorf(daylight * WORLD_LIGHT_STEPS) / WORLD_LIGHT_STEPS;
 }
 
 #endif
