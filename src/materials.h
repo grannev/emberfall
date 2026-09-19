@@ -45,6 +45,10 @@ typedef struct MaterialInfo {
     MaterialPhase onCool;
     bool dynamic;
     bool solid;
+    /* Flows and seeks a level, as opposed to piling up or rising. What the
+       motion rules ask when they need to know whether a cell is pressing on
+       the one below it. */
+    bool liquid;
     /* Grows on the ground rather than being it. Solid — a canopy can be stood
        on and a trunk can be cut — but never the answer to "where is the
        surface here": a tree is not a cliff, and code that measures terrain has
@@ -96,6 +100,11 @@ static inline bool MaterialIsDynamic(CellMaterial material)
 static inline bool MaterialIsSolid(CellMaterial material)
 {
     return MaterialAt(material)->solid;
+}
+
+static inline bool MaterialIsLiquid(CellMaterial material)
+{
+    return MaterialAt(material)->liquid;
 }
 
 static inline float MaterialInitialTemperature(CellMaterial material)

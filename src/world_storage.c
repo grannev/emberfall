@@ -116,6 +116,7 @@ void WorldSetGeneratedCell(World *world, int x, int y,
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
     cell->effectStamp = 0;
+    cell->heatHeld = 0;
 }
 
 void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
@@ -131,6 +132,7 @@ void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
     cell->effectStamp = 0;
+    cell->heatHeld = 0;
     WorldWakeCellAndNeighbors(world, x, y);
 }
 

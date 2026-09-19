@@ -71,12 +71,30 @@ typedef struct Cell {
     uint16_t updatedTick;
     uint16_t effectStamp;
     /* Age of the temporary materials: fire, smoke and steam. The longest life
-       any of them has is 420 ticks. */
+       any of them has is 420 ticks. Liquids, which have no age, use it to
+       count how long a surface grain has been wandering without finding
+       anywhere to fall. */
     uint16_t lifetime;
     /* MATERIAL_COUNT is deliberately kept below 256. Storing the enum as an
        int wasted four bytes in every cell; on the 16384-wide world that was
        about 54 MiB for no gameplay value. */
     uint8_t material;
+    /* Ticks for which a capped heat source — lava — is holding this cell.
+       The source sets it on every neighbour it touches; the neighbour's own
+       thermal step counts it down and skips its cooling while it lasts. This
+       is what lets a lava lake's rock lining come to rest: without it the
+       lining was heated three degrees and cooled four in alternate steps
+       forever, a sawtooth that kept every chunk around every lava pocket on
+       the map awake for the whole session. Held at the cap, the lining's
+       temperature stops changing, and a cell whose temperature does not
+       change is a cell that lets its chunk sleep.
+
+       Two ticks rather than one because the traversal direction alternates:
+       a cell beside its source in the same row is visited before the source
+       on one tick and after it on the next, so a one-tick flag was consumed
+       twice in a row and the cell cooled in the gap. Lives in what was the
+       struct's padding byte, so it costs nothing. */
+    uint8_t heatHeld;
 } Cell;
 
 _Static_assert(MATERIAL_COUNT <= UINT8_MAX, "Cell.material no longer fits in uint8_t");

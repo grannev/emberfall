@@ -56,7 +56,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
         .onHeat = {true, MATERIAL_STEAM, 108.0f},
         .onCool = {true, MATERIAL_ICE, -4.0f},
-        .dynamic = true,
+        .dynamic = true, .liquid = true,
         .chillRate = 90.0f,
         .density = 1.0f,
     },
@@ -68,7 +68,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
                 /* Lava will not cool this far on its own — it relaxes back toward 900 —
            so this threshold only ever fires under the cryo beam. */
         .onCool = {true, MATERIAL_ROCK, 620.0f},
-        .dynamic = true,
+        .dynamic = true, .liquid = true,
         .emission = 1.0f,
         /* Lava is pulled back toward 900C at 8% of the gap every tick, which at
            the 620C freezing point is 22 degrees a tick on its own. A beam that

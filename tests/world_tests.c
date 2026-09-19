@@ -9909,6 +9909,95 @@ static void test_a_lava_pocket_cannot_consume_its_rock_lining(void)
     WorldUnload(&world);
 }
 
+/* A lava lake that nothing disturbs is not work. Its lining is held hot at
+   the passive cap and stays there, and once nothing in the pocket's chunks is
+   changing they go to sleep. They did not use to: the lining was heated three
+   degrees and cooled four in alternate steps forever, and every lava pocket
+   the player had ever flown past stayed awake for the rest of the session. */
+static void test_a_settled_lava_pocket_lets_its_chunks_sleep(void)
+{
+    World world;
+    float lining;
+
+    CHECK(WorldInit(&world, 128, 128), "world allocation failed");
+    FillRect(&world, 0, 0, 127, 127, MATERIAL_ROCK);
+    FillRect(&world, 40, 50, 79, 69, MATERIAL_LAVA);
+    Tick(&world, 1200);
+
+    CHECK(world.activeChunkCount == 0,
+          "a settled lava pocket kept %d chunks awake", world.activeChunkCount);
+    /* Sleeping must not mean cold: the lining is what makes the pocket glow,
+       and a rim that had cooled to ambient would read as a hole in the light. */
+    lining = WorldGetTemperature(&world, 39, 60);
+    CHECK(lining >= 600.0f && lining < 720.0f,
+          "the lining rests at %.1fC instead of near the passive cap", lining);
+    CHECK(WorldGetCell(&world, 39, 60) == MATERIAL_ROCK, "the lining melted");
+
+    /* And waking it back up is an ordinary disturbance away. */
+    WorldSetCell(&world, 60, 49, MATERIAL_WATER);
+    WorldUpdate(&world);
+    CHECK(world.activeChunkCount > 0, "water dropped on lava woke nothing");
+    WorldUnload(&world);
+}
+
+/* The other permanent motion: a shoreline. The top cell of a pool sitting
+   against a slope used to slide one cell onto the bank and back every tick,
+   and a single grain standing proud of a level surface skated across it for
+   ever. Both looked like nothing and each kept a neighbourhood of chunks awake
+   for the whole session. */
+static void test_a_level_pool_and_its_shore_go_to_sleep(void)
+{
+    World world;
+    const int floorY = 100;
+    int waterBefore;
+    int x;
+    int surfaceLow = 0;
+    int surfaceHigh = 1 << 30;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    FillRect(&world, 0, floorY, 159, 127, MATERIAL_ROCK);
+    /* A bank climbing one cell per column out of the pool on the left, and a
+       sheer wall on the right. */
+    for (x = 0; x < 40; ++x) {
+        FillRect(&world, x, floorY - (40 - x), x, floorY - 1, MATERIAL_ROCK);
+    }
+    FillRect(&world, 150, 0, 159, floorY - 1, MATERIAL_ROCK);
+    /* A level pool up to the bank, plus one grain standing proud of it. */
+    FillRect(&world, 20, floorY - 20, 149, floorY - 1, MATERIAL_WATER);
+    FillRect(&world, 20, floorY - 21, 20, floorY - 21, MATERIAL_EMPTY);
+    WorldSetCell(&world, 90, floorY - 21, MATERIAL_WATER);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+
+    Tick(&world, 600);
+
+    CHECK(world.activeChunkCount == 0,
+          "a level pool kept %d chunks awake", world.activeChunkCount);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    for (x = 45; x < 150; ++x) {
+        int y;
+
+        for (y = 0; y < floorY; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                if (y > surfaceLow) surfaceLow = y;
+                if (y < surfaceHigh) surfaceHigh = y;
+                break;
+            }
+        }
+    }
+    CHECK(surfaceLow - surfaceHigh <= 1,
+          "the surface runs from row %d to row %d", surfaceHigh, surfaceLow);
+
+    /* Sleeping water is still water: open a drain and it must go. */
+    FillRect(&world, 100, floorY, 104, 127, MATERIAL_EMPTY);
+    Tick(&world, 30);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) < waterBefore ||
+              WorldGetCell(&world, 102, floorY + 5) == MATERIAL_WATER,
+          "a drain opened under sleeping water drained nothing");
+    WorldUnload(&world);
+}
+
 static void test_lava_still_ignites_dirt_it_touches(void)
 {
     World world;
@@ -11149,6 +11238,8 @@ int main(void)
     RUN(test_water_and_lava_react_into_steam_and_rock);
     RUN(test_one_fire_cell_cannot_consume_a_whole_dirt_field);
     RUN(test_a_lava_pocket_cannot_consume_its_rock_lining);
+    RUN(test_a_settled_lava_pocket_lets_its_chunks_sleep);
+    RUN(test_a_level_pool_and_its_shore_go_to_sleep);
     RUN(test_lava_still_ignites_dirt_it_touches);
     RUN(test_settled_cells_sleep_but_wake_when_disturbed);
     RUN(test_drill_removes_solids_and_leaves_liquids);

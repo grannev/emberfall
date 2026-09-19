@@ -56,8 +56,8 @@ static void WorldUpdateSand(World *world, int x, int y, int direction)
     (void)WorldTryMoveInto(world, x, y, x - direction, y + 1, true);
 }
 
-/* One sideways run, up to `reach` cells, ending at the furthest clear cell or at
-   the first one with a drop under it.
+/* One sideways run, up to `reach` cells, ending at the first cell with a drop
+   under it or, when the cell is under pressure, at the furthest clear cell.
 
    A liquid that may only step one cell a tick does not level. A pool a hundred
    cells wide needs a hundred ticks to carry one cell of displacement from one
@@ -67,11 +67,31 @@ static void WorldUpdateSand(World *world, int x, int y, int direction)
 
    The run stops at a hole rather than passing over it: falling beats spreading,
    and a cell that skipped a gap would drain a pool from its middle instead of
-   from its edge. */
+   from its edge.
+
+   A surface cell — one with no liquid above it — is different. It always takes
+   a drop, and it may slide along the top of other liquid a bounded number of
+   times, which is how a grain left standing proud of a surface wanders until
+   it finds somewhere lower to fall; that wander is what takes the last cell of
+   slope out of a pool. What it never does is slide onto ground at its own
+   height, and it does not wander forever. Both used to happen: every shoreline
+   on the map sloshed one cell back and forth for the whole session, and a lake
+   with a single grain sitting proud of a perfectly level surface skated that
+   grain across the pool until the world was unloaded. Each kept its chunks
+   awake for as long as the world existed. A cell with liquid on top of it is
+   under pressure and spreads as before: that is what flattens a poured column
+   and fills a tub.
+
+   The wander budget lives in `lifetime`, which liquids never use as an age: a
+   wander counts, anything that is progress — a drop, a fall, a pressed spread —
+   resets it, and the counter travels with the cell because WorldMoveCell swaps
+   whole cells. */
 static bool WorldFlowSideways(World *world, int x, int y, int direction,
-                              int reach)
+                              int reach, bool pressed)
 {
+    Cell *cell = WorldCell(world, x, y);
     int furthest = 0;
+    bool drop = false;
     int step;
 
     for (step = 1; step <= reach; ++step) {
@@ -82,35 +102,61 @@ static bool WorldFlowSideways(World *world, int x, int y, int direction,
         furthest = step;
         if (WorldInBounds(world, probeX, y + 1) &&
             WorldMaterialAt(world, probeX, y + 1) == MATERIAL_EMPTY) {
+            drop = true;
             break;
         }
     }
     if (furthest == 0) {
         return false;
     }
+    if (drop || pressed) {
+        cell->lifetime = 0;
+    } else {
+        if (cell->lifetime >= WORLD_LIQUID_WANDER_LIMIT ||
+            !MaterialIsLiquid(WorldMaterialAt(world, x + direction * furthest,
+                                              y + 1))) {
+            return false;
+        }
+        ++cell->lifetime;
+    }
     return WorldTryMoveInto(world, x, y, x + direction * furthest, y, false);
+}
+
+static bool WorldLiquidFalls(World *world, int x, int y, int direction)
+{
+    static const int sideways[3] = {0, 1, -1};
+    int attempt;
+
+    for (attempt = 0; attempt < 3; ++attempt) {
+        int targetX = x + sideways[attempt] * direction;
+
+        if (WorldTryMoveInto(world, x, y, targetX, y + 1, false)) {
+            /* Falling is progress: the cell may wander again from wherever it
+               lands. It has moved, so it is addressed at its new home. */
+            WorldCell(world, targetX, y + 1)->lifetime = 0;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void WorldUpdateLiquid(World *world, int x, int y, int direction,
                               int reach, bool viscous)
 {
+    bool pressed;
+
     if (viscous && ((world->tick + (uint32_t)x + (uint32_t)y) % 3u != 0u)) {
         return;
     }
 
-    if (WorldTryMoveInto(world, x, y, x, y + 1, false)) {
+    if (WorldLiquidFalls(world, x, y, direction)) {
         return;
     }
-    if (WorldTryMoveInto(world, x, y, x + direction, y + 1, false)) {
+    pressed = MaterialIsLiquid(WorldMaterialAt(world, x, y - 1));
+    if (WorldFlowSideways(world, x, y, direction, reach, pressed)) {
         return;
     }
-    if (WorldTryMoveInto(world, x, y, x - direction, y + 1, false)) {
-        return;
-    }
-    if (WorldFlowSideways(world, x, y, direction, reach)) {
-        return;
-    }
-    (void)WorldFlowSideways(world, x, y, -direction, reach);
+    (void)WorldFlowSideways(world, x, y, -direction, reach, pressed);
 }
 
 static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool slow)

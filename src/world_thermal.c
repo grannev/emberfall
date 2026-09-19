@@ -27,13 +27,26 @@ void WorldHeatNeighbors(World *world, int x, int y, float heat, float cap)
             WorldMaterialAt(world, targetX, targetY) != MATERIAL_EMPTY) {
             Cell *target = WorldCell(world, targetX, targetY);
 
-            /* Once a neighbour has saturated, more heat can neither change it
-               nor ever push it over a threshold. Skipping it lets a settled
-               lava lake stop waking its surroundings every single tick. */
-            if (cap > 0.0f && target->temperature >= cap) {
-                continue;
+            if (cap > 0.0f) {
+                /* A capped source holds what it touches rather than merely
+                   heating it: the neighbour's own cooling is suspended for
+                   this tick, so a cell that has reached the cap stays there
+                   instead of sliding off it and being pushed back every tick.
+                   See Cell.heatHeld. */
+                target->heatHeld = WORLD_HEAT_HOLD_TICKS;
+                /* Once a neighbour has saturated, more heat can neither change
+                   it nor ever push it over a threshold. Skipping it is what
+                   lets a settled lava lake stop waking its surroundings. */
+                if (target->temperature >= cap) {
+                    continue;
+                }
+                target->temperature += heat;
+                if (target->temperature > cap) {
+                    target->temperature = cap;
+                }
+            } else {
+                target->temperature += heat;
             }
-            target->temperature += heat;
             WorldWakeCellAndNeighbors(world, targetX, targetY);
         }
     }
@@ -85,9 +98,24 @@ bool WorldUpdateTemperatureState(World *world, int x, int y)
         return false;
     }
 
-    cell->temperature += (info->selfHeatTarget - cell->temperature) *
-                         info->selfHeatRate;
-    cell->temperature -= info->linearCoolRate;
+    {
+        float drift = (info->selfHeatTarget - cell->temperature) *
+                          info->selfHeatRate -
+                      info->linearCoolRate;
+
+        /* A cell a capped source is holding does not cool this tick. Only
+           cooling is suspended: lava chilled below its resting heat still
+           warms back up beside its neighbours, because what the hold
+           represents is the source keeping the cell from losing heat, not
+           the source forbidding it from gaining any. */
+        if (cell->heatHeld != 0u) {
+            --cell->heatHeld;
+            if (drift < 0.0f) {
+                drift = 0.0f;
+            }
+        }
+        cell->temperature += drift;
+    }
 
     return WorldTryThermalTransition(world, x, y);
 }

@@ -27,6 +27,9 @@
 /* The cap, not the rate, is what keeps a pocket from melting its lining: even
    a cell heated from eight sides at once lands well under rock's 720C. */
 #define LAVA_PASSIVE_HEAT_CAP 660.0f
+/* How long a capped source's hold on a neighbour outlives the push. See
+   Cell.heatHeld for why it is two. */
+#define WORLD_HEAT_HOLD_TICKS 2u
 /* Friction heat left on a drilled tunnel wall. Deliberately below the water
    steam point (108) and far below the dirt ignition point (175). */
 #define DRILL_WALL_TEMPERATURE 96.0f
@@ -40,6 +43,11 @@
  * keeps a short run on purpose — it is supposed to crawl. */
 #define WORLD_WATER_DISPERSION 16
 #define WORLD_LAVA_DISPERSION 2
+/* How many ticks in a row a surface liquid cell may wander along the top of a
+   pool without finding anywhere to fall before it lies still. Long enough to
+   carry a grain the length of a large pond in either direction; short enough
+   that a grain with nowhere to go stops costing its chunks within a second. */
+#define WORLD_LIQUID_WANDER_LIMIT 60u
 
 static inline bool WorldInBounds(const World *world, int x, int y)
 {
