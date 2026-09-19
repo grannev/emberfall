@@ -31,13 +31,22 @@ static int WorldLightIndex(const World *world, int lightX, int lightY)
     return lightY * world->lightColumns + lightX;
 }
 
-/* Rebuilds emission and opacity for one chunk's worth of light cells. */
-static void WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
+/* Rebuilds emission and opacity for one chunk's worth of light cells, and
+   reports whether either actually changed.
+
+   The report is what stops a still scene from being re-lit sixty times a
+   second. Every awake chunk marks its light inputs dirty every tick, and most
+   awake chunks change nothing the light can see: water sloshing in a pool is
+   not opaque, a lava lake glows exactly as it did a tick ago. The solve is the
+   one part of drawing that is not proportional to what changed, so it must
+   only run when an input it reads has. */
+static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
 {
     int firstLightX = chunkX * WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
     int firstLightY = chunkY * WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
     int lastLightX = firstLightX + WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
     int lastLightY = firstLightY + WORLD_CHUNK_SIZE / WORLD_LIGHT_SCALE;
+    bool changed = false;
     int lightX;
     int lightY;
 
@@ -82,18 +91,32 @@ static void WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
                 }
             }
 
-            world->lightEmission[WorldLightIndex(world, lightX, lightY)] = emission;
-            world->lightOpacity[WorldLightIndex(world, lightX, lightY)] =
-                samples > 0 ? (float)solid / (float)samples : 0.0f;
+            {
+                int index = WorldLightIndex(world, lightX, lightY);
+                float opacity = samples > 0 ? (float)solid / (float)samples
+                                            : 0.0f;
+
+                /* Exact comparisons: both values are computed the same way
+                   from the same cells, so an unchanged block reproduces them
+                   bit for bit. */
+                if (world->lightEmission[index] != emission ||
+                    world->lightOpacity[index] != opacity) {
+                    world->lightEmission[index] = emission;
+                    world->lightOpacity[index] = opacity;
+                    changed = true;
+                }
+            }
         }
     }
+    return changed;
 }
 
 /* Sky light: fill each column from the top while it stays open. Doing this as
    a column walk rather than as propagation is what lets open air stay at full
    brightness however deep the world is, and it is also why the solve window
    costs sky nothing — a column is solved independently of its neighbours. */
-static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
+static void WorldSeedSky(World *world, int firstColumn, int lastColumn,
+                         float daylight)
 {
     int lightX;
 
@@ -107,7 +130,7 @@ static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
             if (open && world->lightOpacity[index] > 0.35f) {
                 open = false;
             }
-            world->lightSky[index] = open ? world->daylight : 0.0f;
+            world->lightSky[index] = open ? daylight : 0.0f;
         }
     }
 }
@@ -188,6 +211,17 @@ static float WorldQuantiseLight(float value)
     return floorf(Clamp(value, 0.0f, 1.0f) * WORLD_LIGHT_STEPS) / WORLD_LIGHT_STEPS;
 }
 
+/* The sky is seeded with the daylight already quantised. The day advances a
+   little every tick, and seeding with the raw value meant that whenever a
+   solve ran for some other reason — the lamp moved — every sample sitting
+   near a quantisation boundary flipped, scattering re-lit chunks over the
+   whole view for a change no eye could see. Quantised, the seed only moves
+   when the daylight has crossed a step, and then every column moves with it. */
+static float WorldSolvedDaylight(const World *world)
+{
+    return WorldQuantiseLight(world->daylight);
+}
+
 /* Two raster sweeps: forward carries light down and right, backward carries it
    up and left. Two sweeps are not an exact flood fill around a hairpin
    corridor, but they are stable, allocation-free, and close enough that the
@@ -208,7 +242,7 @@ static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
        root of two costs a call and changes nothing visible. */
     const float diagonal = 0.87f;
 
-    WorldSeedSky(world, firstColumn, lastColumn);
+    WorldSeedSky(world, firstColumn, lastColumn, WorldSolvedDaylight(world));
     WorldSeedEmber(world, firstColumn, lastColumn);
 
     for (lightY = 0; lightY < world->lightRows; ++lightY) {
@@ -366,9 +400,10 @@ void WorldUpdateLighting(World *world, Rectangle visible)
             size_t index = WorldChunkIndex(world, chunkX, chunkY);
 
             if (world->lightDirtyChunks[index] != 0u) {
-                WorldRefreshLightBlock(world, chunkX, chunkY);
+                if (WorldRefreshLightBlock(world, chunkX, chunkY)) {
+                    terrainChanged = true;
+                }
                 world->lightDirtyChunks[index] = 0u;
-                terrainChanged = true;
             }
         }
     }
@@ -383,8 +418,7 @@ void WorldUpdateLighting(World *world, Rectangle visible)
         bool windowMoved = firstColumn != world->solvedFirstColumn ||
                            lastColumn != world->solvedLastColumn;
 
-        bool dayChanged = fabsf(world->daylight - world->solvedDaylight) >
-                          1.0f / WORLD_LIGHT_STEPS;
+        bool dayChanged = WorldSolvedDaylight(world) != world->solvedDaylight;
 
         if (!sourceMoved && !terrainSettled && !windowMoved && !dayChanged &&
             world->lightSolved) {
@@ -396,7 +430,7 @@ void WorldUpdateLighting(World *world, Rectangle visible)
         world->solvedPointLight = world->pointLight;
         world->solvedPointLightStrength = world->pointLightStrength;
         world->solvedTick = world->tick;
-        world->solvedDaylight = world->daylight;
+        world->solvedDaylight = WorldSolvedDaylight(world);
         world->solvedFirstColumn = firstColumn;
         world->solvedLastColumn = lastColumn;
         world->lightSolved = true;
