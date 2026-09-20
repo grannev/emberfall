@@ -8475,6 +8475,55 @@ static int LiveBodyCount(const DynamicTerrainSystem *system)
     return count;
 }
 
+/* --- impact fracture ------------------------------------------------------ */
+
+/* A slab stopped hard enough cracks from where it hit; a slab set down does
+   not. The threshold is a change of speed, the same for a chip and a slab,
+   because rock is brittle by nature and not by size. */
+static void test_a_slab_dropped_from_a_height_cracks_on_landing(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    int step;
+
+    CHECK(BuildFloorWorld(&world, 80), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeKinematicBody(&terrain, 30, 8, (Vector2){64.0f, 40.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 260.0f}, 0.0f);
+    for (step = 0; step < 60; ++step) {
+        TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+        (void)TerrainDamageImpactFractures(&damage, &terrain);
+    }
+    CHECK(damage.stats.impactCracks >= 1, "the slab landed at 260 without cracking");
+    CHECK(LiveBodyCount(&terrain) >= 2, "the crack left the slab in %d piece(s)",
+          LiveBodyCount(&terrain));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_slab_set_down_gently_does_not_crack(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    int step;
+
+    CHECK(BuildFloorWorld(&world, 80), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    handle = MakeKinematicBody(&terrain, 30, 8, (Vector2){64.0f, 70.0f});
+    for (step = 0; step < 120; ++step) {
+        TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+        (void)TerrainDamageImpactFractures(&damage, &terrain);
+    }
+    CHECK(damage.stats.impactCracks == 0, "a slab dropped six cells cracked");
+    CHECK(LiveBodyCount(&terrain) == 1, "the slab is in %d pieces",
+          LiveBodyCount(&terrain));
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL, "the slab was lost");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_carving_a_body_removes_cells_and_bumps_its_revision(void)
 {
     TerrainBodyHandle handle;
@@ -12085,6 +12134,64 @@ static void test_cryo_freezes_water_into_standing_ice(void)
     WorldUnload(&world);
 }
 
+/* The frost frontier: ice made by the beam spreads through the water it is
+   in, so a pond freezes over from where the beam lands; rock is not water and
+   the frost stops at it; and the frontier goes no further than the beam
+   paid for. */
+static void test_a_held_cryo_beam_freezes_a_whole_pond(void)
+{
+    World world;
+    int waterBefore;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 96), "world allocation failed");
+    FillRect(&world, 0, 60, 255, 95, MATERIAL_ROCK);
+    /* A pond of about 2 400 cells, and a second pond behind a rock wall. */
+    FillRect(&world, 10, 40, 129, 59, MATERIAL_WATER);
+    FillRect(&world, 130, 30, 133, 59, MATERIAL_ROCK);
+    FillRect(&world, 134, 40, 200, 59, MATERIAL_WATER);
+    Tick(&world, 30);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+
+    /* Four seconds of beam into the near pond. */
+    for (step = 0; step < 240; ++step) {
+        WorldApplyChill(&world, (Vector2){40.0f, 20.0f}, (Vector2){40.0f, 58.0f},
+                        2.6f, 1.0f / 60.0f);
+        WorldUpdate(&world);
+    }
+    Tick(&world, 120);
+    CHECK(world.fluid.frozen > 1500, "the frontier froze only %d cells",
+          world.fluid.frozen);
+    CHECK(CountMaterial(&world, MATERIAL_ICE) + CountMaterial(&world, MATERIAL_WATER) ==
+              waterBefore,
+          "freezing changed the amount of water and ice: %d against %d",
+          CountMaterial(&world, MATERIAL_ICE) + CountMaterial(&world, MATERIAL_WATER),
+          waterBefore);
+    /* The near pond is ice from end to end. */
+    CHECK(WorldGetCell(&world, 12, 50) == MATERIAL_ICE &&
+              WorldGetCell(&world, 127, 50) == MATERIAL_ICE,
+          "the frost did not reach the pond's ends");
+    /* The far pond, behind rock, is untouched. */
+    {
+        int farIce = 0;
+        int x;
+        int y;
+
+        for (x = 134; x <= 200; ++x) {
+            for (y = 40; y < 60; ++y) {
+                if (WorldGetCell(&world, x, y) == MATERIAL_ICE) {
+                    ++farIce;
+                }
+            }
+        }
+        CHECK(farIce == 0, "frost crossed a rock wall: %d cells", farIce);
+    }
+    CHECK(world.fluid.frostQueued == 0 && world.fluid.frostBudget < 1.0f,
+          "the frontier outlived the beam: %d queued, budget %.1f",
+          world.fluid.frostQueued, (double)world.fluid.frostBudget);
+    WorldUnload(&world);
+}
+
 static void test_heat_melts_ice_back_into_water(void)
 {
     World world;
@@ -12799,6 +12906,8 @@ int main(void)
     RUN(test_blast_results_are_deterministic);
     RUN(test_an_explosion_throws_the_fragment_it_just_freed);
     RUN(test_the_explosion_ability_throws_terrain_by_itself);
+    RUN(test_a_slab_dropped_from_a_height_cracks_on_landing);
+    RUN(test_a_slab_set_down_gently_does_not_crack);
     RUN(test_carving_a_body_removes_cells_and_bumps_its_revision);
     RUN(test_carving_updates_mass_without_moving_what_is_left);
     RUN(test_a_body_carved_away_entirely_is_freed);
@@ -12901,6 +13010,7 @@ int main(void)
     RUN(test_no_material_evaporates_when_merely_cooled);
     RUN(test_cryo_snuffs_fire_into_smoke);
     RUN(test_cryo_freezes_water_into_standing_ice);
+    RUN(test_a_held_cryo_beam_freezes_a_whole_pond);
     RUN(test_heat_melts_ice_back_into_water);
     RUN(test_cryo_settles_lava_back_into_rock);
     RUN(test_one_force_blast_throws_loose_material_far);

@@ -37,6 +37,12 @@ TerrainDamageConfig TerrainDamageDefaultConfig(void)
        slab in well under a second. */
     config.beamCutInterval = 0.035f;
     config.beamCutRadius = 1.9f;
+    /* A hundred and forty cells a second taken away in one contact: a slab
+       dropped from a house's height, or thrown by a blast into a wall. A
+       slab merely dropped from a hand lands well under it. */
+    config.fractureSpeed = 140.0f;
+    config.fractureMinimumCells = 48;
+    config.fracturesPerStep = 2;
     return config;
 }
 
@@ -56,7 +62,7 @@ void TerrainDamageResetStats(TerrainDamageSystem *system)
         return;
     }
     {
-        TerrainDamageStats empty = {0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainDamageStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         system->stats = empty;
     }
@@ -482,4 +488,123 @@ int TerrainDamageApplyCircle(TerrainDamageSystem *system,
         (void)TerrainDamageFracture(system, terrain, handle);
     }
     return removed;
+}
+
+int TerrainDamageCrack(TerrainDamageSystem *system, DynamicTerrainSystem *terrain,
+                       TerrainBodyHandle handle, Vector2 worldPoint,
+                       Vector2 direction, float length)
+{
+    TerrainBody *body = DynamicTerrainGet(terrain, handle);
+    Vector2 previousCentre;
+    float previousAngle;
+    Vector2 local;
+    Vector2 localDirection;
+    float cosine;
+    float sine;
+    float travelled;
+    int removed = 0;
+    uint32_t wobble;
+
+    if (system == NULL || body == NULL || !(length > 0.0f) ||
+        !TerrainFiniteSample(worldPoint) || !TerrainFiniteSample(direction)) {
+        return 0;
+    }
+    previousCentre = body->centerOfMass;
+    previousAngle = body->angle;
+    /* The crack runs in the body's frame, so a body that is turning is
+       cracked along the same line of its own material whatever its angle. */
+    local = TerrainBodyWorldToLocal(body, worldPoint.x, worldPoint.y);
+    cosine = cosf(-body->angle);
+    sine = sinf(-body->angle);
+    localDirection.x = direction.x * cosine - direction.y * sine;
+    localDirection.y = direction.x * sine + direction.y * cosine;
+    /* Deterministic, from the body's own numbers: the same blow on the same
+       slab cracks it the same way. */
+    wobble = (uint32_t)body->generation * 0x9e3779b9u ^ (uint32_t)body->cellCount;
+
+    {
+        int previousX = 0;
+        int previousY = 0;
+        bool first = true;
+
+        for (travelled = 0.0f; travelled <= length; travelled += 0.7f) {
+            float side;
+            int cellX;
+            int cellY;
+
+            wobble ^= wobble << 13;
+            wobble ^= wobble >> 17;
+            wobble ^= wobble << 5;
+            side = ((float)(wobble & 0xffu) / 255.0f - 0.5f) * 1.6f;
+            cellX = (int)floorf(local.x + localDirection.x * travelled -
+                                localDirection.y * side);
+            cellY = (int)floorf(local.y + localDirection.y * travelled +
+                                localDirection.x * side);
+            /* A crack that steps diagonally leaves the two cells across the
+               corner touching, and touching is connected: the fracture pass
+               would find one piece. The corner cell goes too. */
+            if (!first && cellX != previousX && cellY != previousY &&
+                DynamicTerrainCellAt(terrain, handle, previousX, cellY) !=
+                    MATERIAL_EMPTY) {
+                DynamicTerrainSetCell(terrain, handle, previousX, cellY,
+                                      MATERIAL_EMPTY, 0.0f);
+                ++removed;
+            }
+            first = false;
+            previousX = cellX;
+            previousY = cellY;
+            if (DynamicTerrainCellAt(terrain, handle, cellX, cellY) == MATERIAL_EMPTY) {
+                continue;
+            }
+            DynamicTerrainSetCell(terrain, handle, cellX, cellY, MATERIAL_EMPTY, 0.0f);
+            ++removed;
+        }
+    }
+    if (removed == 0) {
+        return 0;
+    }
+    system->stats.cellsCarved += removed;
+    if (!TerrainDamageRefinalize(terrain, handle, previousCentre, previousAngle)) {
+        ++system->stats.bodiesEmptied;
+        return 0;
+    }
+    return TerrainDamageFracture(system, terrain, handle);
+}
+
+int TerrainDamageImpactFractures(TerrainDamageSystem *system,
+                                 DynamicTerrainSystem *terrain)
+{
+    int cracked = 0;
+    int slot;
+
+    if (system == NULL || terrain == NULL || terrain->material == NULL) {
+        return 0;
+    }
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        TerrainBody *body = &terrain->bodies[slot];
+        float stopped;
+
+        if (!body->active || body->cellCount < system->config.fractureMinimumCells ||
+            !(body->mass > 0.0f) || !(body->impactImpulse > 0.0f)) {
+            continue;
+        }
+        stopped = body->impactImpulse / body->mass;
+        if (stopped < system->config.fractureSpeed) {
+            continue;
+        }
+        if (cracked >= system->config.fracturesPerStep) {
+            /* The impulse is kept for the next step's look, so a blow that
+               waited is not a blow that never happened. */
+            ++system->stats.impactCracksDeferred;
+            continue;
+        }
+        (void)TerrainDamageCrack(system, terrain,
+                                 (TerrainBodyHandle){(uint16_t)slot, body->generation},
+                                 body->impactPoint, body->impactNormal,
+                                 body->boundingRadius * 2.0f + 2.0f);
+        body->impactImpulse = 0.0f;
+        ++system->stats.impactCracks;
+        ++cracked;
+    }
+    return cracked;
 }

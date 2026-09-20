@@ -41,6 +41,21 @@ typedef struct TerrainDamageConfig {
     float beamCutInterval;
     /* Radius of one laser bite, in cells. */
     float beamCutRadius;
+    /* ---- impact fracture ------------------------------------------------
+     *
+     * A body stopped hard enough cracks. What "hard enough" means is the
+     * change of speed the contact delivered — the solver's summed normal
+     * impulse divided by the body's mass — which is the same number for a
+     * chip and a slab hitting the same floor at the same speed: rock is
+     * brittle by nature and not by size. The crack runs from the point that
+     * was hit, into the body along the blow, and the fracture check does the
+     * rest. */
+    float fractureSpeed;
+    /* Bodies smaller than this do not crack: a pebble that cracks is dust. */
+    int fractureMinimumCells;
+    /* Cracks per fixed step, so a landslide of bodies cannot spend the frame
+       on connectivity passes. */
+    int fracturesPerStep;
 } TerrainDamageConfig;
 
 typedef struct TerrainDamageStats {
@@ -54,6 +69,10 @@ typedef struct TerrainDamageStats {
        to be worth one, and because a budget had no room for another. */
     int fragmentsTooSmall;
     int fragmentsRefusedByBudget;
+    /* Bodies cracked by a blow, and blows hard enough that had to wait a
+       step for the budget. */
+    int impactCracks;
+    int impactCracksDeferred;
 } TerrainDamageStats;
 
 typedef struct TerrainDamageSystem {
@@ -123,5 +142,20 @@ void TerrainDamageHeatAround(TerrainDamageSystem *system,
 
 /* Advances the beam's cut rate and reports whether it may bite now. */
 bool TerrainDamageBeamReady(TerrainDamageSystem *system, float deltaTime);
+
+/* Carves a crack one cell wide from `worldPoint` along `direction` for
+   `length` cells, in the body's own frame, wandering a cell either side as
+   it goes so it reads as a crack and not a saw cut, then splits the body if
+   the crack went through. Returns the number of new bodies. */
+int TerrainDamageCrack(TerrainDamageSystem *system, DynamicTerrainSystem *terrain,
+                       TerrainBodyHandle handle, Vector2 worldPoint,
+                       Vector2 direction, float length);
+
+/* Runs after the physics step: every body whose last contact stopped it
+   harder than `fractureSpeed`, and that is big enough to crack, is cracked
+   from the point that was hit along the blow, up to `fracturesPerStep` of
+   them. Returns the number of bodies cracked. */
+int TerrainDamageImpactFractures(TerrainDamageSystem *system,
+                                 DynamicTerrainSystem *terrain);
 
 #endif

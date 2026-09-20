@@ -463,3 +463,80 @@ int WorldSplashLiquid(World *world, Vector2 centre, float radius, int strength)
     }
     return pushed;
 }
+
+/* --- frost --------------------------------------------------------------- */
+
+/* Cells of the frontier frozen in one tick at most, whatever the budget: a
+   pond freezes over in a moment, not in a frame. */
+#define WORLD_FROST_PER_TICK 48
+
+static void WorldFrostQueue(World *world, int x, int y)
+{
+    if (!WorldInBounds(world, x, y) || WorldMaterialAt(world, x, y) != MATERIAL_WATER) {
+        return;
+    }
+    if (world->fluid.frostQueued >= MAX_WORLD_FROST) {
+        ++world->fluid.frostRefused;
+        return;
+    }
+    world->frost[world->fluid.frostQueued].x = x;
+    world->frost[world->fluid.frostQueued].y = y;
+    ++world->fluid.frostQueued;
+}
+
+static void WorldFrostQueueAround(World *world, int x, int y)
+{
+    WorldFrostQueue(world, x - 1, y);
+    WorldFrostQueue(world, x + 1, y);
+    WorldFrostQueue(world, x, y - 1);
+    WorldFrostQueue(world, x, y + 1);
+}
+
+void WorldFrostFeed(World *world, int x, int y, float cells)
+{
+    if (world == NULL || world->cells == NULL || !(cells >= 0.0f)) {
+        return;
+    }
+    world->fluid.frostBudget += cells;
+    /* Two seconds of beam at most, held in hand: a frontier that outlived
+       the beam by a minute would be a pond freezing over on its own. */
+    if (world->fluid.frostBudget > 1200.0f) {
+        world->fluid.frostBudget = 1200.0f;
+    }
+    world->fluid.frostIdle = 0;
+    WorldFrostQueueAround(world, x, y);
+}
+
+void WorldFrostStep(World *world)
+{
+    int frozen = 0;
+
+    while (world->fluid.frostQueued > 0 && frozen < WORLD_FROST_PER_TICK &&
+           world->fluid.frostBudget >= 1.0f) {
+        /* Last in, first out: the frontier grows from where it last froze,
+           which is a front spreading out rather than a ring filling in from
+           every seed at once; either freezes the pond, this one reads as
+           frost creeping. */
+        WorldFrostEntry entry = world->frost[--world->fluid.frostQueued];
+
+        if (WorldMaterialAt(world, entry.x, entry.y) != MATERIAL_WATER) {
+            continue;
+        }
+        WorldSetCellRaw(world, entry.x, entry.y, MATERIAL_ICE);
+        WorldCell(world, entry.x, entry.y)->updatedTick = WorldTickStamp(world);
+        world->fluid.frostBudget -= 1.0f;
+        ++world->fluid.frozen;
+        ++frozen;
+        WorldFrostQueueAround(world, entry.x, entry.y);
+    }
+    /* A frontier the beam has stopped paying for is dropped after a moment,
+       and the next touch of the beam starts one again from where it lands.
+       Not the moment the budget runs dry: the beam pays a few cells a frame
+       and the frontier spends them a few cells a tick, and a frontier that
+       was dropped every time it caught up with the beam froze thirty cells
+       of a pond and stopped. */
+    if (++world->fluid.frostIdle > 60) {
+        world->fluid.frostQueued = 0;
+        world->fluid.frostBudget = 0.0f;
+    }
+}

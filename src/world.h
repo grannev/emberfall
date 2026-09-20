@@ -175,12 +175,37 @@ typedef struct WorldFluidImpulse {
     uint8_t strength;
 } WorldFluidImpulse;
 
+/* ---- frost --------------------------------------------------------------
+ *
+ * Ice made by the cryo beam spreads through the water it touches: every cell
+ * frozen puts its liquid neighbours on this queue, and each tick a bounded
+ * number of them freeze in turn, as long as the beam keeps paying for it.
+ * That is what makes a pond freeze over from where the beam lands rather
+ * than cell by cell under the beam alone, and stop at the pond's edge — rock
+ * is not water and never joins the queue. Fixed capacity, refusals counted;
+ * a frontier wider than the queue freezes the cells it holds and the
+ * neighbours of those join as they go. */
+#define MAX_WORLD_FROST 1024
+
+typedef struct WorldFrostEntry {
+    int32_t x;
+    int32_t y;
+} WorldFrostEntry;
+
 typedef struct WorldFluidStats {
     /* Live entries, and refusals since the last WorldInit. */
     int impulsesActive;
     int impulsesRefused;
     /* Water the drill turned to steam, since the last WorldInit. */
     int vaporised;
+    /* The frost frontier: cells waiting, cells the beam has paid for, and
+       what it has frozen since the last WorldInit. */
+    int frostQueued;
+    int frostRefused;
+    float frostBudget;
+    /* Ticks since the beam last paid; the frontier is dropped after sixty. */
+    int frostIdle;
+    int frozen;
     /* Refreshed by every tick. */
     int impulseMoves;
     int lifts;
@@ -219,6 +244,7 @@ typedef struct World {
     int destructionCount;
     int destructionDropped;
     WorldFluidImpulse fluidImpulses[MAX_WORLD_FLUID_IMPULSES];
+    WorldFrostEntry frost[MAX_WORLD_FROST];
     WorldFluidStats fluid;
     int chunkColumns;
     int chunkRows;
@@ -492,6 +518,11 @@ int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
    into a river from a height does to the river: a crown of water thrown
    clear of the surface and a ring spreading from it. Bounded by the circle. */
 int WorldSplashLiquid(World *world, Vector2 centre, float radius, int strength);
+/* Pays for `cells` more cells of the frost frontier to freeze, and starts
+   the frontier from the water around (x, y) if it is not running there. The
+   cryo beam calls it where it meets water; the frontier then spreads on its
+   own, one bounded step a tick, until the budget is spent. */
+void WorldFrostFeed(World *world, int x, int y, float cells);
 
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);

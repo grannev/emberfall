@@ -436,6 +436,7 @@ void WorldUpdate(World *world)
     /* Pushed liquid moves before the traversal, so a cell an impulse carried
        is stamped and does not also flow this tick. */
     WorldFluidStepImpulses(world);
+    WorldFrostStep(world);
 
     for (chunkY = world->chunkRows - 1; chunkY >= 0; --chunkY) {
         int minimumY = chunkY * WORLD_CHUNK_SIZE;

@@ -473,12 +473,15 @@ static void TerrainRecordImpacts(const TerrainContactWorkspace *workspace,
                                  DynamicTerrainSystem *system)
 {
     float total[MAX_TERRAIN_BODIES] = {0.0f};
-    float strongest[MAX_TERRAIN_BODIES] = {0.0f};
-    Vector2 point[MAX_TERRAIN_BODIES];
-    Vector2 normal[MAX_TERRAIN_BODIES];
+    Vector2 point[MAX_TERRAIN_BODIES] = {{0.0f, 0.0f}};
+    Vector2 normal[MAX_TERRAIN_BODIES] = {{0.0f, 0.0f}};
     int slot;
     int index;
 
+    /* Point and normal are impulse-weighted sums, normalised at the end: the
+       blow of a slab landing flat lands in the middle of its face, not at
+       whichever end happened to carry a hair more, and a crack that started
+       at the end only pared a sliver off it. */
     for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
         const TerrainContactSet *set = &workspace->world[slot];
 
@@ -489,11 +492,10 @@ static void TerrainRecordImpacts(const TerrainContactWorkspace *workspace,
                 continue;
             }
             total[slot] += contact->normalImpulse;
-            if (contact->normalImpulse > strongest[slot]) {
-                strongest[slot] = contact->normalImpulse;
-                point[slot] = contact->point;
-                normal[slot] = contact->normal;
-            }
+            point[slot].x += contact->point.x * contact->normalImpulse;
+            point[slot].y += contact->point.y * contact->normalImpulse;
+            normal[slot].x += contact->normal.x * contact->normalImpulse;
+            normal[slot].y += contact->normal.y * contact->normalImpulse;
         }
     }
     for (index = 0; index < workspace->manifoldCount; ++index) {
@@ -502,23 +504,37 @@ static void TerrainRecordImpacts(const TerrainContactWorkspace *workspace,
 
         for (contact = 0; contact < TERRAIN_CONTACT_CAPACITY; ++contact) {
             const TerrainContact *pair = &manifold->contacts[contact];
+            int slots[2];
+            int which;
 
             if (TerrainContactIsEmpty(pair)) {
                 continue;
             }
-            total[manifold->sampler] += pair->normalImpulse;
-            total[manifold->raster] += pair->normalImpulse;
-            if (pair->normalImpulse > strongest[manifold->sampler]) {
-                strongest[manifold->sampler] = pair->normalImpulse;
-                point[manifold->sampler] = pair->point;
-                normal[manifold->sampler] = pair->normal;
+            slots[0] = manifold->sampler;
+            slots[1] = manifold->raster;
+            for (which = 0; which < 2; ++which) {
+                float sign = which == 0 ? 1.0f : -1.0f;
+
+                total[slots[which]] += pair->normalImpulse;
+                point[slots[which]].x += pair->point.x * pair->normalImpulse;
+                point[slots[which]].y += pair->point.y * pair->normalImpulse;
+                normal[slots[which]].x += sign * pair->normal.x * pair->normalImpulse;
+                normal[slots[which]].y += sign * pair->normal.y * pair->normalImpulse;
             }
-            if (pair->normalImpulse > strongest[manifold->raster]) {
-                strongest[manifold->raster] = pair->normalImpulse;
-                point[manifold->raster] = pair->point;
-                normal[manifold->raster] = (Vector2){-pair->normal.x,
-                                                     -pair->normal.y};
-            }
+        }
+    }
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        float length;
+
+        if (!(total[slot] > 0.0f)) {
+            continue;
+        }
+        point[slot].x /= total[slot];
+        point[slot].y /= total[slot];
+        length = sqrtf(normal[slot].x * normal[slot].x + normal[slot].y * normal[slot].y);
+        if (length > 0.0001f) {
+            normal[slot].x /= length;
+            normal[slot].y /= length;
         }
     }
     for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {

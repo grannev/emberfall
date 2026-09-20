@@ -175,4 +175,8 @@ bool WorldFluidMayFlowToward(const World *world, int x, int y, int direction,
    not also flow. */
 void WorldFluidStepImpulses(World *world);
 
+/* Freezes a bounded number of queued frontier cells and queues their liquid
+   neighbours, as far as the budget goes. Called once per tick. */
+void WorldFrostStep(World *world);
+
 #endif

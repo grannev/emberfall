@@ -11,6 +11,11 @@
  */
 #include "world_internal.h"
 
+/* How much water the cryo beam freezes a second through the frost frontier,
+   on top of the cells it chills directly. A pond of two thousand cells
+   freezes over in about three seconds of beam. */
+#define WORLD_FROST_CELLS_PER_SECOND 600.0f
+
 #include <math.h>
 
 #include <raymath.h>
@@ -703,6 +708,7 @@ LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radi
     int steps = (int)ceilf(length / 0.65f);
     int step;
     uint16_t stamp;
+    bool fed = false;
     LaserResult result = {end, MATERIAL_EMPTY, false};
 
     if (world == NULL || world->cells == NULL || length < 0.001f) {
@@ -748,6 +754,15 @@ LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radi
                 cell->temperature -= deltaTime * rate;
                 WorldWakeCellAndNeighbors(world, x, y);
                 (void)WorldTryThermalTransition(world, x, y);
+                /* Water or ice under the beam feeds a frost that spreads
+                   through the water around it on its own: the beam pays for
+                   the cells, once a frame, and the frontier chooses them. */
+                if (!fed && (cell->material == MATERIAL_WATER ||
+                             cell->material == MATERIAL_ICE)) {
+                    WorldFrostFeed(world, x, y,
+                                   deltaTime * WORLD_FROST_CELLS_PER_SECOND);
+                    fed = true;
+                }
             }
         }
 

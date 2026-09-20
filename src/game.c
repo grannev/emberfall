@@ -264,6 +264,10 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
                            events, game->config.fixedStep);
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
+        /* Right after the contacts that stopped them: a body that hit the
+           ground this step harder than rock bears cracks from where it hit,
+           and the pieces are bodies before the next step. */
+        (void)TerrainDamageImpactFractures(&game->damage, &game->dynamicTerrain);
         /* After integration, so a body that settled on this very step starts
            its rest here rather than a step late. Rubble that has lain still
            long enough stops being a body and becomes ground again, which is
