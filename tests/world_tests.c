@@ -9203,33 +9203,45 @@ static void test_movement_survives_an_absurd_velocity(void)
     WorldUnload(&world);
 }
 
-/* Moving through something costs speed in proportion to its density, which is
-   the whole of the water transition this task asks for. */
-static void test_entering_water_costs_speed(void)
+/* Water and lava used to cost speed in proportion to their density: a rule
+   read off the material table rather than a list of names, so it slowed
+   anything passable without a name check. It made flying through the sea or
+   over a lava flow feel like wading, which is not what this flight is meant
+   to feel like anywhere in the world, so the drag is gone entirely. Passing
+   through either must leave speed exactly as it was. */
+static void test_water_and_lava_cost_no_speed(void)
 {
     World world;
     Player dry;
     Player wet;
+    Player molten;
 
     CHECK(WorldInit(&world, 512, 256), "world allocation failed");
     PlayerInit(&dry, (Vector2){60.0f, 60.0f});
     PlayerInit(&wet, (Vector2){60.0f, 180.0f});
-    /* Both pinned where they start, so "one of them is in the pool" stays true
-       for the whole comparison. */
+    PlayerInit(&molten, (Vector2){60.0f, 100.0f});
+    /* All three pinned where they start, so "one of them is in the fluid"
+       stays true for the whole comparison. */
     FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 300);
     FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 300);
-    CHECK(fabsf(PlayerSpeed(&dry) - PlayerSpeed(&wet)) < 0.01f,
-          "the two fixtures did not start level");
+    FlyPlayer(&molten, &world, (Vector2){1.0f, 0.0f}, true, 300);
+    CHECK(fabsf(PlayerSpeed(&dry) - PlayerSpeed(&wet)) < 0.01f &&
+              fabsf(PlayerSpeed(&dry) - PlayerSpeed(&molten)) < 0.01f,
+          "the three fixtures did not start level");
 
-    /* A pool in front of one of them only. */
+    /* A pool and a lava flow in front of two of them only. */
     FillRect(&world, 0, 150, 511, 220, MATERIAL_WATER);
+    FillRect(&world, 0, 70, 511, 130, MATERIAL_LAVA);
     FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 30);
     FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 30);
+    FlyPlayer(&molten, &world, (Vector2){1.0f, 0.0f}, true, 30);
 
-    CHECK(PlayerSpeed(&wet) < PlayerSpeed(&dry) * 0.85f,
-          "water barely slowed the player: %.1f wet against %.1f dry",
+    CHECK(fabsf(PlayerSpeed(&wet) - PlayerSpeed(&dry)) < 0.5f,
+          "water slowed the player: %.1f wet against %.1f dry",
           (double)PlayerSpeed(&wet), (double)PlayerSpeed(&dry));
-    CHECK(PlayerSpeed(&wet) > 0.0f, "water stopped the player dead");
+    CHECK(fabsf(PlayerSpeed(&molten) - PlayerSpeed(&dry)) < 0.5f,
+          "lava slowed the player: %.1f molten against %.1f dry",
+          (double)PlayerSpeed(&molten), (double)PlayerSpeed(&dry));
     WorldUnload(&world);
 }
 
@@ -11522,7 +11534,7 @@ int main(void)
     RUN(test_a_diagonal_drill_does_not_stall);
     RUN(test_the_same_flight_replays_identically);
     RUN(test_movement_survives_an_absurd_velocity);
-    RUN(test_entering_water_costs_speed);
+    RUN(test_water_and_lava_cost_no_speed);
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
     RUN(test_drilling_through_a_slab_can_split_it);
     RUN(test_a_coasting_player_still_stops_on_a_body);

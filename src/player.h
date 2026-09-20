@@ -93,11 +93,6 @@ typedef struct Player {
        so that braking out of stage three is as forceful as getting into it: the
        harder the engine, the harder it can also stop. */
     float brakingAuthority;
-    /* Drag per second per unit of material density, applied while the player is
-       inside something they can move through. One rule covers every fluid the
-       table has or will have: water slows, lava slows harder, smoke barely
-       registers, and a new liquid needs no code here at all. */
-    float fluidDrag;
     float drag;
     float restitution;
     float radius;

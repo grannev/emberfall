@@ -36,7 +36,6 @@ void PlayerInit(Player *player, Vector2 position)
     /* Braking beats accelerating, which is what makes committing to speed feel
        safe rather than reckless. */
     player->brakingAuthority = 2.6f;
-    player->fluidDrag = 3.4f;
     player->drag = 1.1f;
     player->restitution = 0.34f;
     /* Scaled with the drawn figure. The collider and the body have to agree or
@@ -536,26 +535,6 @@ static void PlayerApplyThrust(Player *player, Vector2 input, float acceleration,
                           across.y * acceleration * authority * deltaTime;
 }
 
-/* Moving through something costs speed in proportion to how heavy it is. The
-   rule is the material table's, not a list of names: anything the player can
-   pass through slows them by its own density, so water slows, lava slows
-   harder, and a gas barely registers. One cell read per frame. */
-static void PlayerApplyFluidDrag(Player *player, const World *world,
-                                 float deltaTime)
-{
-    CellMaterial material = WorldGetCell(world, (int)floorf(player->position.x),
-                                         (int)floorf(player->position.y));
-    float density = MaterialAt(material)->density;
-    float damping;
-
-    if (WorldMaterialIsSolid(material) || density <= 0.0f) {
-        return;
-    }
-    damping = expf(-player->fluidDrag * density * deltaTime);
-    player->velocity.x *= damping;
-    player->velocity.y *= damping;
-}
-
 /* The one moment the flight still has: engaging the boost.
  *
  * What used to live here was the tier machine — a timer that had to be fed a
@@ -632,7 +611,6 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     if (player->thrusting) {
         PlayerApplyThrust(player, input, acceleration, velocityLength, deltaTime);
     }
-    PlayerApplyFluidDrag(player, world, deltaTime);
 
     damping = expf(-damping * deltaTime);
     player->velocity.x *= damping;
