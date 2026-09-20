@@ -39,6 +39,8 @@ void WorldGenerate(World *world, uint64_t seed)
             memset(world->cells, 0, cellCount * sizeof(*world->cells));
         }
     }
+    memset(world->chunkWater, 0, chunkCount * sizeof(*world->chunkWater));
+    memset(world->chunkLava, 0, chunkCount * sizeof(*world->chunkLava));
     memset(world->activeChunks, 0, chunkCount * sizeof(*world->activeChunks));
     memset(world->nextActiveChunks, 0, chunkCount * sizeof(*world->nextActiveChunks));
     memset(world->activeRowCount, 0,

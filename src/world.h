@@ -201,6 +201,15 @@ typedef struct World {
        one; a wake between ticks — a laser, a settling particle, a drilled
        tunnel — schedules the tick about to run. */
     bool simulating;
+    /* How many water and lava cells each chunk holds, kept exact by the three
+       functions that write a cell's material. The water/lava reaction used to
+       scan eight neighbours of every water and lava cell every tick, and in
+       almost every chunk on the map it found nothing — a lake has no lava in
+       it. With the counts, a cell scans only when its own chunk, or the one
+       across the border it sits on, holds the material it could react with:
+       a third of a large pool's simulation, gone. */
+    uint16_t *chunkWater;
+    uint16_t *chunkLava;
     /* Chunks whose pixels changed since the last upload. The simulation already
        tracks where work happens; the renderer reuses that instead of rebuilding
        the whole texture every frame. */
@@ -403,6 +412,11 @@ static inline float WorldAirFractionAt(const World *world, float y)
 
 CellMaterial WorldGetCell(const World *world, int x, int y);
 int WorldCountDynamicCells(const World *world);
+/* Cells of `material` in one chunk, for water and lava; zero for anything the
+   world does not count. Exposed so a test can hold the bookkeeping to the
+   truth of a brute-force count. */
+int WorldChunkMaterialCount(const World *world, int chunkX, int chunkY,
+                            CellMaterial material);
 float WorldGetTemperature(const World *world, int x, int y);
 void WorldSetTemperature(World *world, int x, int y, float temperature);
 bool WorldMaterialIsSolid(CellMaterial material);

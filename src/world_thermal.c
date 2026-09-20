@@ -170,6 +170,11 @@ bool WorldTryMaterialReaction(World *world, int x, int y)
         return false;
     }
     targetMaterial = material == MATERIAL_WATER ? MATERIAL_LAVA : MATERIAL_WATER;
+    /* Nothing to react with anywhere a neighbour could be: no scan. This is
+       the common case for every cell of every lake and every lava lake. */
+    if (!WorldNeighbourhoodHolds(world, x, y, targetMaterial)) {
+        return false;
+    }
     firstOffset = (int)(CoordinateHash(x, y) % 8u);
 
     for (i = 0; i < 8; ++i) {

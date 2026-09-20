@@ -19,6 +19,12 @@ void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
     Cell *to = WorldCell(world, toX, toY);
     Cell moving = *from;
 
+    /* A swap across a chunk border carries each material into the other
+       chunk; within a chunk the counts do not move. */
+    WorldCountMaterialChange(world, fromX, fromY, (CellMaterial)from->material,
+                             (CellMaterial)to->material);
+    WorldCountMaterialChange(world, toX, toY, (CellMaterial)to->material,
+                             (CellMaterial)from->material);
     *from = *to;
     *to = moving;
     to->updatedTick = WorldTickStamp(world);

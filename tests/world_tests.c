@@ -10064,6 +10064,108 @@ static void test_water_and_lava_react_into_steam_and_rock(void)
     WorldUnload(&world);
 }
 
+/* The per-chunk water and lava counts gate the reaction scan, so a count that
+   is ever too low is a reaction that never happens. Held to a brute-force
+   recount after everything that moves material has run: generation, flow,
+   swaps across chunk borders, reactions, blasts, a drill, a laser. */
+static void test_chunk_material_counts_match_a_brute_force_recount(void)
+{
+    World world;
+    int chunkY;
+    int tick;
+
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    WorldGenerate(&world, 0xC0DEu);
+    /* Water and lava poured beside each other across chunk borders, then
+       everything destructive the game has thrown at them. */
+    FillRect(&world, 60, 20, 130, 60, MATERIAL_WATER);
+    FillRect(&world, 131, 20, 200, 60, MATERIAL_LAVA);
+    FillRect(&world, 20, 200, 500, 255, MATERIAL_ROCK);
+    for (tick = 0; tick < 240; ++tick) {
+        WorldUpdate(&world);
+        if (tick % 40 == 0) {
+            WorldDestroyCircle(&world, 100 + tick, 120, 14, 0.5f);
+            WorldApplyShockwave(&world, 130, 100, 10, 40);
+            (void)WorldDrillCircle(&world, 150, 150 + tick / 8, 5);
+            (void)WorldApplyLaser(&world, (Vector2){40.0f, 30.0f},
+                                  (Vector2){200.0f, 90.0f}, 2.0f, 1.0f / 60.0f);
+        }
+    }
+
+    for (chunkY = 0; chunkY < world.chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world.chunkColumns; ++chunkX) {
+            int water = 0;
+            int lava = 0;
+            int y;
+
+            for (y = chunkY * WORLD_CHUNK_SIZE;
+                 y < (chunkY + 1) * WORLD_CHUNK_SIZE && y < world.height; ++y) {
+                int x;
+
+                for (x = chunkX * WORLD_CHUNK_SIZE;
+                     x < (chunkX + 1) * WORLD_CHUNK_SIZE && x < world.width; ++x) {
+                    CellMaterial material = WorldGetCell(&world, x, y);
+
+                    water += material == MATERIAL_WATER;
+                    lava += material == MATERIAL_LAVA;
+                }
+            }
+            CHECK(WorldChunkMaterialCount(&world, chunkX, chunkY, MATERIAL_WATER) ==
+                      water,
+                  "chunk %d,%d counts %d water cells but holds %d", chunkX, chunkY,
+                  WorldChunkMaterialCount(&world, chunkX, chunkY, MATERIAL_WATER),
+                  water);
+            CHECK(WorldChunkMaterialCount(&world, chunkX, chunkY, MATERIAL_LAVA) ==
+                      lava,
+                  "chunk %d,%d counts %d lava cells but holds %d", chunkX, chunkY,
+                  WorldChunkMaterialCount(&world, chunkX, chunkY, MATERIAL_LAVA),
+                  lava);
+        }
+    }
+    /* Regeneration starts the counts over with the cells. */
+    WorldGenerate(&world, 0xC0DEu);
+    CHECK(WorldChunkMaterialCount(&world, 3, 1, MATERIAL_WATER) == 0 &&
+              WorldChunkMaterialCount(&world, 4, 1, MATERIAL_LAVA) == 0,
+          "the poured water and lava survived regeneration in the counts");
+    WorldUnload(&world);
+}
+
+/* The one thing the counts must never cost: a reaction between neighbours that
+   sit in different chunks. The water is the last cell of one chunk and the
+   lava the first of the next, so each one's own chunk holds none of the
+   other. */
+static void test_water_and_lava_react_across_a_chunk_border(void)
+{
+    World world;
+    int tick;
+    bool reacted = false;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    FillRect(&world, 0, 40, 127, 63, MATERIAL_ROCK);
+    WorldSetCell(&world, WORLD_CHUNK_SIZE - 1, 39, MATERIAL_WATER);
+    WorldSetCell(&world, WORLD_CHUNK_SIZE, 39, MATERIAL_LAVA);
+    for (tick = 0; tick < 30 && !reacted; ++tick) {
+        WorldUpdate(&world);
+        reacted = CountMaterial(&world, MATERIAL_STEAM) > 0;
+    }
+    CHECK(reacted, "water and lava on opposite sides of a chunk border never reacted");
+    /* And diagonally across a corner, the furthest a neighbour can be. */
+    WorldSetCell(&world, WORLD_CHUNK_SIZE - 1, WORLD_CHUNK_SIZE - 1, MATERIAL_WATER);
+    WorldSetCell(&world, WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, MATERIAL_LAVA);
+    reacted = false;
+    for (tick = 0; tick < 30 && !reacted; ++tick) {
+        WorldUpdate(&world);
+        reacted = WorldGetCell(&world, WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE) !=
+                      MATERIAL_LAVA ||
+                  WorldGetCell(&world, WORLD_CHUNK_SIZE - 1, WORLD_CHUNK_SIZE - 1) !=
+                      MATERIAL_WATER;
+    }
+    CHECK(reacted, "water and lava touching only at a chunk corner never reacted");
+    WorldUnload(&world);
+}
+
 static void test_one_fire_cell_cannot_consume_a_whole_dirt_field(void)
 {
     /* The containment budget is the invariant that keeps fire from eating an
@@ -11449,6 +11551,8 @@ int main(void)
     RUN(test_rock_becomes_lava_above_its_threshold);
     RUN(test_water_becomes_steam_above_its_threshold);
     RUN(test_water_and_lava_react_into_steam_and_rock);
+    RUN(test_chunk_material_counts_match_a_brute_force_recount);
+    RUN(test_water_and_lava_react_across_a_chunk_border);
     RUN(test_one_fire_cell_cannot_consume_a_whole_dirt_field);
     RUN(test_a_lava_pocket_cannot_consume_its_rock_lining);
     RUN(test_a_settled_lava_pocket_lets_its_chunks_sleep);

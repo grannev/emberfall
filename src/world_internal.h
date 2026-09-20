@@ -115,6 +115,75 @@ static inline uint32_t CoordinateHash(int x, int y)
     return value;
 }
 
+/* The per-chunk material counts. `WorldCountMaterialChange` is the only way
+   the counts move, and every function that writes a cell's material calls
+   it: WorldSetGeneratedCell, WorldSetCellRaw and WorldMoveCell. A count that
+   is ever too low skips a real reaction, so nothing writes `material` past
+   them. */
+static inline uint16_t *WorldMaterialCounter(World *world, size_t chunkIndex,
+                                             CellMaterial material)
+{
+    if (material == MATERIAL_WATER) return &world->chunkWater[chunkIndex];
+    if (material == MATERIAL_LAVA) return &world->chunkLava[chunkIndex];
+    return NULL;
+}
+
+static inline void WorldCountMaterialChange(World *world, int x, int y,
+                                            CellMaterial from, CellMaterial to)
+{
+    size_t chunkIndex;
+    uint16_t *counter;
+
+    if (from == to) {
+        return;
+    }
+    chunkIndex = WorldChunkIndex(world, x / WORLD_CHUNK_SIZE, y / WORLD_CHUNK_SIZE);
+    counter = WorldMaterialCounter(world, chunkIndex, from);
+    if (counter != NULL && *counter > 0u) {
+        --*counter;
+    }
+    counter = WorldMaterialCounter(world, chunkIndex, to);
+    if (counter != NULL) {
+        ++*counter;
+    }
+}
+
+/* Whether `material` exists in the chunk holding (x, y) or in any chunk the
+   cell touches across a border, which is every chunk one of its eight
+   neighbours can lie in. Conservative: a true answer means "worth scanning",
+   never "found". */
+static inline bool WorldNeighbourhoodHolds(const World *world, int x, int y,
+                                           CellMaterial material)
+{
+    const uint16_t *counts = material == MATERIAL_WATER ? world->chunkWater
+                                                        : world->chunkLava;
+    int chunkX = x / WORLD_CHUNK_SIZE;
+    int chunkY = y / WORLD_CHUNK_SIZE;
+    int firstChunkX = chunkX - (x % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
+    int lastChunkX = chunkX + (x % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
+    int firstChunkY = chunkY - (y % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
+    int lastChunkY = chunkY + (y % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
+    int probeY;
+
+    if (counts == NULL) {
+        return true;
+    }
+    if (firstChunkX < 0) firstChunkX = 0;
+    if (firstChunkY < 0) firstChunkY = 0;
+    if (lastChunkX > world->chunkColumns - 1) lastChunkX = world->chunkColumns - 1;
+    if (lastChunkY > world->chunkRows - 1) lastChunkY = world->chunkRows - 1;
+    for (probeY = firstChunkY; probeY <= lastChunkY; ++probeY) {
+        int probeX;
+
+        for (probeX = firstChunkX; probeX <= lastChunkX; ++probeX) {
+            if (counts[WorldChunkIndex(world, probeX, probeY)] > 0u) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /* world_storage.c
  *
  * Every wake goes through WorldWakeCellAndNeighbors, which is the only caller

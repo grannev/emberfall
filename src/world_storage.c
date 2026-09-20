@@ -112,6 +112,7 @@ void WorldSetGeneratedCell(World *world, int x, int y,
     }
 
     cell = WorldCell(world, x, y);
+    WorldCountMaterialChange(world, x, y, (CellMaterial)cell->material, material);
     cell->material = (uint8_t)material;
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
@@ -128,6 +129,7 @@ void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
     }
 
     cell = WorldCell(world, x, y);
+    WorldCountMaterialChange(world, x, y, (CellMaterial)cell->material, material);
     cell->material = (uint8_t)material;
     cell->temperature = MaterialInitialTemperature(material);
     cell->lifetime = 0;
@@ -172,6 +174,8 @@ bool WorldInit(World *world, int width, int height)
                                    sizeof(*world->activeRowCount));
     world->nextRowCount = calloc((size_t)world->chunkRows,
                                  sizeof(*world->nextRowCount));
+    world->chunkWater = calloc(chunkCount, sizeof(*world->chunkWater));
+    world->chunkLava = calloc(chunkCount, sizeof(*world->chunkLava));
     world->lightColumns = (width + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
     world->lightRows = (height + WORLD_LIGHT_SCALE - 1) / WORLD_LIGHT_SCALE;
     lightCount = (size_t)world->lightColumns * (size_t)world->lightRows;
@@ -200,7 +204,8 @@ bool WorldInit(World *world, int width, int height)
     if (world->cells == NULL || world->activeChunks == NULL ||
         world->nextActiveChunks == NULL || world->activeRowColumns == NULL ||
         world->nextRowColumns == NULL || world->activeRowCount == NULL ||
-        world->nextRowCount == NULL || world->dirtyChunks == NULL ||
+        world->nextRowCount == NULL || world->chunkWater == NULL ||
+        world->chunkLava == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
         world->lightEmission == NULL || world->lightOpacity == NULL ||
@@ -225,6 +230,8 @@ void WorldUnload(World *world)
     free(world->nextRowColumns);
     free(world->activeRowCount);
     free(world->nextRowCount);
+    free(world->chunkWater);
+    free(world->chunkLava);
     free(world->dirtyChunks);
     free(world->lightDirtyChunks);
     free(world->lightSky);
@@ -362,6 +369,22 @@ int WorldCountDynamicCells(const World *world)
         }
     }
     return count;
+}
+
+int WorldChunkMaterialCount(const World *world, int chunkX, int chunkY,
+                            CellMaterial material)
+{
+    if (world == NULL || world->chunkWater == NULL || chunkX < 0 || chunkY < 0 ||
+        chunkX >= world->chunkColumns || chunkY >= world->chunkRows) {
+        return 0;
+    }
+    if (material == MATERIAL_WATER) {
+        return world->chunkWater[WorldChunkIndex(world, chunkX, chunkY)];
+    }
+    if (material == MATERIAL_LAVA) {
+        return world->chunkLava[WorldChunkIndex(world, chunkX, chunkY)];
+    }
+    return 0;
 }
 
 CellMaterial WorldGetCell(const World *world, int x, int y)
