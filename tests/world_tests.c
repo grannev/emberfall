@@ -10167,6 +10167,42 @@ static void test_diving_in_fast_throws_a_crown(void)
     WorldUnload(&world);
 }
 
+/* The dive that matters most is the boosted one, and it is the one the drill
+   would hide: the corridor is steam before the character is in it. The entry
+   is read a frame ahead, so the crown is thrown from water that is still
+   water. */
+static void test_a_boosted_dive_still_splashes(void)
+{
+    World world;
+    Player player;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    int splashes = 0;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 256), "world allocation failed");
+    FillRect(&world, 0, 120, 255, 200, MATERIAL_WATER);
+    FillRect(&world, 0, 201, 255, 255, MATERIAL_ROCK);
+    Tick(&world, 60);
+    PlayerInit(&player, (Vector2){128.0f, 60.0f});
+    player.velocity = (Vector2){0.0f, player.boostSpeed};
+    FluidInteractionInit(&fluid);
+    for (step = 0; step < 20; ++step) {
+        GameEventsClear(&events);
+        FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
+        splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
+        PlayerUpdate(&player, &world, (Vector2){0.0f, 1.0f}, true, MOVEMENT_STEP);
+        WorldUpdate(&world);
+    }
+    CHECK(fluid.stats.entries == 1, "the boosted dive counted %d entries",
+          fluid.stats.entries);
+    CHECK(splashes == 1, "the boosted dive made %d splashes", splashes);
+    CHECK(fluid.stats.cellsPushed > 40, "the boosted dive threw only %d cells",
+          fluid.stats.cellsPushed);
+    CHECK(world.fluid.vaporised > 0, "the drill vaporised nothing on the way down");
+    WorldUnload(&world);
+}
+
 static void test_a_low_fast_pass_lifts_the_water(void)
 {
     World world;
@@ -12192,6 +12228,34 @@ static void test_a_held_cryo_beam_freezes_a_whole_pond(void)
     WorldUnload(&world);
 }
 
+/* Steam is lighter than water: made under the surface it bubbles up through
+   it, and when its life runs out it thins to nothing rather than raining
+   back down as water. */
+static void test_steam_rises_through_water_and_disperses(void)
+{
+    World world;
+    int y;
+
+    CHECK(WorldInit(&world, 32, 64), "world allocation failed");
+    FillRect(&world, 0, 60, 31, 63, MATERIAL_ROCK);
+    FillRect(&world, 0, 20, 31, 59, MATERIAL_WATER);
+    WorldSetCell(&world, 16, 50, MATERIAL_STEAM);
+    Tick(&world, 60);
+    for (y = 30; y < 60; ++y) {
+        CHECK(WorldGetCell(&world, 16, y) != MATERIAL_STEAM &&
+                  WorldGetCell(&world, 15, y) != MATERIAL_STEAM &&
+                  WorldGetCell(&world, 17, y) != MATERIAL_STEAM,
+              "steam was still under water at row %d after a second", y);
+    }
+    CHECK(CountMaterial(&world, MATERIAL_STEAM) == 1, "the steam was lost on the way up");
+    Tick(&world, 600);
+    CHECK(CountMaterial(&world, MATERIAL_STEAM) == 0, "the steam never dispersed");
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == 32 * 40 - 1,
+          "the steam came back as water: %d cells of water",
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+}
+
 static void test_heat_melts_ice_back_into_water(void)
 {
     World world;
@@ -12945,6 +13009,7 @@ int main(void)
     RUN(test_water_never_slows_the_player);
     RUN(test_the_drill_turns_water_to_steam);
     RUN(test_diving_in_fast_throws_a_crown);
+    RUN(test_a_boosted_dive_still_splashes);
     RUN(test_a_low_fast_pass_lifts_the_water);
     RUN(test_leaving_the_water_fast_splashes);
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
@@ -13011,6 +13076,7 @@ int main(void)
     RUN(test_cryo_snuffs_fire_into_smoke);
     RUN(test_cryo_freezes_water_into_standing_ice);
     RUN(test_a_held_cryo_beam_freezes_a_whole_pond);
+    RUN(test_steam_rises_through_water_and_disperses);
     RUN(test_heat_melts_ice_back_into_water);
     RUN(test_cryo_settles_lava_back_into_rock);
     RUN(test_one_force_blast_throws_loose_material_far);

@@ -255,19 +255,37 @@ static void WorldUpdateLiquid(World *world, int x, int y, int direction,
     (void)WorldFlowSideways(world, x, y, -direction, reach, true);
 }
 
+/* A gas rises through liquid as well as through air: it is lighter than
+   both, and steam made under water — by a drill, by lava — has to come up
+   through it as a bubble rather than sit in a tube below the surface. */
+static bool WorldGasRisesInto(World *world, int x, int y, int targetX, int targetY)
+{
+    CellMaterial target;
+
+    if (!WorldInBounds(world, targetX, targetY)) {
+        return false;
+    }
+    target = WorldMaterialAt(world, targetX, targetY);
+    if (target == MATERIAL_EMPTY || MaterialIsLiquid(target)) {
+        WorldMoveCell(world, x, y, targetX, targetY);
+        return true;
+    }
+    return false;
+}
+
 static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool slow)
 {
     if (slow && ((world->tick + (uint32_t)x + (uint32_t)y) & 1u) != 0u) {
         return;
     }
 
-    if (WorldTryMoveInto(world, x, y, x, y - 1, false)) {
+    if (WorldGasRisesInto(world, x, y, x, y - 1)) {
         return;
     }
-    if (WorldTryMoveInto(world, x, y, x + direction, y - 1, false)) {
+    if (WorldGasRisesInto(world, x, y, x + direction, y - 1)) {
         return;
     }
-    if (WorldTryMoveInto(world, x, y, x - direction, y - 1, false)) {
+    if (WorldGasRisesInto(world, x, y, x - direction, y - 1)) {
         return;
     }
     if (WorldTryMoveInto(world, x, y, x + direction, y, false)) {

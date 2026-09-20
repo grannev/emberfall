@@ -84,7 +84,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 2, .variationG = 2,
         .initialTemperature = 125.0f,
         .linearCoolRate = 0.42f,
-        .onCool = {true, MATERIAL_WATER, 58.0f},
+        /* Steam thins into nothing when its life runs out rather than
+           condensing back: a cloud of it raining down as water read as the
+           water coming back, and the player asked for it to disperse. */
         .dynamic = true,
         .chillRate = 320.0f,
     },

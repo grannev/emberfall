@@ -60,7 +60,7 @@ void FluidInteractionInit(FluidInteractionState *state)
 /* Fraction of the collider's samples that are liquid, and which liquid the
    most of them are. */
 static float FluidSubmergedFraction(const World *world, const Player *player,
-                                    CellMaterial *liquid)
+                                    Vector2 at, CellMaterial *liquid)
 {
     int counts[MATERIAL_COUNT] = {0};
     int total = 0;
@@ -70,11 +70,11 @@ static float FluidSubmergedFraction(const World *world, const Player *player,
     int best = MATERIAL_EMPTY;
 
     for (row = 0; row < FLUID_SAMPLE_ROWS; ++row) {
-        float y = player->position.y - player->radius +
+        float y = at.y - player->radius +
                   2.0f * player->radius * (float)row / (float)(FLUID_SAMPLE_ROWS - 1);
 
         for (column = 0; column < FLUID_SAMPLE_COLUMNS; ++column) {
-            float x = player->position.x - player->radius +
+            float x = at.x - player->radius +
                       2.0f * player->radius * (float)column /
                           (float)(FLUID_SAMPLE_COLUMNS - 1);
             CellMaterial material = WorldGetCell(world, (int)floorf(x),
@@ -97,11 +97,11 @@ static float FluidSubmergedFraction(const World *world, const Player *player,
 /* The row of the surface of the liquid the character is in: the topmost
    liquid cell in their column within reach of the collider, or the
    character's own row when the column is not liquid at all. */
-static int FluidSurfaceRow(const World *world, const Player *player)
+static int FluidSurfaceRow(const World *world, const Player *player, Vector2 at)
 {
-    int x = (int)floorf(player->position.x);
-    int y = (int)floorf(player->position.y);
-    int reach = (int)ceilf(player->radius) + 4;
+    int x = (int)floorf(at.x);
+    int y = (int)floorf(at.y);
+    int reach = (int)ceilf(player->radius) + 6;
     int probe;
     int surface = y;
 
@@ -115,9 +115,9 @@ static int FluidSurfaceRow(const World *world, const Player *player)
 
 static void FluidSplash(FluidInteractionState *state, const Player *player,
                         World *world, GameEventBuffer *events, float speed,
-                        bool entering)
+                        Vector2 where, bool entering)
 {
-    Vector2 at = {player->position.x, (float)FluidSurfaceRow(world, player) + 0.5f};
+    Vector2 at = {where.x, (float)FluidSurfaceRow(world, player, where) + 0.5f};
     float radius = 4.0f + speed / 30.0f;
     int strength = 4 + (int)(speed / 25.0f);
     Vector2 direction = {0.0f, entering ? 1.0f : -1.0f};
@@ -218,7 +218,10 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
 {
     float speed;
     float fraction;
+    float fractionAhead;
     CellMaterial liquid;
+    CellMaterial liquidAhead;
+    Vector2 ahead;
 
     if (state == NULL || player == NULL || world == NULL || world->cells == NULL ||
         events == NULL) {
@@ -226,7 +229,7 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
     }
     speed = sqrtf(player->velocity.x * player->velocity.x +
                   player->velocity.y * player->velocity.y);
-    fraction = FluidSubmergedFraction(world, player, &liquid);
+    fraction = FluidSubmergedFraction(world, player, player->position, &liquid);
     state->submerged = fraction;
     if (fraction > 0.0f) {
         state->liquid = liquid;
@@ -234,28 +237,49 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
     state->flyoverCooldown -= deltaTime;
     state->wakeCooldown -= deltaTime;
 
-    if (!state->inside && fraction >= FLUID_ENTER_FRACTION) {
+    /* Where the character will be at the end of this frame, read now,
+       before they move: at boost the frame covers six cells and the drill
+       cuts the corridor first, so the water the character is about to hit
+       is steam by the time they are in it, and a check of where they stand
+       never saw an entry at all. */
+    ahead.x = player->position.x + player->velocity.x * deltaTime;
+    ahead.y = player->position.y + player->velocity.y * deltaTime;
+    fractionAhead = FluidSubmergedFraction(world, player, ahead, &liquidAhead);
+
+    if (!state->inside &&
+        (fraction >= FLUID_ENTER_FRACTION || fractionAhead >= FLUID_ENTER_FRACTION)) {
+        bool here = fraction >= FLUID_ENTER_FRACTION;
+
         state->inside = true;
         ++state->stats.entries;
-        if (speed >= state->config.splashSpeed) {
-            FluidSplash(state, player, world, events, speed, true);
+        if (!here) {
+            state->liquid = liquidAhead;
         }
-    } else if (state->inside && fraction <= FLUID_LEAVE_FRACTION) {
+        if (speed >= state->config.splashSpeed) {
+            FluidSplash(state, player, world, events, speed,
+                        here ? player->position : ahead, true);
+        }
+        return;
+    }
+    if (state->inside && fraction <= FLUID_LEAVE_FRACTION &&
+        fractionAhead <= FLUID_LEAVE_FRACTION) {
         state->inside = false;
         ++state->stats.exits;
         if (speed >= state->config.splashSpeed) {
-            FluidSplash(state, player, world, events, speed, false);
+            FluidSplash(state, player, world, events, speed, player->position, false);
         }
-    } else if (state->inside && fraction > 0.0f &&
-               speed >= state->config.wakeSpeed && !PlayerIsDrilling(player) &&
-               state->wakeCooldown <= 0.0f) {
+        return;
+    }
+    if (state->inside && fraction > 0.0f && speed >= state->config.wakeSpeed &&
+        !PlayerIsDrilling(player) && state->wakeCooldown <= 0.0f) {
         /* Not while drilling: the drill is turning the water to steam, and
            steam is not shoved. */
         FluidWake(state, player, world, speed);
         state->wakeCooldown = 0.05f;
-    } else if (!state->inside && fraction <= 0.0f &&
-               speed >= state->config.flyoverSpeed &&
-               state->flyoverCooldown <= 0.0f) {
+        return;
+    }
+    if (!state->inside && fraction <= 0.0f && speed >= state->config.flyoverSpeed &&
+        state->flyoverCooldown <= 0.0f) {
         FluidFlyover(state, player, world, events, speed);
     }
 }
