@@ -6,6 +6,8 @@
 
 #include <raymath.h>
 
+#include "materials.h"
+
 #define PRESENTATION_FX_RANDOM_SEED 0x4f1bbcddu
 #define PRESENTATION_FX_MAX_DELAY 5.0f
 
@@ -588,6 +590,86 @@ static void PresentationFxSpawnDrill(PresentationFxSystem *system,
     }, spawned);
 }
 
+/* The colour of a liquid's spray: the material's own, lightened, so lava
+   throws embers and water throws foam. */
+static Color PresentationFxLiquidColor(CellMaterial material, unsigned char alpha)
+{
+    Color base = MaterialAt(material)->color;
+
+    return (Color){(unsigned char)(base.r + (255 - base.r) / 2),
+                   (unsigned char)(base.g + (255 - base.g) / 2),
+                   (unsigned char)(base.b + (255 - base.b) / 2), alpha};
+}
+
+/* A splash: a ring spreading on the surface and a fan of droplets thrown up
+   and away from the way the thing was going. Sized by the speed and, for a
+   body, by how much of it went in. */
+static void PresentationFxSpawnSplash(PresentationFxSystem *system,
+                                      const GameEvent *event, uint16_t *spawned)
+{
+    float size = PresentationFxClamp(event->strength / 120.0f, 0.25f, 2.0f) +
+                 PresentationFxClamp((float)event->count / 400.0f, 0.0f, 1.5f);
+    Color color = PresentationFxLiquidColor(event->material, 235);
+    bool glowing = event->material == MATERIAL_LAVA;
+    Vector2 direction = PresentationFxDirection(event->direction,
+                                                (Vector2){0.0f, 1.0f});
+    int droplets = 3 + (int)(size * 3.0f);
+    int index;
+
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_RING,
+        .priority = PRESENTATION_FX_PRIORITY_NORMAL,
+        .start = event->position,
+        .color = color,
+        .startRadius = 1.5f,
+        .endRadius = 6.0f + 9.0f * size,
+        .width = 0.9f,
+        .intensity = 0.55f,
+        .lifetime = 0.34f + 0.12f * size,
+        .emissive = glowing,
+    }, spawned);
+    for (index = 0; index < droplets; ++index) {
+        /* Up and out, leaning away from the direction of travel: a diver
+           throws spray behind them, a body falling in throws it all round. */
+        float angle = -PI * 0.5f +
+                      PresentationFxRandomRange(system, -0.9f, 0.9f) -
+                      direction.x * 0.5f;
+        float reach = PresentationFxRandomRange(system, 5.0f, 9.0f + 10.0f * size);
+        Vector2 spray = {cosf(angle), sinf(angle)};
+
+        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+            .type = PRESENTATION_FX_TRAIL,
+            .priority = PRESENTATION_FX_PRIORITY_LOW,
+            .start = event->position,
+            .end = Vector2Add(event->position, Vector2Scale(spray, reach)),
+            .color = color,
+            .width = 0.7f,
+            .intensity = 0.5f,
+            .lifetime = 0.22f + 0.1f * size,
+            .delay = 0.01f * (float)index,
+            .emissive = glowing,
+        }, spawned);
+    }
+}
+
+/* A ripple: a low, wide ring on the surface, nothing thrown. */
+static void PresentationFxSpawnRipple(PresentationFxSystem *system,
+                                      const GameEvent *event, uint16_t *spawned)
+{
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_RING,
+        .priority = PRESENTATION_FX_PRIORITY_LOW,
+        .start = event->position,
+        .color = PresentationFxLiquidColor(event->material, 170),
+        .startRadius = 1.0f,
+        .endRadius = 3.0f + event->radius,
+        .width = 0.6f,
+        .intensity = 0.3f,
+        .lifetime = 0.3f,
+        .emissive = event->material == MATERIAL_LAVA,
+    }, spawned);
+}
+
 uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
                                      const GameEventBuffer *events)
 {
@@ -655,6 +737,12 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
                 PresentationFxSpawnDrill(system, event, &spawned);
                 system->drillSpawnCooldown = 0.035f;
             }
+            break;
+        case GAME_EVENT_LIQUID_SPLASH:
+            PresentationFxSpawnSplash(system, event, &spawned);
+            break;
+        case GAME_EVENT_LIQUID_RIPPLE:
+            PresentationFxSpawnRipple(system, event, &spawned);
             break;
         default:
             break;

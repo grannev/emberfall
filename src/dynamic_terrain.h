@@ -155,6 +155,12 @@ typedef struct TerrainBody {
        exactly which cells to restore. */
     int sourceX;
     int sourceY;
+    /* How much of the body terrain_fluid.c last found under liquid, 0 to 1,
+       and whether it counted as in the liquid, with hysteresis. Kept on the
+       body because the entry and the exit are the difference between two
+       steps, and nothing else remembers the last one. */
+    float submerged;
+    bool inLiquid;
 } TerrainBody;
 
 /* Tuning for how bodies move. Gathered in one struct rather than scattered

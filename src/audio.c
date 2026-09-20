@@ -20,7 +20,8 @@ typedef enum SynthKind {
     SYNTH_FORCE,
     SYNTH_CHILL,
     SYNTH_CHILL_IMPACT,
-    SYNTH_BOOST
+    SYNTH_BOOST,
+    SYNTH_SPLASH
 } SynthKind;
 
 static float SynthNoise(uint32_t *state)
@@ -145,6 +146,17 @@ static float SynthSample(SynthKind kind, float time, float duration,
         return (thump * 0.72f + rush * 1.8f + crack * 0.28f) * decay * release;
     }
 
+    if (kind == SYNTH_SPLASH) {
+        /* A slap and a wash: a short low thump for the surface giving way,
+           then filtered noise falling away as the spray comes down. */
+        float slap = sinf(time * 2.0f * PI * (180.0f - 110.0f * time / duration)) *
+                     expf(-22.0f * time);
+        float wash = SynthLowPass(SynthNoise(noiseState), filterState, 0.18f) *
+                     expf(-5.5f * time);
+
+        return (slap * 0.7f + wash * 2.4f) * release * 0.7f;
+    }
+
     {
         float decay = expf(-4.5f * time);
         float hiss = SynthNoise(noiseState);
@@ -211,6 +223,7 @@ bool GameAudioInit(GameAudio *audio)
     audio->chill = SynthCreateSound(SYNTH_CHILL, 0.2f);
     audio->chillImpact = SynthCreateSound(SYNTH_CHILL_IMPACT, 0.12f);
     audio->boost = SynthCreateSound(SYNTH_BOOST, 0.52f);
+    audio->splash = SynthCreateSound(SYNTH_SPLASH, 0.46f);
     SetMasterVolume(0.72f);
 
     if (IsSoundValid(audio->laser)) SetSoundVolume(audio->laser, 0.34f);
@@ -225,6 +238,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
     if (IsSoundValid(audio->chillImpact)) SetSoundVolume(audio->chillImpact, 0.26f);
     if (IsSoundValid(audio->boost)) SetSoundVolume(audio->boost, 0.45f);
+    if (IsSoundValid(audio->splash)) SetSoundVolume(audio->splash, 0.5f);
     return true;
 }
 
@@ -302,6 +316,7 @@ void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime)
     }
 
     audio->reactionCooldown = fmaxf(0.0f, audio->reactionCooldown - deltaTime);
+    audio->splashCooldown = fmaxf(0.0f, audio->splashCooldown - deltaTime);
     audio->impactCooldown = fmaxf(0.0f, audio->impactCooldown - deltaTime);
     audio->laserImpactCooldown = fmaxf(
         0.0f, audio->laserImpactCooldown - deltaTime);
@@ -425,6 +440,21 @@ void GameAudioPlayReaction(GameAudio *audio)
     audio->reactionCooldown = 0.13f;
 }
 
+void GameAudioPlaySplash(GameAudio *audio, float strength)
+{
+    float weight;
+
+    if (audio == NULL || !audio->ready || audio->splashCooldown > 0.0f ||
+        !IsSoundValid(audio->splash)) {
+        return;
+    }
+    weight = Clamp(strength / 300.0f, 0.0f, 1.0f);
+    SetSoundPitch(audio->splash, 1.25f - 0.45f * weight);
+    SetSoundVolume(audio->splash, 0.28f + 0.42f * weight);
+    PlaySound(audio->splash);
+    audio->splashCooldown = 0.11f;
+}
+
 void GameAudioUnload(GameAudio *audio)
 {
     if (audio == NULL) {
@@ -443,6 +473,7 @@ void GameAudioUnload(GameAudio *audio)
         if (IsSoundValid(audio->force)) UnloadSound(audio->force);
         if (IsSoundValid(audio->chill)) UnloadSound(audio->chill);
         if (IsSoundValid(audio->chillImpact)) UnloadSound(audio->chillImpact);
+        if (IsSoundValid(audio->splash)) UnloadSound(audio->splash);
         if (IsSoundValid(audio->boost)) UnloadSound(audio->boost);
         CloseAudioDevice();
     }

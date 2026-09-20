@@ -14,6 +14,8 @@
 #include "terrain_weld.h"
 #include "terrain_damage.h"
 #include "terrain_impulse.h"
+#include "fluid_interaction.h"
+#include "terrain_fluid.h"
 #include "terrain_interaction.h"
 #include "world.h"
 
@@ -65,6 +67,10 @@ typedef struct GameState {
     /* Everything the player does to a body directly: standing on it, shoving
        it, carrying it, throwing it. */
     TerrainInteractionSystem interaction;
+    /* The player against liquid: drag, splashes, the wake of a low pass. */
+    FluidInteractionState fluid;
+    /* Bodies against liquid: buoyancy, drag, splashes. */
+    TerrainFluidSystem bodyFluid;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

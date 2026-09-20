@@ -89,6 +89,14 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 - Beams start at `PlayerBeamOrigin`, used by the gameplay ray and the drawn beam
   alike. A beam cast from the chest and drawn from the head reads as a bug the
   moment the player aims down.
+- The player's resistance in liquid is `Player.fluidDrag`, a quadratic drag set
+  each frame by `fluid_interaction.c` from a bounded sample through the
+  collider and integrated after thrust, so a dive is stopped hard, a drift is
+  hardly touched, and the controls stay alive under water. Never a flat
+  multiplier on velocity: that took the same fraction from a crawl as from a
+  dive, read as swimming through glue, and was removed once already. Dry
+  flight must be bit-identical with the model running. A body in liquid gets
+  buoyancy from density alone (`terrain_fluid.c`), drag before buoyancy.
 - Thrust is decomposed along and across the direction of travel: forward is
   acceleration, backward is braking and is worth more than acceleration, across
   is steering and is what speed takes away. Steering authority falls to a

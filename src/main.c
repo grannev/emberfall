@@ -288,6 +288,10 @@ static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
         case GAME_EVENT_MATERIAL_REACTION:
             GameAudioPlayReaction(audio);
             break;
+        case GAME_EVENT_LIQUID_SPLASH:
+            GameAudioPlaySplash(audio, event->strength +
+                                           (float)event->count * 0.25f);
+            break;
         default:
             break;
         }

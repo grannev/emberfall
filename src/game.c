@@ -78,6 +78,8 @@ bool GameInit(GameState *game, GameConfig config)
     TerrainImpulseInit(&game->impulses);
     TerrainDamageInit(&game->damage);
     TerrainInteractionInit(&game->interaction);
+    FluidInteractionInit(&game->fluid);
+    TerrainFluidInit(&game->bodyFluid);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -113,6 +115,8 @@ void GameReset(GameState *game, uint64_t seed)
     TerrainImpulseInit(&game->impulses);
     TerrainDamageInit(&game->damage);
     TerrainInteractionInit(&game->interaction);
+    FluidInteractionInit(&game->fluid);
+    TerrainFluidInit(&game->bodyFluid);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -244,6 +248,11 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         game->dayPhase += game->config.fixedStep / GAME_DAY_SECONDS;
         if (game->dayPhase >= 1.0f) game->dayPhase -= floorf(game->dayPhase);
         WorldSetDaylight(&game->world, GameDaylightAt(game->dayPhase));
+        /* Before the bodies are stepped: the liquid a body is in changes the
+           velocity the step integrates, and a body that breaks the surface
+           this step shoves the liquid before the liquid's next tick. */
+        TerrainFluidUpdate(&game->bodyFluid, &game->dynamicTerrain, &game->world,
+                           events, game->config.fixedStep);
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
                              game->config.fixedStep);
         /* After integration, so a body that settled on this very step starts
@@ -282,6 +291,11 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
         GameRegenerate(game);
     }
 
+    /* Before the character moves: the liquid they are in sets the drag they
+       integrate this frame, and the surface they are about to break is
+       still where they are about to break it. */
+    FluidInteractionUpdatePlayer(&game->fluid, &game->player, &game->world,
+                                 events, deltaTime);
     PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,
                  deltaTime);
     GameActivatePlayerRegion(game);

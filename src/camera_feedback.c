@@ -166,6 +166,21 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
             impulse.zoomStrength = 0.0f;
             impulse.duration = 0.12f;
             break;
+        case GAME_EVENT_LIQUID_SPLASH:
+            /* Only the player's own dive, and only a hard one: a body
+               falling into a lake across the map must not jolt the frame. */
+            if (event->count != 0 || event->strength < 100.0f) {
+                relevant = false;
+                break;
+            }
+            impulse.direction = CameraFeedbackDirection(
+                event->direction, (Vector2){0.0f, 1.0f});
+            impulse.positionStrength = CameraFeedbackClamp(
+                event->strength * 0.008f, 0.6f, 2.4f);
+            impulse.rotationStrength = 0.14f;
+            impulse.zoomStrength = 0.012f;
+            impulse.duration = 0.2f;
+            break;
         default:
             relevant = false;
             break;

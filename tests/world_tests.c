@@ -25,7 +25,9 @@
 #include "world.h"
 #include "dynamic_terrain.h"
 #include "environment_renderer.h"
+#include "fluid_interaction.h"
 #include "terrain_extraction.h"
+#include "terrain_fluid.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
 #include "input.h"
@@ -93,6 +95,19 @@ static void FillRect(World *world, int x0, int y0, int x1, int y1,
             WorldSetCell(world, x, y, material);
         }
     }
+}
+
+static int CountEvents(const GameEventBuffer *events, GameEventType type)
+{
+    int count = 0;
+    unsigned index;
+
+    for (index = 0u; index < events->count; ++index) {
+        if (events->events[index].type == type) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 static void Tick(World *world, int count)
@@ -6292,6 +6307,140 @@ static void test_ground_destroyed_under_a_sleeping_body_wakes_it(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* --- terrain bodies and a liquid ------------------------------------------ */
+
+/* The contract of terrain_fluid.h: what floats is decided by density alone,
+   a body in water is slowed, a body that hits water fast splashes, and a
+   floating body comes to rest. */
+
+static TerrainFluidSystem bodyFluid;
+
+/* A solid block of `material`, finalised, placed at `position`. */
+static TerrainBodyHandle MakeMaterialBody(DynamicTerrainSystem *system, int width,
+                                          int height, CellMaterial material,
+                                          Vector2 position)
+{
+    TerrainBodyHandle handle = DynamicTerrainAllocBody(system, width, height);
+    TerrainBody *body;
+
+    FillBody(system, handle, 0, 0, width - 1, height - 1, material, 20.0f);
+    DynamicTerrainFinalizeBody(system, handle);
+    body = DynamicTerrainGet(system, handle);
+    if (body != NULL) {
+        body->position = position;
+    }
+    return handle;
+}
+
+static void FluidTick(DynamicTerrainSystem *system, World *world,
+                      GameEventBuffer *events, int count)
+{
+    int step;
+
+    for (step = 0; step < count; ++step) {
+        GameEventsClear(events);
+        TerrainFluidUpdate(&bodyFluid, system, world, events, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(system, world, KINEMATIC_STEP);
+        WorldUpdate(world);
+    }
+}
+
+static void test_ice_floats_and_rock_sinks(void)
+{
+    World world;
+    GameEventBuffer events;
+    TerrainBodyHandle ice;
+    TerrainBodyHandle rock;
+    const TerrainBody *iceBody;
+    const TerrainBody *rockBody;
+    const float surfaceY = 40.0f;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    FillRect(&world, 0, 100, 159, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 0, 3, 99, MATERIAL_ROCK);
+    FillRect(&world, 156, 0, 159, 99, MATERIAL_ROCK);
+    FillRect(&world, 4, (int)surfaceY, 155, 99, MATERIAL_WATER);
+    Tick(&world, 60);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainFluidInit(&bodyFluid);
+    ice = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ICE, (Vector2){40.0f, 20.0f});
+    rock = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK, (Vector2){120.0f, 20.0f});
+    FluidTick(&terrain, &world, &events, 900);
+
+    iceBody = DynamicTerrainGetConst(&terrain, ice);
+    rockBody = DynamicTerrainGetConst(&terrain, rock);
+    CHECK(iceBody != NULL && rockBody != NULL, "a body was lost");
+    /* Ice at 0.92 of water's density rides with about a twelfth of it above
+       the surface: its centre sits just under the surface row. */
+    CHECK(iceBody->position.y > surfaceY - 1.0f && iceBody->position.y < surfaceY + 5.0f,
+          "the ice floe settled at y = %.2f against a surface at %.0f",
+          (double)iceBody->position.y, (double)surfaceY);
+    /* Sampled at surface cells, so a floe riding a twelfth proud can still
+       read as fully under; what matters is that it stopped at the top. */
+    CHECK(iceBody->submerged > 0.5f,
+          "the floating floe is %.2f submerged", (double)iceBody->submerged);
+    CHECK(BodyLowestPoint(rockBody) > 95.0f,
+          "the rock stopped at %.2f instead of sinking to the bottom at 100",
+          (double)BodyLowestPoint(rockBody));
+    /* Its bottom row reads the rock it rests on, not water. */
+    CHECK(rockBody->submerged > 0.6f, "the sunk rock is %.2f submerged",
+          (double)rockBody->submerged);
+    CHECK(terrain.awakeCount == 0, "%d bodies stayed awake in still water",
+          terrain.awakeCount);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_hitting_water_splashes_and_slows(void)
+{
+    World world;
+    GameEventBuffer events;
+    TerrainBodyHandle handle;
+    const TerrainBody *body;
+    float speedAtEntry = -1.0f;
+    int splashes = 0;
+    int waterBefore;
+    int step;
+
+    CHECK(WorldInit(&world, 160, 160), "world allocation failed");
+    FillRect(&world, 0, 140, 159, 159, MATERIAL_ROCK);
+    FillRect(&world, 0, 0, 3, 139, MATERIAL_ROCK);
+    FillRect(&world, 156, 0, 159, 139, MATERIAL_ROCK);
+    FillRect(&world, 4, 60, 155, 139, MATERIAL_WATER);
+    Tick(&world, 60);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainFluidInit(&bodyFluid);
+    handle = MakeMaterialBody(&terrain, 10, 10, MATERIAL_ROCK, (Vector2){80.0f, 30.0f});
+    DynamicTerrainSetVelocity(&terrain, handle, (Vector2){0.0f, 200.0f}, 0.0f);
+    body = DynamicTerrainGetConst(&terrain, handle);
+
+    for (step = 0; step < 40; ++step) {
+        GameEventsClear(&events);
+        TerrainFluidUpdate(&bodyFluid, &terrain, &world, &events, KINEMATIC_STEP);
+        if (bodyFluid.stats.entries == 1 && speedAtEntry < 0.0f) {
+            speedAtEntry = body->velocity.y;
+        }
+        splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
+        TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
+        WorldUpdate(&world);
+    }
+    CHECK(bodyFluid.stats.entries == 1, "the fall counted %d entries",
+          bodyFluid.stats.entries);
+    CHECK(splashes == 1, "the fall made %d splashes", splashes);
+    CHECK(bodyFluid.stats.cellsPushed > 20, "the fall pushed only %d cells",
+          bodyFluid.stats.cellsPushed);
+    /* Forty ticks of free fall from 200 would be 280; the water took most
+       of it. */
+    CHECK(body->velocity.y < 100.0f,
+          "the body is still doing %.1f under water", (double)body->velocity.y);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "the splash changed the water count from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 /* The bug this was written for: a beam cut a wedge free and the wedge hung in
    the air. The beam is the one destructive power that removes nothing directly —
    it heats cells until they stop being rock — so every cell it destroys leaves
@@ -9602,39 +9751,274 @@ static void test_movement_survives_an_absurd_velocity(void)
    over a lava flow feel like wading, which is not what this flight is meant
    to feel like anywhere in the world, so the drag is gone entirely. Passing
    through either must leave speed exactly as it was. */
-static void test_water_and_lava_cost_no_speed(void)
+/* --- the player and a liquid --------------------------------------------- */
+
+/* The contract of fluid_interaction.h. The drag is quadratic — a dive is
+   stopped hard, a crawl hardly — and thrust still works under water; going
+   in or coming out fast breaks the surface and tells presentation; a fast
+   pass just above the water lifts it. Dry flight is untouched by any of it. */
+
+/* Flies `steps` frames through the fluid model and the player together,
+   without pinning the position: these tests are about what the liquid does
+   to a character who is actually somewhere. */
+static void SwimPlayer(FluidInteractionState *fluid, Player *player, World *world,
+                       GameEventBuffer *events, Vector2 input, bool boost,
+                       int steps)
+{
+    int step;
+
+    for (step = 0; step < steps; ++step) {
+        GameEventsClear(events);
+        FluidInteractionUpdatePlayer(fluid, player, world, events, MOVEMENT_STEP);
+        PlayerUpdate(player, world, input, boost, MOVEMENT_STEP);
+    }
+}
+
+static void test_dry_flight_is_untouched_by_the_fluid_model(void)
 {
     World world;
-    Player dry;
-    Player wet;
-    Player molten;
+    Player plain;
+    Player modelled;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    int step;
 
     CHECK(WorldInit(&world, 512, 256), "world allocation failed");
-    PlayerInit(&dry, (Vector2){60.0f, 60.0f});
-    PlayerInit(&wet, (Vector2){60.0f, 180.0f});
-    PlayerInit(&molten, (Vector2){60.0f, 100.0f});
-    /* All three pinned where they start, so "one of them is in the fluid"
-       stays true for the whole comparison. */
-    FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 300);
-    FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 300);
-    FlyPlayer(&molten, &world, (Vector2){1.0f, 0.0f}, true, 300);
-    CHECK(fabsf(PlayerSpeed(&dry) - PlayerSpeed(&wet)) < 0.01f &&
-              fabsf(PlayerSpeed(&dry) - PlayerSpeed(&molten)) < 0.01f,
-          "the three fixtures did not start level");
+    FillRect(&world, 0, 200, 511, 255, MATERIAL_WATER);
+    PlayerInit(&plain, (Vector2){60.0f, 60.0f});
+    PlayerInit(&modelled, (Vector2){60.0f, 60.0f});
+    FluidInteractionInit(&fluid);
+    GameEventsClear(&events);
+    for (step = 0; step < 200; ++step) {
+        Vector2 input = {1.0f, step < 100 ? 0.0f : -0.4f};
 
-    /* A pool and a lava flow in front of two of them only. */
-    FillRect(&world, 0, 150, 511, 220, MATERIAL_WATER);
-    FillRect(&world, 0, 70, 511, 130, MATERIAL_LAVA);
-    FlyPlayer(&dry, &world, (Vector2){1.0f, 0.0f}, true, 30);
-    FlyPlayer(&wet, &world, (Vector2){1.0f, 0.0f}, true, 30);
-    FlyPlayer(&molten, &world, (Vector2){1.0f, 0.0f}, true, 30);
+        PlayerUpdate(&plain, &world, input, true, MOVEMENT_STEP);
+        FluidInteractionUpdatePlayer(&fluid, &modelled, &world, &events,
+                                     MOVEMENT_STEP);
+        PlayerUpdate(&modelled, &world, input, true, MOVEMENT_STEP);
+    }
+    CHECK(plain.velocity.x == modelled.velocity.x &&
+              plain.velocity.y == modelled.velocity.y &&
+              plain.position.x == modelled.position.x &&
+              plain.position.y == modelled.position.y,
+          "the fluid model changed a dry flight: %.3f,%.3f vs %.3f,%.3f",
+          (double)plain.velocity.x, (double)plain.velocity.y,
+          (double)modelled.velocity.x, (double)modelled.velocity.y);
+    CHECK(fluid.stats.entries == 0 && fluid.stats.flyovers == 0 &&
+              events.count == 0,
+          "a dry flight produced fluid events");
+    WorldUnload(&world);
+}
 
-    CHECK(fabsf(PlayerSpeed(&wet) - PlayerSpeed(&dry)) < 0.5f,
-          "water slowed the player: %.1f wet against %.1f dry",
-          (double)PlayerSpeed(&wet), (double)PlayerSpeed(&dry));
-    CHECK(fabsf(PlayerSpeed(&molten) - PlayerSpeed(&dry)) < 0.5f,
-          "lava slowed the player: %.1f molten against %.1f dry",
-          (double)PlayerSpeed(&molten), (double)PlayerSpeed(&dry));
+static void test_water_drags_by_the_square_of_the_speed(void)
+{
+    World world;
+    Player fast;
+    Player slow;
+    FluidInteractionState fluidFast;
+    FluidInteractionState fluidSlow;
+    GameEventBuffer events;
+    float fastBefore;
+    float slowBefore;
+    float fastLoss;
+    float slowLoss;
+
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    FillRect(&world, 0, 100, 511, 255, MATERIAL_WATER);
+    PlayerInit(&fast, (Vector2){100.0f, 180.0f});
+    PlayerInit(&slow, (Vector2){300.0f, 180.0f});
+    fast.velocity = (Vector2){200.0f, 0.0f};
+    slow.velocity = (Vector2){20.0f, 0.0f};
+    FluidInteractionInit(&fluidFast);
+    FluidInteractionInit(&fluidSlow);
+    /* Already inside, so neither pays the entry blow. */
+    fluidFast.inside = true;
+    fluidSlow.inside = true;
+    fastBefore = PlayerSpeed(&fast);
+    slowBefore = PlayerSpeed(&slow);
+    SwimPlayer(&fluidFast, &fast, &world, &events, (Vector2){0.0f, 0.0f}, false, 1);
+    SwimPlayer(&fluidSlow, &slow, &world, &events, (Vector2){0.0f, 0.0f}, false, 1);
+    CHECK(fluidFast.submerged > 0.99f, "the fast fixture was not under water");
+    fastLoss = 1.0f - PlayerSpeed(&fast) / fastBefore;
+    slowLoss = 1.0f - PlayerSpeed(&slow) / slowBefore;
+    /* Both lose the same air drag; the water takes a share that grows with
+       the speed, so the fast one loses a clearly larger fraction. */
+    CHECK(fastLoss > slowLoss * 2.0f,
+          "water took %.3f of the fast fixture and %.3f of the slow one",
+          (double)fastLoss, (double)slowLoss);
+    CHECK(PlayerSpeed(&fast) > fastBefore * 0.5f,
+          "a single frame of water took the diver from %.1f to %.1f",
+          (double)fastBefore, (double)PlayerSpeed(&fast));
+    WorldUnload(&world);
+}
+
+static void test_thrust_still_works_under_water(void)
+{
+    World world;
+    Player player;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    float cruise;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    FillRect(&world, 0, 60, 1023, 255, MATERIAL_WATER);
+    PlayerInit(&player, (Vector2){100.0f, 160.0f});
+    FluidInteractionInit(&fluid);
+    fluid.inside = true;
+    /* Pinned, so the world's edge is never reached while the speed builds. */
+    {
+        Vector2 at = player.position;
+        int step;
+
+        for (step = 0; step < 240; ++step) {
+            GameEventsClear(&events);
+            FluidInteractionUpdatePlayer(&fluid, &player, &world, &events,
+                                         MOVEMENT_STEP);
+            PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+            player.position = at;
+        }
+    }
+    cruise = PlayerSpeed(&player);
+    CHECK(cruise > 100.0f, "a boosting diver crawled at %.1f", (double)cruise);
+    CHECK(cruise < player.boostSpeed * 0.7f,
+          "water did not slow the boost: %.1f against %.1f in air",
+          (double)cruise, (double)player.boostSpeed);
+    /* Steering: a turn of the thrust turns the velocity. */
+    {
+        Vector2 at = player.position;
+        int step;
+
+        for (step = 0; step < 60; ++step) {
+            GameEventsClear(&events);
+            FluidInteractionUpdatePlayer(&fluid, &player, &world, &events,
+                                         MOVEMENT_STEP);
+            PlayerUpdate(&player, &world, (Vector2){0.0f, -1.0f}, true, MOVEMENT_STEP);
+            player.position = at;
+        }
+    }
+    CHECK(player.velocity.y < -30.0f,
+          "the diver could not turn: vertical speed %.1f", (double)player.velocity.y);
+    WorldUnload(&world);
+}
+
+static void test_diving_in_fast_splashes_and_costs_speed(void)
+{
+    World world;
+    Player player;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    int waterBefore;
+    int splashes = 0;
+    float speedBefore;
+    float speedAtEntry = -1.0f;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 256), "world allocation failed");
+    FillRect(&world, 0, 120, 255, 200, MATERIAL_WATER);
+    FillRect(&world, 0, 201, 255, 255, MATERIAL_ROCK);
+    Tick(&world, 60);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    PlayerInit(&player, (Vector2){128.0f, 100.0f});
+    player.velocity = (Vector2){0.0f, 240.0f};
+    speedBefore = PlayerSpeed(&player);
+    FluidInteractionInit(&fluid);
+    for (step = 0; step < 20; ++step) {
+        GameEventsClear(&events);
+        FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
+        if (fluid.stats.entries == 1 && speedAtEntry < 0.0f) {
+            speedAtEntry = PlayerSpeed(&player);
+        }
+        splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
+        PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+        WorldUpdate(&world);
+    }
+    CHECK(fluid.stats.entries == 1, "the dive counted %d entries", fluid.stats.entries);
+    CHECK(splashes == 1, "the dive made %d splashes", splashes);
+    CHECK(speedAtEntry < speedBefore * 0.85f,
+          "breaking the surface cost nothing: %.1f at entry from %.1f",
+          (double)speedAtEntry, (double)speedBefore);
+    CHECK(fluid.stats.cellsPushed > 10, "the dive pushed %d cells",
+          fluid.stats.cellsPushed);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "the dive changed the water count from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    CHECK(PlayerSpeed(&player) < speedBefore * 0.5f,
+          "the diver is still doing %.1f after twenty frames under water",
+          (double)PlayerSpeed(&player));
+    WorldUnload(&world);
+}
+
+static void test_a_low_fast_pass_lifts_the_water(void)
+{
+    World world;
+    Player player;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    int ripples = 0;
+    int lifted = 0;
+    int x;
+    int step;
+
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    FillRect(&world, 0, 120, 511, 200, MATERIAL_WATER);
+    FillRect(&world, 0, 201, 511, 255, MATERIAL_ROCK);
+    Tick(&world, 60);
+    /* Skimming two cells above the surface at speed. */
+    PlayerInit(&player, (Vector2){40.0f, 120.0f - 2.0f - 3.2f * PLAYER_BODY_SCALE});
+    player.velocity = (Vector2){260.0f, 0.0f};
+    FluidInteractionInit(&fluid);
+    for (step = 0; step < 40; ++step) {
+        GameEventsClear(&events);
+        FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
+        ripples += CountEvents(&events, GAME_EVENT_LIQUID_RIPPLE);
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+        player.position.y = 120.0f - 2.0f - 3.2f * PLAYER_BODY_SCALE;
+        WorldUpdate(&world);
+        for (x = 0; x < 512; ++x) {
+            if (WorldGetCell(&world, x, 119) == MATERIAL_WATER ||
+                WorldGetCell(&world, x, 118) == MATERIAL_WATER) {
+                ++lifted;
+            }
+        }
+    }
+    CHECK(fluid.stats.flyovers > 3, "a fast low pass disturbed the water %d times",
+          fluid.stats.flyovers);
+    CHECK(ripples == fluid.stats.flyovers, "%d ripples for %d flyovers", ripples,
+          fluid.stats.flyovers);
+    CHECK(lifted > 0, "nothing rose above the surface under the pass");
+    CHECK(fluid.stats.entries == 0, "the pass counted as an entry");
+    WorldUnload(&world);
+}
+
+static void test_leaving_the_water_fast_splashes(void)
+{
+    World world;
+    Player player;
+    FluidInteractionState fluid;
+    GameEventBuffer events;
+    int splashes = 0;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 256), "world allocation failed");
+    FillRect(&world, 0, 120, 255, 200, MATERIAL_WATER);
+    FillRect(&world, 0, 201, 255, 255, MATERIAL_ROCK);
+    Tick(&world, 60);
+    PlayerInit(&player, (Vector2){128.0f, 160.0f});
+    player.velocity = (Vector2){0.0f, -300.0f};
+    FluidInteractionInit(&fluid);
+    for (step = 0; step < 30; ++step) {
+        GameEventsClear(&events);
+        FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
+        splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
+        PlayerUpdate(&player, &world, (Vector2){0.0f, -1.0f}, true, MOVEMENT_STEP);
+        WorldUpdate(&world);
+    }
+    CHECK(fluid.stats.entries == 1 && fluid.stats.exits == 1,
+          "a diver starting under water counted %d entries and %d exits",
+          fluid.stats.entries, fluid.stats.exits);
+    CHECK(splashes >= 1, "leaving the water fast made no splash");
+    CHECK(player.position.y < 110.0f, "the diver never got out: y = %.1f",
+          (double)player.position.y);
     WorldUnload(&world);
 }
 
@@ -12190,6 +12574,8 @@ int main(void)
     RUN(test_a_beam_held_on_one_spot_detonates_and_a_swept_one_does_not);
     RUN(test_an_explosion_under_a_block_detaches_it);
     RUN(test_ground_destroyed_under_a_sleeping_body_wakes_it);
+    RUN(test_ice_floats_and_rock_sinks);
+    RUN(test_a_body_hitting_water_splashes_and_slows);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
     RUN(test_drilling_through_a_support_detaches_the_section_above);
@@ -12264,7 +12650,12 @@ int main(void)
     RUN(test_a_diagonal_drill_does_not_stall);
     RUN(test_the_same_flight_replays_identically);
     RUN(test_movement_survives_an_absurd_velocity);
-    RUN(test_water_and_lava_cost_no_speed);
+    RUN(test_dry_flight_is_untouched_by_the_fluid_model);
+    RUN(test_water_drags_by_the_square_of_the_speed);
+    RUN(test_thrust_still_works_under_water);
+    RUN(test_diving_in_fast_splashes_and_costs_speed);
+    RUN(test_a_low_fast_pass_lifts_the_water);
+    RUN(test_leaving_the_water_fast_splashes);
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
     RUN(test_drilling_through_a_slab_can_split_it);
     RUN(test_a_coasting_player_still_stops_on_a_body);

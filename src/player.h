@@ -94,6 +94,15 @@ typedef struct Player {
        harder the engine, the harder it can also stop. */
     float brakingAuthority;
     float drag;
+    /* Quadratic drag of the fluid the character is in, per cell of speed:
+       each frame the velocity loses the fraction fluidDrag * speed * dt, so
+       the loss grows with the square of the speed and a thrust of A settles
+       at sqrt(A / fluidDrag). Zero in air. Set every frame by
+       fluid_interaction.c, which is what knows about liquids; the player
+       only integrates it. Never a flat multiplier: a flat multiplier took
+       the same fraction from a crawl as from a dive, which read as swimming
+       through glue and was removed once already. */
+    float fluidDrag;
     float restitution;
     float radius;
     float impactStrength;

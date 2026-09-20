@@ -22,6 +22,16 @@ typedef enum GameEventType {
     /* A piece of terrain came loose and is now a body. `position` is where the
        body starts, `count` is how many cells it took with it. */
     GAME_EVENT_TERRAIN_DETACHED,
+    /* Something broke a liquid surface: the player or a body, going in or
+       coming out. `position` is on the surface, `direction` the way it was
+       travelling, `strength` its speed, `material` the liquid, `count` the
+       cells of body that went in (zero for the player). Presentation makes
+       the splash from this; the water itself is already moving. */
+    GAME_EVENT_LIQUID_SPLASH,
+    /* A liquid surface was disturbed without being broken — a fast pass just
+       above it, a push arriving from below. `position`, `strength` and
+       `material` as above, `radius` how wide. */
+    GAME_EVENT_LIQUID_RIPPLE,
     GAME_EVENT_COUNT
 } GameEventType;
 
