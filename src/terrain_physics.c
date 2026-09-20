@@ -1,11 +1,12 @@
-/* Terrain bodies against the static world. See terrain_physics.h for the
- * bounds; this file records the shape of the solution and why each piece is the
- * cheap one rather than the general one.
+/* Terrain bodies against the static world, and the order of one fixed step.
+ * See terrain_physics.h for the bounds; this file records the shape of the
+ * solution and why each piece is the cheap one rather than the general one.
  *
- * There is no broad phase, and there is nothing for one to do. A broad phase
- * exists to avoid testing pairs that cannot touch, but the world is a grid and
- * asking it about a cell is O(1): there is no list of candidate obstacles to
- * cut down. What bounds the cost is the surface list, not a spatial reject.
+ * There is no broad phase against the world, and there is nothing for one to
+ * do. A broad phase exists to avoid testing pairs that cannot touch, but the
+ * world is a grid and asking it about a cell is O(1): there is no list of
+ * candidate obstacles to cut down. What bounds the cost is the surface list,
+ * not a spatial reject.
  *
  * Narrow phase walks only the body's surface cells — an interior cell is walled in by
  * its own body and can never make first contact — transforms each to world
@@ -21,6 +22,9 @@
  * If it ever does look wrong once bodies are drawn, testing the 2x2
  * neighbourhood a body cell can span is the known upgrade — it is a cost
  * decision, not an oversight.
+ *
+ * The response lives in terrain_contact.c, shared with the body-body narrow
+ * phase, because a pile is only stable when both are solved together.
  */
 #include "terrain_physics.h"
 
@@ -28,40 +32,7 @@
 #include <stddef.h>
 
 #include "materials.h"
-
-typedef struct TerrainContact {
-    Vector2 point;
-    Vector2 normal;
-    float penetration;
-    /* How fast the body was closing on this contact when it was found, before
-       the solver touched anything. Restitution has to be measured against this
-       rather than against the current velocity: the solver drains the approach
-       as it goes, so by the last contact of the last iteration there would be
-       nothing left for a bounce to act on, and restitution would do almost
-       nothing however high it was set. */
-    float approachSpeed;
-} TerrainContact;
-
-typedef struct TerrainContactSet {
-    TerrainContact contacts[MAX_TERRAIN_CONTACTS_PER_BODY];
-    int count;
-    /* Deepest overlap seen this substep, including contacts that did not make
-       it into the set. Positional correction uses it so that dropping shallow
-       contacts can never make a body sink further. */
-    float deepest;
-} TerrainContactSet;
-
-/* Below this closing speed a contact is treated as resting and does not bounce.
-   Without it a body settling on the floor would be given a small kick every
-   tick and would never stop, let alone sleep. */
-#define TERRAIN_BOUNCE_THRESHOLD 6.0f
-
-/* Penetration below this is left alone. Correcting every last thousandth is
-   what makes a resting body jitter, and jitter is what stops it sleeping. */
-#define TERRAIN_PENETRATION_SLOP 0.02f
-/* Fraction of the excess penetration removed per substep. Removing all of it at
-   once turns a deep overlap into a visible pop. */
-#define TERRAIN_CORRECTION_RATE 0.6f
+#include "terrain_body_collision.h"
 
 bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
                                 float boundingRadius, float deltaTime)
@@ -117,7 +88,8 @@ static bool TerrainWorldCellIsSolid(const World *world, int x, int y)
  * direction is only taken if the cell it leads to is not itself solid. That one
  * extra question is what makes a flat floor behave like a floor. */
 static bool TerrainResolveSample(const World *world, Vector2 sample, int cellX,
-                                 int cellY, Vector2 *normal, float *penetration)
+                                 int cellY, Vector2 *normal, float *penetration,
+                                 int *face)
 {
     static const int offsets[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
     float depths[4];
@@ -154,6 +126,7 @@ static bool TerrainResolveSample(const World *world, Vector2 sample, int cellX,
        separating at the exact moment it was sinking. */
     *normal = (Vector2){(float)offsets[best][0], (float)offsets[best][1]};
     *penetration = depths[best];
+    *face = best;
     return true;
 }
 
@@ -169,39 +142,6 @@ static Vector2 TerrainPointVelocity(const TerrainBody *body, Vector2 point)
                      body->velocity.y + body->angularVelocity * leverX};
 }
 
-static void TerrainAddContact(TerrainContactSet *set, Vector2 point,
-                              Vector2 normal, float penetration,
-                              float approachSpeed)
-{
-    int shallowest = 0;
-    int i;
-
-    if (penetration > set->deepest) {
-        set->deepest = penetration;
-    }
-    if (set->count < MAX_TERRAIN_CONTACTS_PER_BODY) {
-        set->contacts[set->count].point = point;
-        set->contacts[set->count].normal = normal;
-        set->contacts[set->count].penetration = penetration;
-        set->contacts[set->count].approachSpeed = approachSpeed;
-        ++set->count;
-        return;
-    }
-    /* Full: keep the deepest, since those are the ones the response has to
-       answer. Overflow is a quality question, never a safety one. */
-    for (i = 1; i < MAX_TERRAIN_CONTACTS_PER_BODY; ++i) {
-        if (set->contacts[i].penetration < set->contacts[shallowest].penetration) {
-            shallowest = i;
-        }
-    }
-    if (penetration > set->contacts[shallowest].penetration) {
-        set->contacts[shallowest].point = point;
-        set->contacts[shallowest].normal = normal;
-        set->contacts[shallowest].penetration = penetration;
-        set->contacts[shallowest].approachSpeed = approachSpeed;
-    }
-}
-
 static void TerrainCollectContacts(const DynamicTerrainSystem *system,
                                    const World *world, const TerrainBody *body,
                                    int slot, TerrainContactSet *set)
@@ -211,6 +151,7 @@ static void TerrainCollectContacts(const DynamicTerrainSystem *system,
     float sine = sinf(body->angle);
     int index;
 
+    TerrainContactClear(set->contacts);
     set->count = 0;
     set->deepest = 0.0f;
 
@@ -222,6 +163,7 @@ static void TerrainCollectContacts(const DynamicTerrainSystem *system,
         Vector2 sample;
         Vector2 normal;
         float penetration;
+        int face;
         int cellX;
         int cellY;
 
@@ -239,128 +181,18 @@ static void TerrainCollectContacts(const DynamicTerrainSystem *system,
             continue;
         }
         if (!TerrainResolveSample(world, sample, cellX, cellY, &normal,
-                                  &penetration)) {
+                                  &penetration, &face)) {
             continue;
         }
         {
             Vector2 pointVelocity = TerrainPointVelocity(body, sample);
 
-            TerrainAddContact(set, sample, normal, penetration,
+            TerrainContactAdd(set->contacts, &set->count, &set->deepest, face,
+                              index, sample, normal, penetration,
                               pointVelocity.x * normal.x +
                                   pointVelocity.y * normal.y);
         }
     }
-}
-
-static void TerrainApplyContactImpulse(TerrainBody *body, const TerrainContact *contact,
-                                       const DynamicTerrainConfig *config, float share)
-{
-    Vector2 pointVelocity = TerrainPointVelocity(body, contact->point);
-    Vector2 tangent = {-contact->normal.y, contact->normal.x};
-    float leverX = contact->point.x - body->position.x;
-    float leverY = contact->point.y - body->position.y;
-    float inverseMass = 1.0f / body->mass;
-    float inverseInertia = 1.0f / body->inertia;
-    float normalSpeed = pointVelocity.x * contact->normal.x +
-                        pointVelocity.y * contact->normal.y;
-    float leverNormal;
-    float effectiveMass;
-    float normalImpulse;
-    float tangentSpeed;
-    float leverTangent;
-    float tangentImpulse;
-    float limit;
-
-    /* Already separating: a contact that is coming apart needs no help. */
-    if (normalSpeed >= 0.0f) {
-        return;
-    }
-
-    leverNormal = leverX * contact->normal.y - leverY * contact->normal.x;
-    effectiveMass = inverseMass + leverNormal * leverNormal * inverseInertia;
-    if (!(effectiveMass > 0.0f)) {
-        return;
-    }
-    /* Target: leave the contact separating at restitution times the speed it
-       was closing at when it was found. With restitution zero this reduces to
-       simply cancelling the approach. A contact that was barely moving does not
-       bounce at all, or a settling body would be kicked awake every tick. */
-    {
-        float bounce = fabsf(contact->approachSpeed) > TERRAIN_BOUNCE_THRESHOLD
-                           ? config->restitution * contact->approachSpeed
-                           : 0.0f;
-
-        normalImpulse = -(normalSpeed + bounce) / effectiveMass * share;
-    }
-    if (normalImpulse < 0.0f) {
-        return;
-    }
-
-    body->velocity.x += normalImpulse * contact->normal.x * inverseMass;
-    body->velocity.y += normalImpulse * contact->normal.y * inverseMass;
-    body->angularVelocity += leverNormal * normalImpulse * inverseInertia;
-
-    /* Friction along the contact face, bounded by Coulomb's rule. Recomputing
-       the point velocity would be more correct and, at these speeds, buys
-       nothing worth the second transform. */
-    tangentSpeed = pointVelocity.x * tangent.x + pointVelocity.y * tangent.y;
-    leverTangent = leverX * tangent.y - leverY * tangent.x;
-    effectiveMass = inverseMass + leverTangent * leverTangent * inverseInertia;
-    if (!(effectiveMass > 0.0f)) {
-        return;
-    }
-    tangentImpulse = -tangentSpeed / effectiveMass * share;
-    limit = config->friction * fabsf(normalImpulse);
-    if (tangentImpulse > limit) {
-        tangentImpulse = limit;
-    } else if (tangentImpulse < -limit) {
-        tangentImpulse = -limit;
-    }
-
-    body->velocity.x += tangentImpulse * tangent.x * inverseMass;
-    body->velocity.y += tangentImpulse * tangent.y * inverseMass;
-    body->angularVelocity += leverTangent * tangentImpulse * inverseInertia;
-}
-
-static void TerrainResolveContacts(TerrainBody *body, const TerrainContactSet *set,
-                                   const DynamicTerrainConfig *config)
-{
-    Vector2 push = {0.0f, 0.0f};
-    float pushLength;
-    float share;
-    int iteration;
-    int index;
-
-    if (set->count <= 0 || !(body->mass > 0.0f) || !(body->inertia > 0.0f)) {
-        return;
-    }
-
-    /* Contacts share one body's worth of response. This is not a sequential
-       impulse solver: without the share, a slab resting on twenty cells would
-       receive twenty times the push it needs and leap off the ground. */
-    share = 1.0f / (float)set->count;
-    for (iteration = 0; iteration < TERRAIN_SOLVER_ITERATIONS; ++iteration) {
-        for (index = 0; index < set->count; ++index) {
-            TerrainApplyContactImpulse(body, &set->contacts[index], config, share);
-        }
-    }
-
-    /* Positional correction along the averaged contact normal. Averaging keeps
-       a body wedged in a corner from being shoved along one wall. */
-    for (index = 0; index < set->count; ++index) {
-        push.x += set->contacts[index].normal.x;
-        push.y += set->contacts[index].normal.y;
-    }
-    pushLength = sqrtf(push.x * push.x + push.y * push.y);
-    if (pushLength < 0.0001f || set->deepest <= TERRAIN_PENETRATION_SLOP) {
-        return;
-    }
-    push.x /= pushLength;
-    push.y /= pushLength;
-    body->position.x += push.x * (set->deepest - TERRAIN_PENETRATION_SLOP) *
-                        TERRAIN_CORRECTION_RATE;
-    body->position.y += push.y * (set->deepest - TERRAIN_PENETRATION_SLOP) *
-                        TERRAIN_CORRECTION_RATE;
 }
 
 /* How many substeps this body's motion needs. The fastest point of a body is
@@ -383,9 +215,37 @@ static int TerrainSubstepCount(const TerrainBody *body, float deltaTime)
     return substeps;
 }
 
+/* Frees every body that has left the map. A body that has left can never touch
+   anything again, so it would fall for ever, never satisfy the sleep condition,
+   and hold an awake slot nothing could reclaim. Destroying it is a world-safety
+   decision and deliberately nothing to do with the camera: a body that has
+   merely scrolled off screen is left exactly where it is. */
+static void TerrainRemoveLostBodies(DynamicTerrainSystem *system,
+                                    const World *world)
+{
+    int slot;
+
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        TerrainBody *body = &system->bodies[slot];
+
+        if (!body->active) {
+            continue;
+        }
+        if (TerrainBodyIsLost(body, world, &system->config)) {
+            DynamicTerrainFreeBody(system, (TerrainBodyHandle){
+                (uint16_t)slot, body->generation});
+            ++system->stats.bodiesRemovedOutOfBounds;
+        }
+    }
+}
+
 void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
                           float deltaTime)
 {
+    TerrainContactWorkspace *contacts;
+    bool touched[MAX_TERRAIN_BODIES] = {false};
+    int substeps = 1;
+    int substep;
     int slot;
 
     if (system == NULL || system->material == NULL) {
@@ -397,65 +257,92 @@ void TerrainPhysicsUpdate(DynamicTerrainSystem *system, const World *world,
     if (world != NULL && world->cells == NULL) {
         world = NULL;
     }
+    contacts = &system->contacts;
 
     system->stats.collisionBodies = 0;
     system->stats.collisionContacts = 0;
     system->stats.collisionSubsteps = 0;
+    TerrainContactStatsReset(contacts);
 
+    if (world != NULL) {
+        TerrainRemoveLostBodies(system, world);
+    }
+    /* Before anything moves: a body that woke since the last update takes
+       whatever was resting on it along, so the pieces above a kicked base fall
+       with it rather than hanging where the base was. */
+    TerrainPairWakeNeighbours(contacts, system);
+
+    /* Every awake body takes the same number of substeps, set by the fastest
+       of them. Bodies collide with each other, and two bodies can only be
+       compared at the same moment; a per-body count would have one body at
+       the end of the step while its neighbour was still at the start. The
+       bound is unchanged — the slowest body was always allowed to take as many
+       steps as the fastest — and a resting body walks its surface a few more
+       times when something nearby is quick. */
     for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
         TerrainBody *body = &system->bodies[slot];
-        TerrainContactSet set;
-        int substeps;
-        int substep;
+        int needed;
 
         if (!body->active) {
             continue;
         }
-        /* A body that has left the map can never touch anything again, so it
-           would fall for ever, never satisfy the sleep condition, and hold an
-           awake slot nothing could reclaim. Destroying it is a world-safety
-           decision and deliberately nothing to do with the camera: a body that
-           has merely scrolled off screen is left exactly where it is. */
-        if (world != NULL && TerrainBodyIsLost(body, world, &system->config)) {
-            DynamicTerrainFreeBody(system, (TerrainBodyHandle){
-                (uint16_t)slot, body->generation});
-            ++system->stats.bodiesRemovedOutOfBounds;
-            continue;
-        }
+        body->impactImpulse = 0.0f;
         if (!body->awake) {
             continue;
         }
+        needed = TerrainSubstepCount(body, deltaTime);
+        if (needed > substeps) {
+            substeps = needed;
+        }
+    }
+    system->stats.collisionSubsteps = substeps;
 
-        substeps = world != NULL ? TerrainSubstepCount(body, deltaTime) : 1;
-        system->stats.collisionSubsteps += substeps;
-        for (substep = 0; substep < substeps; ++substep) {
+    for (substep = 0; substep < substeps; ++substep) {
+        float stepTime = deltaTime / (float)substeps;
+
+        TerrainContactBegin(contacts, stepTime);
+        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+            TerrainBody *body = &system->bodies[slot];
+            TerrainContactSet *set = &contacts->world[slot];
+
+            if (!body->active || !body->awake) {
+                continue;
+            }
             /* Re-asked every substep, so a body climbing through the band
                loses its weight while it climbs rather than at the end. */
-            DynamicTerrainIntegrateBody(system, body,
-                                        deltaTime / (float)substeps,
+            DynamicTerrainIntegrateBody(system, body, stepTime,
                                         WorldGravityScaleAt(world,
                                                             body->position.y));
             if (world == NULL) {
                 continue;
             }
-            TerrainCollectContacts(system, world, body, slot, &set);
-            if (set.count == 0) {
+            TerrainCollectContacts(system, world, body, slot, set);
+            if (set->count == 0) {
                 continue;
             }
-            system->stats.collisionContacts += set.count;
-            if (set.count > system->stats.maxContactsObserved) {
-                system->stats.maxContactsObserved = set.count;
+            system->stats.collisionContacts += set->count;
+            if (set->count > system->stats.maxContactsObserved) {
+                system->stats.maxContactsObserved = set->count;
             }
-            TerrainResolveContacts(body, &set, &system->config);
+            touched[slot] = true;
         }
-        if (world != NULL && system->stats.collisionContacts > 0) {
+        /* Bodies against each other, then everything solved together. */
+        TerrainPairCollect(contacts, system);
+        TerrainContactSolve(contacts, system);
+    }
+
+    /* Sleep is judged once per fixed step, not once per substep, so the quiet
+       time a body accumulates means the same thing however fast it happened to
+       be moving. */
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        TerrainBody *body = &system->bodies[slot];
+
+        if (touched[slot]) {
             ++system->stats.collisionBodies;
         }
-
-        /* Sleep is judged once per fixed step, not once per substep, so the
-           quiet time a body accumulates means the same thing however fast it
-           happened to be moving. */
-        DynamicTerrainSettleBody(system, body, deltaTime);
+        if (body->active && body->awake) {
+            DynamicTerrainSettleBody(system, body, deltaTime);
+        }
     }
     /* Derived from the invariant, not counted by this loop, so they are equally
        correct for a caller that never calls update. */

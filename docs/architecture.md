@@ -124,18 +124,24 @@ cross-module call в самый горячий цикл проекта; benchmar
 ### `dynamic_terrain.c/.h`
 
 Fixed-capacity хранилище кусков породы, переставших быть частью клеточного
-мира: `DynamicTerrainSystem` владеет `TerrainBody[32]`, material/temperature
-raster arena на 1.25 MiB и surface-coordinate arena на 0.50 MiB, выделенными
-при init. `TerrainBody` — один крупный связный кусок terrain, а не entity на
+мира: `DynamicTerrainSystem` владеет `TerrainBody[64]`, material/temperature
+raster arena на 8.4 MiB и surface-coordinate arena на 3 MiB, выделенными
+при init, и рабочим пространством контактов около 90 KiB внутри себя. `TerrainBody` — один крупный связный кусок terrain, а не entity на
 каждую клетку.
 
 Хранилище тел `World` не получает и изменить его не может. Столкновения живут
-в отдельном модуле `terrain_physics.c`, который **читает** мир через
-`const World *` — гарантия компилятора, а не обещание, — и вызывается на
-фиксированном шаге из `GameAdvanceWorld`. Тела рисуются presentation-cache, но
-пока не сталкиваются друг с другом, с игроком или с частицами. Presentation читает
-систему через `const DynamicTerrainSystem *`; GPU-кэшем владеет отдельный
-`TerrainBodyRenderer`. Владеет gameplay-подсистемой `GameState`.
+в отдельных модулях: `terrain_physics.c` **читает** мир через `const World *`
+— гарантия компилятора, а не обещание — и ведёт порядок шага;
+`terrain_body_collision.c` находит контакты тел друг с другом (растр против
+растра, в порядке слотов, спящее тело — стена, пока его не ударят);
+`terrain_contact.c` решает контакты с миром и между телами в одном цикле
+projected Gauss-Seidel с warm start — порознь куча обломков не засыпала бы
+никогда. Всё вызывается на фиксированном шаге из `GameAdvanceWorld`. Тела
+рисуются presentation-cache, но пока не сталкиваются с частицами. Presentation
+читает систему через `const DynamicTerrainSystem *`; GPU-кэшем владеет
+отдельный `TerrainBodyRenderer`. Владеет gameplay-подсистемой `GameState`.
+Жёсткие бюджеты вынесены в `terrain_limits.h`, потому что рабочее
+пространство контактов — член хранилища и размерено ими.
 
 Стоимость кадра ограничена сверху тремя runtime-бюджетами — тел, занятых клеток
 и **активных** тел, — и каждый из них обеспечивается отказом, а не вытеснением.
@@ -436,8 +442,9 @@ device не является фатальной.
 | bloom ping/pong `RenderTexture2D` | `RendererInit`, half-resolution, только при resize | `RendererUnload` |
 | bloom shaders | `RendererInit`, ошибка включает sharp fallback | `RendererUnload` |
 | scene/emissive staging 32×32 × 2 | stack внутри `WorldPrepareVisible` | возврат из вызова |
-| material/temperature arena динамического terrain (1.25 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
-| surface-coordinate arena динамического terrain (0.50 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| material/temperature arena динамического terrain (8.4 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| surface-coordinate arena динамического terrain (3 MiB) | `DynamicTerrainInit` из `GameInit` | `DynamicTerrainUnload` |
+| контакты, манифолды и warm start тел (~90 KiB) | встроены в `DynamicTerrainSystem` | автоматически |
 | scene/emissive texture динамических тел (до 2 MiB RGBA8) | лениво в `TerrainBodyRenderer`, один раз на generation | free/reset sync или `RendererUnload` |
 | staging динамических тел (64 KiB) | встроен в `TerrainBodyRenderer` | автоматически |
 | particle pool | встроен в `ParticleSystem` | автоматически |

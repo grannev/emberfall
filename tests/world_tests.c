@@ -4392,8 +4392,9 @@ static void test_damping_depends_on_time_and_not_on_step_count(void)
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     config.linearDamping = 1.5f;
     terrain.config = config;
+    /* Apart, since bodies now collide with each other. */
     coarse = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
-    fine = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 0.0f});
+    fine = MakeKinematicBody(&terrain, 4, 4, (Vector2){0.0f, 100.0f});
     DynamicTerrainSetVelocity(&terrain, coarse, (Vector2){100.0f, 0.0f}, 0.0f);
     DynamicTerrainSetVelocity(&terrain, fine, (Vector2){100.0f, 0.0f}, 0.0f);
 
@@ -5012,15 +5013,27 @@ static void test_a_body_stops_against_a_wall(void)
 
     handle = MakeKinematicBody(&terrain, 6, 6, (Vector2){40.0f, 50.0f});
     DynamicTerrainSetVelocity(&terrain, handle, (Vector2){200.0f, 0.0f}, 0.0f);
-    PhysicsTick(&terrain, &world, 120);
     body = DynamicTerrainGetConst(&terrain, handle);
+    {
+        float farthest = body->position.x;
+        int step;
 
-    CHECK(body->position.x < 80.0f,
-          "the body passed into or through the wall: x = %.3f",
-          (double)body->position.x);
-    CHECK(body->position.x > 60.0f, "the body never reached the wall: x = %.3f",
-          (double)body->position.x);
-    CHECK(body->velocity.x < 30.0f,
+        for (step = 0; step < 120; ++step) {
+            PhysicsTick(&terrain, &world, 1);
+            CHECK(body->position.x < 80.0f,
+                  "the body passed into or through the wall: x = %.3f",
+                  (double)body->position.x);
+            if (body->position.x > farthest) {
+                farthest = body->position.x;
+            }
+        }
+        CHECK(farthest > 60.0f, "the body never reached the wall: x = %.3f",
+              (double)farthest);
+    }
+    /* Rock is not rubber, but it is not putty either: a small rebound at the
+       configured restitution is the right answer, and with no gravity and no
+       damping in this world there is nothing to take it away afterwards. */
+    CHECK(fabsf(body->velocity.x) < 30.0f,
           "the wall did not stop the body: it is still moving at %.3f",
           (double)body->velocity.x);
     WorldUnload(&world);
@@ -5379,6 +5392,349 @@ static void test_substeps_stay_inside_their_budget(void)
           TERRAIN_MAX_SUBSTEPS);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
+}
+
+/* --- terrain bodies against each other ---------------------------------- */
+
+/* Until the pair solver existed, two bodies occupied the same cells without
+   noticing. These tests hold the contract of terrain_body_collision.h: bodies
+   exchange momentum, a pile settles and sleeps, mass decides who moves, an
+   off-centre blow turns, nothing tunnels, and a base that moves takes what
+   rests on it along. */
+
+static float BodyMomentumX(const DynamicTerrainSystem *system,
+                           TerrainBodyHandle handle)
+{
+    const TerrainBody *body = DynamicTerrainGetConst(system, handle);
+
+    return body != NULL ? body->mass * body->velocity.x : 0.0f;
+}
+
+static void test_two_bodies_do_not_pass_through_each_other(void)
+{
+    TerrainBodyHandle mover;
+    TerrainBodyHandle target;
+    float momentumBefore;
+    float momentumAfter;
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    mover = MakeKinematicBody(&terrain, 8, 8, (Vector2){40.0f, 40.0f});
+    target = MakeKinematicBody(&terrain, 8, 8, (Vector2){70.0f, 40.0f});
+    DynamicTerrainSetVelocity(&terrain, mover, (Vector2){60.0f, 0.0f}, 0.0f);
+    momentumBefore = BodyMomentumX(&terrain, mover) +
+                     BodyMomentumX(&terrain, target);
+
+    for (step = 0; step < 120; ++step) {
+        const TerrainBody *a;
+        const TerrainBody *b;
+
+        TickBodies(&terrain, 1);
+        a = DynamicTerrainGetConst(&terrain, mover);
+        b = DynamicTerrainGetConst(&terrain, target);
+        CHECK(a->position.x < b->position.x,
+              "the mover passed through the target at step %d: %.2f vs %.2f",
+              step, (double)a->position.x, (double)b->position.x);
+        /* Point samples let outlines overlap by up to half a cell; anything
+           deeper is a body inside another. */
+        CHECK(b->position.x - a->position.x > 8.0f - 1.0f,
+              "the bodies overlapped by %.2f cells at step %d",
+              (double)(8.0f - (b->position.x - a->position.x)), step);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, target)->velocity.x > 20.0f,
+          "the struck body did not take the momentum: %.2f",
+          (double)DynamicTerrainGetConst(&terrain, target)->velocity.x);
+    momentumAfter = BodyMomentumX(&terrain, mover) +
+                    BodyMomentumX(&terrain, target);
+    CHECK(fabsf(momentumAfter - momentumBefore) < 0.05f * fabsf(momentumBefore),
+          "momentum went from %.1f to %.1f across the collision",
+          (double)momentumBefore, (double)momentumAfter);
+    CHECK(terrain.contacts.stats.pairsBroadPhase > 0,
+          "no pair was ever tested");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_body_lands_on_another_and_the_pile_sleeps(void)
+{
+    World world;
+    TerrainBodyHandle base;
+    TerrainBodyHandle top;
+    const TerrainBody *baseBody;
+    const TerrainBody *topBody;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    base = MakeKinematicBody(&terrain, 16, 6, (Vector2){60.0f, 60.0f});
+    top = MakeKinematicBody(&terrain, 8, 6, (Vector2){60.0f, 30.0f});
+    PhysicsTick(&terrain, &world, 600);
+
+    baseBody = DynamicTerrainGetConst(&terrain, base);
+    topBody = DynamicTerrainGetConst(&terrain, top);
+    CHECK(baseBody != NULL && topBody != NULL, "a body of the pile was lost");
+    CHECK(BodyLowestPoint(baseBody) < 71.0f,
+          "the base sank into the floor to %.2f",
+          (double)BodyLowestPoint(baseBody));
+    CHECK(topBody->position.y < baseBody->position.y,
+          "the top body ended below the base: %.2f vs %.2f",
+          (double)topBody->position.y, (double)baseBody->position.y);
+    /* Resting on the base: its underside within a cell of the base's top. */
+    CHECK(BodyLowestPoint(topBody) > 62.5f && BodyLowestPoint(topBody) < 65.5f,
+          "the top body rests at %.2f rather than on the base's top at 64",
+          (double)BodyLowestPoint(topBody));
+    CHECK(!baseBody->awake && !topBody->awake,
+          "the pile never slept: base %s, top %s",
+          baseBody->awake ? "awake" : "asleep",
+          topBody->awake ? "awake" : "asleep");
+    CHECK(terrain.awakeCount == 0, "%d bodies stayed awake in a settled pile",
+          terrain.awakeCount);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Four bodies dropped one above another. Every level carries the weight of
+   those above it down to the ground and the ground's answer back up, which is
+   the case the coupled solver exists for: solved level by level, such a stack
+   crept for ever. */
+/* Highest world row any of the body's cells reaches. */
+static float BodyHighestPoint(const TerrainBody *body)
+{
+    float highest = body->position.y;
+    int corner;
+
+    for (corner = 0; corner < 4; ++corner) {
+        Vector2 point = TerrainBodyLocalToWorld(
+            body, corner & 1 ? (float)body->maximumX + 1.0f : (float)body->minimumX,
+            (corner >> 1) & 1 ? (float)body->maximumY + 1.0f : (float)body->minimumY);
+
+        if (point.y < highest) {
+            highest = point.y;
+        }
+    }
+    return highest;
+}
+
+static void test_a_tall_pile_settles_and_sleeps(void)
+{
+    World world;
+    TerrainBodyHandle handles[4];
+    int widths[4] = {20, 14, 10, 6};
+    int index;
+    int sleptAt = -1;
+    int step;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    for (index = 0; index < 4; ++index) {
+        handles[index] = MakeKinematicBody(
+            &terrain, widths[index], 5,
+            (Vector2){60.0f + (float)(index % 2) * 1.5f,
+                      60.0f - 12.0f * (float)index});
+    }
+    for (step = 0; step < 900; ++step) {
+        PhysicsTick(&terrain, &world, 1);
+        if (terrain.awakeCount == 0) {
+            sleptAt = step;
+            break;
+        }
+    }
+    CHECK(sleptAt >= 0, "a four-body pile never slept: %d still awake after 15 s",
+          terrain.awakeCount);
+    for (index = 1; index < 4; ++index) {
+        const TerrainBody *below = DynamicTerrainGetConst(&terrain, handles[index - 1]);
+        const TerrainBody *above = DynamicTerrainGetConst(&terrain, handles[index]);
+        float gap = BodyLowestPoint(above) - BodyHighestPoint(below);
+
+        CHECK(above->position.y < below->position.y,
+              "body %d ended below the body it was dropped on", index);
+        /* Resting on it: the underside within a cell of the top below. */
+        CHECK(gap > -1.5f && gap < 1.5f,
+              "body %d rests %.2f cells from the top of body %d", index,
+              (double)gap, index - 1);
+        CHECK(fabsf(above->angle) < 0.2f,
+              "body %d settled at %.2f rad rather than flat", index,
+              (double)above->angle);
+    }
+    CHECK(BodyLowestPoint(DynamicTerrainGetConst(&terrain, handles[0])) < 71.0f,
+          "the base sank into the floor to %.2f",
+          (double)BodyLowestPoint(DynamicTerrainGetConst(&terrain, handles[0])));
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_heavy_body_moves_a_light_one_more_than_the_reverse(void)
+{
+    TerrainBodyHandle heavy;
+    TerrainBodyHandle light;
+    const TerrainBody *heavyBody;
+    const TerrainBody *lightBody;
+
+    /* Heavy into light: the heavy one barely notices. */
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    heavy = MakeKinematicBody(&terrain, 16, 16, (Vector2){40.0f, 40.0f});
+    light = MakeKinematicBody(&terrain, 4, 4, (Vector2){60.0f, 40.0f});
+    DynamicTerrainSetVelocity(&terrain, heavy, (Vector2){40.0f, 0.0f}, 0.0f);
+    TickBodies(&terrain, 90);
+    heavyBody = DynamicTerrainGetConst(&terrain, heavy);
+    lightBody = DynamicTerrainGetConst(&terrain, light);
+    CHECK(lightBody->velocity.x > heavyBody->velocity.x,
+          "the light body was not thrown ahead: %.2f vs %.2f",
+          (double)lightBody->velocity.x, (double)heavyBody->velocity.x);
+    CHECK(heavyBody->velocity.x > 30.0f,
+          "a chip stopped a boulder: boulder at %.2f",
+          (double)heavyBody->velocity.x);
+    DynamicTerrainUnload(&terrain);
+
+    /* Light into heavy: the light one stops, the heavy one hardly moves. */
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    light = MakeKinematicBody(&terrain, 4, 4, (Vector2){40.0f, 40.0f});
+    heavy = MakeKinematicBody(&terrain, 16, 16, (Vector2){60.0f, 40.0f});
+    DynamicTerrainSetVelocity(&terrain, light, (Vector2){40.0f, 0.0f}, 0.0f);
+    TickBodies(&terrain, 90);
+    heavyBody = DynamicTerrainGetConst(&terrain, heavy);
+    lightBody = DynamicTerrainGetConst(&terrain, light);
+    CHECK(heavyBody->velocity.x > 0.0f && heavyBody->velocity.x < 10.0f,
+          "a chip moved a boulder at %.2f", (double)heavyBody->velocity.x);
+    CHECK(lightBody->velocity.x < 5.0f,
+          "the chip kept %.2f of its speed through the boulder",
+          (double)lightBody->velocity.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_an_off_centre_blow_spins_the_struck_body(void)
+{
+    TerrainBodyHandle mover;
+    TerrainBodyHandle target;
+    const TerrainBody *targetBody;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    /* A tall target, struck near its top. In screen coordinates a push to
+       the right above the centre turns the body clockwise, which is a
+       positive angular velocity. */
+    target = MakeKinematicBody(&terrain, 8, 16, (Vector2){60.0f, 40.0f});
+    mover = MakeKinematicBody(&terrain, 4, 4, (Vector2){40.0f, 34.0f});
+    DynamicTerrainSetVelocity(&terrain, mover, (Vector2){60.0f, 0.0f}, 0.0f);
+    TickBodies(&terrain, 60);
+
+    targetBody = DynamicTerrainGetConst(&terrain, target);
+    CHECK(targetBody->angularVelocity > 0.01f,
+          "the struck body did not turn: %.4f rad/s",
+          (double)targetBody->angularVelocity);
+    CHECK(targetBody->velocity.x > 0.0f,
+          "the struck body was not pushed: %.2f", (double)targetBody->velocity.x);
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_a_fast_body_does_not_tunnel_through_a_thin_one(void)
+{
+    TerrainBodyHandle mover;
+    TerrainBodyHandle wall;
+    int step;
+
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    terrain.config = QuietConfig();
+    /* The wall goes to sleep first, so it is also a test that a sleeper is
+       woken by being struck rather than sailed through. */
+    wall = MakeKinematicBody(&terrain, 2, 20, (Vector2){80.0f, 40.0f});
+    TickBodies(&terrain, 40);
+    CHECK(!DynamicTerrainGetConst(&terrain, wall)->awake,
+          "the resting wall never slept");
+    mover = MakeKinematicBody(&terrain, 3, 3, (Vector2){20.0f, 40.0f});
+    DynamicTerrainSetVelocity(&terrain, mover,
+                              (Vector2){terrain.config.maximumSpeed, 0.0f}, 0.0f);
+
+    for (step = 0; step < 60; ++step) {
+        const TerrainBody *a;
+        const TerrainBody *b;
+
+        TickBodies(&terrain, 1);
+        a = DynamicTerrainGetConst(&terrain, mover);
+        b = DynamicTerrainGetConst(&terrain, wall);
+        CHECK(a->position.x < b->position.x,
+              "a body at top speed tunnelled through a thin one at step %d",
+              step);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, wall)->velocity.x > 0.0f,
+          "the wall was not moved by the blow");
+    CHECK(terrain.contacts.stats.bodiesWokenByContact > 0 ||
+              DynamicTerrainGetConst(&terrain, wall)->awake,
+          "the struck wall was never woken");
+    DynamicTerrainUnload(&terrain);
+}
+
+static void test_waking_a_body_wakes_what_rests_on_it(void)
+{
+    World world;
+    TerrainBodyHandle base;
+    TerrainBodyHandle top;
+    Vector2 topBefore;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    base = MakeKinematicBody(&terrain, 16, 6, (Vector2){60.0f, 60.0f});
+    top = MakeKinematicBody(&terrain, 8, 6, (Vector2){60.0f, 30.0f});
+    PhysicsTick(&terrain, &world, 600);
+    CHECK(terrain.awakeCount == 0, "the pile did not settle first");
+    topBefore = DynamicTerrainGetConst(&terrain, top)->position;
+
+    DynamicTerrainSetVelocity(&terrain, base, (Vector2){80.0f, 0.0f}, 0.0f);
+    PhysicsTick(&terrain, &world, 1);
+    CHECK(DynamicTerrainGetConst(&terrain, top)->awake,
+          "the body resting on a kicked base stayed asleep");
+    CHECK(terrain.contacts.stats.bodiesWokenByNeighbour +
+                  terrain.contacts.stats.bodiesWokenByContact > 0,
+          "the wake was not counted");
+
+    PhysicsTick(&terrain, &world, 180);
+    CHECK(fabsf(DynamicTerrainGetConst(&terrain, top)->position.x - topBefore.x) > 2.0f ||
+              DynamicTerrainGetConst(&terrain, top)->position.y > topBefore.y + 2.0f,
+          "the top body hung where the base used to be: %.2f,%.2f -> %.2f,%.2f",
+          (double)topBefore.x, (double)topBefore.y,
+          (double)DynamicTerrainGetConst(&terrain, top)->position.x,
+          (double)DynamicTerrainGetConst(&terrain, top)->position.y);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Pair order is slot order and the solver is sequential, so two runs of the
+   same scene must agree to the bit. */
+static void test_pair_collision_is_deterministic(void)
+{
+    DynamicTerrainSystem systemA;
+    DynamicTerrainSystem systemB;
+    TerrainBodyHandle handlesA[3];
+    TerrainBodyHandle handlesB[3];
+    int index;
+
+    CHECK(DynamicTerrainInit(&systemA), "dynamic terrain allocation failed");
+    CHECK(DynamicTerrainInit(&systemB), "dynamic terrain allocation failed");
+    systemA.config = QuietConfig();
+    systemB.config = QuietConfig();
+    for (index = 0; index < 3; ++index) {
+        Vector2 at = {30.0f + 20.0f * (float)index, 40.0f + 3.0f * (float)index};
+
+        handlesA[index] = MakeKinematicBody(&systemA, 6 + index, 6, at);
+        handlesB[index] = MakeKinematicBody(&systemB, 6 + index, 6, at);
+    }
+    DynamicTerrainSetVelocity(&systemA, handlesA[0], (Vector2){70.0f, 0.0f}, 0.7f);
+    DynamicTerrainSetVelocity(&systemB, handlesB[0], (Vector2){70.0f, 0.0f}, 0.7f);
+    for (index = 0; index < 240; ++index) {
+        TerrainPhysicsUpdate(&systemA, NULL, KINEMATIC_STEP);
+        TerrainPhysicsUpdate(&systemB, NULL, KINEMATIC_STEP);
+    }
+    for (index = 0; index < 3; ++index) {
+        const TerrainBody *a = DynamicTerrainGetConst(&systemA, handlesA[index]);
+        const TerrainBody *b = DynamicTerrainGetConst(&systemB, handlesB[index]);
+
+        CHECK(a->position.x == b->position.x && a->position.y == b->position.y &&
+                  a->angle == b->angle,
+              "body %d diverged between two identical runs", index);
+    }
+    DynamicTerrainUnload(&systemA);
+    DynamicTerrainUnload(&systemB);
 }
 
 /* --- dynamic terrain budgets and lifecycle ------------------------------ */
@@ -5895,6 +6251,43 @@ static void test_an_explosion_under_a_block_detaches_it(void)
         CHECK(survivors == 0, "%d block cells were left in the static world",
               survivors);
     }
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A sleeping body is never integrated, so it has to be told when the ground
+   under it is destroyed. The destruction log is the only thing that tells it:
+   the same bounded region that triggers a detach check wakes the bodies
+   resting over it, and a body elsewhere is not looked at. */
+static void test_ground_destroyed_under_a_sleeping_body_wakes_it(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    TerrainBodyHandle bystander;
+    float restingY;
+
+    CHECK(BuildFloorWorld(&world, 70), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&detach);
+    handle = MakeKinematicBody(&terrain, 8, 6, (Vector2){40.0f, 60.0f});
+    bystander = MakeKinematicBody(&terrain, 8, 6, (Vector2){100.0f, 60.0f});
+    PhysicsTick(&terrain, &world, 300);
+    CHECK(terrain.awakeCount == 0, "the bodies never settled");
+    restingY = DynamicTerrainGetConst(&terrain, handle)->position.y;
+
+    /* A hole under the first body only. */
+    WorldDestroyCircle(&world, 40, 74, 7, 0.0f);
+    (void)RunDetach(&world, &terrain);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->awake,
+          "the body over the hole stayed asleep");
+    CHECK(!DynamicTerrainGetConst(&terrain, bystander)->awake,
+          "a body nowhere near the hole was woken");
+
+    PhysicsTick(&terrain, &world, 120);
+    CHECK(DynamicTerrainGetConst(&terrain, handle)->position.y > restingY + 2.0f,
+          "the body hung over the hole at %.2f, it rested at %.2f",
+          (double)DynamicTerrainGetConst(&terrain, handle)->position.y,
+          (double)restingY);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -11448,6 +11841,14 @@ int main(void)
     RUN(test_collision_is_deterministic);
     RUN(test_the_contact_cap_is_never_exceeded);
     RUN(test_substeps_stay_inside_their_budget);
+    RUN(test_two_bodies_do_not_pass_through_each_other);
+    RUN(test_a_body_lands_on_another_and_the_pile_sleeps);
+    RUN(test_a_tall_pile_settles_and_sleeps);
+    RUN(test_a_heavy_body_moves_a_light_one_more_than_the_reverse);
+    RUN(test_an_off_centre_blow_spins_the_struck_body);
+    RUN(test_a_fast_body_does_not_tunnel_through_a_thin_one);
+    RUN(test_waking_a_body_wakes_what_rests_on_it);
+    RUN(test_pair_collision_is_deterministic);
     RUN(test_body_slots_are_bounded_and_reusable);
     RUN(test_the_dynamic_cell_budget_is_counted_and_enforced);
     RUN(test_the_awake_budget_is_honoured);
@@ -11460,6 +11861,7 @@ int main(void)
     RUN(test_a_blast_tears_its_rim_and_breaks_the_rock_around_it);
     RUN(test_a_beam_held_on_one_spot_detonates_and_a_swept_one_does_not);
     RUN(test_an_explosion_under_a_block_detaches_it);
+    RUN(test_ground_destroyed_under_a_sleeping_body_wakes_it);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
     RUN(test_drilling_through_a_support_detaches_the_section_above);

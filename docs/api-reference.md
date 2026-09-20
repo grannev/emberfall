@@ -468,13 +468,36 @@ bool TerrainPhysicsConfigIsSafe(const DynamicTerrainConfig *config,
 ```
 
 Объявлено в `terrain_physics.h`. Единственная точка входа шага тела:
-интегрирование плюс столкновение со статическим миром, на фиксированном шаге из
-`GameAdvanceWorld`. `world` берётся как `const` — изменить клетку столкновение
-не может по сигнатуре; `NULL` даёт чистую кинематику. Это же единственное место,
-где тело может быть уничтожено за то, что покинуло мир, — проверка выполняется
-до проверки `awake`, потому что потерянным бывает и спящее тело. Спящие тела
-пропускаются
-целиком; обход — плоский по 32 слотам, без аллокаций.
+интегрирование, столкновение со статическим миром и столкновение тел друг с
+другом, на фиксированном шаге из `GameAdvanceWorld`. `world` берётся как
+`const` — изменить клетку столкновение не может по сигнатуре; `NULL` даёт
+кинематику плюс столкновения тел между собой. Это же единственное место, где
+тело может быть уничтожено за то, что покинуло мир, — проверка выполняется до
+проверки `awake`, потому что потерянным бывает и спящее тело. Спящие тела
+пропускаются целиком; обход — плоский по слотам, без аллокаций.
+
+```c
+void TerrainPairCollect(TerrainContactWorkspace *workspace,
+                        DynamicTerrainSystem *system);
+void TerrainPairWakeNeighbours(TerrainContactWorkspace *workspace,
+                               DynamicTerrainSystem *system);
+void TerrainContactSolve(TerrainContactWorkspace *workspace,
+                         DynamicTerrainSystem *system);
+```
+
+`terrain_body_collision.h` и `terrain_contact.h` — части того же шага, вызываемые
+только из него: narrow phase пар тел и общий решатель. `TerrainContactWorkspace`
+— член `DynamicTerrainSystem` (`contacts`), его `stats` — телеметрия парной
+фазы.
+
+```c
+int DynamicTerrainWakeInCells(DynamicTerrainSystem *system, int minimumX,
+                              int minimumY, int maximumX, int maximumY);
+```
+
+Будит спящие тела, чей AABB касается диапазона клеток, — так разрушение мира
+доходит до тела, которое не интегрируется; вызывается `TerrainDetachProcess`
+для каждой области destruction-лога.
 
 Модель, границы стоимости и стратегия anti-tunnelling —
 [dynamic-terrain.md](dynamic-terrain.md).

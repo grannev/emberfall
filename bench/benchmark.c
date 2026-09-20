@@ -453,6 +453,11 @@ typedef struct {
     int bodyHeight;
     bool asleep;   /* settle every body before the first tick */
     int awakeBudget; /* 0 keeps the shipped default */
+    /* Bodies per layer when they are dropped as a pile rather than a row.
+       Zero is a row: bodies spaced so that they never touch each other, which
+       measures the world half of collision alone. A pile lands every body on
+       the one below it, which is what the pair half costs. */
+    int pileColumns;
 } TerrainBenchScenario;
 
 static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
@@ -492,8 +497,24 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
         if (body == NULL) {
             break;
         }
-        body->position = (Vector2){(float)(context->centerX - 200 + index * 26),
-                                   BenchY(120.0f)};
+        if (scenario.pileColumns > 0) {
+            int column = index % scenario.pileColumns;
+            int layer = index / scenario.pileColumns;
+
+            body->position = (Vector2){
+                (float)(context->centerX - 100 + column * 26),
+                BenchY(120.0f) - (float)(layer * (scenario.bodyHeight + 2))};
+        } else {
+            /* Spaced so that no two touch: a row measures the world half of
+               collision alone, and the largest bodies are wider than the
+               spacing the small ones were laid out with. */
+            int spacing = scenario.bodyWidth + 10;
+
+            body->position = (Vector2){
+                (float)(context->centerX - spacing * scenario.bodyCount / 2 +
+                        index * spacing),
+                BenchY(120.0f)};
+        }
         if (scenario.asleep) {
             /* Settled in place, holding a slot and its cells but asking for no
                work. This is the state most rubble spends its life in. The quiet
@@ -522,14 +543,17 @@ static void RunDynamicTerrainBenchmark(BenchContext *context, double *samples,
 
     printf("terrain %-18s avg=%7.3f ms  p50=%7.3f  p95=%7.3f  "
            "awake=%3d sleeping=%3d cells=%6d  contacts/tick=%5d "
-           "substeps/tick=%4d max_contacts=%3d\n",
+           "substeps/tick=%4d max_contacts=%3d pairs/tick=%4d "
+           "pair_contacts/tick=%4d\n",
            scenario.name, total / (double)context->ticks,
            Percentile(samples, context->ticks, 0.50),
            Percentile(samples, context->ticks, 0.95),
            terrain.stats.awakeBodies, terrain.stats.sleepingBodies,
            terrain.stats.dynamicCellsUsed,
            terrain.stats.collisionContacts, terrain.stats.collisionSubsteps,
-           terrain.stats.maxContactsObserved);
+           terrain.stats.maxContactsObserved,
+           terrain.contacts.stats.pairsNarrowPhase,
+           terrain.contacts.stats.pairContacts);
     DynamicTerrainUnload(&terrain);
 }
 
@@ -1005,14 +1029,18 @@ int main(int argc, char **argv)
         /* 32 bodies of 64x32 is 65536 occupied cells: the shipped cell budget
            exactly, and the worst case the budgets are meant to bound. */
         static const TerrainBenchScenario terrainScenarios[] = {
-            {"idle",              0,                  16, 12, false, MAX_TERRAIN_BODIES},
-            {"1 awake",           1,                  16, 12, false, MAX_TERRAIN_BODIES},
-            {"16 awake",          16,                 16, 12, false, MAX_TERRAIN_BODIES},
-            {"32 awake",          MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES},
-            {"32 sleeping",       MAX_TERRAIN_BODIES, 16, 12, true,  MAX_TERRAIN_BODIES},
-            {"32 shipped budget", MAX_TERRAIN_BODIES, 16, 12, false, 0},
-            {"cells at budget",   MAX_TERRAIN_BODIES, 64, 32, false, MAX_TERRAIN_BODIES},
-            {"cells asleep",      MAX_TERRAIN_BODIES, 64, 32, true,  MAX_TERRAIN_BODIES},
+            {"idle",              0,                  16, 12, false, MAX_TERRAIN_BODIES, 0},
+            {"1 awake",           1,                  16, 12, false, MAX_TERRAIN_BODIES, 0},
+            {"16 awake",          16,                 16, 12, false, MAX_TERRAIN_BODIES, 0},
+            {"32 awake",          MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 0},
+            {"32 sleeping",       MAX_TERRAIN_BODIES, 16, 12, true,  MAX_TERRAIN_BODIES, 0},
+            {"32 shipped budget", MAX_TERRAIN_BODIES, 16, 12, false, 0,                  0},
+            {"cells at budget",   MAX_TERRAIN_BODIES, 64, 32, false, MAX_TERRAIN_BODIES, 0},
+            {"cells asleep",      MAX_TERRAIN_BODIES, 64, 32, true,  MAX_TERRAIN_BODIES, 0},
+            /* Eight columns of eight: every body but the lowest lands on
+               another, so the pair phase carries the whole pile. */
+            {"64 pile",           MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 8},
+            {"64 pile shipped",   MAX_TERRAIN_BODIES, 16, 12, false, 0,                  8},
         };
         size_t terrainIndex;
 

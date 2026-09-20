@@ -110,6 +110,11 @@ static bool TerrainDamageRefinalize(DynamicTerrainSystem *terrain,
        body's linear velocity now has to mean. */
     body->velocity.x += -body->angularVelocity * movedWorld.y;
     body->velocity.y += body->angularVelocity * movedWorld.x;
+    /* A body with a new shape has to be judged again: what was balanced may
+       now topple, and what rested on the part that is gone has to fall. If the
+       awake budget refuses, the body stays where it is, which is the same
+       answer the budget gives everywhere else. */
+    (void)DynamicTerrainWakeBody(terrain, handle);
     return true;
 }
 

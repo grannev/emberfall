@@ -28,53 +28,13 @@
 
 #include <raylib.h>
 
+#include "terrain_contact.h"
+#include "terrain_limits.h"
 #include "world.h"
 
-/* ---- hard budgets -------------------------------------------------------
- *
- * Dynamic terrain must never be able to grow without bound: a player with a
- * force blast and some patience would otherwise turn a hillside into an
- * unbounded allocation. Every limit here is compile-time, and every one of them
- * is enforced by refusing work rather than by growing.
- */
-
-/* Bodies alive at once. A single blast severs a handful of pieces; sixty-four
-   leaves room for a chaotic scene without pretending the budget is infinite.
-   It could be raised because settled rubble no longer holds a slot for the rest
-   of the session — see terrain_weld.h — so the number bounds how much is loose
-   at one time rather than how much has ever come loose. */
-#define MAX_TERRAIN_BODIES 64
-
-/* Raster slots reserved for each body. A body's bounding box must fit in this
-   many cells — not in a square, so a long thin slab is as welcome as a
-   compact lump. 27648 holds a 144x192 shard, which is what lets a body be a
-   piece of cliff rather than a boulder. */
-#define TERRAIN_BODY_RASTER_CAPACITY 27648
-
-/* Longest side of a body's bounding box, matching the detector's own region
-   limit so that anything WorldFindComponent can report as detached is a shape
-   this can hold. */
-#define TERRAIN_BODY_MAX_SPAN 192
-
-/* Occupied cells in one body, inherited from WORLD_COMPONENT_MAX_CELLS: a body
-   can only ever be built from a component the detector proved free. It is also
-   the cap on a body's surface list, because a filigree body can have every one
-   of its cells on the surface. */
-#define MAX_TERRAIN_BODY_CELLS 12288
-
-/* Total material/temperature raster storage:
-   64 x 27648 x (1 byte material + 4 bytes temperature) = 8.4 MiB, allocated
-   once and never resized. Collision also owns a fixed surface list. */
-#define MAX_TERRAIN_RASTER_CELLS (MAX_TERRAIN_BODIES * TERRAIN_BODY_RASTER_CAPACITY)
-
-/* Occupied cells across every live body. This is the budget that bounds *work*
-   rather than memory: the raster arena above is allocated once whatever
-   happens, but every occupied cell is a cell collision may test and a cell the
-   renderer will eventually draw, so a long series of explosions must not be
-   able to accumulate them without limit. A quarter of the theoretical maximum
-   (64 x 12288) buys either sixteen of the largest bodies the detector can now
-   hand over or every slot filled with an ordinary one. */
-#define MAX_TERRAIN_DYNAMIC_CELLS 196608
+/* The hard budgets — MAX_TERRAIN_BODIES, TERRAIN_BODY_RASTER_CAPACITY,
+   TERRAIN_BODY_MAX_SPAN, MAX_TERRAIN_BODY_CELLS, MAX_TERRAIN_DYNAMIC_CELLS —
+   live in terrain_limits.h with the reasoning behind each. */
 
 /* ---- handles ------------------------------------------------------------
  *
@@ -124,6 +84,16 @@ typedef struct TerrainBody {
     /* A settled body still exists and still collides, but costs nothing to
        integrate: DynamicTerrainUpdate skips it entirely. */
     bool awake;
+    /* Set when the body goes from asleep to awake and cleared by the physics
+       update once it has woken whatever was resting on this body. */
+    bool wokeRecently;
+    /* Largest normal impulse any contact — with the world or with another
+       body — delivered to this body during the last physics update, in
+       mass-cells per second, and where it landed. What a fracture rule reads;
+       reset every update. */
+    float impactImpulse;
+    Vector2 impactPoint;
+    Vector2 impactNormal;
     /* Seconds this body has been below both sleep thresholds. Reset the moment
        it moves again, so a body only sleeps after a continuous quiet spell
        rather than after one lucky tick. */
@@ -301,6 +271,11 @@ typedef struct DynamicTerrainSystem {
     int awakeCount;
     DynamicTerrainConfig config;
     DynamicTerrainStats stats;
+    /* The contacts of the substep being solved, against the world and between
+       bodies, and their counters. Owned here because the physics update is the
+       only user and a per-tick call is not the place for fifty kilobytes of
+       stack. */
+    TerrainContactWorkspace contacts;
 } DynamicTerrainSystem;
 
 /* All fixed-capacity arenas are allocated at init and freed at unload, with
@@ -378,6 +353,15 @@ static inline bool TerrainFiniteSample(Vector2 value)
    rather than believing a body is moving when it is not. Safe on a dead
    handle. */
 bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle handle);
+
+/* Wakes every sleeping body whose world box touches the inclusive cell range,
+   grown by one cell so a body resting on the range's edge counts. Returns how
+   many woke. This is how ground destroyed under a sleeping body reaches it: a
+   sleeping body is never integrated and would otherwise hang over the hole. A
+   scan over the bodies, never over cells, so the cost is MAX_TERRAIN_BODIES
+   per call. */
+int DynamicTerrainWakeInCells(DynamicTerrainSystem *system, int minimumX,
+                              int minimumY, int maximumX, int maximumY);
 
 /* World-space bounding box of a body's occupied cells, for callers deciding
    what to draw or where a body has got to. Rotation is included, so the box is

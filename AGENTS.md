@@ -253,6 +253,18 @@ coherent phase with an explanatory message.
   one transform: no integration step may walk a body's raster. The transform
   lives in `TerrainBodyLocalToWorld`/`TerrainBodyWorldToLocal` — read it there
   rather than re-deriving it, since rotation is about the centre of mass.
+- Bodies collide with each other (`terrain_body_collision.c`) the way they
+  collide with the world: raster against raster, one cell read per surface
+  sample, pairs in slot order so a replay stays a replay. Contacts with the
+  world and between bodies are solved in one projected Gauss-Seidel loop with
+  warm starting (`terrain_contact.c`); solved separately, a pile creeps under a
+  residual for ever and never sleeps. A sleeping body is a wall until something
+  moving faster than `TERRAIN_PAIR_WAKE_SPEED` touches it, a body that wakes
+  wakes what rests on it, and ground destroyed under a sleeper reaches it
+  through the destruction log (`DynamicTerrainWakeInCells`) — never through a
+  scan of sleeping bodies asking whether their floor is still there. Every
+  substep shares one count set by the fastest body: two bodies can only be
+  compared at the same moment.
 - `TerrainBodyRenderer` is the only GPU owner for detached terrain. Its 32
   fixed cache slots key scene/emissive RGBA8 textures by the existing
   generation handle plus `rasterRevision`; unchanged bodies cost only a bounded

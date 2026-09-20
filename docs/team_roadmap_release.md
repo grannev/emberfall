@@ -62,6 +62,8 @@ world_components.*
 terrain_extraction.*
 terrain_detach.*
 terrain_physics.*
+terrain_body_collision.*
+terrain_contact.*
 terrain_impulse.*
 terrain_body_render_data.*
 terrain_body_renderer.*

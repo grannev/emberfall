@@ -951,3 +951,43 @@ water` 2.95 → 1.95 ms.
 Память: два массива `uint16_t` на chunk, 128 KiB на боевом мире. Регрессии:
 `test_chunk_material_counts_match_a_brute_force_recount`,
 `test_water_and_lava_react_across_a_chunk_border`.
+
+## Замер 2026-09-20: тела сталкиваются друг с другом (EF-DYN-012)
+
+До этого замера тела сталкивались только с миром, и куча обломков была
+кусками в одних и тех же клетках. Парная фаза (`terrain_body_collision.c`) и
+общий решатель контактов (`terrain_contact.c`, PGS по накопленным импульсам с
+warm start) описаны в `docs/dynamic-terrain.md`; здесь — цена. `make bench`,
+16384×2048, те же сценарии `terrain *`, плюс два новых: «64 pile» — восемь
+колонн по восемь тел, каждое падает на предыдущее.
+
+| Сценарий | до | после | пар/tick |
+|---|---:|---:|---:|
+| 1 awake | 0.003 ms | 0.010 ms | 0 |
+| 16 awake | 0.054 ms | 0.072 ms | 0 |
+| 64 awake в ряд | 0.221 ms | 0.290 ms | 0 |
+| 64 sleeping | 0.001 ms | 0.006 ms | 0 |
+| 64 shipped budget (40 awake) | 0.137 ms | 0.192 ms | 0 |
+| cells at budget (64×64×32) | 0.825 ms | 0.962 ms | 0 |
+| cells asleep | 0.001 ms | 0.006 ms | 0 |
+| 64 pile | — | 0.444 ms | 560 |
+| 64 pile shipped budget | — | 0.257 ms | 320 |
+
+Три вещи стоили заметно, и все три сняты до замера выше: AABB тел пересчитывались
+на каждую из 2016 пар (теперь один раз за подшаг); рабочее пространство
+переписывало все 64 набора контактов каждый подшаг (теперь только непустые);
+и тела, рождённые с флагом `wokeRecently`, будили соседей уже после того, как
+сами уснули (флаг снимается при засыпании) — так «cells asleep» стоил 3.2 мс и
+держал все 64 тела бодрствующими. Спящие строки остались на 0.006 мс: пары, в
+которых спят оба, не рассматриваются.
+
+Клеточные сценарии не изменились ни на один счётчик: столкновения мир не
+трогают. Регрессии: `test_two_bodies_do_not_pass_through_each_other`,
+`test_a_body_lands_on_another_and_the_pile_sleeps`,
+`test_a_tall_pile_settles_and_sleeps`,
+`test_a_heavy_body_moves_a_light_one_more_than_the_reverse`,
+`test_an_off_centre_blow_spins_the_struck_body`,
+`test_a_fast_body_does_not_tunnel_through_a_thin_one`,
+`test_waking_a_body_wakes_what_rests_on_it`,
+`test_pair_collision_is_deterministic`,
+`test_ground_destroyed_under_a_sleeping_body_wakes_it`.

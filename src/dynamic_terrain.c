@@ -90,6 +90,7 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
     }
     memset(system, 0, sizeof(*system));
     system->config = DynamicTerrainDefaultConfig();
+    TerrainContactWorkspaceInit(&system->contacts);
     for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
         system->bodies[index].generation = TERRAIN_BODY_FIRST_GENERATION;
     }
@@ -197,6 +198,10 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
        simulating three hundred of them. */
     if (system->awakeCount < system->config.maxAwakeBodies) {
         body->awake = true;
+        /* A body that begins to exist is a change to whatever it is placed
+           against: the pieces of a fractured base rest on the same rubble the
+           base did, and that rubble has to learn its support moved. */
+        body->wokeRecently = true;
         ++system->awakeCount;
         if (system->awakeCount > system->stats.peakAwakeBodies) {
             system->stats.peakAwakeBodies = system->awakeCount;
@@ -249,6 +254,9 @@ void DynamicTerrainFreeBody(DynamicTerrainSystem *system, TerrainBodyHandle hand
     }
     body->active = false;
     body->awake = false;
+    /* What the solver remembered about this body's contacts must not be
+       delivered to whatever takes the slot next. */
+    TerrainContactForgetBody(&system->contacts, handle.index);
     /* Bumping on free is what makes every outstanding handle to this body stale
        from this moment, including the one that did the freeing. Zero is
        skipped: it is the value a zero-initialised handle carries. */
@@ -643,6 +651,7 @@ void DynamicTerrainSettleBody(DynamicTerrainSystem *system, TerrainBody *body,
            no longer being integrated, so a sleeping transform is exactly the
            one a reader sees. */
         body->awake = false;
+        body->wokeRecently = false;
         body->sleepTimer = 0.0f;
         body->velocity = (Vector2){0.0f, 0.0f};
         body->angularVelocity = 0.0f;
@@ -800,12 +809,49 @@ bool DynamicTerrainWakeBody(DynamicTerrainSystem *system, TerrainBodyHandle hand
         return false;
     }
     body->awake = true;
+    body->wokeRecently = true;
     body->sleepTimer = 0.0f;
     ++system->awakeCount;
     if (system->awakeCount > system->stats.peakAwakeBodies) {
         system->stats.peakAwakeBodies = system->awakeCount;
     }
     return true;
+}
+
+int DynamicTerrainWakeInCells(DynamicTerrainSystem *system, int minimumX,
+                              int minimumY, int maximumX, int maximumY)
+{
+    int woken = 0;
+    int slot;
+
+    if (system == NULL) {
+        return 0;
+    }
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        TerrainBody *body = &system->bodies[slot];
+        Vector2 minimum;
+        Vector2 maximum;
+
+        if (!body->active || body->awake || body->cellCount <= 0) {
+            continue;
+        }
+        if (!TerrainBodyWorldBounds(body, &minimum, &maximum)) {
+            continue;
+        }
+        /* The range is cells, the box is continuous: cell maximumX ends at
+           maximumX + 1, and one more cell either side is the resting gap. */
+        if (maximum.x < (float)(minimumX - 1) ||
+            minimum.x > (float)(maximumX + 2) ||
+            maximum.y < (float)(minimumY - 1) ||
+            minimum.y > (float)(maximumY + 2)) {
+            continue;
+        }
+        if (DynamicTerrainWakeBody(system, (TerrainBodyHandle){
+                                               (uint16_t)slot, body->generation})) {
+            ++woken;
+        }
+    }
+    return woken;
 }
 
 void DynamicTerrainSetVelocity(DynamicTerrainSystem *system,

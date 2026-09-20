@@ -321,9 +321,19 @@ int TerrainDetachProcess(TerrainDetachSystem *system, World *world,
        make the next call's work depend on how many ticks the last frame
        happened to run. */
     for (index = 0; index < world->destructionCount; ++index) {
+        const WorldDestructionRegion *region = &world->destruction[index];
+
+        /* A sleeping body is never integrated, so the ground being cut from
+           under it is news it has to be told. The same log that says where a
+           detach check is due says where that happened, and nothing else does
+           — no scan over sleeping bodies asking whether their floor is still
+           there. */
+        (void)DynamicTerrainWakeInCells(terrain, region->minimumX,
+                                        region->minimumY, region->maximumX,
+                                        region->maximumY);
         if (created < system->config.maxExtractionsPerTick) {
             created += DetachProcessRegion(system, world, terrain, events,
-                                           &world->destruction[index],
+                                           region,
                                            system->config.maxExtractionsPerTick -
                                                created);
         }

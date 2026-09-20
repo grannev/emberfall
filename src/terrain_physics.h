@@ -1,8 +1,9 @@
 #ifndef TERRAIN_PHYSICS_H
 #define TERRAIN_PHYSICS_H
 
-/* One fixed step of terrain-body physics: integration, then collision against
- * the static cellular world.
+/* One fixed step of terrain-body physics: integration, collision against the
+ * static cellular world, then collision between the bodies themselves
+ * (terrain_body_collision.h), all inside one shared run of substeps.
  *
  * The dependency runs one way only. This module reads the world through a
  * `const World *` — the compiler, not a comment, is what guarantees collision
@@ -24,14 +25,25 @@
  * Worst case per tick is the product of these, and every one of them is a
  * compile-time constant so the product can be read off:
  *
- *   MAX_TERRAIN_BODIES (32)
- *     x TERRAIN_MAX_SUBSTEPS (16)
- *       x [surface cells tested, <= MAX_TERRAIN_BODY_CELLS]
- *   plus MAX_TERRAIN_CONTACTS_PER_BODY (16) x TERRAIN_SOLVER_ITERATIONS (4)
+ *   TERRAIN_MAX_SUBSTEPS (24), shared by every awake body, times
+ *     MAX_TERRAIN_BODIES (64)
+ *       x [surface cells tested against the world, <= MAX_TERRAIN_BODY_CELLS]
+ *     plus the pair phase: MAX_TERRAIN_BODIES choose two box tests and
+ *       TERRAIN_PAIR_MAX_MANIFOLDS x TERRAIN_PAIR_MAX_SAMPLES raster reads
+ *     plus the solve: TERRAIN_SOLVER_ITERATIONS x
+ *       (MAX_TERRAIN_BODIES x MAX_TERRAIN_CONTACTS_PER_BODY
+ *        + TERRAIN_PAIR_MAX_MANIFOLDS x TERRAIN_PAIR_MAX_CONTACTS) impulses.
+ *
+ * The substep count is the one the fastest awake body needs, taken by all of
+ * them, because two bodies can only be compared at the same moment. The
+ * contact caps and the iteration count live in terrain_contact.h.
  */
 
 /* A substep never advances a body's fastest point by more than this, so it
-   cannot step over a wall one cell thick. */
+   cannot step over a wall one cell thick. Two bodies closing on each other
+   advance by at most twice this relative to each other, which is one cell:
+   still not enough to step a surface cell centre clean across a body one cell
+   thick, so the same budget covers bodies against bodies. */
 #define TERRAIN_COLLISION_SUBSTEP_DISTANCE 0.5f
 /* Ceiling on substeps, and therefore on cost. Beyond the motion this covers a
    body may tunnel; the envelope is stated rather than hidden, and
@@ -44,10 +56,6 @@
    ordinary one still takes one or two, and only the largest, fastest, fastest
    spinning body ever reaches the ceiling. */
 #define TERRAIN_MAX_SUBSTEPS 24
-/* Contacts kept per body per substep. A body resting on a long floor generates
-   one per surface cell in touch; the deepest few are what the response needs,
-   and keeping all of them would buy nothing. */
-#define MAX_TERRAIN_CONTACTS_PER_BODY 16
 /* The largest bounding radius any body can have. A raster is at most
    TERRAIN_BODY_RASTER_CAPACITY cells with neither side over
    TERRAIN_BODY_MAX_SPAN, so the widest it can be is 192x144 and the farthest a
@@ -55,11 +63,6 @@
    the speed ceilings are chosen against, which is why no body can tunnel rather
    than merely no body anyone has tried. */
 #define TERRAIN_BODY_MAX_BOUNDING_RADIUS 120.0f
-
-/* Velocity solver passes over the contact set. Enough for a body to settle on
-   a floor without the unbounded "repeat until no overlap" loop that would make
-   a bad frame arbitrarily expensive. */
-#define TERRAIN_SOLVER_ITERATIONS 4
 
 /* Advances every awake body by `deltaTime`, colliding against `world`.
  *
