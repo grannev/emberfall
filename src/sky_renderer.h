@@ -74,8 +74,9 @@ typedef struct SkyCloudLayer {
     float parallax;
     /* Radius of a cloud's body, and of the largest puff in it. */
     float radius;
-    /* Where in the band between the cloud line and the space line the layer
-       sits, as fractions of the band from the top. */
+    /* Where the layer sits, in units of the band between the space line and
+       the cloud line, measured down from the space line. May exceed one: the
+       cloud line is where weight fades, not where weather stops. */
     float bandLow;
     float bandHigh;
     /* Opacity of the densest block at noon. */

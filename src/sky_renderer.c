@@ -28,8 +28,8 @@ static const SkyCloudLayer LAYERS[SKY_CLOUD_LAYERS] = {
         .drift = 2.5f,
         .parallax = 0.55f,
         .radius = 15.0f,
-        .bandLow = 0.18f,
-        .bandHigh = 0.55f,
+        .bandLow = 0.20f,
+        .bandHigh = 1.00f,
         .alpha = 0.42f,
     },
     {
@@ -37,8 +37,8 @@ static const SkyCloudLayer LAYERS[SKY_CLOUD_LAYERS] = {
         .drift = 5.0f,
         .parallax = 0.78f,
         .radius = 23.0f,
-        .bandLow = 0.30f,
-        .bandHigh = 0.82f,
+        .bandLow = 0.50f,
+        .bandHigh = 1.90f,
         .alpha = 0.62f,
     },
 };
@@ -168,8 +168,11 @@ static void SkyCloudAt(uint64_t seed, const SkyCloudLayer *layer, int layerIndex
          SkyUnit(seed, slot, layerIndex, 5) * layer->spacing *
              SKY_SLOT_OFFSET_FRACTION +
          time * layer->drift + SkyLayerShift(layer, visible);
-    /* Kept inside the band, and never quite touching its edges: a cloud sitting
-       on the space line would read as the ceiling of the world. */
+    /* Measured down from the space line in units of the band between it and
+       the cloud line, and never quite touching the space line: a cloud sitting
+       on it would read as the ceiling of the world. The near layer reaches
+       well below the cloud line — that line is where weight fades, and weather
+       has no reason to stop there. */
     *y = (float)worldHeight * WORLD_SPACE_LINE +
          band * (layer->bandLow +
                  SkyUnit(seed, slot, layerIndex, 7 + layerIndex * 100) *

@@ -34,7 +34,17 @@ raylib input -> input.c -> GameInput
 - владение `CameraFeedback`, camera follow и применение его bounded output;
 - потребление `GameEvents` звуком и камерой;
 - порядок platform update и отрисовки;
-- HUD и smoke-test integration.
+- HUD.
+
+Сам smoke-прогон живёт в `smoke_test.c`: `main.c` лишь вызывает его фазы в
+известных точках кадра (`SmokeTestBeginFrame` до опроса ввода,
+`SmokeTestScriptInput` после, `SmokeTestObserve*` после update/камеры/рендера,
+`SmokeTestCapture` внутри кадра до `EndDrawing`, `SmokeTestAdvance` и
+`SmokeTestReport`). Композиционный корень не знает, что именно прогон проверяет,
+а прогон не тянется в состояние цикла иначе как через эти вызовы. В smoke-режиме
+окно создаётся без vsync и без лимита FPS: прогон шагает фиксированными тиками и
+не смотрит на часы, а композитор отдаёт незасфокусированному окну один кадр в
+секунду — с vsync десятисекундный прогон превращался в семиминутный.
 
 ### `input.c/.h` и `game_input.h`
 

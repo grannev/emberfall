@@ -6,7 +6,7 @@ WORLD_SOURCES := src/materials.c src/world_storage.c src/world_simulation.c \
 	src/world_thermal.c src/world_generation.c src/world_biomes.c src/world_lighting.c \
 	src/world_effects.c src/material_render.c src/world_render_data.c \
 	src/world_components.c
-SOURCES := src/main.c src/game.c src/game_events.c src/input.c \
+SOURCES := src/main.c src/smoke_test.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
 	src/renderer.c src/environment_renderer.c src/world_renderer.c src/light_renderer.c \
 	src/presentation_fx.c src/camera_feedback.c \
