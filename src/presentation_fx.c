@@ -739,7 +739,13 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
             }
             break;
         case GAME_EVENT_LIQUID_SPLASH:
-            PresentationFxSpawnSplash(system, event, &spawned);
+            /* Only for the character. A body's splash is the water itself,
+               thrown up in a crown by the gameplay push, and a ring drawn
+               over it read as a hit effect on the body rather than as
+               water; it was removed at the player's request. */
+            if (event->count == 0) {
+                PresentationFxSpawnSplash(system, event, &spawned);
+            }
             break;
         case GAME_EVENT_LIQUID_RIPPLE:
             PresentationFxSpawnRipple(system, event, &spawned);

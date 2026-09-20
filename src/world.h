@@ -37,6 +37,10 @@ typedef enum CellMaterial {
     MATERIAL_LEAF,
     MATERIAL_GRASS,
     MATERIAL_CACTUS,
+    /* What ground becomes when it can no longer hold itself up: a ceiling
+       that spans more than its material can bear crumbles into this, and it
+       falls and piles like sand. See terrain_stability.h. */
+    MATERIAL_RUBBLE,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -160,7 +164,7 @@ typedef struct LaserResult {
  *
  * Fixed capacity, counted refusals. Entries advance in queue order and the
  * order is a function of the state alone, so a replay is a replay. */
-#define MAX_WORLD_FLUID_IMPULSES 1024
+#define MAX_WORLD_FLUID_IMPULSES 4096
 
 typedef struct WorldFluidImpulse {
     int32_t x;
@@ -175,6 +179,8 @@ typedef struct WorldFluidStats {
     /* Live entries, and refusals since the last WorldInit. */
     int impulsesActive;
     int impulsesRefused;
+    /* Water the drill turned to steam, since the last WorldInit. */
+    int vaporised;
     /* Refreshed by every tick. */
     int impulseMoves;
     int lifts;
@@ -480,6 +486,12 @@ bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
    splash or a body entering the water does to it. Bounded by the circle. */
 int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
                           int strength);
+/* Throws the surface up around `centre`: every surface cell — liquid with
+   nothing over it — within `radius` is pushed up and outward, hardest at the
+   centre, and the liquid under it out and down. What a heavy body dropped
+   into a river from a height does to the river: a crown of water thrown
+   clear of the surface and a ring spreading from it. Bounded by the circle. */
+int WorldSplashLiquid(World *world, Vector2 centre, float radius, int strength);
 
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);

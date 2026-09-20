@@ -6,9 +6,29 @@
 #include <math.h>
 #include <stddef.h>
 
+/* The head of a liquid cell. A cell with rock over it stores its own; a
+   cell with liquid over it is one cell deeper than the cell above, and its
+   head is read by walking up its column to the first cell that has something
+   other than liquid over it — a free surface, which is zero, or a roof, which
+   stores what its neighbours push it with. Nothing under liquid is ever
+   written: storing the chain meant every grain that slid onto a column of
+   the ocean rewrote a hundred cells under it and woke four chunk rows that
+   had nothing to do, and one blast in the sea cost eight milliseconds a tick
+   for two hundred ticks. The walk is bounded, and a column deeper than the
+   bound presses no harder than the bound. */
 static int32_t WorldFluidHeadAt(const World *world, int x, int y)
 {
-    return (int32_t)WorldLiquidHead(WorldCellConst(world, x, y));
+    int depth = 0;
+
+    while (depth < WORLD_LIQUID_CHAIN_REACH &&
+           MaterialIsLiquid(WorldMaterialAt(world, x, y - depth - 1))) {
+        ++depth;
+    }
+    if (MaterialIsSolid(WorldMaterialAt(world, x, y - depth - 1))) {
+        return (int32_t)WorldLiquidHead(WorldCellConst(world, x, y - depth)) +
+               (int32_t)WORLD_LIQUID_HEAD_PER_CELL * depth;
+    }
+    return (int32_t)WORLD_LIQUID_HEAD_PER_CELL * depth;
 }
 
 /* Stores a head, and wakes the neighbourhood when it changed: a changing
@@ -52,56 +72,77 @@ static int32_t WorldFluidOffered(const World *world, int x, int y)
 
 uint32_t WorldFluidUpdateHead(World *world, int x, int y)
 {
-    int32_t head = WorldFluidOffered(world, x, y);
-
-    /* A cell above is one cell higher, so whatever pushes it pushes this cell
-       one cell harder — and its head is exact when its column reaches a
-       surface, which is what keeps a pool from ever holding a stale value:
-       the surface walk below rewrites every column under a surface, and this
-       rule only carries it on from where the walk stopped. */
-    if (MaterialIsLiquid(WorldMaterialAt(world, x, y - 1))) {
-        int32_t above = WorldFluidHeadAt(world, x, y - 1) +
-                        (int32_t)WORLD_LIQUID_HEAD_PER_CELL;
-
-        if (above > head) head = above;
-    }
-    WorldFluidStoreHead(world, x, y, head);
+    /* Only a cell with rock over it keeps a head of its own: the roof of a
+       channel, the ceiling of a sealed cave. That is where pressure travels
+       sideways, and it is a row of cells rather than a lake of them. */
+    WorldFluidStoreHead(world, x, y, WorldFluidOffered(world, x, y));
     return WorldLiquidHead(WorldCellConst(world, x, y));
+}
+
+/* How much a column's neighbour at (x, y) pushes a column whose surface is
+   `surfaceY`, over what the column's own depth there explains. A neighbour
+   under its own free surface pushes by how much higher that surface stands —
+   read at the surface, once, rather than at every depth — and a neighbour
+   with rock over it pushes with the head it stores. Under liquid without a
+   free surface the chain goes up to a roof, and the roof's head is what it
+   says. */
+static int32_t WorldFluidPushFrom(const World *world, int x, int y, int surfaceY)
+{
+    CellMaterial material = WorldMaterialAt(world, x, y);
+    int32_t head;
+
+    if (!MaterialIsLiquid(material)) {
+        return 0;
+    }
+    head = WorldFluidHeadAt(world, x, y);
+    return head - (int32_t)WORLD_LIQUID_HEAD_LOSS -
+           (int32_t)WORLD_LIQUID_HEAD_PER_CELL * (y - surfaceY);
 }
 
 bool WorldFluidSurfaceStep(World *world, int x, int y)
 {
     CellMaterial material = WorldMaterialAt(world, x, y);
     int32_t bottomHead;
+    int32_t excess;
     int depth = 0;
+    int pushedDepth = 0;
 
     /* The surface is the reference: no head, whatever the cell remembered. */
     WorldFluidStoreHead(world, x, y, 0);
-    /* Its own neighbours may still push it — a surface cell that is the whole
-       of a column beside a pressed channel — so the walk starts from it. */
-    bottomHead = WorldFluidOffered(world, x, y);
-    /* Down the column: each cell is one cell deeper than the one above,
-       or whatever more its neighbours offer. The same rule the neighbour
-       update applies, so the two agree — a walk that took the plain depth
-       where the neighbour update took the cell above plus one disagreed by
-       a unit wherever a neighbouring column pressed harder, and a pond with
-       a bump on it flickered between the two answers for ever. */
+    /* What the two neighbouring columns stand at, read once: a neighbour
+       whose surface is higher pushes every cell of this column by the
+       difference, and that is the same number at every depth. */
+    excess = WorldFluidPushFrom(world, x - 1, y, y);
     {
-        int32_t above = 0;
+        int32_t right = WorldFluidPushFrom(world, x + 1, y, y);
 
-        while (depth < WORLD_LIQUID_COLUMN_REACH &&
-               WorldMaterialAt(world, x, y + depth + 1) == material) {
-            int32_t head;
+        if (right > excess) excess = right;
+    }
+    /* Down the column for pushes that enter its side from under a roof — a
+       pipe into it — which only a cell with rock over it can deliver. Those
+       are found by their roof, two material reads a cell, and their head is
+       read only when one is found. */
+    while (depth < WORLD_LIQUID_COLUMN_REACH &&
+           WorldMaterialAt(world, x, y + depth + 1) == material) {
+        int side;
 
-            ++depth;
-            head = above + (int32_t)WORLD_LIQUID_HEAD_PER_CELL;
-            bottomHead = WorldFluidOffered(world, x, y + depth);
-            if (bottomHead > head) head = bottomHead;
-            WorldFluidStoreHead(world, x, y + depth, head);
-            above = (int32_t)WorldLiquidHead(WorldCellConst(world, x, y + depth));
-            bottomHead = above;
+        ++depth;
+        for (side = -1; side <= 1; side += 2) {
+            int probeX = x + side;
+
+            if (MaterialIsLiquid(WorldMaterialAt(world, probeX, y + depth)) &&
+                MaterialIsSolid(WorldMaterialAt(world, probeX, y + depth - 1))) {
+                int32_t offered = WorldFluidPushFrom(world, probeX, y + depth, y);
+
+                if (offered > excess) {
+                    excess = offered;
+                    pushedDepth = depth;
+                }
+            }
         }
     }
+    depth = pushedDepth;
+    bottomHead = excess + (int32_t)WORLD_LIQUID_HEAD_PER_CELL * depth;
     /* Pushed by more than its own depth explains, and room above to rise
        into: the bottom of the column is lifted to the top, and its place is
        taken by the liquid that is pushing — found by following the head
@@ -182,7 +223,7 @@ bool WorldFluidMayFlowToward(const World *world, int x, int y, int direction,
     if (!MaterialIsLiquid((CellMaterial)other->material)) {
         return true;
     }
-    return WorldLiquidHead(other) < WorldLiquidHead(WorldCellConst(world, x, y));
+    return WorldFluidHeadAt(world, otherX, y) < WorldFluidHeadAt(world, x, y);
 }
 
 /* --- impulses ------------------------------------------------------------ */
@@ -358,6 +399,63 @@ int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
                 directionY = -1;
             }
             steps = 1 + (int)((float)strength * (1.0f - distance / radius));
+            if (WorldPushLiquid(world, x, y, directionX, directionY, steps)) {
+                ++pushed;
+            }
+        }
+    }
+    return pushed;
+}
+
+int WorldSplashLiquid(World *world, Vector2 centre, float radius, int strength)
+{
+    int pushed = 0;
+    int centreX;
+    int centreY;
+    int extent;
+    int y;
+
+    if (world == NULL || world->cells == NULL || !(radius > 0.0f) || strength <= 0) {
+        return 0;
+    }
+    if (radius > 96.0f) {
+        radius = 96.0f;
+    }
+    centreX = (int)floorf(centre.x);
+    centreY = (int)floorf(centre.y);
+    extent = (int)ceilf(radius);
+    for (y = centreY - extent; y <= centreY + extent; ++y) {
+        int x;
+
+        for (x = centreX - extent; x <= centreX + extent; ++x) {
+            float dx = (float)x + 0.5f - centre.x;
+            float dy = (float)y + 0.5f - centre.y;
+            float distance = sqrtf(dx * dx + dy * dy);
+            float falloff;
+            int directionX;
+            int directionY;
+            int steps;
+
+            if (distance > radius || !WorldInBounds(world, x, y) ||
+                !MaterialIsLiquid(WorldMaterialAt(world, x, y))) {
+                continue;
+            }
+            falloff = 1.0f - distance / radius;
+            if (fabsf(dx) >= radius * 0.3f) {
+                /* The ring around what fell in, the whole depth of it: up,
+                   and outward the further from the centre, so the crown
+                   leans away from the impact. Column after column rises,
+                   which is what makes it a crown and not a sheet. */
+                directionX = fabsf(dx) > radius * 0.65f ? (dx < 0.0f ? -1 : 1) : 0;
+                directionY = -1;
+                steps = 1 + (int)((float)strength * (0.5f + 0.5f * falloff));
+            } else {
+                /* Straight under it: shoved out of the way and down, which
+                   is where the mass that went in has to go. */
+                directionX = dx < 0.0f ? -1 : 1;
+                directionY = dy > 0.0f ? 1 : 0;
+                steps = 1 + (int)((float)strength * 0.5f * falloff);
+            }
             if (WorldPushLiquid(world, x, y, directionX, directionY, steps)) {
                 ++pushed;
             }

@@ -281,6 +281,16 @@ int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
             }
 
             cell = WorldCell(world, x, y);
+            /* Water in the drill's path flashes to steam: a body going this
+               fast burns through everything it meets, and water is not the
+               exception. Lava is already what fire makes of things, and a
+               gas is nothing to burn. */
+            if (distanceSquared <= radiusSquared && cell->material == MATERIAL_WATER) {
+                WorldSetCellRaw(world, x, y, MATERIAL_STEAM);
+                WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+                ++world->fluid.vaporised;
+                continue;
+            }
             if (distanceSquared > radiusSquared ||
                 !MaterialIsSolid(cell->material)) {
                 /* Everything the drill cannot cut is only warmed. The cap stays

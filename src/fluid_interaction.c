@@ -5,6 +5,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 #include "materials.h"
 
@@ -16,30 +17,33 @@
 /* Hysteresis on "in the liquid". */
 #define FLUID_ENTER_FRACTION 0.25f
 #define FLUID_LEAVE_FRACTION 0.05f
-/* Widest and strongest splash the character can make, in cells of push
-   radius and steps of push. */
-#define FLUID_SPLASH_MAX_RADIUS 10.0f
-#define FLUID_SPLASH_MAX_STRENGTH 10
-/* Cells lifted either side of a low pass. */
-#define FLUID_FLYOVER_HALF_WIDTH 2
+/* Widest and strongest splash the character can make, in cells of radius
+   and steps of push. */
+#define FLUID_SPLASH_MAX_RADIUS 16.0f
+#define FLUID_SPLASH_MAX_STRENGTH 18
+/* The wall of water a low pass throws: cells either side of the pass, and
+   steps of push, at the speeds where each starts and where each is at its
+   widest. */
+#define FLUID_FLYOVER_MIN_HALF_WIDTH 4
+#define FLUID_FLYOVER_MAX_HALF_WIDTH 16
+#define FLUID_FLYOVER_MAX_STRENGTH 16
 
 FluidInteractionConfig FluidInteractionDefaultConfig(void)
 {
     FluidInteractionConfig config;
 
-    config.dragCoefficient = 0.028f;
-    config.lavaDragScale = 2.0f;
     config.splashSpeed = 60.0f;
-    config.entryLoss = 0.30f;
-    config.flyoverHeight = 4.0f;
-    config.flyoverSpeed = 120.0f;
-    config.flyoverInterval = 0.05f;
+    config.wakeSpeed = 40.0f;
+    config.flyoverHeight = 6.0f;
+    config.flyoverSpeed = 110.0f;
+    config.sonicFlyoverHeight = 14.0f;
+    config.flyoverInterval = 0.03f;
     return config;
 }
 
 void FluidInteractionInit(FluidInteractionState *state)
 {
-    FluidInteractionStats empty = {0, 0, 0, 0};
+    FluidInteractionStats empty = {0, 0, 0, 0, 0};
 
     if (state == NULL) {
         return;
@@ -49,6 +53,7 @@ void FluidInteractionInit(FluidInteractionState *state)
     state->liquid = MATERIAL_EMPTY;
     state->inside = false;
     state->flyoverCooldown = 0.0f;
+    state->wakeCooldown = 0.0f;
     state->stats = empty;
 }
 
@@ -108,13 +113,13 @@ static int FluidSurfaceRow(const World *world, const Player *player)
     return surface;
 }
 
-static void FluidSplash(FluidInteractionState *state, Player *player,
+static void FluidSplash(FluidInteractionState *state, const Player *player,
                         World *world, GameEventBuffer *events, float speed,
                         bool entering)
 {
     Vector2 at = {player->position.x, (float)FluidSurfaceRow(world, player) + 0.5f};
-    float radius = 3.0f + speed / 60.0f;
-    int strength = 2 + (int)(speed / 40.0f);
+    float radius = 4.0f + speed / 30.0f;
+    int strength = 4 + (int)(speed / 25.0f);
     Vector2 direction = {0.0f, entering ? 1.0f : -1.0f};
 
     if (radius > FLUID_SPLASH_MAX_RADIUS) radius = FLUID_SPLASH_MAX_RADIUS;
@@ -123,7 +128,7 @@ static void FluidSplash(FluidInteractionState *state, Player *player,
         direction.x = player->velocity.x / speed;
         direction.y = player->velocity.y / speed;
     }
-    state->stats.cellsPushed += WorldPushLiquidRadial(world, at, radius, strength);
+    state->stats.cellsPushed += WorldSplashLiquid(world, at, radius, strength);
     (void)GameEventsPush(events, (GameEvent){
         .type = GAME_EVENT_LIQUID_SPLASH,
         .position = at,
@@ -135,18 +140,44 @@ static void FluidSplash(FluidInteractionState *state, Player *player,
     });
 }
 
+/* Under water at speed: the cells around the character are thrown out of
+   the way, ahead and to the sides, and rise behind as the wake. */
+static void FluidWake(FluidInteractionState *state, const Player *player,
+                      World *world, float speed)
+{
+    float radius = player->radius + 2.0f + speed / 60.0f;
+    int strength = 2 + (int)(speed / 40.0f);
+
+    if (radius > 10.0f) radius = 10.0f;
+    if (strength > 8) strength = 8;
+    state->stats.cellsPushed += WorldPushLiquidRadial(world, player->position,
+                                                      radius, strength);
+    ++state->stats.wakes;
+}
+
 static void FluidFlyover(FluidInteractionState *state, const Player *player,
                          World *world, GameEventBuffer *events, float speed)
 {
     int x = (int)floorf(player->position.x);
     int bottom = (int)floorf(player->position.y + player->radius);
+    float reach = speed >= player->sonicSpeed ? state->config.sonicFlyoverHeight
+                                              : state->config.flyoverHeight;
+    /* Wider and higher the faster: a wall at boost, a ripple at a crawl. */
+    float pace = (speed - state->config.flyoverSpeed) /
+                 (player->boostSpeed - state->config.flyoverSpeed);
+    int halfWidth;
+    int strength;
     int probe;
 
-    for (probe = bottom + 1;
-         probe <= bottom + (int)ceilf(state->config.flyoverHeight); ++probe) {
+    if (pace < 0.0f) pace = 0.0f;
+    if (pace > 1.0f) pace = 1.0f;
+    halfWidth = FLUID_FLYOVER_MIN_HALF_WIDTH +
+                (int)((float)(FLUID_FLYOVER_MAX_HALF_WIDTH - FLUID_FLYOVER_MIN_HALF_WIDTH) * pace);
+    strength = 2 + (int)((float)(FLUID_FLYOVER_MAX_STRENGTH - 2) * pace);
+
+    for (probe = bottom + 1; probe <= bottom + (int)ceilf(reach); ++probe) {
         CellMaterial material = WorldGetCell(world, x, probe);
         int offset;
-        int strength;
 
         if (!MaterialIsLiquid(material)) {
             if (material != MATERIAL_EMPTY) {
@@ -154,11 +185,16 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
             }
             continue;
         }
-        /* The wake: the water under the pass is lifted, and falls back. */
-        strength = 1 + (int)(speed / 200.0f);
-        for (offset = -FLUID_FLYOVER_HALF_WIDTH; offset <= FLUID_FLYOVER_HALF_WIDTH;
-             ++offset) {
-            if (WorldPushLiquid(world, x + offset, probe, 0, -1, strength)) {
+        /* The nearer the surface, the harder. Straight up under the pass,
+           leaning outward at the edges of the band, so the wall curls. */
+        strength = 1 + (int)((float)strength *
+                             (1.0f - 0.5f * (float)(probe - bottom - 1) / reach));
+        for (offset = -halfWidth; offset <= halfWidth; ++offset) {
+            int directionX = abs(offset) > halfWidth / 2 ? (offset < 0 ? -1 : 1) : 0;
+            int steps = 1 + (int)((float)strength *
+                                  (1.0f - (float)abs(offset) / (float)(halfWidth + 1)));
+
+            if (WorldPushLiquid(world, x + offset, probe, directionX, -1, steps)) {
                 ++state->stats.cellsPushed;
             }
         }
@@ -169,16 +205,16 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
             .position = {(float)x + 0.5f, (float)probe},
             .direction = {player->velocity.x / speed, player->velocity.y / speed},
             .strength = speed,
-            .radius = (float)(2 * FLUID_FLYOVER_HALF_WIDTH + 1),
+            .radius = (float)(2 * halfWidth + 1),
             .material = material,
         });
         return;
     }
 }
 
-void FluidInteractionUpdatePlayer(FluidInteractionState *state, Player *player,
-                                  World *world, GameEventBuffer *events,
-                                  float deltaTime)
+void FluidInteractionUpdatePlayer(FluidInteractionState *state,
+                                  const Player *player, World *world,
+                                  GameEventBuffer *events, float deltaTime)
 {
     float speed;
     float fraction;
@@ -196,22 +232,12 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state, Player *player,
         state->liquid = liquid;
     }
     state->flyoverCooldown -= deltaTime;
-
-    /* The drag the character integrates this frame: nothing in air, the full
-       coefficient under water, and in proportion between. */
-    player->fluidDrag = state->config.dragCoefficient * fraction;
-    if (fraction > 0.0f && state->liquid == MATERIAL_LAVA) {
-        player->fluidDrag *= state->config.lavaDragScale;
-    }
+    state->wakeCooldown -= deltaTime;
 
     if (!state->inside && fraction >= FLUID_ENTER_FRACTION) {
         state->inside = true;
         ++state->stats.entries;
         if (speed >= state->config.splashSpeed) {
-            /* Hitting the surface costs a share of the speed outright — the
-               blow of it — before the drag takes the rest. */
-            player->velocity.x *= 1.0f - state->config.entryLoss;
-            player->velocity.y *= 1.0f - state->config.entryLoss;
             FluidSplash(state, player, world, events, speed, true);
         }
     } else if (state->inside && fraction <= FLUID_LEAVE_FRACTION) {
@@ -220,6 +246,13 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state, Player *player,
         if (speed >= state->config.splashSpeed) {
             FluidSplash(state, player, world, events, speed, false);
         }
+    } else if (state->inside && fraction > 0.0f &&
+               speed >= state->config.wakeSpeed && !PlayerIsDrilling(player) &&
+               state->wakeCooldown <= 0.0f) {
+        /* Not while drilling: the drill is turning the water to steam, and
+           steam is not shoved. */
+        FluidWake(state, player, world, speed);
+        state->wakeCooldown = 0.05f;
     } else if (!state->inside && fraction <= 0.0f &&
                speed >= state->config.flyoverSpeed &&
                state->flyoverCooldown <= 0.0f) {

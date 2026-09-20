@@ -89,14 +89,20 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 - Beams start at `PlayerBeamOrigin`, used by the gameplay ray and the drawn beam
   alike. A beam cast from the chest and drawn from the head reads as a bug the
   moment the player aims down.
-- The player's resistance in liquid is `Player.fluidDrag`, a quadratic drag set
-  each frame by `fluid_interaction.c` from a bounded sample through the
-  collider and integrated after thrust, so a dive is stopped hard, a drift is
-  hardly touched, and the controls stay alive under water. Never a flat
-  multiplier on velocity: that took the same fraction from a crawl as from a
-  dive, read as swimming through glue, and was removed once already. Dry
-  flight must be bit-identical with the model running. A body in liquid gets
-  buoyancy from density alone (`terrain_fluid.c`), drag before buoyancy.
+- Nothing slows the player in a liquid, and nothing may start to: no flat
+  multiplier, no drag however physical — both were tried and both were
+  removed at the player's request. Flying through the world is the point of
+  the game and no material punishes it. The liquid pays instead
+  (`fluid_interaction.c`): a fast entry throws a crown, a fast low pass
+  lifts a wall of water, a dive at speed leaves a wake, and at drill speed the
+  water in the corridor flashes to steam. A body in liquid gets buoyancy from
+  density alone (`terrain_fluid.c`), drag before buoyancy, and its splash is
+  the water itself — never a drawn effect over it.
+- A liquid cell under liquid stores no head: its head is read by walking up
+  its column, bounded. Only a cell with rock over it stores one. Storing the
+  chain sent a wave of head changes through an ocean after one blast and
+  woke it for two hundred ticks; measure any fluid change on a real ocean
+  (`docs/performance.md`, EF-WLD-011), not only on a tub.
 - Thrust is decomposed along and across the direction of travel: forward is
   acceleration, backward is braking and is worth more than acceleration, across
   is steering and is what speed takes away. Steering authority falls to a

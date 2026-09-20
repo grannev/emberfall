@@ -11,8 +11,11 @@
 /* Hysteresis on "in the liquid". */
 #define TERRAIN_FLUID_ENTER_FRACTION 0.25f
 #define TERRAIN_FLUID_LEAVE_FRACTION 0.05f
-/* Strongest push a body's splash can give, in steps. */
-#define TERRAIN_FLUID_SPLASH_MAX_STRENGTH 12
+/* Strongest push a body's splash can give, in steps, and the widest, in
+   cells of radius: a slab the size of a house dropped into a lake from a
+   height throws water thirty cells up and the ring reaches the shore. */
+#define TERRAIN_FLUID_SPLASH_MAX_STRENGTH 30
+#define TERRAIN_FLUID_SPLASH_MAX_RADIUS 64.0f
 
 TerrainFluidConfig TerrainFluidDefaultConfig(void)
 {
@@ -70,14 +73,24 @@ static float TerrainFluidSubmerged(const DynamicTerrainSystem *terrain, int slot
     return sampled > 0 ? (float)inLiquid / (float)sampled : 0.0f;
 }
 
+/* The splash a body makes is the water's to make: a crown thrown clear of
+   the surface around it and a ring spreading out, sized by how fast it came
+   and how big it is — the mass that went in is water that has to go
+   somewhere, at once. No effect is drawn over it; what the player sees is
+   the water. */
 static void TerrainFluidSplash(TerrainFluidSystem *system, const TerrainBody *body,
                                World *world, GameEventBuffer *events,
                                CellMaterial liquid, float speed, bool entering)
 {
-    float radius = body->boundingRadius + 2.0f;
-    int strength = 2 + (int)(speed / 40.0f);
+    float size = sqrtf((float)body->cellCount);
+    float radius = body->boundingRadius * 1.5f + 3.0f + speed / 40.0f;
+    int strength = 3 + (int)(speed / 12.0f) + (int)(size / 3.0f);
     Vector2 direction = {0.0f, entering ? 1.0f : -1.0f};
+    Vector2 at = body->position;
 
+    if (radius > TERRAIN_FLUID_SPLASH_MAX_RADIUS) {
+        radius = TERRAIN_FLUID_SPLASH_MAX_RADIUS;
+    }
     if (strength > TERRAIN_FLUID_SPLASH_MAX_STRENGTH) {
         strength = TERRAIN_FLUID_SPLASH_MAX_STRENGTH;
     }
@@ -85,8 +98,22 @@ static void TerrainFluidSplash(TerrainFluidSystem *system, const TerrainBody *bo
         direction.x = body->velocity.x / speed;
         direction.y = body->velocity.y / speed;
     }
-    system->stats.cellsPushed += WorldPushLiquidRadial(world, body->position,
-                                                       radius, strength);
+    /* From the surface the body broke, not its centre: the crown rises from
+       where the water was. */
+    {
+        int x = (int)floorf(at.x);
+        int y = (int)floorf(at.y);
+        int probe;
+
+        for (probe = y - (int)ceilf(body->boundingRadius) - 2;
+             probe <= y + (int)ceilf(body->boundingRadius) + 2; ++probe) {
+            if (MaterialIsLiquid(WorldGetCell(world, x, probe))) {
+                at.y = (float)probe + 0.5f;
+                break;
+            }
+        }
+    }
+    system->stats.cellsPushed += WorldSplashLiquid(world, at, radius, strength);
     (void)GameEventsPush(events, (GameEvent){
         .type = GAME_EVENT_LIQUID_SPLASH,
         .position = body->position,

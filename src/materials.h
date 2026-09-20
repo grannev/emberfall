@@ -74,6 +74,13 @@ typedef struct MaterialInfo {
        the same slab of ice. Zero means the material has no mass, which is
        correct for empty space and for gases nothing can pick up. */
     float density;
+    /* How many cells of ceiling this material can hold up between two
+       supports before it crumbles, checked only where something was just
+       destroyed (terrain_stability.h). Zero means it never crumbles: a
+       liquid, a gas, and anything that falls on its own anyway. Rock spans a
+       cavern; dirt spans a burrow; a leaf canopy holds itself up on nothing,
+       which is what makes it a canopy. */
+    int span;
 } MaterialInfo;
 
 extern const MaterialInfo MATERIALS[MATERIAL_COUNT];

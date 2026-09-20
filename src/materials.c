@@ -26,6 +26,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .laserHeatRate = 2500.0f,
         .chillRate = 260.0f,
         .density = 1.4f,
+        .span = 8,
     },
     [MATERIAL_ROCK] = {
         .name = "ROCK", .color = {72, 77, 86, 255},
@@ -37,6 +38,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .laserHeatRate = 1080.0f,
         .chillRate = 260.0f,
         .density = 2.6f,
+        .span = 28,
     },
     [MATERIAL_SAND] = {
         .name = "SAND", .color = {218, 184, 91, 255},
@@ -124,6 +126,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .laserHeatRate = 600.0f,
         .chillRate = 260.0f,
         .density = 0.92f,
+        .span = 14,
     },
     [MATERIAL_WOOD] = {
         .flora = true,
@@ -141,6 +144,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         /* Light enough that a torn-off branch tumbles rather than drops, and
            far lighter than the rock it grows on. */
         .density = 0.55f,
+        /* A branch, not a beam: long enough that a tree stands, short enough
+           that a felled trunk bridging a chasm breaks under its own length. */
+        .span = 18,
     },
     [MATERIAL_LEAF] = {
         .flora = true,
@@ -189,6 +195,20 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .dynamic = true,
         .chillRate = 260.0f,
         .density = 0.7f,
+    },
+    [MATERIAL_RUBBLE] = {
+        .name = "RUBBLE", .color = {92, 82, 72, 255},
+        .variationR = 4, .variationG = 3, .variationB = 3,
+        .initialTemperature = AMBIENT_TEMPERATURE,
+        .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
+        /* Broken ground: it falls and piles like sand, stops the player like
+           sand, and is what a laser meets when it burns through a cave-in.
+           Between dirt and rock in weight, since it is both. */
+        .onHeat = {true, MATERIAL_LAVA, 720.0f},
+        .dynamic = true, .solid = true,
+        .laserHeatRate = 1600.0f,
+        .chillRate = 260.0f,
+        .density = 1.9f,
     },
 };
 

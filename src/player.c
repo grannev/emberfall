@@ -37,7 +37,6 @@ void PlayerInit(Player *player, Vector2 position)
        safe rather than reckless. */
     player->brakingAuthority = 2.6f;
     player->drag = 1.1f;
-    player->fluidDrag = 0.0f;
     player->restitution = 0.34f;
     /* Scaled with the drawn figure. The collider and the body have to agree or
        the character stands with his shins in the ground, which is what a
@@ -618,20 +617,7 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->velocity.y *= damping;
     velocityLength = sqrtf(player->velocity.x * player->velocity.x +
                            player->velocity.y * player->velocity.y);
-    /* The fluid, after the thrust and the air: quadratic, so a dive is
-       slowed hard and a crawl is hardly slowed, and never past zero or
-       through it in one frame. Thrust has already been applied this frame,
-       which is what keeps the controls alive under water. */
-    if (player->fluidDrag > 0.0f && velocityLength > 0.0f) {
-        float loss = player->fluidDrag * velocityLength * deltaTime;
 
-        if (loss > 0.9f) {
-            loss = 0.9f;
-        }
-        player->velocity.x *= 1.0f - loss;
-        player->velocity.y *= 1.0f - loss;
-        velocityLength *= 1.0f - loss;
-    }
     if (velocityLength > speedLimit) {
         float reducedSpeed = player->boosting
                                  ? speedLimit

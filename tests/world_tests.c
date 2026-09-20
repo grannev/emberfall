@@ -28,6 +28,7 @@
 #include "fluid_interaction.h"
 #include "terrain_extraction.h"
 #include "terrain_fluid.h"
+#include "terrain_stability.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
 #include "input.h"
@@ -6307,6 +6308,154 @@ static void test_ground_destroyed_under_a_sleeping_body_wakes_it(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* --- cave-ins ------------------------------------------------------------- */
+
+/* The contract of terrain_stability.h: a roof wider than its material bears
+   crumbles once something opens it, climbs until a layer that can bear its
+   width, never touches a cell that has support under it, costs no mass and
+   never starts on its own. */
+
+static TerrainStabilitySystem stability;
+
+static void StabilityTick(World *world, int count)
+{
+    int step;
+
+    for (step = 0; step < count; ++step) {
+        WorldUpdate(world);
+        TerrainStabilityNoteDestruction(&stability, world);
+        WorldClearDestruction(world);
+        (void)TerrainStabilityProcess(&stability, world);
+    }
+}
+
+/* Dirt from row 40 down with a rock layer on top of it, and a burrow of the
+   given width cut into the dirt. */
+static void BuildBurrow(World *world, int width, int roofRow, int floorRow)
+{
+    int left = world->width / 2 - width / 2;
+
+    FillRect(world, 0, 40, world->width - 1, world->height - 1, MATERIAL_DIRT);
+    FillRect(world, 0, 30, world->width - 1, 39, MATERIAL_ROCK);
+    FillRect(world, left, roofRow, left + width - 1, floorRow, MATERIAL_EMPTY);
+}
+
+static void test_a_blast_brings_down_a_roof_too_wide_for_its_dirt(void)
+{
+    World world;
+    int solidBefore;
+    int rockBefore;
+    int rubble;
+    int dirtOverBurrow = 0;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    /* A burrow 24 wide: three times what dirt spans, less than what rock
+       spans. */
+    BuildBurrow(&world, 24, 60, 80);
+    TerrainStabilityInit(&stability);
+    solidBefore = CountMaterial(&world, MATERIAL_DIRT) +
+                  CountMaterial(&world, MATERIAL_ROCK);
+    rockBefore = CountMaterial(&world, MATERIAL_ROCK);
+    /* Untouched, a generated burrow stands whatever its width. */
+    StabilityTick(&world, 60);
+    CHECK(stability.stats.crumbles == 0,
+          "a burrow nobody touched crumbled %d cells", stability.stats.crumbles);
+
+    /* A small cut in the roof's edge. */
+    WorldDestroyCircle(&world, 80 - 12, 60, 2, 0.0f);
+    solidBefore = CountMaterial(&world, MATERIAL_DIRT) +
+                  CountMaterial(&world, MATERIAL_ROCK);
+    StabilityTick(&world, 900);
+
+    rubble = CountMaterial(&world, MATERIAL_RUBBLE);
+    CHECK(rubble > 50, "the roof crumbled only %d cells", rubble);
+    /* The flat roof is gone and the burrow has climbed into a dome: the
+       middle of the roof is open several rows up, and the rows above it
+       overhang by no more than a shelf of dirt can bear, which is what
+       stops it. */
+    for (x = 80 - 12; x < 80 + 12; ++x) {
+        for (y = 55; y < 58; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_EMPTY) {
+                ++dirtOverBurrow;
+            }
+        }
+    }
+    CHECK(dirtOverBurrow > 10, "the cave-in opened only %d cells above the roof",
+          dirtOverBurrow);
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == rockBefore,
+          "the rock over the burrow gave way: %d of %d rock cells left",
+          CountMaterial(&world, MATERIAL_ROCK), rockBefore);
+    CHECK(CountMaterial(&world, MATERIAL_DIRT) + CountMaterial(&world, MATERIAL_ROCK) +
+                  CountMaterial(&world, MATERIAL_RUBBLE) ==
+              solidBefore,
+          "a cave-in changed the amount of ground: %d against %d after the cut",
+          CountMaterial(&world, MATERIAL_DIRT) + CountMaterial(&world, MATERIAL_ROCK) +
+              CountMaterial(&world, MATERIAL_RUBBLE),
+          solidBefore);
+    CHECK(stability.stats.checks <= 960 * TERRAIN_STABILITY_CHECKS_PER_TICK,
+          "the cave-in examined %d cells, past its budget", stability.stats.checks);
+    WorldUnload(&world);
+}
+
+static void test_a_roof_within_its_span_holds(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    BuildBurrow(&world, 6, 60, 80);
+    TerrainStabilityInit(&stability);
+    WorldDestroyCircle(&world, 80 - 3, 60, 2, 0.0f);
+    StabilityTick(&world, 300);
+    CHECK(stability.stats.checks > 0, "the cut queued nothing");
+    CHECK(CountMaterial(&world, MATERIAL_RUBBLE) == 0,
+          "a burrow narrower than dirt spans crumbled %d cells",
+          CountMaterial(&world, MATERIAL_RUBBLE));
+    WorldUnload(&world);
+}
+
+/* World safety: ground with support under it is never touched, however much
+   was blown up beside it, so a cut in a flat field opens a hole and nothing
+   else, and a hillside beside a cave-in stays a hillside. */
+static void test_supported_ground_never_crumbles(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    FillRect(&world, 0, 40, 255, 127, MATERIAL_DIRT);
+    TerrainStabilityInit(&stability);
+    WorldDestroyCircle(&world, 128, 50, 12, 0.0f);
+    StabilityTick(&world, 300);
+    /* The crater's rim overhangs by a cell or two here and there — that may
+       crumble — but nothing beyond the crater's own reach. */
+    CHECK(CountMaterial(&world, MATERIAL_RUBBLE) < 40,
+          "%d cells crumbled around a crater in solid ground",
+          CountMaterial(&world, MATERIAL_RUBBLE));
+    CHECK(WorldGetCell(&world, 30, 41) == MATERIAL_DIRT &&
+              WorldGetCell(&world, 220, 41) == MATERIAL_DIRT,
+          "ground far from the crater was disturbed");
+    WorldUnload(&world);
+}
+
+/* The unsupported run is measured from wall to wall, and the weakest
+   material in it is what is asked. */
+static void test_the_span_is_measured_between_supports(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    FillRect(&world, 0, 20, 63, 63, MATERIAL_DIRT);
+    FillRect(&world, 10, 30, 29, 40, MATERIAL_EMPTY);
+    CHECK(TerrainStabilitySpanAt(&world, 15, 29, 64) == 20,
+          "a twenty-cell roof measured %d", TerrainStabilitySpanAt(&world, 15, 29, 64));
+    CHECK(TerrainStabilitySpanAt(&world, 15, 28, 64) == 0,
+          "a cell with dirt under it counted as a roof");
+    CHECK(TerrainStabilitySpanAt(&world, 15, 41, 64) == 0,
+          "the floor counted as a roof");
+    WorldUnload(&world);
+}
+
 /* --- terrain bodies and a liquid ------------------------------------------ */
 
 /* The contract of terrain_fluid.h: what floats is decided by density alone,
@@ -6399,6 +6548,7 @@ static void test_a_body_hitting_water_splashes_and_slows(void)
     const TerrainBody *body;
     float speedAtEntry = -1.0f;
     int splashes = 0;
+    int thrown = 0;
     int waterBefore;
     int step;
 
@@ -6416,6 +6566,10 @@ static void test_a_body_hitting_water_splashes_and_slows(void)
     body = DynamicTerrainGetConst(&terrain, handle);
 
     for (step = 0; step < 40; ++step) {
+        int x;
+        int y;
+        int thrownNow = 0;
+
         GameEventsClear(&events);
         TerrainFluidUpdate(&bodyFluid, &terrain, &world, &events, KINEMATIC_STEP);
         if (bodyFluid.stats.entries == 1 && speedAtEntry < 0.0f) {
@@ -6424,12 +6578,24 @@ static void test_a_body_hitting_water_splashes_and_slows(void)
         splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
         TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
         WorldUpdate(&world);
+        /* The crown at its highest, whichever tick that is. */
+        for (x = 4; x < 156; ++x) {
+            for (y = 20; y < 59; ++y) {
+                if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                    ++thrownNow;
+                }
+            }
+        }
+        if (thrownNow > thrown) {
+            thrown = thrownNow;
+        }
     }
     CHECK(bodyFluid.stats.entries == 1, "the fall counted %d entries",
           bodyFluid.stats.entries);
     CHECK(splashes == 1, "the fall made %d splashes", splashes);
-    CHECK(bodyFluid.stats.cellsPushed > 20, "the fall pushed only %d cells",
+    CHECK(bodyFluid.stats.cellsPushed > 200, "the fall pushed only %d cells",
           bodyFluid.stats.cellsPushed);
+    CHECK(thrown > 60, "the fall threw only %d cells above the surface", thrown);
     /* Forty ticks of free fall from 200 would be 280; the water took most
        of it. */
     CHECK(body->velocity.y < 100.0f,
@@ -9810,98 +9976,93 @@ static void test_dry_flight_is_untouched_by_the_fluid_model(void)
     WorldUnload(&world);
 }
 
-static void test_water_drags_by_the_square_of_the_speed(void)
+/* Nothing slows the character in a liquid, and nothing may start to. The
+   flight through the world is the point of the game. */
+static void test_water_never_slows_the_player(void)
 {
     World world;
-    Player fast;
-    Player slow;
-    FluidInteractionState fluidFast;
-    FluidInteractionState fluidSlow;
+    Player dry;
+    Player wet;
+    Player molten;
+    FluidInteractionState fluidWet;
+    FluidInteractionState fluidMolten;
     GameEventBuffer events;
-    float fastBefore;
-    float slowBefore;
-    float fastLoss;
-    float slowLoss;
 
     CHECK(WorldInit(&world, 512, 256), "world allocation failed");
-    FillRect(&world, 0, 100, 511, 255, MATERIAL_WATER);
-    PlayerInit(&fast, (Vector2){100.0f, 180.0f});
-    PlayerInit(&slow, (Vector2){300.0f, 180.0f});
-    fast.velocity = (Vector2){200.0f, 0.0f};
-    slow.velocity = (Vector2){20.0f, 0.0f};
-    FluidInteractionInit(&fluidFast);
-    FluidInteractionInit(&fluidSlow);
-    /* Already inside, so neither pays the entry blow. */
-    fluidFast.inside = true;
-    fluidSlow.inside = true;
-    fastBefore = PlayerSpeed(&fast);
-    slowBefore = PlayerSpeed(&slow);
-    SwimPlayer(&fluidFast, &fast, &world, &events, (Vector2){0.0f, 0.0f}, false, 1);
-    SwimPlayer(&fluidSlow, &slow, &world, &events, (Vector2){0.0f, 0.0f}, false, 1);
-    CHECK(fluidFast.submerged > 0.99f, "the fast fixture was not under water");
-    fastLoss = 1.0f - PlayerSpeed(&fast) / fastBefore;
-    slowLoss = 1.0f - PlayerSpeed(&slow) / slowBefore;
-    /* Both lose the same air drag; the water takes a share that grows with
-       the speed, so the fast one loses a clearly larger fraction. */
-    CHECK(fastLoss > slowLoss * 2.0f,
-          "water took %.3f of the fast fixture and %.3f of the slow one",
-          (double)fastLoss, (double)slowLoss);
-    CHECK(PlayerSpeed(&fast) > fastBefore * 0.5f,
-          "a single frame of water took the diver from %.1f to %.1f",
-          (double)fastBefore, (double)PlayerSpeed(&fast));
+    FillRect(&world, 0, 150, 511, 220, MATERIAL_WATER);
+    FillRect(&world, 0, 70, 511, 130, MATERIAL_LAVA);
+    PlayerInit(&dry, (Vector2){60.0f, 30.0f});
+    PlayerInit(&wet, (Vector2){60.0f, 180.0f});
+    PlayerInit(&molten, (Vector2){60.0f, 100.0f});
+    FluidInteractionInit(&fluidWet);
+    FluidInteractionInit(&fluidMolten);
+    fluidWet.inside = true;
+    fluidMolten.inside = true;
+    {
+        Vector2 atDry = dry.position;
+        Vector2 atWet = wet.position;
+        Vector2 atMolten = molten.position;
+        int step;
+
+        for (step = 0; step < 300; ++step) {
+            GameEventsClear(&events);
+            PlayerUpdate(&dry, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+            dry.position = atDry;
+            FluidInteractionUpdatePlayer(&fluidWet, &wet, &world, &events, MOVEMENT_STEP);
+            PlayerUpdate(&wet, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+            wet.position = atWet;
+            FluidInteractionUpdatePlayer(&fluidMolten, &molten, &world, &events,
+                                         MOVEMENT_STEP);
+            PlayerUpdate(&molten, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+            molten.position = atMolten;
+        }
+    }
+    CHECK(fabsf(PlayerSpeed(&wet) - PlayerSpeed(&dry)) < 0.01f,
+          "water slowed the player: %.1f wet against %.1f dry",
+          (double)PlayerSpeed(&wet), (double)PlayerSpeed(&dry));
+    CHECK(fabsf(PlayerSpeed(&molten) - PlayerSpeed(&dry)) < 0.01f,
+          "lava slowed the player: %.1f molten against %.1f dry",
+          (double)PlayerSpeed(&molten), (double)PlayerSpeed(&dry));
+    /* And the water paid for it instead: at boost the drill is running, and
+       what it meets flashes to steam. */
+    CHECK(world.fluid.vaporised > 100, "a boosting diver vaporised only %d cells",
+          world.fluid.vaporised);
     WorldUnload(&world);
 }
 
-static void test_thrust_still_works_under_water(void)
+/* At drill speed the character burns through water as through rock: the
+   corridor flashes to steam. */
+static void test_the_drill_turns_water_to_steam(void)
 {
     World world;
     Player player;
-    FluidInteractionState fluid;
-    GameEventBuffer events;
-    float cruise;
+    int waterBefore;
+    int step;
 
-    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
-    FillRect(&world, 0, 60, 1023, 255, MATERIAL_WATER);
-    PlayerInit(&player, (Vector2){100.0f, 160.0f});
-    FluidInteractionInit(&fluid);
-    fluid.inside = true;
-    /* Pinned, so the world's edge is never reached while the speed builds. */
-    {
-        Vector2 at = player.position;
-        int step;
-
-        for (step = 0; step < 240; ++step) {
-            GameEventsClear(&events);
-            FluidInteractionUpdatePlayer(&fluid, &player, &world, &events,
-                                         MOVEMENT_STEP);
-            PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
-            player.position = at;
-        }
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    FillRect(&world, 0, 100, 511, 200, MATERIAL_WATER);
+    FillRect(&world, 0, 201, 511, 255, MATERIAL_ROCK);
+    Tick(&world, 30);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    PlayerInit(&player, (Vector2){40.0f, 150.0f});
+    player.velocity = (Vector2){player.boostSpeed, 0.0f};
+    for (step = 0; step < 40; ++step) {
+        PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
+        WorldUpdate(&world);
     }
-    cruise = PlayerSpeed(&player);
-    CHECK(cruise > 100.0f, "a boosting diver crawled at %.1f", (double)cruise);
-    CHECK(cruise < player.boostSpeed * 0.7f,
-          "water did not slow the boost: %.1f against %.1f in air",
-          (double)cruise, (double)player.boostSpeed);
-    /* Steering: a turn of the thrust turns the velocity. */
-    {
-        Vector2 at = player.position;
-        int step;
-
-        for (step = 0; step < 60; ++step) {
-            GameEventsClear(&events);
-            FluidInteractionUpdatePlayer(&fluid, &player, &world, &events,
-                                         MOVEMENT_STEP);
-            PlayerUpdate(&player, &world, (Vector2){0.0f, -1.0f}, true, MOVEMENT_STEP);
-            player.position = at;
-        }
-    }
-    CHECK(player.velocity.y < -30.0f,
-          "the diver could not turn: vertical speed %.1f", (double)player.velocity.y);
+    CHECK(player.position.x > 200.0f, "the diver only reached x = %.1f",
+          (double)player.position.x);
+    CHECK(world.fluid.vaporised > 200, "the drill vaporised only %d cells",
+          world.fluid.vaporised);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) < waterBefore - 200,
+          "the water count went from %d to %d through a drilled corridor",
+          waterBefore, CountMaterial(&world, MATERIAL_WATER));
+    CHECK(CountMaterial(&world, MATERIAL_STEAM) > 50,
+          "only %d cells of steam came of it", CountMaterial(&world, MATERIAL_STEAM));
     WorldUnload(&world);
 }
 
-static void test_diving_in_fast_splashes_and_costs_speed(void)
+static void test_diving_in_fast_throws_a_crown(void)
 {
     World world;
     Player player;
@@ -9934,17 +10095,26 @@ static void test_diving_in_fast_splashes_and_costs_speed(void)
     }
     CHECK(fluid.stats.entries == 1, "the dive counted %d entries", fluid.stats.entries);
     CHECK(splashes == 1, "the dive made %d splashes", splashes);
-    CHECK(speedAtEntry < speedBefore * 0.85f,
-          "breaking the surface cost nothing: %.1f at entry from %.1f",
-          (double)speedAtEntry, (double)speedBefore);
-    CHECK(fluid.stats.cellsPushed > 10, "the dive pushed %d cells",
+    CHECK(fluid.stats.cellsPushed > 40, "the dive pushed only %d cells",
           fluid.stats.cellsPushed);
+    /* A crown: water above the old surface. */
+    {
+        int thrown = 0;
+        int x;
+        int y;
+
+        for (x = 100; x < 156; ++x) {
+            for (y = 100; y < 120; ++y) {
+                if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                    ++thrown;
+                }
+            }
+        }
+        CHECK(thrown > 10, "the dive threw only %d cells above the surface", thrown);
+    }
     CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
           "the dive changed the water count from %d to %d", waterBefore,
           CountMaterial(&world, MATERIAL_WATER));
-    CHECK(PlayerSpeed(&player) < speedBefore * 0.5f,
-          "the diver is still doing %.1f after twenty frames under water",
-          (double)PlayerSpeed(&player));
     WorldUnload(&world);
 }
 
@@ -11196,7 +11366,8 @@ static void test_draining_one_arm_lowers_the_other(void)
     FillRect(&world, a, 81, a + 5, 95, MATERIAL_EMPTY);
     waterBefore = CountMaterial(&world, MATERIAL_WATER);
     Tick(&world, 600);
-    CHECK(WaterSurfaceIn(&world, b, b + 5, 10, 80) > surfaceB + 5,
+    /* The pit holds ninety cells; arm B gives up its share of them. */
+    CHECK(WaterSurfaceIn(&world, b, b + 5, 10, 80) >= surfaceB + 4,
           "arm B stayed at row %d after arm A was drained",
           WaterSurfaceIn(&world, b, b + 5, 10, 80));
     CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
@@ -11474,7 +11645,10 @@ static void test_settled_cells_sleep_but_wake_when_disturbed(void)
 
 /* --- drilling ---------------------------------------------------------- */
 
-static void test_drill_removes_solids_and_leaves_liquids(void)
+/* The drill burns through water as through rock — the water in its path
+   flashes to steam, cell for cell — and leaves lava, which is already what
+   heat makes of things. */
+static void test_drill_removes_solids_and_boils_water(void)
 {
     World world;
     int waterBefore;
@@ -11488,9 +11662,13 @@ static void test_drill_removes_solids_and_leaves_liquids(void)
     lavaBefore = CountMaterial(&world, MATERIAL_LAVA);
 
     CHECK(WorldDrillCircle(&world, 32, 32, 6) > 0, "drill removed nothing");
-    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
-          "drill destroyed %d water cells",
-          waterBefore - CountMaterial(&world, MATERIAL_WATER));
+    CHECK(CountMaterial(&world, MATERIAL_WATER) < waterBefore,
+          "the drill left the water in its path");
+    CHECK(CountMaterial(&world, MATERIAL_WATER) + CountMaterial(&world, MATERIAL_STEAM) ==
+              waterBefore,
+          "water became something other than steam: %d water and %d steam from %d",
+          CountMaterial(&world, MATERIAL_WATER), CountMaterial(&world, MATERIAL_STEAM),
+          waterBefore);
     CHECK(CountMaterial(&world, MATERIAL_LAVA) == lavaBefore,
           "drill destroyed %d lava cells",
           lavaBefore - CountMaterial(&world, MATERIAL_LAVA));
@@ -12574,6 +12752,10 @@ int main(void)
     RUN(test_a_beam_held_on_one_spot_detonates_and_a_swept_one_does_not);
     RUN(test_an_explosion_under_a_block_detaches_it);
     RUN(test_ground_destroyed_under_a_sleeping_body_wakes_it);
+    RUN(test_a_blast_brings_down_a_roof_too_wide_for_its_dirt);
+    RUN(test_a_roof_within_its_span_holds);
+    RUN(test_supported_ground_never_crumbles);
+    RUN(test_the_span_is_measured_between_supports);
     RUN(test_ice_floats_and_rock_sinks);
     RUN(test_a_body_hitting_water_splashes_and_slows);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
@@ -12651,9 +12833,9 @@ int main(void)
     RUN(test_the_same_flight_replays_identically);
     RUN(test_movement_survives_an_absurd_velocity);
     RUN(test_dry_flight_is_untouched_by_the_fluid_model);
-    RUN(test_water_drags_by_the_square_of_the_speed);
-    RUN(test_thrust_still_works_under_water);
-    RUN(test_diving_in_fast_splashes_and_costs_speed);
+    RUN(test_water_never_slows_the_player);
+    RUN(test_the_drill_turns_water_to_steam);
+    RUN(test_diving_in_fast_throws_a_crown);
     RUN(test_a_low_fast_pass_lifts_the_water);
     RUN(test_leaving_the_water_fast_splashes);
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
@@ -12699,7 +12881,7 @@ int main(void)
     RUN(test_a_sleeping_pool_wakes_for_a_change_and_sleeps_again);
     RUN(test_lava_still_ignites_dirt_it_touches);
     RUN(test_settled_cells_sleep_but_wake_when_disturbed);
-    RUN(test_drill_removes_solids_and_leaves_liquids);
+    RUN(test_drill_removes_solids_and_boils_water);
     RUN(test_drill_returns_the_number_of_cells_it_removed);
     RUN(test_drill_cannot_breach_the_world_boundary);
     RUN(test_drill_heat_cannot_ignite_dirt_or_boil_water);

@@ -1,30 +1,33 @@
 #ifndef FLUID_INTERACTION_H
 #define FLUID_INTERACTION_H
 
-/* What a liquid does to the player and the player does to a liquid.
+/* What the player does to a liquid.
  *
- * This is the one place the two know about each other. `Player` keeps no
- * notion of water beyond a drag coefficient it integrates; `World` keeps no
- * notion of a character; the coupling lives here, where it can be read in one
- * sitting, the way terrain_interaction.c couples the player to bodies.
+ * Not what a liquid does to the player: nothing slows the character, in
+ * water or in lava, and nothing here may start to. Flying through the world
+ * rather than only around it is the point of the game, and it is not
+ * punished by any material — the drag that once took a share of every frame
+ * under water read as swimming through glue and was removed for good. What
+ * the character does to the water is the whole of this module, and it is
+ * big, because a body going that fast that close to a surface leaves its
+ * mark on it:
  *
- * Four things happen, and all of them come from where the character is and
- * how fast they are going, nothing else:
- *
- *   under water   the character is slowed by a drag that grows with the
- *                 square of their speed — a dive is stopped hard, a crawl is
- *                 hardly touched — and never by a flat multiplier, which took
- *                 the same fraction from both and read as swimming through
- *                 glue. Thrust keeps working: a diving character can steer.
- *   going in      fast enough, the surface breaks: the water under the entry
- *                 is shoved outward and up, the speed across the surface is
- *                 cut, and presentation is told so it can splash.
+ *   going in      fast enough, the surface breaks in a crown thrown clear of
+ *                 the water and a ring spreading from it, and presentation is
+ *                 told so it can splash.
  *   coming out    the same, the other way.
- *   flying low    a fast pass just above the surface lifts the water under
- *                 it — the wake of something going that fast that close.
+ *   under water   the character shoves the water aside as they go: a wake
+ *                 of cells thrown out of the way every frame at speed. At
+ *                 drill speed they burn through it instead, and the water in
+ *                 the corridor flashes to steam (WorldDrillCircle).
+ *   flying low    a fast pass just above the surface lifts a wall of water
+ *                 under and behind it, wider and higher the faster it goes,
+ *                 and a supersonic pass lifts it from further up — the wake
+ *                 of a jet over a river.
  *
- * All of it is bounded by the size of the character: a handful of samples
- * through the collider, a handful of pushed cells, one event a frame at most.
+ * The coupling lives here and only here: `Player` keeps no notion of water
+ * and `World` no notion of a character. Everything is bounded by the size
+ * of the character and the speed ceilings.
  */
 
 #include <stdbool.h>
@@ -34,24 +37,18 @@
 #include "world.h"
 
 typedef struct FluidInteractionConfig {
-    /* Quadratic drag per cell of speed when fully submerged. With the boost's
-       thrust of 720 cells/s^2 this settles a boosting character at about
-       160 cells/s under water, well under the 380 of open air but far from
-       stuck; in lava it is doubled by `lavaDragScale`. */
-    float dragCoefficient;
-    float lavaDragScale;
     /* Speed across the surface at which going in or coming out is a splash
        rather than a step. */
     float splashSpeed;
-    /* Fraction of the speed lost on breaking the surface at a splash: the
-       blow of hitting water flat. */
-    float entryLoss;
+    /* Speed under water at which the character throws a wake. */
+    float wakeSpeed;
     /* How far above a surface a pass counts as low, and how fast it must be
-       to disturb the water. */
+       to disturb the water; the supersonic pass reaches further. */
     float flyoverHeight;
     float flyoverSpeed;
-    /* Seconds between two flyover disturbances, so a low pass leaves a line
-       of them rather than lifting every cell it passes over. */
+    float sonicFlyoverHeight;
+    /* Seconds between two flyover disturbances, so a low pass leaves a
+       continuous wall rather than lifting the same cells every frame. */
     float flyoverInterval;
 } FluidInteractionConfig;
 
@@ -59,6 +56,7 @@ typedef struct FluidInteractionStats {
     int entries;
     int exits;
     int flyovers;
+    int wakes;
     int cellsPushed;
 } FluidInteractionStats;
 
@@ -73,6 +71,7 @@ typedef struct FluidInteractionState {
        bobbing at the surface does not enter and leave every frame. */
     bool inside;
     float flyoverCooldown;
+    float wakeCooldown;
     FluidInteractionStats stats;
 } FluidInteractionState;
 
@@ -80,10 +79,10 @@ FluidInteractionConfig FluidInteractionDefaultConfig(void);
 void FluidInteractionInit(FluidInteractionState *state);
 
 /* Runs once per frame before PlayerUpdate: reads where the character is,
-   sets the drag they will integrate, pushes the liquid they disturb and
-   reports the splashes. Writes the world only through WorldPushLiquid. */
-void FluidInteractionUpdatePlayer(FluidInteractionState *state, Player *player,
-                                  World *world, GameEventBuffer *events,
-                                  float deltaTime);
+   pushes the liquid they disturb and reports the splashes. Never writes the
+   player, and writes the world only through the liquid push entry points. */
+void FluidInteractionUpdatePlayer(FluidInteractionState *state,
+                                  const Player *player, World *world,
+                                  GameEventBuffer *events, float deltaTime);
 
 #endif

@@ -235,9 +235,10 @@ static void WorldUpdateLiquid(World *world, int x, int y, int direction,
        pipe beside a pocket of air lies still — run as a pressed cell, it
        swept to the far end of the pocket and back every tick for ever. Read
        from the update, not from the stored value, so the head is this
-       tick's. */
-    if (WorldFluidUpdateHead(world, x, y) < WORLD_LIQUID_HEAD_PER_CELL / 2u &&
-        !MaterialIsLiquid(WorldMaterialAt(world, x, y - 1))) {
+       tick's. A cell with liquid over it is pressed by that liquid and keeps
+       no head of its own. */
+    if (!MaterialIsLiquid(WorldMaterialAt(world, x, y - 1)) &&
+        WorldFluidUpdateHead(world, x, y) < WORLD_LIQUID_HEAD_PER_CELL / 2u) {
         int last = WorldLiquidWanderDirection(WorldCell(world, x, y));
 
         if (WorldFlowSideways(world, x, y, last, WORLD_LIQUID_WANDER_REACH,
@@ -378,6 +379,7 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             WorldUpdateFire(world, x, y, direction);
             break;
         case MATERIAL_ASH:
+        case MATERIAL_RUBBLE:
             WorldUpdateSand(world, x, y, direction);
             break;
         default:

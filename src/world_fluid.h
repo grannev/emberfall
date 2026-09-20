@@ -62,7 +62,7 @@
    cost of one wandering grain; there are few of them and each stops within
    its budget, where a pressed run is what a whole poured column does at
    once. */
-#define WORLD_LIQUID_WANDER_REACH 48
+#define WORLD_LIQUID_WANDER_REACH 32
 /* Head units per cell of depth. */
 #define WORLD_LIQUID_HEAD_PER_CELL 16u
 /* Head lost per cell a value travels sideways, or upward through liquid that
@@ -85,11 +85,17 @@
    the two columns traded the step back and forth for ever. The half is
    hysteresis, so two arms within half a cell of each other stop. */
 #define WORLD_LIQUID_LIFT_THRESHOLD (2u * WORLD_LIQUID_HEAD_PER_CELL + 8u)
-/* How far down a surface cell walks its column each tick, refreshing the
-   head of every cell in it and finding the bottom a lift would take from.
-   Bounds the cost of one surface cell; a deeper column carries its head on
-   from there by the neighbour rule, one cell a tick. */
+/* How far down a surface cell looks for a push into its column each tick,
+   two material reads a cell. Bounds the cost of one surface cell; a push
+   that enters a column deeper than this is not seen. Not rate-limited: a
+   column checked every fourth tick could fall asleep between checks with a
+   push waiting beside it, and did. */
 #define WORLD_LIQUID_COLUMN_REACH 48
+/* How far up a column the head of a cell under liquid is read. Bounds the
+   cost of one read; a column deeper than this presses as if it were this
+   deep, which for a lake deeper than sixty-four cells is a pressure nothing
+   in the game can tell from the true one. */
+#define WORLD_LIQUID_CHAIN_REACH 64
 /* How far a lift follows the head uphill from the bottom of its column to
    find the liquid that is pushing. Bounds the cost of one lift; a longer
    route is taken from part way along, and the hole that leaves walks the

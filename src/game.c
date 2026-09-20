@@ -80,6 +80,7 @@ bool GameInit(GameState *game, GameConfig config)
     TerrainInteractionInit(&game->interaction);
     FluidInteractionInit(&game->fluid);
     TerrainFluidInit(&game->bodyFluid);
+    TerrainStabilityInit(&game->stability);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -117,6 +118,7 @@ void GameReset(GameState *game, uint64_t seed)
     TerrainInteractionInit(&game->interaction);
     FluidInteractionInit(&game->fluid);
     TerrainFluidInit(&game->bodyFluid);
+    TerrainStabilityInit(&game->stability);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -221,6 +223,9 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         int reaction;
 
         WorldUpdate(&game->world);
+        /* The same log, read before it is drained: an opening that was just
+           made is where a ceiling may have lost its support. */
+        TerrainStabilityNoteDestruction(&game->stability, &game->world);
         /* Between the world's tick and the bodies': the world has finished
            every cell write it was going to make, so connectivity now describes
            a state that actually existed, and a piece that comes loose here is
@@ -231,6 +236,10 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            recorded, and a tick with no destruction in it does nothing at all. */
         TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
                              events);
+        /* After the detach check has drained the log: what crumbles here is
+           logged for the next tick's check, so a slab undermined by a
+           cave-in comes loose the way a slab cut by a blast does. */
+        (void)TerrainStabilityProcess(&game->stability, &game->world);
         /* After detachment and before integration. Both halves matter: a piece
            the blast just cut free has to exist before it can be thrown, and it
            has to be thrown before it is stepped, or the throw would arrive a
