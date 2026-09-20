@@ -41,6 +41,22 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   The set simulated by a tick is frozen at its start, so a wake raised during a
   tick schedules the next one.
 - Fire and lava heating stay local. Passive lava cannot melt its rock lining.
+  A capped source holds what it touches (`Cell.heatHeld`), so a lining rests
+  exactly on the cap and its chunks sleep; never reintroduce the heat/cool
+  sawtooth that kept every lava pocket awake for the whole session.
+- A surface liquid cell takes a drop, slides only over other liquid, and gives
+  up after `WORLD_LIQUID_WANDER_LIMIT` slides; a cell under pressure spreads as
+  before. A settled pool and its shoreline must go to sleep — check with
+  `activeChunkCount`, not by eye, because the motion this prevents is invisible.
+- An empty cell has no temperature: the field is ignored and reads as
+  ambient. That is what lets the cell array stay unwritten above the ground,
+  so never initialise it, and never `memset` it on regeneration — take a fresh
+  `calloc`. The ground is laid out in the bottom `WORLD_GROUND_ROWS` rows and
+  described as fractions of that band; everything above is sky and free.
+- The per-chunk water and lava counts gate the reaction scan. Only
+  `WorldSetGeneratedCell`, `WorldSetCellRaw` and `WorldMoveCell` write a cell's
+  material, and each moves the counts; a count that is ever too low is a
+  reaction that never happens.
 - Player collision uses substeps and must not tunnel; boost drilling must not
   leave the collider embedded. The substep count follows the displacement and is
   capped, so one frame's work is bounded however fast the player is going.
@@ -104,10 +120,16 @@ coherent phase with an explanatory message.
   world size; timing assertions do not belong in tests.
 - Baseline CPU allocation was 275.12 MiB before GPU state: 216 MiB cells,
   54 MiB persistent pixels, 5.06 MiB lighting, and minor metadata. The
-  persistent pixel buffer is gone and `Cell` is packed to 12 bytes, so the
-  current estimate is 167.22 MiB. The giant world texture is gone as well:
+  persistent pixel buffer is gone, `Cell` is packed to 12 bytes, and the sky
+  above the ground band is never written, so the 16384x2048 map is 392 MiB
+  virtual and about 162 MiB resident. The giant world texture is gone as well:
   `WorldRenderer` keeps a cache of 256x256 pages and only the visible ones are
   resident, so world size is no longer bounded by `GL_MAX_TEXTURE_SIZE`.
+- The benchmark never activates generated lakes and calderas, so a "settled
+  world costs nothing" reading from `make bench` says nothing about a long
+  session. Sweep the activation window across the whole map and count what
+  stays awake (see EF-PERF-001 in `docs/performance.md`) before believing that
+  a change to the simulation lets the world sleep.
 - Refactoring is deliberately phased. Do not combine game/input/events, world
   decomposition, Cell layout, active scheduling, and render paging into one
   rewrite. Keep every intermediate commit playable and measured.
