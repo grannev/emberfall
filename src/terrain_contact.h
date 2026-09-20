@@ -51,11 +51,11 @@ typedef struct DynamicTerrainSystem DynamicTerrainSystem;
 #define TERRAIN_CONTACT_CAPACITY (TERRAIN_CONTACT_FACES * TERRAIN_CONTACTS_PER_FACE)
 #define MAX_TERRAIN_CONTACTS_PER_BODY TERRAIN_CONTACT_CAPACITY
 #define TERRAIN_PAIR_MAX_CONTACTS TERRAIN_CONTACT_CAPACITY
-/* Pairs in contact tracked in one substep. Sixty-four bodies could in theory
-   touch in two thousand pairs; a scene where more than this many do is a
-   scene where quality, not safety, is being lost, and the overflow is
-   counted. */
-#define TERRAIN_PAIR_MAX_MANIFOLDS 96
+/* Pairs in contact tracked in one substep. Every body in a pile touches a
+   few others, so a pile of two hundred is a few hundred pairs; a scene where
+   more than this many touch is a scene where quality, not safety, is being
+   lost, and the overflow is counted. */
+#define TERRAIN_PAIR_MAX_MANIFOLDS 768
 /* Solver passes over every contact. Each pass carries a pile's weight one
    level further and the ground's answer one level back, so the residual after
    the last pass shrinks geometrically with the count. Four settled a body on

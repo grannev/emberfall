@@ -164,7 +164,7 @@ typedef struct LaserResult {
  *
  * Fixed capacity, counted refusals. Entries advance in queue order and the
  * order is a function of the state alone, so a replay is a replay. */
-#define MAX_WORLD_FLUID_IMPULSES 4096
+#define MAX_WORLD_FLUID_IMPULSES 32768
 
 typedef struct WorldFluidImpulse {
     int32_t x;
@@ -173,6 +173,9 @@ typedef struct WorldFluidImpulse {
     int8_t directionY;
     /* Steps left. */
     uint8_t strength;
+    /* Steps taken per tick, at least one. A spray thrown by a supersonic
+       pass moves several cells a tick; a ripple moves one. Still 12 bytes. */
+    uint8_t pace;
 } WorldFluidImpulse;
 
 /* ---- frost --------------------------------------------------------------
@@ -507,6 +510,11 @@ void WorldClearDestruction(World *world);
    the queue is full. The same cell may hold several. */
 bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
                      int strength);
+/* The same, moving `pace` cells a tick instead of one: the jet of a spray
+   rather than the roll of a wave. `strength` is still the total number of
+   steps. */
+bool WorldPushLiquidFast(World *world, int x, int y, int directionX,
+                         int directionY, int strength, int pace);
 /* Pushes every liquid cell within `radius` of `centre` away from it, with
    `strength` steps at the centre falling to one at the edge. What a blast, a
    splash or a body entering the water does to it. Bounded by the circle. */
@@ -518,6 +526,13 @@ int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
    into a river from a height does to the river: a crown of water thrown
    clear of the surface and a ring spreading from it. Bounded by the circle. */
 int WorldSplashLiquid(World *world, Vector2 centre, float radius, int strength);
+/* Moves the liquid cell at (x, y) to the first empty cell above it, looking
+   up through liquid for at most `reach` rows. Returns false and leaves the
+   world unchanged when the cell is not liquid or the column above it is
+   sealed by a solid within reach. What a body settling on a lake bed does
+   with the water it lies in: the water is lifted to the surface rather than
+   destroyed, so the lake keeps every cell it had. */
+bool WorldLiftLiquidOut(World *world, int x, int y, int reach);
 /* Pays for `cells` more cells of the frost frontier to freeze, and starts
    the frontier from the water around (x, y) if it is not running there. The
    cryo beam calls it where it meets water; the frontier then spreads on its

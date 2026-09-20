@@ -66,6 +66,11 @@ typedef struct TerrainWeldStats {
        count here means bodies are being welded while overlapping the ground,
        which is a physics question, not a welding one. */
     int cellsRefused;
+    /* Bodies kept because one of their cells had nowhere to go: they lie on
+       solid ground that has since grown under them, or in water that has no
+       air above it to be pushed into. A refused body rests again and is asked
+       again; it is never freed with its cells unplaced. */
+    int bodiesRefused;
     int bodiesDeferredByPlayer;
     int bodiesDeferredByBudget;
 } TerrainWeldStats;

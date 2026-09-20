@@ -1,6 +1,8 @@
 /* Welding settled bodies back into the world. See terrain_weld.h. */
 #include "terrain_weld.h"
 
+#include "materials.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -62,6 +64,29 @@ static bool TerrainWeldTouchesPlayer(const TerrainBody *body, Vector2 playerAt,
  * covers it gives every destination exactly one answer, and the result is
  * solid.
  */
+/* How far up through water a body's cell may push the water it displaces.
+   A body welded into a flooded cave with no air over it would have to
+   destroy the water it lies in, and it is left a body instead. */
+#define TERRAIN_WELD_LIQUID_REACH 512
+
+/* True when the liquid at (x, y) has an empty cell above it within reach. */
+static bool TerrainWeldLiquidCanRise(const World *world, int x, int y)
+{
+    int probe;
+
+    for (probe = y - 1; probe >= 0 && probe >= y - TERRAIN_WELD_LIQUID_REACH; --probe) {
+        CellMaterial material = WorldGetCell(world, x, probe);
+
+        if (material == MATERIAL_EMPTY) {
+            return true;
+        }
+        if (!MaterialIsLiquid(material)) {
+            return false;
+        }
+    }
+    return false;
+}
+
 static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                             DynamicTerrainSystem *terrain, int slot)
 {
@@ -110,6 +135,73 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
     if (lastX > world->width - 1) lastX = world->width - 1;
     if (lastY > world->height - 1) lastY = world->height - 1;
 
+    /* Two passes. The first asks whether every cell of the body can be
+       given back: into an empty cell outright, or into a liquid cell whose
+       water has somewhere to go — the first empty cell above it, where it
+       is moved before the weld writes. A body on a lake bed used to have
+       every cell refused, since none of them were empty, and was freed
+       anyway: it vanished into the water, and the player saw it. Now a body
+       with even one cell that cannot be placed stays a body and is asked
+       again later. */
+    for (worldY = firstY; worldY <= lastY; ++worldY) {
+        int worldX;
+
+        for (worldX = firstX; worldX <= lastX; ++worldX) {
+            Vector2 local = TerrainBodyWorldToLocal(body, (float)worldX + 0.5f,
+                                                    (float)worldY + 0.5f);
+            CellMaterial material =
+                DynamicTerrainCellAt(terrain, handle, (int)floorf(local.x),
+                                     (int)floorf(local.y));
+            CellMaterial there;
+
+            if (material == MATERIAL_EMPTY) {
+                continue;
+            }
+            there = WorldGetCell(world, worldX, worldY);
+            if (there == MATERIAL_EMPTY) {
+                continue;
+            }
+            if (!MaterialIsLiquid(there) ||
+                !TerrainWeldLiquidCanRise(world, worldX, worldY)) {
+                ++system->stats.cellsRefused;
+                ++system->stats.bodiesRefused;
+                system->rested[slot] = system->config.weldDelay * 0.5f;
+                return;
+            }
+        }
+    }
+    /* The second lifts the water out of every cell the body will take,
+       bottom row first: the water above a cell is still water when the cell
+       is lifted, so it rises through the body's whole footprint to the
+       surface instead of into the cell just emptied above it. */
+    for (worldY = lastY; worldY >= firstY; --worldY) {
+        int worldX;
+
+        for (worldX = firstX; worldX <= lastX; ++worldX) {
+            Vector2 local = TerrainBodyWorldToLocal(body, (float)worldX + 0.5f,
+                                                    (float)worldY + 0.5f);
+            CellMaterial material =
+                DynamicTerrainCellAt(terrain, handle, (int)floorf(local.x),
+                                     (int)floorf(local.y));
+            CellMaterial there;
+
+            if (material == MATERIAL_EMPTY) {
+                continue;
+            }
+            there = WorldGetCell(world, worldX, worldY);
+            if (there != MATERIAL_EMPTY &&
+                !WorldLiftLiquidOut(world, worldX, worldY,
+                                    TERRAIN_WELD_LIQUID_REACH)) {
+                /* The first pass promised this cannot happen; counted so a
+                   broken promise shows in the stats rather than in a lake. */
+                ++system->stats.cellsRefused;
+                continue;
+            }
+        }
+    }
+    /* Every cell is now empty, and only now is the body written: written a
+       row at a time, the row above would have sealed the water under it in
+       before it could rise. */
     for (worldY = firstY; worldY <= lastY; ++worldY) {
         int worldX;
 
@@ -120,11 +212,8 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                 DynamicTerrainCellAt(terrain, handle, (int)floorf(local.x),
                                      (int)floorf(local.y));
 
-            if (material == MATERIAL_EMPTY) {
-                continue;
-            }
-            if (WorldGetCell(world, worldX, worldY) != MATERIAL_EMPTY) {
-                ++system->stats.cellsRefused;
+            if (material == MATERIAL_EMPTY ||
+                WorldGetCell(world, worldX, worldY) != MATERIAL_EMPTY) {
                 continue;
             }
             WorldSetCell(world, worldX, worldY, material);

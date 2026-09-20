@@ -102,7 +102,12 @@ void WorldUpdateLighting(World *world, Rectangle visible);
  * needed, not what open air needs, so the closing lives in the curve instead.
  *
  * The shader is what draws it; this is the reference the shader and the tests
- * share. `sky` is the daylight-scaled sky light. */
+ * share. `sky` is the sky channel of the light field as solved for full day —
+ * how open the cell is to the sky — and not the daylight-scaled light: scaled,
+ * every cell of open air sealed itself at dusk, and the night sky, the stars
+ * and the moon were drawn behind a wall of dark air. Night belongs to the
+ * backdrop and to the tint of the ground; the veil only says whether there is
+ * ground in the way. */
 
 /* Sky light at and above which air is a window, and at and below which it is
    ground. The band between them is the surface line; it is narrow because the

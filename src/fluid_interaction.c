@@ -16,17 +16,28 @@
 #define FLUID_SAMPLE_ROWS 3
 /* Hysteresis on "in the liquid". */
 #define FLUID_ENTER_FRACTION 0.25f
+#define FLUID_ENTER_FRACTION_IN_SPRAY 0.75f
 #define FLUID_LEAVE_FRACTION 0.05f
+/* How long after a low pass the water in the air around the character is
+   taken for spray rather than a lake. */
+#define FLUID_SPRAY_SECONDS 0.3f
 /* Widest and strongest splash the character can make, in cells of radius
    and steps of push. */
 #define FLUID_SPLASH_MAX_RADIUS 16.0f
 #define FLUID_SPLASH_MAX_STRENGTH 18
-/* The wall of water a low pass throws: cells either side of the pass, and
-   steps of push, at the speeds where each starts and where each is at its
-   widest. */
-#define FLUID_FLYOVER_MIN_HALF_WIDTH 4
-#define FLUID_FLYOVER_MAX_HALF_WIDTH 16
-#define FLUID_FLYOVER_MAX_STRENGTH 16
+/* The wall of water a low pass throws: cells either side of the pass, rows
+   of water under the surface thrown up, steps of push and cells a tick, at
+   the speeds where each starts and where each is at its greatest. Everything
+   here moves cells — a pass at the sound barrier over a lake has to be a
+   column of water standing in the air behind the character, not a ripple. */
+#define FLUID_FLYOVER_MIN_HALF_WIDTH 8
+#define FLUID_FLYOVER_MAX_HALF_WIDTH 30
+#define FLUID_FLYOVER_MIN_DEPTH 3
+#define FLUID_FLYOVER_MAX_DEPTH 14
+#define FLUID_FLYOVER_MIN_STRENGTH 6
+#define FLUID_FLYOVER_MAX_STRENGTH 48
+#define FLUID_FLYOVER_MIN_PACE 1
+#define FLUID_FLYOVER_MAX_PACE 4
 
 FluidInteractionConfig FluidInteractionDefaultConfig(void)
 {
@@ -34,16 +45,17 @@ FluidInteractionConfig FluidInteractionDefaultConfig(void)
 
     config.splashSpeed = 60.0f;
     config.wakeSpeed = 40.0f;
-    config.flyoverHeight = 6.0f;
-    config.flyoverSpeed = 110.0f;
-    config.sonicFlyoverHeight = 14.0f;
-    config.flyoverInterval = 0.03f;
+    config.flyoverHeight = 9.0f;
+    config.flyoverSpeed = 90.0f;
+    config.sonicFlyoverHeight = 22.0f;
+    config.flyoverInterval = 0.015f;
+    config.sonicBoilHeight = 5.0f;
     return config;
 }
 
 void FluidInteractionInit(FluidInteractionState *state)
 {
-    FluidInteractionStats empty = {0, 0, 0, 0, 0};
+    FluidInteractionStats empty = {0, 0, 0, 0, 0, 0};
 
     if (state == NULL) {
         return;
@@ -54,6 +66,7 @@ void FluidInteractionInit(FluidInteractionState *state)
     state->inside = false;
     state->flyoverCooldown = 0.0f;
     state->wakeCooldown = 0.0f;
+    state->sprayTimer = 0.0f;
     state->stats = empty;
 }
 
@@ -162,22 +175,32 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
     int bottom = (int)floorf(player->position.y + player->radius);
     float reach = speed >= player->sonicSpeed ? state->config.sonicFlyoverHeight
                                               : state->config.flyoverHeight;
-    /* Wider and higher the faster: a wall at boost, a ripple at a crawl. */
+    /* Wider, deeper and faster the faster: a wall at the sound barrier, a
+       ripple at a crawl. Full strength is reached at sonic speed, not boost
+       speed, so the whole of a boosted pass is at full strength. */
     float pace = (speed - state->config.flyoverSpeed) /
-                 (player->boostSpeed - state->config.flyoverSpeed);
+                 (player->sonicSpeed - state->config.flyoverSpeed);
     int halfWidth;
+    int depth;
     int strength;
+    int cellsPerTick;
     int probe;
 
     if (pace < 0.0f) pace = 0.0f;
     if (pace > 1.0f) pace = 1.0f;
     halfWidth = FLUID_FLYOVER_MIN_HALF_WIDTH +
                 (int)((float)(FLUID_FLYOVER_MAX_HALF_WIDTH - FLUID_FLYOVER_MIN_HALF_WIDTH) * pace);
-    strength = 2 + (int)((float)(FLUID_FLYOVER_MAX_STRENGTH - 2) * pace);
+    depth = FLUID_FLYOVER_MIN_DEPTH +
+            (int)((float)(FLUID_FLYOVER_MAX_DEPTH - FLUID_FLYOVER_MIN_DEPTH) * pace);
+    strength = FLUID_FLYOVER_MIN_STRENGTH +
+               (int)((float)(FLUID_FLYOVER_MAX_STRENGTH - FLUID_FLYOVER_MIN_STRENGTH) * pace);
+    cellsPerTick = FLUID_FLYOVER_MIN_PACE +
+                   (int)((float)(FLUID_FLYOVER_MAX_PACE - FLUID_FLYOVER_MIN_PACE) * pace + 0.5f);
 
     for (probe = bottom + 1; probe <= bottom + (int)ceilf(reach); ++probe) {
         CellMaterial material = WorldGetCell(world, x, probe);
         int offset;
+        int row;
 
         if (!MaterialIsLiquid(material)) {
             if (material != MATERIAL_EMPTY) {
@@ -185,17 +208,44 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
             }
             continue;
         }
-        /* The nearer the surface, the harder. Straight up under the pass,
-           leaning outward at the edges of the band, so the wall curls. */
+        /* The nearer the surface, the harder. */
         strength = 1 + (int)((float)strength *
                              (1.0f - 0.5f * (float)(probe - bottom - 1) / reach));
-        for (offset = -halfWidth; offset <= halfWidth; ++offset) {
-            int directionX = abs(offset) > halfWidth / 2 ? (offset < 0 ? -1 : 1) : 0;
-            int steps = 1 + (int)((float)strength *
-                                  (1.0f - (float)abs(offset) / (float)(halfWidth + 1)));
+        /* A supersonic pass skimming the water boils the surface directly
+           under it: the shock the drill puts through rock, put through water.
+           Water only — lava is already as hot as it gets. Only the middle of
+           the band, so what is boiled is a trail and not the pond. */
+        if (speed >= player->sonicSpeed && material == MATERIAL_WATER &&
+            (float)(probe - bottom - 1) < state->config.sonicBoilHeight) {
+            int boilHalfWidth = halfWidth / 3;
 
-            if (WorldPushLiquid(world, x + offset, probe, directionX, -1, steps)) {
-                ++state->stats.cellsPushed;
+            for (offset = -boilHalfWidth; offset <= boilHalfWidth; ++offset) {
+                if (WorldGetCell(world, x + offset, probe) == MATERIAL_WATER) {
+                    WorldSetCell(world, x + offset, probe, MATERIAL_STEAM);
+                    ++state->stats.cellsBoiled;
+                }
+            }
+        }
+        /* The band under the pass, `depth` rows of it, is thrown up: the
+           surface row fastest and hardest, each row under it a little less,
+           and every cell of a deep row hands its push to the water above it
+           on the way, so a column of water leaves the lake rather than one
+           cell. Straight up under the pass, leaning outward at the edges of
+           the band, so the wall curls away from the character. */
+        for (row = 0; row < depth; ++row) {
+            float rowShare = 1.0f - 0.6f * (float)row / (float)depth;
+            int rowStrength = 1 + (int)((float)strength * rowShare);
+            int rowPace = 1 + (int)((float)(cellsPerTick - 1) * rowShare + 0.5f);
+
+            for (offset = -halfWidth; offset <= halfWidth; ++offset) {
+                int directionX = abs(offset) > halfWidth / 2 ? (offset < 0 ? -1 : 1) : 0;
+                int steps = 1 + (int)((float)rowStrength *
+                                      (1.0f - (float)abs(offset) / (float)(halfWidth + 1)));
+
+                if (WorldPushLiquidFast(world, x + offset, probe + row, directionX,
+                                        -1, steps, rowPace)) {
+                    ++state->stats.cellsPushed;
+                }
             }
         }
         ++state->stats.flyovers;
@@ -208,6 +258,7 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
             .radius = (float)(2 * halfWidth + 1),
             .material = material,
         });
+        /* One surface per pass: the rows under it were the band. */
         return;
     }
 }
@@ -219,6 +270,7 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
     float speed;
     float fraction;
     float fractionAhead;
+    float enterFraction;
     CellMaterial liquid;
     CellMaterial liquidAhead;
     Vector2 ahead;
@@ -236,6 +288,7 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
     }
     state->flyoverCooldown -= deltaTime;
     state->wakeCooldown -= deltaTime;
+    state->sprayTimer -= deltaTime;
 
     /* Where the character will be at the end of this frame, read now,
        before they move: at boost the frame covers six cells and the drill
@@ -246,9 +299,15 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
     ahead.y = player->position.y + player->velocity.y * deltaTime;
     fractionAhead = FluidSubmergedFraction(world, player, ahead, &liquidAhead);
 
+    /* Just after a low pass the air around the character is full of the
+       water it threw, and a collider a quarter in spray is not a character
+       in a lake: entry then needs most of the collider under, which a real
+       dive at these speeds reaches within a frame. */
+    enterFraction = state->sprayTimer > 0.0f ? FLUID_ENTER_FRACTION_IN_SPRAY
+                                             : FLUID_ENTER_FRACTION;
     if (!state->inside &&
-        (fraction >= FLUID_ENTER_FRACTION || fractionAhead >= FLUID_ENTER_FRACTION)) {
-        bool here = fraction >= FLUID_ENTER_FRACTION;
+        (fraction >= enterFraction || fractionAhead >= enterFraction)) {
+        bool here = fraction >= enterFraction;
 
         state->inside = true;
         ++state->stats.entries;
@@ -278,8 +337,12 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
         state->wakeCooldown = 0.05f;
         return;
     }
-    if (!state->inside && fraction <= 0.0f && speed >= state->config.flyoverSpeed &&
-        state->flyoverCooldown <= 0.0f) {
+    /* A pass is flight along the water, not toward it: a dive is an entry,
+       and the water it throws is the splash. */
+    if (!state->inside && (fraction <= 0.0f || state->sprayTimer > 0.0f) &&
+        speed >= state->config.flyoverSpeed && state->flyoverCooldown <= 0.0f &&
+        fabsf(player->velocity.x) > fabsf(player->velocity.y)) {
         FluidFlyover(state, player, world, events, speed);
+        state->sprayTimer = FLUID_SPRAY_SECONDS;
     }
 }

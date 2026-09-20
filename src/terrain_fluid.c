@@ -125,6 +125,56 @@ static void TerrainFluidSplash(TerrainFluidSystem *system, const TerrainBody *bo
     });
 }
 
+/* A moving body pushes the liquid out of the cells it occupies: every surface
+   cell of the body that stands in liquid shoves that liquid away from the
+   body's centre, and as the body moves its surface sweeps through the water
+   ahead of it. What is displaced is therefore the body's own outline, cell
+   for cell — a boulder shoves a boulder's worth of water aside, a pebble a
+   pebble's, and neither merely sinks through it. Bounded by the surface
+   sample count per step. */
+#define TERRAIN_FLUID_DISPLACE_SAMPLES 512
+#define TERRAIN_FLUID_DISPLACE_SPEED 6.0f
+
+static void TerrainFluidDisplace(TerrainFluidSystem *system,
+                                 const DynamicTerrainSystem *terrain, int slot,
+                                 const TerrainBody *body, World *world, float speed)
+{
+    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    int stride = body->surfaceCount / TERRAIN_FLUID_DISPLACE_SAMPLES + 1;
+    int strength = 2 + (int)(speed / 30.0f) + (int)(sqrtf((float)body->cellCount) / 4.0f);
+    int index;
+
+    if (strength > 16) {
+        strength = 16;
+    }
+    for (index = 0; index < body->surfaceCount; index += stride) {
+        Vector2 at = TerrainBodyLocalToWorld(
+            body, (float)terrain->surfaceX[surfaceBase + (size_t)index] + 0.5f,
+            (float)terrain->surfaceY[surfaceBase + (size_t)index] + 0.5f);
+        int x = (int)floorf(at.x);
+        int y = (int)floorf(at.y);
+        float dx = at.x - body->position.x;
+        float dy = at.y - body->position.y;
+        int directionX;
+        int directionY;
+
+        if (!MaterialIsLiquid(WorldGetCell(world, x, y))) {
+            continue;
+        }
+        /* Away from the centre, in eight directions; a cell on the centre
+           line goes with the body's motion instead. */
+        directionX = fabsf(dx) * 2.0f > fabsf(dy) ? (dx < 0.0f ? -1 : 1) : 0;
+        directionY = fabsf(dy) * 2.0f > fabsf(dx) ? (dy < 0.0f ? -1 : 1) : 0;
+        if (directionX == 0 && directionY == 0) {
+            directionX = body->velocity.x < 0.0f ? -1 : (body->velocity.x > 0.0f ? 1 : 0);
+            directionY = body->velocity.y < 0.0f ? -1 : 1;
+        }
+        if (WorldPushLiquid(world, x, y, directionX, directionY, strength)) {
+            ++system->stats.cellsPushed;
+        }
+    }
+}
+
 void TerrainFluidUpdate(TerrainFluidSystem *system, DynamicTerrainSystem *terrain,
                         World *world, GameEventBuffer *events, float deltaTime)
 {
@@ -169,6 +219,9 @@ void TerrainFluidUpdate(TerrainFluidSystem *system, DynamicTerrainSystem *terrai
             continue;
         }
         ++system->stats.bodiesInLiquid;
+        if (speed >= TERRAIN_FLUID_DISPLACE_SPEED) {
+            TerrainFluidDisplace(system, terrain, slot, body, world, speed);
+        }
 
         /* Drag first, in proportion to how much is under, then buoyancy.
            The integrator adds gravity after this and damps almost nothing,

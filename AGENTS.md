@@ -94,10 +94,21 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   removed at the player's request. Flying through the world is the point of
   the game and no material punishes it. The liquid pays instead
   (`fluid_interaction.c`): a fast entry throws a crown, a fast low pass
-  lifts a wall of water, a dive at speed leaves a wake, and at drill speed the
-  water in the corridor flashes to steam. A body in liquid gets buoyancy from
+  throws up a band of water several rows deep (and boils the surface at
+  sonic speed), a dive at speed leaves a wake, and at drill speed the water
+  in the corridor flashes to steam. When a reaction is asked to be bigger,
+  move more cells — never add a drawn effect in its place. A body in liquid gets buoyancy from
   density alone (`terrain_fluid.c`), drag before buoyancy, and its splash is
   the water itself — never a drawn effect over it.
+- A cave-in (`terrain_stability.c`) is asked only where the destruction log
+  says something was cut, and it brings a roof down as slabs: a failed run is
+  cracked off its supports so the detach check extracts the roof between the
+  cracks as a body, and only the cracks and the ceiling row become rubble. A
+  grain never anchors a component and a loose fragment that touches only at
+  a corner goes with it; a body that cannot be split for want of a slot is
+  marked `fracturePending` and split when one frees, never left as two rocks
+  moving as one. Bodies are welded back only when every cell has a place,
+  and water under a body is lifted to the surface, never destroyed.
 - A liquid cell under liquid stores no head: its head is read by walking up
   its column, bounded. Only a cell with rock over it stores one. Storing the
   chain sent a wave of head changes through an ocean after one blast and

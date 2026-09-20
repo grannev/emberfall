@@ -308,6 +308,20 @@ static bool WorldFluidAdvance(World *world, WorldFluidImpulse *impulse)
     return impulse->strength > 0u;
 }
 
+/* One tick of an impulse: `pace` steps, stopping at the first that ends it. */
+static bool WorldFluidAdvanceTick(World *world, WorldFluidImpulse *impulse)
+{
+    int step;
+    int pace = impulse->pace > 0u ? impulse->pace : 1;
+
+    for (step = 0; step < pace; ++step) {
+        if (!WorldFluidAdvance(world, impulse)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void WorldFluidStepImpulses(World *world)
 {
     int index = 0;
@@ -316,7 +330,7 @@ void WorldFluidStepImpulses(World *world)
     while (index < world->fluid.impulsesActive) {
         WorldFluidImpulse *impulse = &world->fluidImpulses[index];
 
-        if (WorldFluidAdvance(world, impulse)) {
+        if (WorldFluidAdvanceTick(world, impulse)) {
             ++index;
             continue;
         }
@@ -328,8 +342,35 @@ void WorldFluidStepImpulses(World *world)
     }
 }
 
+bool WorldLiftLiquidOut(World *world, int x, int y, int reach)
+{
+    int probe;
+
+    if (!MaterialIsLiquid(WorldGetCell(world, x, y))) {
+        return false;
+    }
+    for (probe = y - 1; probe >= 0 && probe >= y - reach; --probe) {
+        CellMaterial material = WorldGetCell(world, x, probe);
+
+        if (material == MATERIAL_EMPTY) {
+            WorldMoveCell(world, x, y, x, probe);
+            return true;
+        }
+        if (!MaterialIsLiquid(material)) {
+            return false;
+        }
+    }
+    return false;
+}
+
 bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
                      int strength)
+{
+    return WorldPushLiquidFast(world, x, y, directionX, directionY, strength, 1);
+}
+
+bool WorldPushLiquidFast(World *world, int x, int y, int directionX,
+                         int directionY, int strength, int pace)
 {
     WorldFluidImpulse *impulse;
 
@@ -337,7 +378,7 @@ bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
         return false;
     }
     if (directionX < -1 || directionX > 1 || directionY < -1 || directionY > 1 ||
-        (directionX == 0 && directionY == 0) || strength <= 0) {
+        (directionX == 0 && directionY == 0) || strength <= 0 || pace <= 0) {
         return false;
     }
     if (!WorldInBounds(world, x, y) ||
@@ -354,6 +395,7 @@ bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
     impulse->directionX = (int8_t)directionX;
     impulse->directionY = (int8_t)directionY;
     impulse->strength = (uint8_t)(strength > 255 ? 255 : strength);
+    impulse->pace = (uint8_t)(pace > 8 ? 8 : pace);
     WorldWakeCellAndNeighbors(world, x, y);
     return true;
 }

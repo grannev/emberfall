@@ -62,7 +62,7 @@ void TerrainDamageResetStats(TerrainDamageSystem *system)
         return;
     }
     {
-        TerrainDamageStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainDamageStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         system->stats = empty;
     }
@@ -223,6 +223,7 @@ static int TerrainDamageLabelComponents(TerrainDamageSystem *system,
             continue;
         }
         if (count >= TERRAIN_FRACTURE_MAX_COMPONENTS) {
+            /* The rest stays unlabelled, and so stays with the body. */
             return -1;
         }
         ++count;
@@ -343,6 +344,7 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
     int largest = 1;
     int created = 0;
     bool detached = false;
+    bool refused = false;
     int label;
     int index;
 
@@ -353,7 +355,14 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
     memset(sizes, 0, sizeof(sizes));
     components = TerrainDamageLabelComponents(system, terrain, handle, body,
                                               sizes);
+    if (components < 0) {
+        /* More pieces than one pass tracks: the pieces it did label are
+           split off now, and the body is asked again for the rest. */
+        components = TERRAIN_FRACTURE_MAX_COMPONENTS;
+        refused = true;
+    }
     if (components <= 1) {
+        body->fracturePending = false;
         return 0;
     }
 
@@ -391,6 +400,7 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
                was already part of: nothing is lost, nothing moves, and the
                world is exactly as valid as it was a moment ago. */
             ++system->stats.fragmentsRefusedByBudget;
+            refused = true;
             continue;
         }
         /* Whether it became a body or was too small to be worth one, these
@@ -411,6 +421,11 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
     }
     if (created > 0) {
         ++system->stats.fractureSplits;
+    }
+    /* The body may have been refinalized, but it is the same slot. */
+    body = DynamicTerrainGet(terrain, handle);
+    if (body != NULL) {
+        body->fracturePending = refused;
     }
     return created;
 }
@@ -605,6 +620,24 @@ int TerrainDamageImpactFractures(TerrainDamageSystem *system,
         body->impactImpulse = 0.0f;
         ++system->stats.impactCracks;
         ++cracked;
+    }
+    /* One body left in pieces by a refused split is asked again, when there
+       is a slot to give a piece to. One a step: a labelling is a walk over
+       the whole raster, and a session with every slot taken would otherwise
+       walk every pending body every step for nothing. */
+    if (terrain->stats.activeBodies < MAX_TERRAIN_BODIES) {
+        for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+            TerrainBody *body = &terrain->bodies[slot];
+
+            if (!body->active || !body->fracturePending) {
+                continue;
+            }
+            ++system->stats.fractureRetries;
+            (void)TerrainDamageFracture(system, terrain,
+                                        (TerrainBodyHandle){(uint16_t)slot,
+                                                            body->generation});
+            break;
+        }
     }
     return cracked;
 }

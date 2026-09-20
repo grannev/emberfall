@@ -59,7 +59,12 @@ DynamicTerrainConfig DynamicTerrainDefaultConfig(void)
     config.sleepDelay = 0.5f;
     config.restitution = 0.08f;
     config.friction = 0.55f;
-    config.maxAwakeBodies = 40;
+    /* Every slot may move at once. The awake budget exists to throttle
+       motion in a scene that cannot afford it, and a body born asleep for
+       want of budget hangs in the air where it was cut, which reads as a
+       bug rather than as thrift; the per-substep costs are bounded by the
+       cell budget instead. */
+    config.maxAwakeBodies = MAX_TERRAIN_BODIES;
     config.maxDynamicCells = MAX_TERRAIN_DYNAMIC_CELLS;
     config.killBoundsMargin = 512.0f;
     return config;
@@ -210,6 +215,7 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
         ++system->stats.awakeBudgetRefusals;
     }
     body->sleepTimer = 0.0f;
+    body->fracturePending = false;
     body->width = width;
     body->height = height;
     /* An empty body has no extent. Finalize will set real bounds once cells

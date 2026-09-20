@@ -87,6 +87,13 @@ typedef struct TerrainBody {
     /* Set when the body goes from asleep to awake and cleared by the physics
        update once it has woken whatever was resting on this body. */
     bool wokeRecently;
+    /* Set when a fracture found this raster in more than one piece and could
+       not give every piece a body of its own — no free slot, no cell budget,
+       more pieces than one pass tracks. The damage system asks again once a
+       slot is free: two rocks that share a body move as one rock, and a
+       player watching them knows it. Cleared when a fracture leaves the
+       raster in one piece. */
+    bool fracturePending;
     /* Largest normal impulse any contact — with the world or with another
        body — delivered to this body during the last physics update, in
        mass-cells per second, and where it landed. What a fracture rule reads;
@@ -202,12 +209,11 @@ typedef struct DynamicTerrainConfig {
      * find the rubble where they left it.
      */
 
-    /* Bodies integrating and colliding at once. Collision measured 0.103 ms for
-       thirty-two awake bodies, so this is not yet where the frame goes; the
-       budget exists because EF-DYN-011 will create bodies in bursts and because
-       drawing them has not been measured at all. Keeping it below
-       MAX_TERRAIN_BODIES is what makes the mechanism testable now rather than
-       after it is needed. */
+    /* Bodies integrating and colliding at once. The mechanism throttles
+       motion, never existence: a body created past it is born asleep. The
+       default is every slot, since a body born asleep for want of budget
+       hangs in the air where it was cut; tests lower it to exercise the
+       throttle, and a scene that cannot afford its bodies can too. */
     int maxAwakeBodies;
     /* Occupied cells across all bodies, clamped to MAX_TERRAIN_DYNAMIC_CELLS. */
     int maxDynamicCells;

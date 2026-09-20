@@ -53,7 +53,12 @@ void main()
     float ember = light.g;
     bool air = texel.a <= airAlpha + 0.5 / 255.0;
 
-    float closing = clamp((veil.x - sky) / (veil.x - veil.y), 0.0, 1.0);
+    // The veil follows how open a cell is to the sky, not how bright the sky
+    // is: closing it on the daylight-scaled light drew a wall of dark air
+    // over the whole night sky, and the stars and the moon behind it went
+    // out at dusk. Night is the backdrop's to draw; the veil only says
+    // whether there is ground between the viewer and it.
+    float closing = clamp((veil.x - light.r) / (veil.x - veil.y), 0.0, 1.0);
     closing = closing * closing * (3.0 - 2.0 * closing);
     float veiled = veilAlpha.x + veilAlpha.y * closing;
 

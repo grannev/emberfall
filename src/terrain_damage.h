@@ -73,6 +73,8 @@ typedef struct TerrainDamageStats {
        step for the budget. */
     int impactCracks;
     int impactCracksDeferred;
+    /* Fractures run again for a body left in pieces by a refused split. */
+    int fractureRetries;
 } TerrainDamageStats;
 
 typedef struct TerrainDamageSystem {
@@ -88,10 +90,11 @@ typedef struct TerrainDamageSystem {
     uint16_t queue[TERRAIN_BODY_RASTER_CAPACITY];
 } TerrainDamageSystem;
 
-/* The largest number of separate pieces one fracture will track. Beyond it the
-   remaining cells stay with the body they were part of, which is always a safe
-   answer: nothing is lost and nothing moves. */
-#define TERRAIN_FRACTURE_MAX_COMPONENTS 32
+/* The largest number of separate pieces one fracture will track: every label
+   an eight-bit component map can hold. Beyond it the remaining cells stay with
+   the body they were part of, which is always a safe answer — nothing is lost
+   and nothing moves — and the body is marked for another look. */
+#define TERRAIN_FRACTURE_MAX_COMPONENTS 255
 
 TerrainDamageConfig TerrainDamageDefaultConfig(void);
 void TerrainDamageInit(TerrainDamageSystem *system);

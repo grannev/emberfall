@@ -50,6 +50,9 @@ typedef struct FluidInteractionConfig {
     /* Seconds between two flyover disturbances, so a low pass leaves a
        continuous wall rather than lifting the same cells every frame. */
     float flyoverInterval;
+    /* How close above the water a supersonic pass must be to boil the
+       surface under it, in cells. */
+    float sonicBoilHeight;
 } FluidInteractionConfig;
 
 typedef struct FluidInteractionStats {
@@ -58,6 +61,8 @@ typedef struct FluidInteractionStats {
     int flyovers;
     int wakes;
     int cellsPushed;
+    /* Surface water a supersonic pass turned to steam. */
+    int cellsBoiled;
 } FluidInteractionStats;
 
 typedef struct FluidInteractionState {
@@ -72,6 +77,9 @@ typedef struct FluidInteractionState {
     bool inside;
     float flyoverCooldown;
     float wakeCooldown;
+    /* Seconds left in which liquid around the character is the spray of
+       their own pass rather than a lake they are entering. */
+    float sprayTimer;
     FluidInteractionStats stats;
 } FluidInteractionState;
 

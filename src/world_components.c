@@ -12,12 +12,23 @@
  * pixel thick and would not hold anything up. A caller that wants a minimum
  * thickness before tearing terrain off should impose it itself.
  *
- * Membership is WorldMaterialIsSolid, the same notion of solid that stops the
- * player, a beam and a force blast. That includes sand, which is loose rather
- * than structural. Including it is the conservative choice: more cells in a
- * component means more chances to reach an anchor or the region edge, and so a
- * greater tendency toward "not detached", which is the direction this detector
- * is allowed to err in.
+ * Membership is the structural solids: WorldMaterialIsSolid, the notion of
+ * solid that stops the player, a beam and a force blast, less the dynamic
+ * ones — sand, ash, rubble — which fall on their own and hold nothing up. A
+ * grain is never a link: a slab cut free that happened to touch a pile of
+ * sand, or the rubble of the cave-in that freed it, read as attached to the
+ * ground through the pile, and the pile was what should have been ignored.
+ * The one thing a grain does is ride along: a grain resting directly on a
+ * member cell is a member too, but the search never continues through it,
+ * so a pile beside the piece stays in the world and a dusting on top of it
+ * goes with it.
+ *
+ * A structural cell joined to the component only at a corner is absorbed
+ * when it has no other structural neighbour on any side: with the component
+ * gone it would hang in the air by nothing, and one pixel of leaf left
+ * behind where a tree was torn out is the kind of thing a player notices.
+ * The rule is one pass and never chains — an orphan's own corner neighbours
+ * are not asked — so the cost is a bounded number of reads per member cell.
  */
 #include "world_components.h"
 
@@ -25,6 +36,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "materials.h"
 #include "world_internal.h"
 
 /* Region-local index of a cell, used for both the visited bitmap and nothing
@@ -44,6 +56,38 @@ static inline void ComponentMarkVisited(WorldComponentWorkspace *workspace,
                                         int index)
 {
     workspace->visited[index >> 5] |= 1u << (index & 31);
+}
+
+/* Solid and not loose: what the component is made of and searched through. */
+static inline bool ComponentIsStructural(CellMaterial material)
+{
+    return WorldMaterialIsSolid(material) && !MaterialIsDynamic(material);
+}
+
+/* Adds a cell to the component when it is unvisited, inside the region and
+   within the cell budget. Returns false only on the budget. */
+static bool ComponentAdd(WorldComponentWorkspace *workspace,
+                         WorldComponentResult *result, int x, int y,
+                         int firstX, int firstY, int regionWidth,
+                         int maximumCells)
+{
+    int localIndex = ComponentLocalIndex(x - firstX, y - firstY, regionWidth);
+
+    if (ComponentVisited(workspace, localIndex)) {
+        return true;
+    }
+    if (result->cellCount >= maximumCells) {
+        return false;
+    }
+    ComponentMarkVisited(workspace, localIndex);
+    workspace->cellX[result->cellCount] = (int32_t)x;
+    workspace->cellY[result->cellCount] = (int32_t)y;
+    ++result->cellCount;
+    if (x < result->minimumX) result->minimumX = x;
+    if (x > result->maximumX) result->maximumX = x;
+    if (y < result->minimumY) result->minimumY = y;
+    if (y > result->maximumY) result->maximumY = y;
+    return true;
 }
 
 static WorldComponentResult ComponentFailure(WorldComponentStatus status,
@@ -112,7 +156,7 @@ WorldComponentResult WorldFindComponent(const World *world,
     if (seedX < firstX || seedX > lastX || seedY < firstY || seedY > lastY) {
         return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
-    if (!WorldMaterialIsSolid(WorldMaterialAt(world, seedX, seedY))) {
+    if (!ComponentIsStructural(WorldMaterialAt(world, seedX, seedY))) {
         return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
@@ -142,10 +186,14 @@ WorldComponentResult WorldFindComponent(const World *world,
         int y = (int)workspace->cellY[head];
         int i;
 
+        /* A grain that rides along is a leaf: nothing is reached through it. */
+        if (MaterialIsDynamic(WorldMaterialAt(world, x, y))) {
+            continue;
+        }
         for (i = 0; i < 4; ++i) {
             int neighbourX = x + offsets[i][0];
             int neighbourY = y + offsets[i][1];
-            int localIndex;
+            CellMaterial material;
 
             /* Outside the world. The simulation already treats everything past
                the edge as immovable rock — WorldMaterialAt returns ROCK there,
@@ -155,8 +203,13 @@ WorldComponentResult WorldFindComponent(const World *world,
                 return ComponentFailure(WORLD_COMPONENT_ANCHORED, result.cellCount);
             }
 
-            if (!WorldMaterialIsSolid(WorldMaterialAt(world, neighbourX,
-                                                      neighbourY))) {
+            material = WorldMaterialAt(world, neighbourX, neighbourY);
+            if (!WorldMaterialIsSolid(material)) {
+                continue;
+            }
+            /* Loose material is not a link, and only the grains resting on
+               the component ride with it. */
+            if (MaterialIsDynamic(material) && i != 0) {
                 continue;
             }
 
@@ -167,26 +220,75 @@ WorldComponentResult WorldFindComponent(const World *world,
                whether anything solid is actually there. */
             if (neighbourX < firstX || neighbourX > lastX ||
                 neighbourY < firstY || neighbourY > lastY) {
+                if (MaterialIsDynamic(material)) {
+                    continue;
+                }
                 return ComponentFailure(WORLD_COMPONENT_UNKNOWN, result.cellCount);
             }
 
-            localIndex = ComponentLocalIndex(neighbourX - firstX,
-                                             neighbourY - firstY, regionWidth);
-            if (ComponentVisited(workspace, localIndex)) {
-                continue;
-            }
-            if (result.cellCount >= maximumCells) {
+            if (!ComponentAdd(workspace, &result, neighbourX, neighbourY, firstX,
+                              firstY, regionWidth, maximumCells)) {
                 return ComponentFailure(WORLD_COMPONENT_TOO_LARGE, result.cellCount);
             }
-            ComponentMarkVisited(workspace, localIndex);
-            workspace->cellX[result.cellCount] = (int32_t)neighbourX;
-            workspace->cellY[result.cellCount] = (int32_t)neighbourY;
-            ++result.cellCount;
+        }
+    }
 
-            if (neighbourX < result.minimumX) result.minimumX = neighbourX;
-            if (neighbourX > result.maximumX) result.maximumX = neighbourX;
-            if (neighbourY < result.minimumY) result.minimumY = neighbourY;
-            if (neighbourY > result.maximumY) result.maximumY = neighbourY;
+    /* Orphans: structural cells touching the component at a corner only,
+       with no structural cell on any side. The member list is walked as it
+       was before this pass, so an orphan's own corners are never asked. */
+    {
+        static const int corners[4][2] = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+        static const int sides[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+        int members = result.cellCount;
+
+        for (head = 0; head < members; ++head) {
+            int x = (int)workspace->cellX[head];
+            int y = (int)workspace->cellY[head];
+            int i;
+
+            if (MaterialIsDynamic(WorldMaterialAt(world, x, y))) {
+                continue;
+            }
+            for (i = 0; i < 4; ++i) {
+                int cornerX = x + corners[i][0];
+                int cornerY = y + corners[i][1];
+                int held = 0;
+                int j;
+
+                if (cornerX < firstX || cornerX > lastX || cornerY < firstY ||
+                    cornerY > lastY ||
+                    !ComponentIsStructural(WorldMaterialAt(world, cornerX, cornerY)) ||
+                    ComponentVisited(workspace,
+                                     ComponentLocalIndex(cornerX - firstX,
+                                                         cornerY - firstY,
+                                                         regionWidth))) {
+                    continue;
+                }
+                for (j = 0; j < 4; ++j) {
+                    int sideX = cornerX + sides[j][0];
+                    int sideY = cornerY + sides[j][1];
+
+                    if (!WorldInBounds(world, sideX, sideY) ||
+                        (ComponentIsStructural(WorldMaterialAt(world, sideX, sideY)) &&
+                         (sideX < firstX || sideX > lastX || sideY < firstY ||
+                          sideY > lastY ||
+                          !ComponentVisited(workspace,
+                                            ComponentLocalIndex(sideX - firstX,
+                                                                sideY - firstY,
+                                                                regionWidth))))) {
+                        ++held;
+                        break;
+                    }
+                }
+                if (held > 0) {
+                    continue;
+                }
+                if (!ComponentAdd(workspace, &result, cornerX, cornerY, firstX,
+                                  firstY, regionWidth, maximumCells)) {
+                    return ComponentFailure(WORLD_COMPONENT_TOO_LARGE,
+                                            result.cellCount);
+                }
+            }
         }
     }
 

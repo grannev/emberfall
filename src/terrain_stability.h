@@ -23,8 +23,13 @@
  * is only ever asked where something changed.
  *
  * A collapse costs no mass: a cell of dirt becomes a cell of rubble, and it
- * lands somewhere. Nothing is extracted, nothing is torn out of the landmass —
- * a cell with a support under it is never touched, whatever is above it.
+ * lands somewhere. A cell with a support under it is never crumbled,
+ * whatever is above it. What a failed run was holding up is cracked off its
+ * supports — a column of rubble cut up from each supported end of the run —
+ * so that the roof between the cracks is joined to nothing, and the detach
+ * check that already reads the destruction log extracts it as a body. That
+ * is the difference between a cave-in and a roof turning to sand: the slab
+ * falls in one piece, and cracks where it lands.
  */
 
 #include <stdbool.h>
@@ -39,7 +44,10 @@
 /* Cells taken from the queue in one tick, and the most that may crumble in
    one tick. A cave-in is meant to be watched happening. */
 #define TERRAIN_STABILITY_CHECKS_PER_TICK 96
-#define TERRAIN_STABILITY_CRUMBLES_PER_TICK 24
+#define TERRAIN_STABILITY_CRUMBLES_PER_TICK 96
+/* The most rows a crack cut at the end of a failed run climbs. A roof thicker
+   than this is cut this deep and crumbles the rest a layer at a time. */
+#define TERRAIN_STABILITY_CRACK_HEIGHT 64
 /* How far either side of a destroyed region the ceilings are looked at: a
    cut at the edge of a burrow shortens the span of a ceiling it never touched. */
 #define TERRAIN_STABILITY_MARGIN 4
@@ -51,6 +59,9 @@ typedef struct TerrainStabilityStats {
     int queueRefusals;
     int checks;
     int crumbles;
+    /* Cracks cut up from the ends of failed runs, and the cells they cut. */
+    int cracks;
+    int crackCells;
     /* Refreshed by every update. */
     int crumblesThisTick;
 } TerrainStabilityStats;

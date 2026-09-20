@@ -276,6 +276,10 @@ static void test_the_light_shader_declares_what_the_renderer_sets(void)
     CHECK(strstr(vertex, "out vec2 fragWorld;") != NULL &&
               strstr(fragment, "in vec2 fragWorld;") != NULL,
           "the world position no longer crosses from the vertex shader");
+    /* The veil closes on openness to the sky, never on the daylight-scaled
+       light: scaled, the night sky sealed itself and the stars went out. */
+    CHECK(strstr(fragment, "(veil.x - light.r)") != NULL,
+          "the air veil no longer follows the unscaled sky channel");
     UnloadFileText(fragment);
     UnloadFileText(vertex);
 }
@@ -3612,8 +3616,64 @@ static void test_a_diagonal_only_join_to_the_ground_reads_as_detached(void)
     CHECK(found.status == WORLD_COMPONENT_DETACHED,
           "a diagonally joined island reported %s",
           ComponentStatusName(found.status));
-    CHECK(found.cellCount == 121,
+    /* The first step of the staircase hangs from the island's corner and
+       from nothing else, so it goes with the island as an orphan; the second
+       step hangs from the first, and the pass never chains. */
+    CHECK(found.cellCount == 122,
           "the staircase was counted as part of the island: %d cells",
+          found.cellCount);
+    WorldUnload(&world);
+}
+
+/* A grain is not a link. Sand between a cut slab and the ground used to hold
+   the slab up in the detector's eyes, and the pile the cave-in left under a
+   piece of roof was what kept the piece a piece of roof. */
+static void test_loose_material_never_anchors_a_component(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 0, 80, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    FillRect(&world, 30, 20, 40, 30, MATERIAL_ROCK);
+    /* A column of sand from the island's underside to the floor, and a
+       dusting of sand on top of it. */
+    FillRect(&world, 35, 31, 35, 79, MATERIAL_SAND);
+    FillRect(&world, 30, 19, 40, 19, MATERIAL_SAND);
+
+    found = FindComponent(&world, WholeWorld(&world), 35, 25);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "an island standing on sand reported %s",
+          ComponentStatusName(found.status));
+    /* The island, plus the eleven grains resting on it, and not one grain of
+       the column under it. */
+    CHECK(found.cellCount == 121 + 11,
+          "the island came out as %d cells, expected %d", found.cellCount,
+          121 + 11);
+    WorldUnload(&world);
+}
+
+/* One pixel of leaf joined to a torn-out tree by a corner alone used to stay
+   behind, hanging in the air where the tree had been. */
+static void test_a_corner_orphan_goes_with_the_component(void)
+{
+    World world;
+    WorldComponentResult found;
+
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    FillRect(&world, 0, 80, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    FillRect(&world, 30, 20, 40, 30, MATERIAL_ROCK);
+    /* A leaf at each top corner, touching the block diagonally only, and a
+       leaf that also touches the ground's own outcrop — held, and left. */
+    WorldSetCell(&world, 29, 19, MATERIAL_LEAF);
+    WorldSetCell(&world, 41, 19, MATERIAL_LEAF);
+    WorldSetCell(&world, 41, 31, MATERIAL_LEAF);
+    FillRect(&world, 42, 31, 42, 79, MATERIAL_ROCK);
+
+    found = FindComponent(&world, WholeWorld(&world), 35, 25);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED,
+          "the block reported %s", ComponentStatusName(found.status));
+    CHECK(found.cellCount == 123, "%d cells, expected the block and two leaves",
           found.cellCount);
     WorldUnload(&world);
 }
@@ -6418,6 +6478,53 @@ static void test_a_roof_within_its_span_holds(void)
 /* World safety: ground with support under it is never touched, however much
    was blown up beside it, so a cut in a flat field opens a hole and nothing
    else, and a hillside beside a cave-in stays a hillside. */
+/* The cave-in the player asked for: a roof that fails comes down as slabs
+   that fall and crack, not as a layer of grains. A rock roof over a cavern
+   wider than rock spans is cracked off its supports at both ends, and the
+   detach check that reads the same log turns the roof between the cracks
+   into a body. */
+static void test_a_failed_roof_falls_as_a_slab(void)
+{
+    GameState game;
+    GameConfig config = GameDefaultConfig();
+    GameEventBuffer events;
+    GameInput input = {0};
+    int frame;
+    int bodies = 0;
+    int slabCells = 0;
+
+    config.worldWidth = 256;
+    config.worldHeight = 160;
+    config.seed = 0x5eedu;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, game.world.width - 1, game.world.height - 1,
+             MATERIAL_EMPTY);
+    /* Rock from row 40 down, with a cavern 40 wide and 30 tall in it whose
+       roof is 12 cells of rock under open sky: a roof rock cannot span. */
+    FillRect(&game.world, 0, 40, game.world.width - 1, game.world.height - 1,
+             MATERIAL_ROCK);
+    FillRect(&game.world, 108, 52, 147, 82, MATERIAL_EMPTY);
+    game.player.position = (Vector2){20.0f, 20.0f};
+
+    /* Disturb the roof, as a generated cavern is never asked on its own. */
+    WorldDestroyCircle(&game.world, 128, 52, 2, 0.0f);
+    for (frame = 0; frame < 240; ++frame) {
+        GameUpdate(&game, &input, config.fixedStep, &events);
+    }
+    CHECK(game.stability.stats.cracks > 0, "no crack was cut at the supports");
+    bodies = game.detach.stats.autoDetachSucceeded;
+    slabCells = game.detach.stats.autoDetachCells;
+    CHECK(bodies > 0, "the roof crumbled without a slab coming loose");
+    CHECK(slabCells > 100, "the slabs held only %d cells", slabCells);
+    /* Rubble is the cracks and the ceiling row, not the roof. */
+    CHECK(game.stability.stats.crumbles + game.stability.stats.crackCells <
+              slabCells,
+          "%d cells crumbled against %d in slabs",
+          game.stability.stats.crumbles + game.stability.stats.crackCells,
+          slabCells);
+    GameUnload(&game);
+}
+
 static void test_supported_ground_never_crumbles(void)
 {
     World world;
@@ -7338,8 +7445,55 @@ static void test_a_weld_never_overwrites_the_world_or_buries_the_player(void)
     CHECK(weld.stats.bodiesDeferredByPlayer > 0,
           "the player deferral was never counted");
 
-    /* Step away and it welds, but writes nothing: the ground is already there.
-       The world must come out byte for byte as it went in. */
+    /* Step away and the weld is asked for, but refused: the ground is already
+       there and the body has nowhere to go. It stays a body rather than being
+       freed with its cells unplaced, and the world comes out byte for byte as
+       it went in. */
+    for (steps = 0; steps < 1200; ++steps) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain,
+                                 (Vector2){-4000.0f, -4000.0f}, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "a body with nowhere to go was freed");
+    CHECK(weld.stats.cellsWelded == 0, "a weld overwrote %d occupied cells",
+          weld.stats.cellsWelded);
+    CHECK(weld.stats.bodiesRefused > 0, "the refusal was never counted");
+    CHECK(WorldDigest(&world) == before,
+          "welding into occupied ground changed the world");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* A body that comes to rest on a lake bed lies in water, and a weld that
+   only wrote into empty cells threw every one of its cells away and freed
+   it: the player watched a boulder they had dropped into a pond dissolve.
+   Now the water it lies in is lifted to the surface first, so the boulder
+   becomes ground and the pond keeps every cell it had. */
+static void test_a_body_welded_under_water_keeps_its_cells_and_the_water(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainBodyHandle handle;
+    int waterBefore;
+    int steps;
+    int x;
+    int y;
+    int rockAtBed = 0;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainWeldInit(&weld);
+    /* A basin of rock, filled with water up to row 40. */
+    FillRect(&world, 20, 70, 100, 80, MATERIAL_ROCK);
+    FillRect(&world, 20, 30, 24, 70, MATERIAL_ROCK);
+    FillRect(&world, 96, 30, 100, 70, MATERIAL_ROCK);
+    FillRect(&world, 24, 40, 96, 70, MATERIAL_WATER);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+
+    /* A 4x4 block resting on the bed, entirely submerged. */
+    handle = BuildSleepingBlock(&terrain, (Vector2){60.0f, 68.0f}, 4);
+    CHECK(DynamicTerrainGetConst(&terrain, handle) != NULL,
+          "the fixture body was not created");
     for (steps = 0; steps < 1200 &&
                     DynamicTerrainGetConst(&terrain, handle) != NULL;
          ++steps) {
@@ -7347,13 +7501,21 @@ static void test_a_weld_never_overwrites_the_world_or_buries_the_player(void)
                                  (Vector2){-4000.0f, -4000.0f}, 1.0f / 60.0f);
     }
     CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
-          "the body never welded once the player left");
-    CHECK(weld.stats.cellsWelded == 0, "a weld overwrote %d occupied cells",
+          "the body never welded under water");
+    CHECK(weld.stats.cellsWelded == 16, "%d cells welded, expected 16",
           weld.stats.cellsWelded);
-    CHECK(weld.stats.cellsRefused == 16, "%d cells were refused, expected 16",
+    CHECK(weld.stats.cellsRefused == 0, "%d cells were refused",
           weld.stats.cellsRefused);
-    CHECK(WorldDigest(&world) == before,
-          "welding into occupied ground changed the world");
+    for (y = 66; y < 70; ++y) {
+        for (x = 58; x < 62; ++x) {
+            rockAtBed += WorldMaterialIsSolid(WorldGetCell(&world, x, y));
+        }
+    }
+    CHECK(rockAtBed == 16, "%d of the body's cells are ground, expected 16",
+          rockAtBed);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "the weld changed the water from %d to %d cells", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -12851,6 +13013,8 @@ int main(void)
     RUN(test_cutting_the_bridge_detaches_the_island);
     RUN(test_a_corner_contact_does_not_join_two_components);
     RUN(test_a_diagonal_only_join_to_the_ground_reads_as_detached);
+    RUN(test_loose_material_never_anchors_a_component);
+    RUN(test_a_corner_orphan_goes_with_the_component);
     RUN(test_a_component_crossing_a_chunk_boundary_stays_whole);
     RUN(test_a_component_continuing_past_the_region_is_unknown);
     RUN(test_a_component_that_only_touches_the_region_edge_is_detached);
@@ -12925,6 +13089,7 @@ int main(void)
     RUN(test_ground_destroyed_under_a_sleeping_body_wakes_it);
     RUN(test_a_blast_brings_down_a_roof_too_wide_for_its_dirt);
     RUN(test_a_roof_within_its_span_holds);
+    RUN(test_a_failed_roof_falls_as_a_slab);
     RUN(test_supported_ground_never_crumbles);
     RUN(test_the_span_is_measured_between_supports);
     RUN(test_ice_floats_and_rock_sinks);
@@ -12941,6 +13106,7 @@ int main(void)
     RUN(test_a_rotated_body_welds_without_holes);
     RUN(test_a_moving_body_is_never_welded);
     RUN(test_a_weld_never_overwrites_the_world_or_buries_the_player);
+    RUN(test_a_body_welded_under_water_keeps_its_cells_and_the_water);
     RUN(test_a_fragment_one_cell_past_the_ceiling_stays_static);
     RUN(test_a_full_body_manager_leaves_the_fragment_static);
     RUN(test_a_full_cell_budget_leaves_the_world_unchanged);

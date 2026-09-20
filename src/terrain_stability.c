@@ -9,7 +9,7 @@
 
 void TerrainStabilityInit(TerrainStabilitySystem *system)
 {
-    TerrainStabilityStats empty = {0, 0, 0, 0, 0, 0};
+    TerrainStabilityStats empty = {0, 0, 0, 0, 0, 0, 0, 0};
 
     if (system == NULL) {
         return;
@@ -122,23 +122,32 @@ int TerrainStabilitySpanAt(const World *world, int x, int y, int limit)
     return TerrainStabilityRun(world, x, y, limit, &leftAnchored, &rightAnchored);
 }
 
+/* What a check learns about the ceiling run through a cell. */
+typedef struct TerrainStabilityRunInfo {
+    /* Ceiling cells either side of the checked cell. */
+    int left;
+    int right;
+    bool leftAnchored;
+    bool rightAnchored;
+    /* The shortest span of any material in the run. */
+    int weakest;
+} TerrainStabilityRunInfo;
+
 /* Whether the ceiling run through (x, y) is longer than its weakest material
    bears. A run held at both ends is a beam and bears its material's span; a
    run held at one end is a shelf and bears half of it — which is what makes
    a hole in the middle of a roof bring the rest of the roof down rather than
-   leave two short roofs either side of it; a run held at neither end is
-   hanging from the layer above alone and gives way at any length. The run is
-   bounded by the strongest span any material has, so the walk is bounded
-   whatever the cave looks like. */
-static bool TerrainStabilityFails(const World *world, int x, int y)
+   leave two short roofs either side of it; a run held at neither end is hanging from the layer above alone and gives way at any
+   length. The run is bounded by the strongest span any material has, so the
+   walk is bounded whatever the cave looks like. */
+static bool TerrainStabilityFails(const World *world, int x, int y,
+                                  TerrainStabilityRunInfo *info)
 {
     int weakest = MaterialAt(WorldGetCell(world, x, y))->span;
     int longest = 0;
     int material;
     int span;
     int probe;
-    bool leftAnchored;
-    bool rightAnchored;
 
     if (!TerrainStabilityIsCeiling(world, x, y)) {
         return false;
@@ -148,30 +157,100 @@ static bool TerrainStabilityFails(const World *world, int x, int y)
             longest = MATERIALS[material].span;
         }
     }
-    span = TerrainStabilityRun(world, x, y, longest + 1, &leftAnchored,
-                               &rightAnchored);
+    span = TerrainStabilityRun(world, x, y, longest + 1, &info->leftAnchored,
+                               &info->rightAnchored);
+    info->left = 0;
+    info->right = 0;
     for (probe = 1; probe < span && TerrainStabilityIsCeiling(world, x - probe, y); ++probe) {
         int candidate = MaterialAt(WorldGetCell(world, x - probe, y))->span;
 
         if (candidate < weakest) weakest = candidate;
+        info->left = probe;
     }
     for (probe = 1; probe < span && TerrainStabilityIsCeiling(world, x + probe, y); ++probe) {
         int candidate = MaterialAt(WorldGetCell(world, x + probe, y))->span;
 
         if (candidate < weakest) weakest = candidate;
+        info->right = probe;
     }
-    if (leftAnchored && rightAnchored) {
+    info->weakest = weakest;
+    if (info->leftAnchored && info->rightAnchored) {
         return span > weakest;
     }
-    if (leftAnchored || rightAnchored) {
+    if (info->leftAnchored || info->rightAnchored) {
         return span > weakest / 2;
     }
     return true;
 }
 
+/* Cuts a crack up from the end of a failed run, where it meets its support:
+   the cells of the column become rubble, row by row, until the crack reaches
+   air or has gone `height` rows. With a crack at each supported end, the
+   roof between them is joined to the ground by nothing, and the detach check
+   that reads the destruction log turns it into a body: a slab of roof that
+   falls in one piece and cracks where it lands, which is what a cave-in
+   looks like, rather than a roof that turns into sand a cell at a time. A
+   roof thicker than the crack is cut into as far as it goes and the layers
+   above are asked in their turn, as before. The crack leans in toward the
+   run one cell every few rows, so the slab it frees is narrower at the top
+   and drops clear instead of wedging. Rubble already in the column, from an
+   earlier cut of the same crack, is passed through and not counted, and a
+   material with a longer span than the run's weakest stops the crack: it is
+   a roof of its own, and is asked in its turn. */
+#define TERRAIN_STABILITY_CRACK_LEAN_ROWS 3
+
+static int TerrainStabilityCrack(TerrainStabilitySystem *system, World *world,
+                                 int x, int y, int lean, int height, int weakest)
+{
+    int cut = 0;
+    int row;
+    int minimumX = x;
+    int maximumX = x;
+    int topY = y;
+
+    for (row = 0; row < height && y - row >= 0; ++row) {
+        int cy = y - row;
+        CellMaterial material = WorldGetCell(world, x, cy);
+
+        if (material == MATERIAL_EMPTY || !MaterialIsSolid(material)) {
+            break;
+        }
+        /* A stronger layer is a roof of its own and is asked in its turn:
+           the dirt under a shelf of rock falls, and the rock holds. */
+        if (!MaterialIsDynamic(material) && MaterialAt(material)->span > weakest) {
+            break;
+        }
+        if (!MaterialIsDynamic(material)) {
+            WorldSetCell(world, x, cy, MATERIAL_RUBBLE);
+            ++cut;
+        }
+        topY = cy;
+        if (x < minimumX) minimumX = x;
+        if (x > maximumX) maximumX = x;
+        if (row % TERRAIN_STABILITY_CRACK_LEAN_ROWS == TERRAIN_STABILITY_CRACK_LEAN_ROWS - 1) {
+            x += lean;
+        }
+    }
+    if (cut > 0) {
+        WorldRecordDestruction(world, minimumX, topY, maximumX, y);
+        ++system->stats.cracks;
+        system->stats.crackCells += cut;
+    }
+    return cut;
+}
+
+static int TerrainStabilityCrackHeight(int weakest)
+{
+    int height = weakest * 2;
+
+    return height > TERRAIN_STABILITY_CRACK_HEIGHT ? TERRAIN_STABILITY_CRACK_HEIGHT
+                                                   : height;
+}
+
 int TerrainStabilityProcess(TerrainStabilitySystem *system, World *world)
 {
     int checks = 0;
+    TerrainStabilityRunInfo run;
 
     if (system == NULL || world == NULL || world->cells == NULL) {
         return 0;
@@ -192,7 +271,7 @@ int TerrainStabilityProcess(TerrainStabilitySystem *system, World *world)
             continue;
         }
         ++system->stats.checks;
-        if (!TerrainStabilityFails(world, entry.x, entry.y)) {
+        if (!TerrainStabilityFails(world, entry.x, entry.y, &run)) {
             continue;
         }
         /* It gives way: the cell becomes rubble, which falls on its own from
@@ -205,6 +284,21 @@ int TerrainStabilityProcess(TerrainStabilitySystem *system, World *world)
         WorldRecordDestruction(world, entry.x, entry.y, entry.x, entry.y);
         ++system->stats.crumbles;
         ++system->stats.crumblesThisTick;
+        /* Where the run meets its supports, the roof is cracked off them,
+           twice the run's span high: what the ceiling row was holding up
+           comes down as a slab rather than as a layer of grains. */
+        if (run.leftAnchored) {
+            system->stats.crumblesThisTick +=
+                TerrainStabilityCrack(system, world, entry.x - run.left, entry.y,
+                                      1, TerrainStabilityCrackHeight(run.weakest),
+                                      run.weakest);
+        }
+        if (run.rightAnchored) {
+            system->stats.crumblesThisTick +=
+                TerrainStabilityCrack(system, world, entry.x + run.right, entry.y,
+                                      -1, TerrainStabilityCrackHeight(run.weakest),
+                                      run.weakest);
+        }
         TerrainStabilityQueue(system, entry.x, entry.y - 1, 3);
         TerrainStabilityQueue(system, entry.x - 1, entry.y, 0);
         TerrainStabilityQueue(system, entry.x + 1, entry.y, 0);

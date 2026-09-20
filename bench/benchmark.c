@@ -1032,15 +1032,15 @@ int main(int argc, char **argv)
             {"idle",              0,                  16, 12, false, MAX_TERRAIN_BODIES, 0},
             {"1 awake",           1,                  16, 12, false, MAX_TERRAIN_BODIES, 0},
             {"16 awake",          16,                 16, 12, false, MAX_TERRAIN_BODIES, 0},
-            {"32 awake",          MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 0},
-            {"32 sleeping",       MAX_TERRAIN_BODIES, 16, 12, true,  MAX_TERRAIN_BODIES, 0},
-            {"32 shipped budget", MAX_TERRAIN_BODIES, 16, 12, false, 0,                  0},
+            {"all awake",         MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 0},
+            {"all sleeping",      MAX_TERRAIN_BODIES, 16, 12, true,  MAX_TERRAIN_BODIES, 0},
+            {"all shipped budget",MAX_TERRAIN_BODIES, 16, 12, false, 0,                  0},
             {"cells at budget",   MAX_TERRAIN_BODIES, 64, 32, false, MAX_TERRAIN_BODIES, 0},
             {"cells asleep",      MAX_TERRAIN_BODIES, 64, 32, true,  MAX_TERRAIN_BODIES, 0},
-            /* Eight columns of eight: every body but the lowest lands on
+            /* Eight columns, every slot: every body but the lowest lands on
                another, so the pair phase carries the whole pile. */
-            {"64 pile",           MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 8},
-            {"64 pile shipped",   MAX_TERRAIN_BODIES, 16, 12, false, 0,                  8},
+            {"all pile",          MAX_TERRAIN_BODIES, 16, 12, false, MAX_TERRAIN_BODIES, 8},
+            {"all pile shipped",  MAX_TERRAIN_BODIES, 16, 12, false, 0,                  8},
         };
         size_t terrainIndex;
 
