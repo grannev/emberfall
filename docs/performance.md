@@ -991,3 +991,42 @@ warm start) описаны в `docs/dynamic-terrain.md`; здесь — цена
 `test_waking_a_body_wakes_what_rests_on_it`,
 `test_pair_collision_is_deterministic`,
 `test_ground_destroyed_under_a_sleeping_body_wakes_it`.
+
+## Замер 2026-09-20: давление и импульс в жидкости (EF-WLD-010)
+
+Модель — `docs/world-simulation.md` («Давление: сообщающиеся сосуды»,
+«Импульс»). Клетка не выросла: напор живёт в `lifetime`, очередь импульсов —
+1024 записи по 12 байт в `World`. `make bench`, 16384×2048, та же машина;
+структурные счётчики клеточных сценариев без жидкости не изменились.
+
+| Scenario | до | после | cells/tick до → после |
+|---|---:|---:|---:|
+| falling sand | 0.72 ms | 0.78 ms | 40 436 → 40 436 |
+| large water | 1.94 ms | 2.02 ms | 67 470 → 67 470 |
+| fire and lava | 0.64 ms | 0.95 ms | 32 011 → 37 415 |
+| force ability | 0.75 ms | 0.84 ms | 29 445 → 29 536 |
+| cryo ability | 1.72 ms | 1.86 ms | 67 401 → 66 918 |
+| chaotic mixed | 3.10 ms | 3.46 ms | 120 064 → 122 754 |
+
+Вода: плюс четыре процента — обновление напора у каждой клетки под
+поверхностью и проход столба у каждой поверхностной. Лава в «fire and lava»
+подорожала на половину: сценарий — блок лавы 190×60, вылитый на грунт, который
+горит под ним, и у такого блока напор перестраивается на каждом движении, а
+подъёмы (5 900 за 600 ticks) выносят лаву из глубины наверх, как и положено
+вылитой куче. Это цена сцены, где всё движется; осевшее озеро стоит ноль.
+
+Проба облёта всей карты (та же, что в EF-PERF-001, 3600 ticks покоя после
+активации всего мира): 1408 chunks сразу после облёта, 168 через 60 ticks,
+7 через 1200 — волны напора идут по озёрам со скоростью клетка за tick, —
+**0 через 2400** и 0 через 3600. Трижды по дороге мир не засыпал, и каждая
+причина — в комментариях кода: перенесённый с клеткой напор, ходьба клетки под
+породой по карману воздуха, и два правила напора, которые расходились на
+единицу у пруда с бугром.
+
+Регрессии: `test_water_finds_one_level_through_a_channel`,
+`test_draining_one_arm_lowers_the_other`,
+`test_a_pipe_fills_its_hole_from_the_side`,
+`test_a_pushed_pool_moves_and_settles_again`,
+`test_a_push_travels_through_liquid`,
+`test_fluid_impulses_are_bounded_and_refusals_counted`,
+`test_a_sleeping_pool_wakes_for_a_change_and_sleeps_again`.

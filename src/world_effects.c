@@ -465,6 +465,16 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
                    past the first few cells barely moving, which reads as a weak
                    blow however large the numbers are. */
                 push = 2 + (int)(strength * (float)reach);
+                /* Liquid is not thrown, it is pushed: the same reach, taken a
+                   cell a tick and handed on through the pool, so a blow into
+                   water moves the water for a while and the far shore feels
+                   it. Sand keeps its throw; a grain has no neighbours to hand
+                   anything to. */
+                if (MaterialIsLiquid(cell->material)) {
+                    (void)WorldPushLiquid(world, x, y, (int)roundf(direction.x),
+                                          (int)roundf(direction.y), push);
+                    continue;
+                }
                 for (; push >= 1; --push) {
                     int targetX = (int)roundf((float)x + direction.x * (float)push);
                     int targetY = (int)roundf((float)y + direction.y * (float)push);
@@ -589,6 +599,9 @@ void WorldApplyBlast(World *world, Vector2 at, int coreRadius,
     if (cut) {
         WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);
     }
+    /* The water the crater did not take is shoved outward from it, and the
+       shove travels: a blast in a lake throws a wave. */
+    (void)WorldPushLiquidRadial(world, at, reach + 6.0f, coreRadius + 4);
 }
 
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,
@@ -642,6 +655,15 @@ void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius
                 pushDistance = 2 + (int)(Clamp(strength, 0.0f, 1.0f) * 10.0f);
                 cell->effectStamp = stamp;
 
+                if (MaterialIsLiquid(cell->material)) {
+                    (void)WorldPushLiquid(world, x, y,
+                                          fabsf(directionX) * 2.0f > fabsf(directionY)
+                                              ? (directionX < 0.0f ? -1 : 1) : 0,
+                                          fabsf(directionY) * 2.0f > fabsf(directionX)
+                                              ? (directionY < 0.0f ? -1 : 1) : 0,
+                                          pushDistance);
+                    continue;
+                }
                 for (push = pushDistance; push >= 1; --push) {
                     int targetX = (int)roundf((float)x + directionX * (float)push);
                     int targetY = (int)roundf((float)y + directionY * (float)push);

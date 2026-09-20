@@ -44,10 +44,21 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   A capped source holds what it touches (`Cell.heatHeld`), so a lining rests
   exactly on the cap and its chunks sleep; never reintroduce the heat/cool
   sawtooth that kept every lava pocket awake for the whole session.
-- A surface liquid cell takes a drop, slides only over other liquid, and gives
-  up after `WORLD_LIQUID_WANDER_LIMIT` slides; a cell under pressure spreads as
-  before. A settled pool and its shoreline must go to sleep — check with
+- A surface liquid cell takes a drop, slides only over other liquid in the
+  direction it slid last, and gives up after `WORLD_LIQUID_WANDER_LIMIT`
+  slides; a cell under pressure spreads as before, and only toward lower
+  pressure. A settled pool and its shoreline must go to sleep — check with
   `activeChunkCount`, not by eye, because the motion this prevents is invisible.
+- Liquid is one cell per unit and mass is conserved by construction: motion is
+  `WorldMoveCell`, a swap, and nothing else creates or destroys a liquid cell.
+  Pressure is a head kept in the liquid's `lifetime` (`world_fluid.h`),
+  propagated from neighbours with a loss per hop — the loss is what lets a
+  stale head die, never remove it — and a column whose bottom carries more head
+  than its depth explains is lifted, taking from the foot of the surface that
+  pushes. A moved liquid cell's head is cleared: carried along, a deep cell's
+  head arriving in a shallow column reads as pressure there and every lift it
+  causes carries another. Momentum is a bounded impulse queue in `World`, not a
+  per-cell velocity; the cell must not grow for it.
 - An empty cell has no temperature: the field is ignored and reads as
   ambient. That is what lets the cell array stay unwritten above the ground,
   so never initialise it, and never `memset` it on regeneration — take a fresh
@@ -286,10 +297,10 @@ coherent phase with an explanatory message.
   alone.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
-  `world_lighting.c`, `world_effects.c`, `world_render_data.c` and
-  `world_components.c`.
-  `world_internal.h`, `world_thermal.h` and `world_lighting.h` are private to
-  those files. Hot accessors live in the internal headers as `static inline` on
+  `world_lighting.c`, `world_effects.c`, `world_render_data.c`,
+  `world_components.c` and `world_fluid.c`.
+  `world_internal.h`, `world_thermal.h`, `world_lighting.h` and `world_fluid.h`
+  are private to those files. Hot accessors live in the internal headers as `static inline` on
   purpose: splitting responsibilities must not put a cross-module call in the
   per-cell loop. Add material properties as table columns in `materials.c`, not
   as a switch elsewhere — see `docs/development/adding-a-material.md`.

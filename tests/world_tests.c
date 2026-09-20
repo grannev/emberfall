@@ -10715,6 +10715,334 @@ static void test_a_level_pool_and_its_shore_go_to_sleep(void)
     WorldUnload(&world);
 }
 
+/* --- pressure and momentum in a liquid -------------------------------- */
+
+/* The contract of world_fluid.h: liquid finds one level through a channel,
+   conserves its mass exactly through everything that happens to it, takes a
+   push and carries it, and comes to rest afterwards. */
+
+/* Two arms joined by a channel along the floor, arm A full and arm B empty.
+   Returns the first water row in the columns given, or -1. */
+static int WaterSurfaceIn(const World *world, int firstX, int lastX, int firstY,
+                          int lastY)
+{
+    int y;
+
+    for (y = firstY; y <= lastY; ++y) {
+        int x;
+
+        for (x = firstX; x <= lastX; ++x) {
+            if (WorldGetCell(world, x, y) == MATERIAL_WATER) {
+                return y;
+            }
+        }
+    }
+    return -1;
+}
+
+static void BuildUTube(World *world, int channelLength, int *armALeft,
+                       int *armBLeft)
+{
+    int a = 20;
+    int b = a + 6 + channelLength;
+
+    FillRect(world, 0, 10, world->width - 1, world->height - 1, MATERIAL_ROCK);
+    FillRect(world, a, 15, a + 5, 80, MATERIAL_EMPTY);
+    FillRect(world, b, 15, b + 5, 80, MATERIAL_EMPTY);
+    FillRect(world, a, 78, b + 5, 80, MATERIAL_EMPTY);
+    FillRect(world, a, 30, a + 5, 80, MATERIAL_WATER);
+    FillRect(world, a + 6, 78, b + 5, 80, MATERIAL_WATER);
+    *armALeft = a;
+    *armBLeft = b;
+}
+
+static void test_water_finds_one_level_through_a_channel(void)
+{
+    World world;
+    int a;
+    int b;
+    int waterBefore;
+    int surfaceA;
+    int surfaceB;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    BuildUTube(&world, 50, &a, &b);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    CHECK(WaterSurfaceIn(&world, b, b + 5, 10, 77) < 0,
+          "arm B held water before anything happened");
+
+    Tick(&world, 900);
+
+    surfaceA = WaterSurfaceIn(&world, a, a + 5, 10, 80);
+    surfaceB = WaterSurfaceIn(&world, b, b + 5, 10, 80);
+    CHECK(surfaceB > 0 && surfaceB < 70,
+          "water never rose in the empty arm: its surface is at row %d",
+          surfaceB);
+    /* Within the lift's own hysteresis plus what fifty cells of channel cost
+       in head. */
+    CHECK(abs(surfaceA - surfaceB) <= 4,
+          "the arms settled at rows %d and %d", surfaceA, surfaceB);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    CHECK(world.activeChunkCount == 0,
+          "a settled U-tube kept %d chunks awake", world.activeChunkCount);
+    CHECK(world.fluid.lifts == 0, "a settled U-tube still lifted %d cells",
+          world.fluid.lifts);
+    WorldUnload(&world);
+}
+
+/* Draining the higher arm must not leave the other one rising: the head
+   that pushed it is gone, and after the transient the arms agree again. */
+static void test_draining_one_arm_lowers_the_other(void)
+{
+    World world;
+    int a;
+    int b;
+    int surfaceB;
+    int waterBefore;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    BuildUTube(&world, 30, &a, &b);
+    Tick(&world, 900);
+    surfaceB = WaterSurfaceIn(&world, b, b + 5, 10, 80);
+    CHECK(surfaceB > 0 && surfaceB < 70, "the arms never equalised");
+
+    /* A drain at the foot of arm A. */
+    FillRect(&world, a, 81, a + 5, 95, MATERIAL_EMPTY);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    Tick(&world, 600);
+    CHECK(WaterSurfaceIn(&world, b, b + 5, 10, 80) > surfaceB + 5,
+          "arm B stayed at row %d after arm A was drained",
+          WaterSurfaceIn(&world, b, b + 5, 10, 80));
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+}
+
+/* A hole in a pipe under rock is filled from the side, because nothing can
+   fall into it from above, and from the side that stands under more head:
+   the hole walks to the column that feeds the pipe and the column drops.
+   Without that a channel could never carry water from one arm to the
+   other. */
+static void test_a_pipe_fills_its_hole_from_the_side(void)
+{
+    World world;
+    int waterBefore;
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    FillRect(&world, 0, 4, 63, 63, MATERIAL_ROCK);
+    /* A column at the left end feeding a pipe along row 30. */
+    FillRect(&world, 4, 6, 5, 30, MATERIAL_WATER);
+    FillRect(&world, 6, 30, 59, 30, MATERIAL_WATER);
+    WorldSetCell(&world, 40, 30, MATERIAL_EMPTY);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    Tick(&world, 120);
+    CHECK(WorldGetCell(&world, 40, 30) == MATERIAL_WATER,
+          "the hole in the pipe was never filled");
+    CHECK(WorldGetCell(&world, 4, 6) == MATERIAL_EMPTY ||
+              WorldGetCell(&world, 5, 6) == MATERIAL_EMPTY,
+          "the column feeding the pipe did not drop");
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+}
+
+static void test_a_pushed_pool_moves_and_settles_again(void)
+{
+    World world;
+    const int floorY = 100;
+    int waterBefore;
+    int pushed;
+    int lifted = 0;
+    int x;
+    int surfaceLow = 0;
+    int surfaceHigh = 1 << 30;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    FillRect(&world, 0, floorY, 159, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 0, 9, floorY - 1, MATERIAL_ROCK);
+    FillRect(&world, 150, 0, 159, floorY - 1, MATERIAL_ROCK);
+    FillRect(&world, 10, floorY - 20, 149, floorY - 1, MATERIAL_WATER);
+    Tick(&world, 300);
+    CHECK(world.activeChunkCount == 0, "the pool never settled");
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+
+    pushed = WorldPushLiquidRadial(&world, (Vector2){80.0f, (float)floorY - 17.0f},
+                                   10.0f, 8);
+    CHECK(pushed > 20, "a push into the middle of a pool reached %d cells",
+          pushed);
+    CHECK(world.fluid.impulsesActive == pushed,
+          "%d impulses were queued for %d pushed cells",
+          world.fluid.impulsesActive, pushed);
+    Tick(&world, 12);
+    /* Something rose: cells above the old surface. */
+    for (x = 60; x < 100; ++x) {
+        int y;
+
+        for (y = 0; y < floorY - 20; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                ++lifted;
+            }
+        }
+    }
+    CHECK(lifted > 0, "a push from below the surface threw nothing up");
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+
+    Tick(&world, 900);
+    CHECK(world.fluid.impulsesActive == 0, "%d impulses never expired",
+          world.fluid.impulsesActive);
+    CHECK(world.activeChunkCount == 0,
+          "a pushed pool kept %d chunks awake", world.activeChunkCount);
+    for (x = 10; x < 150; ++x) {
+        int y;
+
+        for (y = 0; y < floorY; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                if (y > surfaceLow) surfaceLow = y;
+                if (y < surfaceHigh) surfaceHigh = y;
+                break;
+            }
+        }
+    }
+    CHECK(surfaceLow - surfaceHigh <= 2,
+          "the surface runs from row %d to row %d after the push", surfaceHigh,
+          surfaceLow);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+}
+
+/* A push travels: an impulse that meets liquid hands itself on, so a push at
+   one end of a pipe of water arrives at the other end, and a push that meets
+   rock turns — up, for a blow along a floor — so it throws the water at the
+   end of the pipe up a shaft that nothing else could lift it into. */
+static void test_a_push_travels_through_liquid(void)
+{
+    World world;
+    int waterBefore;
+    int risen = 0;
+    int y;
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    FillRect(&world, 0, 20, 63, 63, MATERIAL_ROCK);
+    /* A full pipe, closed at the far end, with a shaft rising from it. */
+    FillRect(&world, 4, 30, 40, 30, MATERIAL_WATER);
+    FillRect(&world, 40, 24, 40, 29, MATERIAL_EMPTY);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    Tick(&world, 30);
+    CHECK(WaterSurfaceIn(&world, 40, 40, 24, 29) < 0,
+          "water climbed the shaft without being pushed");
+    CHECK(WorldPushLiquid(&world, 4, 30, 1, 0, 80), "the push was refused");
+    /* Watched tick by tick: the lifted cell falls back into the pipe once
+       the hole it left has walked under it, and what is being tested is that
+       it went up at all. */
+    for (y = 0; y < 60; ++y) {
+        int inShaft = 0;
+        int row;
+
+        Tick(&world, 1);
+        for (row = 24; row <= 29; ++row) {
+            if (WorldGetCell(&world, 40, row) == MATERIAL_WATER) {
+                ++inShaft;
+            }
+        }
+        if (inShaft > risen) {
+            risen = inShaft;
+        }
+    }
+    CHECK(risen > 0, "the push never reached the far end of the pipe");
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    CHECK(world.fluid.impulsesActive == 0, "the impulse never expired");
+    WorldUnload(&world);
+}
+
+static void test_fluid_impulses_are_bounded_and_refusals_counted(void)
+{
+    World world;
+    int accepted = 0;
+    int i;
+
+    CHECK(WorldInit(&world, 64, 64), "world allocation failed");
+    FillRect(&world, 0, 40, 63, 63, MATERIAL_ROCK);
+    FillRect(&world, 0, 30, 63, 39, MATERIAL_WATER);
+    for (i = 0; i < MAX_WORLD_FLUID_IMPULSES + 50; ++i) {
+        if (WorldPushLiquid(&world, 10 + i % 40, 35, 1, 0, 3)) {
+            ++accepted;
+        }
+    }
+    CHECK(accepted == MAX_WORLD_FLUID_IMPULSES,
+          "%d impulses were accepted against a capacity of %d", accepted,
+          MAX_WORLD_FLUID_IMPULSES);
+    CHECK(world.fluid.impulsesRefused == 50,
+          "%d refusals were counted, expected 50", world.fluid.impulsesRefused);
+    CHECK(!WorldPushLiquid(&world, 10, 45, 1, 0, 3),
+          "a push into rock was accepted");
+    CHECK(!WorldPushLiquid(&world, 10, 35, 0, 0, 3),
+          "a push with no direction was accepted");
+    Tick(&world, 10);
+    CHECK(world.fluid.impulsesActive == 0, "%d impulses outlived their strength",
+          world.fluid.impulsesActive);
+    WorldUnload(&world);
+}
+
+/* The one that matters for the whole design: a sleeping pool that is fed at
+   one end wakes only as the change reaches it, levels, and sleeps again. */
+static void test_a_sleeping_pool_wakes_for_a_change_and_sleeps_again(void)
+{
+    World world;
+    const int floorY = 100;
+    int waterBefore;
+    int surfaceLow = 0;
+    int surfaceHigh = 1 << 30;
+    int x;
+
+    CHECK(WorldInit(&world, 256, 128), "world allocation failed");
+    FillRect(&world, 0, floorY, 255, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 0, 9, floorY - 1, MATERIAL_ROCK);
+    FillRect(&world, 246, 0, 255, floorY - 1, MATERIAL_ROCK);
+    FillRect(&world, 10, floorY - 12, 245, floorY - 1, MATERIAL_WATER);
+    Tick(&world, 300);
+    CHECK(world.activeChunkCount == 0, "the pool never settled");
+
+    /* A column of water dropped in at the left end. */
+    FillRect(&world, 12, floorY - 60, 17, floorY - 13, MATERIAL_WATER);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    Tick(&world, 1);
+    CHECK(world.activeChunkCount > 0, "the poured water woke nothing");
+    CHECK(world.activeChunkCount < world.chunkColumns * world.chunkRows / 2,
+          "one column of water woke %d chunks of %d", world.activeChunkCount,
+          world.chunkColumns * world.chunkRows);
+
+    Tick(&world, 1500);
+    CHECK(world.activeChunkCount == 0,
+          "the fed pool kept %d chunks awake", world.activeChunkCount);
+    for (x = 10; x < 246; ++x) {
+        int y;
+
+        for (y = 0; y < floorY; ++y) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) {
+                if (y > surfaceLow) surfaceLow = y;
+                if (y < surfaceHigh) surfaceHigh = y;
+                break;
+            }
+        }
+    }
+    CHECK(surfaceLow - surfaceHigh <= 2,
+          "the surface runs from row %d to row %d", surfaceHigh, surfaceLow);
+    CHECK(CountMaterial(&world, MATERIAL_WATER) == waterBefore,
+          "water count changed from %d to %d", waterBefore,
+          CountMaterial(&world, MATERIAL_WATER));
+    WorldUnload(&world);
+}
+
 static void test_lava_still_ignites_dirt_it_touches(void)
 {
     World world;
@@ -11971,6 +12299,13 @@ int main(void)
     RUN(test_a_lava_pocket_cannot_consume_its_rock_lining);
     RUN(test_a_settled_lava_pocket_lets_its_chunks_sleep);
     RUN(test_a_level_pool_and_its_shore_go_to_sleep);
+    RUN(test_water_finds_one_level_through_a_channel);
+    RUN(test_draining_one_arm_lowers_the_other);
+    RUN(test_a_pipe_fills_its_hole_from_the_side);
+    RUN(test_a_pushed_pool_moves_and_settles_again);
+    RUN(test_a_push_travels_through_liquid);
+    RUN(test_fluid_impulses_are_bounded_and_refusals_counted);
+    RUN(test_a_sleeping_pool_wakes_for_a_change_and_sleeps_again);
     RUN(test_lava_still_ignites_dirt_it_touches);
     RUN(test_settled_cells_sleep_but_wake_when_disturbed);
     RUN(test_drill_removes_solids_and_leaves_liquids);

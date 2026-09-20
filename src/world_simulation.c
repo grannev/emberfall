@@ -11,6 +11,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "world_fluid.h"
 #include "world_thermal.h"
 
 void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
@@ -29,6 +30,18 @@ void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY)
     *to = moving;
     to->updatedTick = WorldTickStamp(world);
     from->updatedTick = WorldTickStamp(world);
+    /* A liquid's head was measured where it stood and means nothing where
+       it has gone; carried along, a deep cell's head arriving in a shallow
+       column reads as pressure there, its neighbours take it up, and every
+       lift it causes carries another. Zero is the least any neighbour can be
+       offered, and the cell's next update recomputes it. Either end of the
+       swap may be the liquid. */
+    if (MaterialIsLiquid((CellMaterial)to->material)) {
+        WorldLiquidSetHead(to, 0u);
+    }
+    if (MaterialIsLiquid((CellMaterial)from->material)) {
+        WorldLiquidSetHead(from, 0u);
+    }
     WorldWakeCellAndNeighbors(world, fromX, fromY);
     WorldWakeCellAndNeighbors(world, toX, toY);
 }
@@ -75,7 +88,7 @@ static void WorldUpdateSand(World *world, int x, int y, int direction)
    and a cell that skipped a gap would drain a pool from its middle instead of
    from its edge.
 
-   A surface cell — one with no liquid above it — is different. It always takes
+   A surface cell — one with nothing above it — is different. It always takes
    a drop, and it may slide along the top of other liquid a bounded number of
    times, which is how a grain left standing proud of a surface wanders until
    it finds somewhere lower to fall; that wander is what takes the last cell of
@@ -86,12 +99,16 @@ static void WorldUpdateSand(World *world, int x, int y, int direction)
    grain across the pool until the world was unloaded. Each kept its chunks
    awake for as long as the world existed. A cell with liquid on top of it is
    under pressure and spreads as before: that is what flattens a poured column
-   and fills a tub.
+   and fills a tub. A cell with rock on top of it is under pressure too — it is
+   the water in a pipe, and a pipe with a hole in it fills the hole from the
+   side, since nothing can fall into it from above.
 
-   The wander budget lives in `lifetime`, which liquids never use as an age: a
-   wander counts, anything that is progress — a drop, a fall, a pressed spread —
-   resets it, and the counter travels with the cell because WorldMoveCell swaps
-   whole cells. */
+   The wander budget lives in the low bits of `lifetime`, beside the head the
+   pressure model keeps there: a wander counts, anything that is progress — a
+   drop, a fall, a spread under liquid — resets it, and the counter travels with
+   the cell because WorldMoveCell swaps whole cells. A spread under rock does
+   not reset it, or a cell could leave a ceiling, wander back under it and
+   leave again for ever. */
 static bool WorldFlowSideways(World *world, int x, int y, int direction,
                               int reach, bool pressed)
 {
@@ -116,16 +133,47 @@ static bool WorldFlowSideways(World *world, int x, int y, int direction,
         return false;
     }
     if (drop || pressed) {
-        cell->lifetime = 0;
+        /* Pressed liquid flows toward lower pressure and nowhere else. The
+           liquid on the far side of the empty stretch, if there is any, says
+           which way that is: a hole between two cells goes to the one under
+           more head, so a hole walks to the higher surface and the liquid,
+           net, flows away from it; and a cell pressed from both ends of a
+           pocket stays put instead of sweeping to one end and back for ever. */
+        if (pressed && !drop &&
+            !WorldFluidMayFlowToward(world, x, y, direction, furthest)) {
+            return false;
+        }
+        if (drop || MaterialIsLiquid(WorldMaterialAt(world, x, y - 1))) {
+            WorldLiquidSetWander(cell, 0u, direction);
+        }
     } else {
-        if (cell->lifetime >= WORLD_LIQUID_WANDER_LIMIT ||
-            !MaterialIsLiquid(WorldMaterialAt(world, x + direction * furthest,
+        if (!MaterialIsLiquid(WorldMaterialAt(world, x + direction * furthest,
                                               y + 1))) {
             return false;
         }
-        ++cell->lifetime;
+        if (WorldLiquidWander(cell) >= WORLD_LIQUID_WANDER_LIMIT) {
+            return false;
+        }
+        WorldLiquidSetWander(cell, WorldLiquidWander(cell) + 1u, direction);
     }
-    return WorldTryMoveInto(world, x, y, x + direction * furthest, y, false);
+    {
+        uint32_t head = WorldLiquidHead(cell);
+
+        if (!WorldTryMoveInto(world, x, y, x + direction * furthest, y, false)) {
+            return false;
+        }
+        /* The move cleared the cell's head, as every move does. A cell that
+           stepped one cell into a hole in the liquid gets it back, less what
+           one cell costs: a hole walking down a channel toward the surface
+           that pushes it must not cut the head behind it, or every lift would
+           wait for the pressure to cross the channel again. */
+        if (furthest == 1 && pressed) {
+            WorldLiquidSetHead(WorldCell(world, x + direction, y),
+                               head > WORLD_LIQUID_HEAD_LOSS
+                                   ? head - WORLD_LIQUID_HEAD_LOSS : 0u);
+        }
+    }
+    return true;
 }
 
 static bool WorldLiquidFalls(World *world, int x, int y, int direction)
@@ -138,7 +186,8 @@ static bool WorldLiquidFalls(World *world, int x, int y, int direction)
 
         if (WorldTryMoveInto(world, x, y, targetX, y + 1, false)) {
             /* Falling is progress: the cell may wander again from wherever it
-               lands. It has moved, so it is addressed at its new home. */
+               lands, and whatever head it had was measured somewhere else. It
+               has moved, so it is addressed at its new home. */
             WorldCell(world, targetX, y + 1)->lifetime = 0;
             return true;
         }
@@ -149,8 +198,6 @@ static bool WorldLiquidFalls(World *world, int x, int y, int direction)
 static void WorldUpdateLiquid(World *world, int x, int y, int direction,
                               int reach, bool viscous)
 {
-    bool pressed;
-
     if (viscous && ((world->tick + (uint32_t)x + (uint32_t)y) % 3u != 0u)) {
         return;
     }
@@ -158,11 +205,53 @@ static void WorldUpdateLiquid(World *world, int x, int y, int direction,
     if (WorldLiquidFalls(world, x, y, direction)) {
         return;
     }
-    pressed = MaterialIsLiquid(WorldMaterialAt(world, x, y - 1));
-    if (WorldFlowSideways(world, x, y, direction, reach, pressed)) {
+    /* Pressure. A surface cell refreshes the column under it and may lift
+       its bottom; a cell with liquid or rock over it carries its head on from
+       its neighbours. Either way the head a neighbour reads from this cell is
+       at most a tick old. */
+    if (WorldLiquidIsSurface(world, x, y)) {
+        if (WorldFluidSurfaceStep(world, x, y)) {
+            return;
+        }
+        /* The way it went last time, and the other way only when that is
+           blocked. A grain that chose afresh every tick walked a pool at
+           random and spent its budget going nowhere; one that keeps going
+           reaches the far end of the pool, or the grain that got there
+           before it, and stops there — which is how the surplus poured in at
+           one end becomes a new layer laid down from the other. */
+        int last = WorldLiquidWanderDirection(WorldCell(world, x, y));
+
+        if (WorldFlowSideways(world, x, y, last, WORLD_LIQUID_WANDER_REACH,
+                              false)) {
+            return;
+        }
+        (void)WorldFlowSideways(world, x, y, -last, WORLD_LIQUID_WANDER_REACH,
+                                false);
         return;
     }
-    (void)WorldFlowSideways(world, x, y, -direction, reach, pressed);
+    /* A cell with rock over it is pressed only when something presses it:
+       a head of at least half a cell arriving from liquid that stands higher
+       somewhere. With less it is water lying in a pipe, and water lying in a
+       pipe beside a pocket of air lies still — run as a pressed cell, it
+       swept to the far end of the pocket and back every tick for ever. Read
+       from the update, not from the stored value, so the head is this
+       tick's. */
+    if (WorldFluidUpdateHead(world, x, y) < WORLD_LIQUID_HEAD_PER_CELL / 2u &&
+        !MaterialIsLiquid(WorldMaterialAt(world, x, y - 1))) {
+        int last = WorldLiquidWanderDirection(WorldCell(world, x, y));
+
+        if (WorldFlowSideways(world, x, y, last, WORLD_LIQUID_WANDER_REACH,
+                              false)) {
+            return;
+        }
+        (void)WorldFlowSideways(world, x, y, -last, WORLD_LIQUID_WANDER_REACH,
+                                false);
+        return;
+    }
+    if (WorldFlowSideways(world, x, y, direction, reach, true)) {
+        return;
+    }
+    (void)WorldFlowSideways(world, x, y, -direction, reach, true);
 }
 
 static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool slow)
@@ -329,6 +418,8 @@ void WorldUpdate(World *world)
 
     world->lastTickStats = (WorldTickStats){0};
     world->reactionCount = 0;
+    world->fluid.lifts = 0;
+    world->fluid.headChanges = 0;
     ++world->tick;
     /* Cells hold the low sixteen bits of this counter, and an unwritten cell
        holds zero, so the truncated value must never be zero — otherwise every
@@ -340,6 +431,9 @@ void WorldUpdate(World *world)
     /* From here to the swap, `activeChunks` is the frozen schedule and every
        wake lands in `nextActiveChunks` instead. */
     world->simulating = true;
+    /* Pushed liquid moves before the traversal, so a cell an impulse carried
+       is stamped and does not also flow this tick. */
+    WorldFluidStepImpulses(world);
 
     for (chunkY = world->chunkRows - 1; chunkY >= 0; --chunkY) {
         int minimumY = chunkY * WORLD_CHUNK_SIZE;

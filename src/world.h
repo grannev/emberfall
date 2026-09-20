@@ -148,6 +148,39 @@ typedef struct LaserResult {
     bool hit;
 } LaserResult;
 
+/* ---- momentum in a liquid ----------------------------------------------
+ *
+ * A liquid cell has no velocity of its own — the cell did not grow to hold
+ * one, and fourteen million of them would have paid for a field a few hundred
+ * ever use. What it can have is an impulse: an entry in this bounded queue
+ * that pushes the cell one step along a direction every tick for a number of
+ * ticks, moves with it, and hands itself to the liquid it runs into. A blast
+ * or a diving body moves water for a while instead of teleporting it once,
+ * and when the queue is empty the liquid costs what it always did.
+ *
+ * Fixed capacity, counted refusals. Entries advance in queue order and the
+ * order is a function of the state alone, so a replay is a replay. */
+#define MAX_WORLD_FLUID_IMPULSES 1024
+
+typedef struct WorldFluidImpulse {
+    int32_t x;
+    int32_t y;
+    int8_t directionX;
+    int8_t directionY;
+    /* Steps left. */
+    uint8_t strength;
+} WorldFluidImpulse;
+
+typedef struct WorldFluidStats {
+    /* Live entries, and refusals since the last WorldInit. */
+    int impulsesActive;
+    int impulsesRefused;
+    /* Refreshed by every tick. */
+    int impulseMoves;
+    int lifts;
+    int headChanges;
+} WorldFluidStats;
+
 /* Work performed by the most recent fixed simulation tick. These counters are
    deliberately structural rather than time-based: they stay meaningful across
    machines and make performance regressions testable without flaky deadlines. */
@@ -179,6 +212,8 @@ typedef struct World {
     WorldDestructionRegion destruction[MAX_WORLD_DESTRUCTION_REGIONS];
     int destructionCount;
     int destructionDropped;
+    WorldFluidImpulse fluidImpulses[MAX_WORLD_FLUID_IMPULSES];
+    WorldFluidStats fluid;
     int chunkColumns;
     int chunkRows;
     int activeChunkCount;
@@ -433,6 +468,18 @@ void WorldRecordDestruction(World *world, int minimumX, int minimumY,
    nothing clears them implicitly, so a tick that never runs a detach check does
    not silently discard what it was told. */
 void WorldClearDestruction(World *world);
+
+/* Gives the liquid cell at (x, y) an impulse: `strength` steps of one cell
+   along (directionX, directionY), each component -1, 0 or 1. Returns false
+   and counts a refusal when the cell is not liquid, the direction is zero, or
+   the queue is full. The same cell may hold several. */
+bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
+                     int strength);
+/* Pushes every liquid cell within `radius` of `centre` away from it, with
+   `strength` steps at the centre falling to one at the edge. What a blast, a
+   splash or a body entering the water does to it. Bounded by the circle. */
+int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
+                          int strength);
 
 void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
                         float rockToLavaChance);

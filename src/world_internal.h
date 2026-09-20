@@ -43,11 +43,14 @@
  * keeps a short run on purpose — it is supposed to crawl. */
 #define WORLD_WATER_DISPERSION 16
 #define WORLD_LAVA_DISPERSION 2
-/* How many ticks in a row a surface liquid cell may wander along the top of a
-   pool without finding anywhere to fall before it lies still. Long enough to
-   carry a grain the length of a large pond in either direction; short enough
-   that a grain with nowhere to go stops costing its chunks within a second. */
-#define WORLD_LIQUID_WANDER_LIMIT 60u
+/* How many times a surface liquid cell may slide along the top of a pool
+   without finding anywhere to fall before it lies still. Each slide is a run
+   of up to WORLD_LIQUID_WANDER_REACH cells in the direction of the last one,
+   so fifteen carry a grain the length of the widest pool the generator makes;
+   and a grain with nowhere to go stops costing its chunks within a moment.
+   Fifteen because the counter shares `lifetime` with the pressure head and
+   the direction of the last slide (world_fluid.h). */
+#define WORLD_LIQUID_WANDER_LIMIT 15u
 
 static inline bool WorldInBounds(const World *world, int x, int y)
 {

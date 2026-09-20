@@ -213,7 +213,22 @@ void WorldApplyForceBlast(World *world, Vector2 origin, Vector2 direction,
 `WorldApplyForceBlast` — один удар: отбрасывает динамические cells вдоль конуса и
 скалывает тонкий слой с открытой грани твёрдых. `spreadCosine` — косинус
 половинного угла, `reach` — насколько далеко отбрасываются ближайшие cells. Удар
-загорожен рельефом и не достаёт из-за препятствия.
+загорожен рельефом и не достаёт из-за препятствия. Жидкость не отбрасывается,
+а толкается — тот же `reach`, но по клетке за tick через очередь импульсов.
+
+```c
+bool WorldPushLiquid(World *world, int x, int y, int directionX, int directionY,
+                     int strength);
+int WorldPushLiquidRadial(World *world, Vector2 centre, float radius,
+                          int strength);
+```
+
+Импульс жидкости: клетка в `(x, y)` идёт `strength` шагов по клетке вдоль
+направления (компоненты −1, 0, 1), импульс идёт с ней и передаётся жидкости,
+которую встречает. `false` и счётчик отказов, когда клетка не жидкость,
+направление нулевое или очередь `MAX_WORLD_FLUID_IMPULSES` полна. Радиальный
+вариант толкает всё жидкое в круге от центра, `strength` в центре и один шаг у
+края. Счётчики — `World.fluid`. Модель — [world-simulation.md](world-simulation.md).
 
 `WorldApplyLaser` возвращает:
 

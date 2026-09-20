@@ -112,6 +112,7 @@ update. При переполнении новые события отбрасы
 | `material_render.c/.h` | Общая CPU-конверсия material/temperature в scene+emissive pixels; static world и detached bodies не имеют двух расходящихся palette paths. |
 | `world_render_data.c` | World-specific dirty traversal и light sampling; делегирует palette conversion в `material_render` и отдаёт renderer готовые прямоугольники pixels. |
 | `world_components.c/.h` | Bounded-поиск связных solid components: отвечает, отделён ли кусок породы от земли. Мир только читает; вызывается из `terrain_detach.c` после разрушения. |
+| `world_fluid.c/.h` | Давление и импульс в жидкости: напор в `lifetime`, подъём столба под напором, очередь импульсов. Приватен модулю мира; вход снаружи — `WorldPushLiquid`. |
 
 `world_internal.h` держит горячие accessors (`WorldCell`, `WorldMaterialAt`,
 `CoordinateHash`) как `static inline`. Разделение файлов не должно вставлять
