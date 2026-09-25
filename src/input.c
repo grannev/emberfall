@@ -90,8 +90,10 @@ AppInput InputPoll(const World *world, Camera2D camera)
     Vector2 point = GetScreenToWorld2D(GetMousePosition(), camera);
     int index;
 
+    /* Rows are clamped to the world; columns are left where the camera put
+       them, unwrapped like the character they are aimed from. */
     if (world != NULL && world->width > 0 && world->height > 0) {
-        point.x = Clamp(floorf(point.x), 0.0f, (float)(world->width - 1));
+        point.x = floorf(point.x);
         point.y = Clamp(floorf(point.y), 0.0f, (float)(world->height - 1));
     }
     input.cursorCell = point;

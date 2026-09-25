@@ -730,8 +730,9 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
         }
     }
 
-    player->position.x = Clamp(player->position.x, player->radius,
-                               (float)world->width - player->radius);
+    /* Only held in vertically: the world wraps across, and the game moves
+       the character back into the map a whole width at a time when it
+       crosses the seam (GameUpdate), with everything around it. */
     player->position.y = Clamp(player->position.y, player->radius,
                                (float)world->height - player->radius);
 

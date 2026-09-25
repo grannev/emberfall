@@ -108,6 +108,9 @@ typedef struct EnvironmentRenderer {
        noon at a quarter, sunset at a half, midnight at three quarters. What
        puts the sun and the moon where they are. */
     float dayPhase;
+    /* The camera's travel round the planet beyond its position, so the
+       parallax does not jump when the view is moved back over the seam. */
+    float travel;
     /* How much of the backdrop is there to see, 0..1. One at ground level,
        zero once the camera has climbed out of the air. */
     float altitude;
@@ -126,6 +129,7 @@ bool EnvironmentRendererSetPalette(EnvironmentRenderer *renderer,
                                    EnvironmentPalette palette);
 void EnvironmentRendererUpdate(EnvironmentRenderer *renderer, float deltaTime);
 void EnvironmentRendererSetDayPhase(EnvironmentRenderer *renderer, float dayPhase);
+void EnvironmentRendererSetTravel(EnvironmentRenderer *renderer, float travel);
 /* Starts a crossing to `palette`, or does nothing if that is already where the
    backdrop is heading. A crossing already under way is restarted from where it
    has got to, so crossing a boundary back and forth never snaps. */

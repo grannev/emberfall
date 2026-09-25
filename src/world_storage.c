@@ -70,11 +70,18 @@ void WorldWakeCellAndNeighbors(World *world, int x, int y)
        an adjacent chunk only when it sits against that chunk's border. Waking a
        full 3x3 block from the middle of a chunk marked nine chunks - over nine
        thousand cells - for a change that could not leave one of them. */
+    /* The world wraps: the chunk left of the first column is the last one,
+       and the last column borders the first chunk even when the width is
+       not a whole number of chunks. */
+    x = WorldWrapX(world, x);
     centerChunkX = x / WORLD_CHUNK_SIZE;
     centerChunkY = y / WORLD_CHUNK_SIZE;
     minimumChunkX = centerChunkX - (x % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
     maximumChunkX = centerChunkX +
-                    (x % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
+                    (x % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ||
+                             x == world->width - 1
+                         ? 1
+                         : 0);
     minimumChunkY = centerChunkY - (y % WORLD_CHUNK_SIZE == 0 ? 1 : 0);
     maximumChunkY = centerChunkY +
                     (y % WORLD_CHUNK_SIZE == WORLD_CHUNK_SIZE - 1 ? 1 : 0);
@@ -82,14 +89,14 @@ void WorldWakeCellAndNeighbors(World *world, int x, int y)
         int chunkX;
 
         for (chunkX = minimumChunkX; chunkX <= maximumChunkX; ++chunkX) {
+            int wrappedX = WorldWrapColumn(chunkX, world->chunkColumns);
             size_t index;
 
-            if (chunkX < 0 || chunkX >= world->chunkColumns ||
-                chunkY < 0 || chunkY >= world->chunkRows) {
+            if (chunkY < 0 || chunkY >= world->chunkRows) {
                 continue;
             }
-            index = (size_t)chunkY * (size_t)world->chunkColumns + (size_t)chunkX;
-            WorldScheduleChunk(world, chunkX, chunkY);
+            index = (size_t)chunkY * (size_t)world->chunkColumns + (size_t)wrappedX;
+            WorldScheduleChunk(world, wrappedX, chunkY);
             if (world->dirtyChunks != NULL) {
                 world->dirtyChunks[index] = 1u;
                 world->lightDirtyChunks[index] = 1u;
@@ -155,7 +162,7 @@ void WorldSetShade(World *world, int x, int y, uint8_t shade)
     /* Only what the cell looks like changed: the page has to be rebuilt, and
        nothing has to be simulated. */
     if (world->dirtyChunks != NULL) {
-        world->dirtyChunks[WorldChunkIndex(world, x / WORLD_CHUNK_SIZE,
+        world->dirtyChunks[WorldChunkIndex(world, WorldWrapX(world, x) / WORLD_CHUNK_SIZE,
                                            y / WORLD_CHUNK_SIZE)] = 1u;
     }
 }
@@ -280,6 +287,7 @@ void WorldUnload(World *world)
     free(world->lightEmission);
     free(world->lightOpacity);
     free(world->lightScratch);
+    free(world->lightWindow);
     memset(world, 0, sizeof(*world));
 }
 
@@ -313,18 +321,23 @@ void WorldActivateRegion(World *world, Rectangle region)
     firstChunkY = (int)floorf(region.y / (float)WORLD_CHUNK_SIZE);
     lastChunkY = (int)floorf((region.y + region.height - 0.001f) /
                             (float)WORLD_CHUNK_SIZE);
-    if (firstChunkX < 0) firstChunkX = 0;
+    /* Columns wrap and may run past either end; a region wider than the
+       world is the whole world, once. */
+    if (lastChunkX - firstChunkX + 1 > world->chunkColumns) {
+        firstChunkX = 0;
+        lastChunkX = world->chunkColumns - 1;
+    }
     if (firstChunkY < 0) firstChunkY = 0;
-    if (lastChunkX >= world->chunkColumns) lastChunkX = world->chunkColumns - 1;
     if (lastChunkY >= world->chunkRows) lastChunkY = world->chunkRows - 1;
     if (firstChunkX > lastChunkX || firstChunkY > lastChunkY) {
         return;
     }
 
     for (chunkY = firstChunkY; chunkY <= lastChunkY; ++chunkY) {
-        int chunkX;
+        int unwrappedX;
 
-        for (chunkX = firstChunkX; chunkX <= lastChunkX; ++chunkX) {
+        for (unwrappedX = firstChunkX; unwrappedX <= lastChunkX; ++unwrappedX) {
+            int chunkX = WorldWrapColumn(unwrappedX, world->chunkColumns);
             size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
                                 (size_t)chunkX;
             int minimumX;
@@ -510,12 +523,15 @@ void WorldRecordDestruction(World *world, int minimumX, int minimumY,
         maximumY < minimumY) {
         return;
     }
-    /* Clipped to the world here rather than at every call site. Everything past
-       the edge reads as immovable rock, so a region reaching outside describes
-       damage that cannot exist. */
-    region.minimumX = minimumX < 0 ? 0 : minimumX;
+    /* Clipped to the world's rows here rather than at every call site: above
+       and below the world reads as immovable rock, so a region reaching
+       there describes damage that cannot exist. Columns are not clipped —
+       the world wraps, and a region is kept in the coordinates it was cut
+       in, which is the space around the player that every consumer of the
+       log works in. */
+    region.minimumX = minimumX;
     region.minimumY = minimumY < 0 ? 0 : minimumY;
-    region.maximumX = maximumX > world->width - 1 ? world->width - 1 : maximumX;
+    region.maximumX = maximumX;
     region.maximumY = maximumY > world->height - 1 ? world->height - 1 : maximumY;
     if (region.minimumX > region.maximumX || region.minimumY > region.maximumY) {
         return;

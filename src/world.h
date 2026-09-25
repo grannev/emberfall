@@ -352,6 +352,12 @@ typedef struct World {
     struct {
         int skippedRows;
     } lightStats;
+    /* Planes for a solve window that crosses the seam where the world wraps:
+       emission, opacity, sky and ember, each window-wide, grown to the widest
+       window ever solved and kept. NULL until the camera first looks across
+       the seam. */
+    float *lightWindow;
+    size_t lightWindowCapacity;
 } World;
 
 bool WorldInit(World *world, int width, int height);

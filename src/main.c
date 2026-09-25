@@ -101,16 +101,12 @@ static const char *PlayerBoostLabel(const Player *player, float speed)
     return speed >= player->sonicSpeed ? "MACH" : "BOOST";
 }
 
+/* Held inside the world's rows only: across, the world wraps and the camera
+   follows the character over the seam like over any other column. */
 static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 {
-    float halfWidth = (float)GetScreenWidth() / (2.0f * zoom);
     float halfHeight = (float)GetScreenHeight() / (2.0f * zoom);
 
-    if (halfWidth * 2.0f >= (float)world->width) {
-        target.x = (float)world->width * 0.5f;
-    } else {
-        target.x = Clamp(target.x, halfWidth, (float)world->width - halfWidth);
-    }
     if (halfHeight * 2.0f >= (float)world->height) {
         target.y = (float)world->height * 0.5f;
     } else {
@@ -580,6 +576,16 @@ int main(int argc, char **argv)
             }
 
             GameUpdate(&game, &input.game, deltaTime, &events);
+            /* The character crossed the seam and was moved back into the
+               map a whole width; the camera, the aim and every effect on
+               screen go with it, so the frame does not move at all. */
+            if (game.wrapShift != 0.0f) {
+                cameraFocus.x += game.wrapShift;
+                stableCamera.target.x += game.wrapShift;
+                lastPlayerPosition.x += game.wrapShift;
+                aimPosition.x += game.wrapShift;
+                RendererShiftPresentation(&renderer, game.wrapShift);
+            }
             if (input.game.regeneratePressed) {
                 cameraFocus = game.player.position;
                 menu.worldSeed = game.worldSeed;

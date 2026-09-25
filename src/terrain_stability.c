@@ -69,7 +69,7 @@ void TerrainStabilityNoteDestruction(TerrainStabilitySystem *system,
 
             for (x = region->minimumX - TERRAIN_STABILITY_MARGIN;
                  x <= region->maximumX + TERRAIN_STABILITY_MARGIN; ++x) {
-                if (x < 0 || y < 0 || x >= world->width || y >= world->height) {
+                if (y < 0 || y >= world->height) {
                     continue;
                 }
                 if (TerrainStabilityIsCeiling(world, x, y)) {

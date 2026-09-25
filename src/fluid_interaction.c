@@ -305,6 +305,12 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
        dive at these speeds reaches within a frame. */
     enterFraction = state->sprayTimer > 0.0f ? FLUID_ENTER_FRACTION_IN_SPRAY
                                              : FLUID_ENTER_FRACTION;
+    /* The look-ahead is for a dive: along the water, what lies ahead of a
+       low pass is the spray its own wall threw forward, and flying into that
+       is not going into the lake. */
+    if (player->velocity.y < 0.5f * fabsf(player->velocity.x)) {
+        fractionAhead = 0.0f;
+    }
     if (!state->inside &&
         (fraction >= enterFraction || fractionAhead >= enterFraction)) {
         bool here = fraction >= enterFraction;

@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#include <rlgl.h>
+
 #include "ability_renderer.h"
 #include "particle_renderer.h"
 #include "player_renderer.h"
@@ -368,6 +370,15 @@ void RendererClearPresentation(Renderer *renderer)
     PresentationFxClear(&renderer->effects);
 }
 
+void RendererShiftPresentation(Renderer *renderer, float dx)
+{
+    if (renderer == NULL || dx == 0.0f) {
+        return;
+    }
+    PresentationFxShift(&renderer->effects, dx);
+    renderer->travel -= dx;
+}
+
 bool RendererSetEnvironmentPalette(Renderer *renderer,
                                    EnvironmentPalette palette)
 {
@@ -423,6 +434,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     EnvironmentRendererSetDaylight(&renderer->environment,
                                    GameDaylightAt(game->dayPhase));
     EnvironmentRendererSetDayPhase(&renderer->environment, game->dayPhase);
+    EnvironmentRendererSetTravel(&renderer->environment, renderer->travel);
     /* Full backdrop at and below the clouds, none at and above the space line.
        Asked here because the environment renderer is never given a World and
        could not work it out; the answer itself belongs to the world, beside the
@@ -451,9 +463,18 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         /* Between the backdrop and the terrain, and inside the camera, because
            a cloud is at an altitude rather than at a place on the screen: the
            player is meant to be able to climb above it. */
-        SkyRendererDraw(&renderer->sky, visible, game->world.height,
-                        GameDaylightAt(game->dayPhase),
+        /* In the space of the camera's travel round the planet, and moved
+           back into the world's own coordinates: the clouds and stars are
+           placed from the view, and the view jumps a whole width when the
+           character crosses the seam, while the travel does not. */
+        rlPushMatrix();
+        rlTranslatef(-renderer->travel, 0.0f, 0.0f);
+        SkyRendererDraw(&renderer->sky,
+                        (Rectangle){visible.x + renderer->travel, visible.y,
+                                    visible.width, visible.height},
+                        game->world.height, GameDaylightAt(game->dayPhase),
                         renderer->presentationTime);
+        rlPopMatrix();
         renderer->lastFrame.skyClouds = SkyRendererStatistics(&renderer->sky)->cloudsDrawn;
         renderer->lastFrame.skyStars = SkyRendererStatistics(&renderer->sky)->starsDrawn;
         renderer->lastFrame.skySpaceVisible =
@@ -500,9 +521,16 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                         renderer->targetWidth,
                                         renderer->targetHeight);
         BeginMode2D(presentationCamera);
-            SkyRendererDrawEmissive(&renderer->sky, visible, game->world.height,
+            rlPushMatrix();
+            rlTranslatef(-renderer->travel, 0.0f, 0.0f);
+            SkyRendererDrawEmissive(&renderer->sky,
+                                    (Rectangle){visible.x + renderer->travel,
+                                                visible.y, visible.width,
+                                                visible.height},
+                                    game->world.height,
                                     GameDaylightAt(game->dayPhase),
                                     renderer->presentationTime);
+            rlPopMatrix();
             /* Occluders first. The world and the bodies are opaque black
                wherever they do not glow, and the character draws its own
                silhouette, so nothing behind any of them can bloom through. */

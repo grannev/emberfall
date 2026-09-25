@@ -237,6 +237,14 @@ void EnvironmentRendererSetDayPhase(EnvironmentRenderer *renderer, float dayPhas
     renderer->dayPhase = dayPhase - floorf(dayPhase);
 }
 
+void EnvironmentRendererSetTravel(EnvironmentRenderer *renderer, float travel)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    renderer->travel = travel;
+}
+
 void EnvironmentRendererSetAltitude(EnvironmentRenderer *renderer,
                                     float altitude)
 {
@@ -302,7 +310,7 @@ static float EnvironmentFeatureX(const EnvironmentFeature *feature,
 {
     float margin = (float)width * 0.12f + 48.0f;
     float period = (float)width + margin * 2.0f;
-    float shift = camera.target.x * camera.zoom * parallax;
+    float shift = (camera.target.x + renderer->travel) * camera.zoom * parallax;
     float animated = renderer->time * drift + feature->phase * 13.0f;
 
     return EnvironmentWrap(feature->x * period - shift + animated, period) -

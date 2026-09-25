@@ -802,6 +802,20 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
     return spawned;
 }
 
+void PresentationFxShift(PresentationFxSystem *system, float dx)
+{
+    uint16_t index;
+
+    if (system == NULL) {
+        return;
+    }
+    for (index = 0u; index < PRESENTATION_FX_CAPACITY; ++index) {
+        system->effects[index].description.start.x += dx;
+        system->effects[index].description.end.x += dx;
+    }
+    system->lastLaserContact.x += dx;
+}
+
 void PresentationFxUpdate(PresentationFxSystem *system, float deltaTime)
 {
     uint16_t index = 0u;

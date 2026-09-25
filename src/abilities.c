@@ -11,19 +11,15 @@
 
 #include <raymath.h>
 
-/* A beam stops at the edge of the map rather than being drawn into the void,
-   and clamping the endpoint here keeps every beam's range honest whichever
-   direction the player aims. */
+/* A beam stops at the top and bottom of the map rather than being drawn into
+   the void, and clamping the endpoint here keeps every beam's range honest
+   whichever direction the player aims. Across there is no edge: the world
+   wraps, and a beam fired over the seam carries on into the other side. */
 static Vector2 BeamEndAtWorldEdge(const World *world, Vector2 origin,
                                   Vector2 direction, float maximumLength)
 {
     float length = maximumLength;
 
-    if (direction.x > 0.001f) {
-        length = fminf(length, ((float)world->width - 0.5f - origin.x) / direction.x);
-    } else if (direction.x < -0.001f) {
-        length = fminf(length, (0.5f - origin.x) / direction.x);
-    }
     if (direction.y > 0.001f) {
         length = fminf(length, ((float)world->height - 0.5f - origin.y) / direction.y);
     } else if (direction.y < -0.001f) {

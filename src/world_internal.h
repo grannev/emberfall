@@ -52,14 +52,40 @@
    the direction of the last slide (world_fluid.h). */
 #define WORLD_LIQUID_WANDER_LIMIT 15u
 
+/* The world wraps: its right edge is joined to its left, so a column index is
+   taken modulo the width wherever it is used, and every x is in the world.
+   Only a row can be outside it. Branch first on the common case — almost every
+   x is already inside — so the hot loops pay a compare, not a division. */
+static inline int WorldWrapColumn(int x, int width)
+{
+    /* One unsigned compare covers both ends. */
+    if ((unsigned)x < (unsigned)width) {
+        return x;
+    }
+    /* Everything that moves is kept within half a turn of the character, who
+       is kept inside the map, so one width either way almost always does. */
+    x += x < 0 ? width : -width;
+    if ((unsigned)x < (unsigned)width) {
+        return x;
+    }
+    x %= width;
+    return x < 0 ? x + width : x;
+}
+
+static inline int WorldWrapX(const World *world, int x)
+{
+    return WorldWrapColumn(x, world->width);
+}
+
 static inline bool WorldInBounds(const World *world, int x, int y)
 {
-    return x >= 0 && x < world->width && y >= 0 && y < world->height;
+    (void)x;
+    return y >= 0 && y < world->height;
 }
 
 static inline size_t WorldIndex(const World *world, int x, int y)
 {
-    return (size_t)y * (size_t)world->width + (size_t)x;
+    return (size_t)y * (size_t)world->width + (size_t)WorldWrapX(world, x);
 }
 
 static inline size_t WorldChunkIndex(const World *world, int chunkX, int chunkY)
@@ -140,7 +166,8 @@ static inline void WorldCountMaterialChange(World *world, int x, int y,
     if (from == to) {
         return;
     }
-    chunkIndex = WorldChunkIndex(world, x / WORLD_CHUNK_SIZE, y / WORLD_CHUNK_SIZE);
+    chunkIndex = WorldChunkIndex(world, WorldWrapX(world, x) / WORLD_CHUNK_SIZE,
+                                y / WORLD_CHUNK_SIZE);
     counter = WorldMaterialCounter(world, chunkIndex, from);
     if (counter != NULL && *counter > 0u) {
         --*counter;

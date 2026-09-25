@@ -140,11 +140,15 @@ WorldComponentResult WorldFindComponent(const World *world,
         return ComponentFailure(WORLD_COMPONENT_INVALID, 0);
     }
 
-    /* Clipping to the world costs no meaning: everything past the edge reads
-       as rock, so a search that reached it would stop with ANCHORED anyway. */
-    if (firstX < 0) firstX = 0;
+    /* Clipping to the world's rows costs no meaning: above and below reads as
+       rock, so a search that reached it would stop with ANCHORED anyway. The
+       columns are not clipped: the world wraps, a region may run past either
+       end of the map, and the component may continue across the seam. A
+       region wider than the world is cut to one turn of it, or the same
+       column would be two places in the visited bitmap and a component
+       could be counted twice. */
+    if (lastX - firstX + 1 > world->width) lastX = firstX + world->width - 1;
     if (firstY < 0) firstY = 0;
-    if (lastX > world->width - 1) lastX = world->width - 1;
     if (lastY > world->height - 1) lastY = world->height - 1;
     if (firstX > lastX || firstY > lastY) {
         return ComponentFailure(WORLD_COMPONENT_INVALID, 0);

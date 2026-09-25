@@ -90,9 +90,9 @@ static bool DetachSearchRegion(const World *world,
 
     firstX = (damage->minimumX + damage->maximumX) / 2 - spanX / 2;
     firstY = (damage->minimumY + damage->maximumY) / 2 - spanY / 2;
-    if (firstX < 0) firstX = 0;
+    /* Centred on the damage across, wherever it is: the world wraps and a
+       window may hang over the seam. Kept inside the rows. */
     if (firstY < 0) firstY = 0;
-    if (firstX > world->width - spanX) firstX = world->width - spanX;
     if (firstY > world->height - spanY) firstY = world->height - spanY;
 
     *region = (Rectangle){(float)firstX, (float)firstY, (float)spanX, (float)spanY};
@@ -232,9 +232,7 @@ static int DetachProcessRegion(TerrainDetachSystem *system, World *world,
     firstY = damage->minimumY - 1;
     lastX = damage->maximumX + 1;
     lastY = damage->maximumY + 1;
-    if (firstX < 0) firstX = 0;
     if (firstY < 0) firstY = 0;
-    if (lastX > world->width - 1) lastX = world->width - 1;
     if (lastY > world->height - 1) lastY = world->height - 1;
 
     for (y = firstY; y <= lastY; ++y) {

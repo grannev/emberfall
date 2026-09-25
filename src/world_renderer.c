@@ -160,6 +160,26 @@ static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
     return true;
 }
 
+/* Pages across the world, the last one possibly partial. */
+static int WorldRenderPageColumns(const World *world)
+{
+    return (world->width + WORLD_RENDER_PAGE_SIZE - 1) / WORLD_RENDER_PAGE_SIZE;
+}
+
+/* The world wraps, so the view may ask for page columns past either end. A
+   page is cached by where it is in the world and drawn where the view needs
+   it: `turn` whole widths of the world along. */
+static void WorldRenderPageAt(const World *world, int unwrapped, int *page,
+                              int *turn)
+{
+    int columns = WorldRenderPageColumns(world);
+    int wrapped = unwrapped % columns;
+
+    if (wrapped < 0) wrapped += columns;
+    *page = wrapped;
+    *turn = (unwrapped - wrapped) / columns;
+}
+
 static void WorldRendererDrawLayer(const WorldRenderer *renderer,
                                    const World *world, Rectangle visible,
                                    bool emissive)
@@ -172,21 +192,23 @@ static void WorldRendererDrawLayer(const WorldRenderer *renderer,
                                 (float)WORLD_RENDER_PAGE_SIZE);
     int pageY;
 
-    if (firstPageX < 0) firstPageX = 0;
     if (firstPageY < 0) firstPageY = 0;
-    if (lastPageX > (world->width - 1) / WORLD_RENDER_PAGE_SIZE) {
-        lastPageX = (world->width - 1) / WORLD_RENDER_PAGE_SIZE;
-    }
     if (lastPageY > (world->height - 1) / WORLD_RENDER_PAGE_SIZE) {
         lastPageY = (world->height - 1) / WORLD_RENDER_PAGE_SIZE;
     }
 
     for (pageY = firstPageY; pageY <= lastPageY; ++pageY) {
-        int pageX;
+        int unwrapped;
 
-        for (pageX = firstPageX; pageX <= lastPageX; ++pageX) {
-            int slot = PageIndexOfSlot(renderer, pageX, pageY);
-            int originX = pageX * WORLD_RENDER_PAGE_SIZE;
+        for (unwrapped = firstPageX; unwrapped <= lastPageX; ++unwrapped) {
+            int pageX;
+            int turn;
+            int slot;
+            int originX;
+
+            WorldRenderPageAt(world, unwrapped, &pageX, &turn);
+            slot = PageIndexOfSlot(renderer, pageX, pageY);
+            originX = pageX * WORLD_RENDER_PAGE_SIZE;
             int originY = pageY * WORLD_RENDER_PAGE_SIZE;
             int width = WORLD_RENDER_PAGE_SIZE;
             int height = WORLD_RENDER_PAGE_SIZE;
@@ -201,7 +223,9 @@ static void WorldRendererDrawLayer(const WorldRenderer *renderer,
                                : renderer->pages[slot].texture;
             DrawTextureRec(texture,
                            (Rectangle){0.0f, 0.0f, (float)width, (float)height},
-                           (Vector2){(float)originX, (float)originY}, WHITE);
+                           (Vector2){(float)(originX + turn * world->width),
+                                     (float)originY},
+                           WHITE);
         }
     }
 }
@@ -243,11 +267,12 @@ void WorldRendererPrepare(WorldRenderer *renderer, World *world, Rectangle visib
     firstPageY = (int)floorf(visible.y / (float)WORLD_RENDER_PAGE_SIZE);
     lastPageY = (int)floorf((visible.y + visible.height) /
                             (float)WORLD_RENDER_PAGE_SIZE);
-    if (firstPageX < 0) firstPageX = 0;
-    if (firstPageY < 0) firstPageY = 0;
-    if (lastPageX > (world->width - 1) / WORLD_RENDER_PAGE_SIZE) {
-        lastPageX = (world->width - 1) / WORLD_RENDER_PAGE_SIZE;
+    /* Page columns wrap; a view wider than the world is every column once. */
+    if (lastPageX - firstPageX + 1 > WorldRenderPageColumns(world)) {
+        firstPageX = 0;
+        lastPageX = WorldRenderPageColumns(world) - 1;
     }
+    if (firstPageY < 0) firstPageY = 0;
     if (lastPageY > (world->height - 1) / WORLD_RENDER_PAGE_SIZE) {
         lastPageY = (world->height - 1) / WORLD_RENDER_PAGE_SIZE;
     }
@@ -267,11 +292,16 @@ void WorldRendererPrepare(WorldRenderer *renderer, World *world, Rectangle visib
        is filled on this frame rather than showing a stale neighbour's pixels
        for one frame. */
     for (pageY = firstPageY; pageY <= lastPageY; ++pageY) {
-        int pageX;
+        int unwrapped;
 
-        for (pageX = firstPageX; pageX <= lastPageX; ++pageX) {
+        for (unwrapped = firstPageX; unwrapped <= lastPageX; ++unwrapped) {
             bool bound = false;
-            int slot = WorldRendererAcquirePage(renderer, pageX, pageY, &bound);
+            int pageX;
+            int turn;
+            int slot;
+
+            WorldRenderPageAt(world, unwrapped, &pageX, &turn);
+            slot = WorldRendererAcquirePage(renderer, pageX, pageY, &bound);
 
             if (slot < 0) {
                 continue;

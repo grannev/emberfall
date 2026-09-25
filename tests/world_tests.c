@@ -3817,11 +3817,26 @@ static void test_a_component_touching_the_world_edge_is_anchored(void)
     WorldComponentResult found;
 
     CHECK(WorldInit(&world, 96, 96), "world allocation failed");
-    FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
-
-    found = FindComponent(&world, WholeWorld(&world), 2, 42);
+    /* The world ends below and above, and a component resting on its floor
+       is held by it. */
+    FillRect(&world, 40, 91, 44, 95, MATERIAL_ROCK);
+    found = FindComponent(&world, WholeWorld(&world), 42, 93);
     CHECK(found.status == WORLD_COMPONENT_ANCHORED,
-          "a component against the map border reported %s",
+          "a component on the world's floor reported %s",
+          ComponentStatusName(found.status));
+
+    /* Across, the world wraps: a block against the left edge continues into
+       the right one, and a region spanning the seam finds all of it. */
+    FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
+    FillRect(&world, 93, 40, 95, 44, MATERIAL_ROCK);
+    found = FindComponent(&world, (Rectangle){-20.0f, 20.0f, 60.0f, 60.0f}, 2, 42);
+    CHECK(found.status == WORLD_COMPONENT_DETACHED && found.cellCount == 40,
+          "a block across the seam reported %s with %d cells",
+          ComponentStatusName(found.status), found.cellCount);
+    /* Asked only on one side of the seam, it continues past the region. */
+    found = FindComponent(&world, WholeWorld(&world), 2, 42);
+    CHECK(found.status == WORLD_COMPONENT_UNKNOWN,
+          "a block cut by the region at the seam reported %s",
           ComponentStatusName(found.status));
     WorldUnload(&world);
 }
@@ -3873,11 +3888,12 @@ static void test_an_oversized_or_malformed_query_is_refused(void)
           "an oversized region was accepted at the map border, reporting %s",
           ComponentStatusName(found.status));
 
-    /* A legal region that merely hangs over the edge is still fine. */
+    /* A legal region that hangs over the seam is still fine: the world
+       wraps, and the empty columns on the far side are simply searched. */
     FillRect(&world, 0, 40, 4, 44, MATERIAL_ROCK);
     found = FindComponent(&world, (Rectangle){-40.0f, 20.0f, 100.0f, 60.0f}, 2, 42);
-    CHECK(found.status == WORLD_COMPONENT_ANCHORED,
-          "a legal region overhanging the border reported %s",
+    CHECK(found.status == WORLD_COMPONENT_DETACHED && found.cellCount == 25,
+          "a legal region overhanging the seam reported %s",
           ComponentStatusName(found.status));
 
     found = FindComponent(&world, (Rectangle){20.0f, 20.0f, 64.0f, 64.0f}, 10, 10);
@@ -6097,11 +6113,12 @@ static void test_a_body_lost_outside_the_world_is_destroyed(void)
 
     lost = MakeKinematicBody(&terrain, 4, 4, (Vector2){64.0f, 48.0f});
     nearby = MakeKinematicBody(&terrain, 4, 4, (Vector2){64.0f, 48.0f});
-    /* One well past the kill margin, one just inside it. */
+    /* One well past the kill margin under the world, one just inside it.
+       Across there is no outside: the world wraps. */
     DynamicTerrainGet(&terrain, lost)->position =
-        (Vector2){-terrain.config.killBoundsMargin * 4.0f, 48.0f};
+        (Vector2){64.0f, 96.0f + terrain.config.killBoundsMargin * 4.0f};
     DynamicTerrainGet(&terrain, nearby)->position =
-        (Vector2){-terrain.config.killBoundsMargin * 0.5f, 48.0f};
+        (Vector2){64.0f, 96.0f + terrain.config.killBoundsMargin * 0.5f};
 
     TerrainPhysicsUpdate(&terrain, &world, KINEMATIC_STEP);
 
@@ -10183,7 +10200,9 @@ static void test_a_diagonal_drill_does_not_stall(void)
     PlayerInit(&player, (Vector2){20.0f, 20.0f});
     start = player.position;
 
-    for (step = 0; step < 240; ++step) {
+    /* Until the tunnel reaches the far side of the block: past it the
+       character meets the floor of the world, and slides along it. */
+    for (step = 0; step < 240 && player.position.y < 330.0f; ++step) {
         PlayerUpdate(&player, &world, (Vector2){0.7071f, 0.7071f}, true,
                      MOVEMENT_STEP);
         drilled += player.drilledCells;
@@ -12279,20 +12298,24 @@ static void test_drill_cannot_breach_the_world_boundary(void)
 
     CHECK(WorldInit(&world, 32, 32), "world allocation failed");
     FillRect(&world, 0, 0, 31, 31, MATERIAL_ROCK);
-    /* Centred outside the grid, and straddling every edge. */
-    WorldDrillCircle(&world, -8, 16, 6);
-    WorldDrillCircle(&world, 40, 16, 6);
+    /* Centred above and below the grid: the world ends there. */
     WorldDrillCircle(&world, 16, -8, 6);
     WorldDrillCircle(&world, 16, 40, 6);
-    WorldDrillCircle(&world, 0, 0, 4);
 
     for (y = 0; y < 32; ++y) {
         for (x = 0; x < 32; ++x) {
-            CHECK(WorldGetCell(&world, x, y) != MATERIAL_EMPTY ||
-                      (x < 6 && y < 6),
+            CHECK(WorldGetCell(&world, x, y) != MATERIAL_EMPTY,
                   "cell %d,%d was cleared from outside the grid", x, y);
         }
     }
+
+    /* Across, it does not: a drill left of the left edge is a drill at the
+       right edge, and the cut it makes there is the same cut. */
+    WorldDrillCircle(&world, -2, 16, 4);
+    CHECK(WorldGetCell(&world, 30, 16) == MATERIAL_EMPTY,
+          "a drill across the seam did not cut the far edge");
+    CHECK(WorldGetCell(&world, 1, 16) == MATERIAL_EMPTY,
+          "a drill across the seam did not cut the near edge");
     WorldUnload(&world);
 }
 

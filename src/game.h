@@ -86,6 +86,13 @@ typedef struct GameState {
        Advanced on the fixed step, so the sky moves at the rate the simulation
        runs and not at the rate the machine draws. */
     float dayPhase;
+    /* How far everything was moved across this frame to bring the character
+       back into the map after crossing the seam: a whole number of world
+       widths, zero on almost every frame. Presentation moves the camera and
+       its effects by the same amount, so nothing on screen jumps. */
+    float wrapShift;
+    /* Crossings of the seam since the world was made, either way. */
+    int wraps;
     float simulationAccumulator;
     int activatedPlayerChunkX;
     int activatedPlayerChunkY;

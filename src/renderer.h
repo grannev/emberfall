@@ -58,6 +58,12 @@ typedef struct Renderer {
        rather than read from the clock so that a run stepping at a fixed rate —
        the smoke test — draws the same frame every time. */
     float presentationTime;
+    /* How far the camera has travelled around the planet beyond where it is
+       now: every time the character is moved back across the seam, the
+       camera moves with it and this takes up the difference. The sky and the
+       backdrop are drawn from the camera's position plus this, so they
+       scroll on as if nothing had been moved. */
+    float travel;
     RenderTexture2D sceneTarget;
     RenderTexture2D emissiveTarget;
     RenderTexture2D bloomPingTarget;
@@ -87,6 +93,9 @@ void RendererUpdatePresentation(Renderer *renderer,
                                 const GameEventBuffer *events,
                                 float deltaTime);
 void RendererClearPresentation(Renderer *renderer);
+/* Moves every presentation effect `dx` across, with the character, when the
+   game has moved everything back over the seam. */
+void RendererShiftPresentation(Renderer *renderer, float dx);
 bool RendererSetEnvironmentPalette(Renderer *renderer,
                                    EnvironmentPalette palette);
 void RendererRenderScene(Renderer *renderer, GameState *game,

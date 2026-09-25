@@ -31,6 +31,18 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
 ## Invariants
 
 - The gameplay simulation advances at a fixed 60 Hz step.
+- The world wraps: its right edge is joined to its left, like a planet.
+  `WorldIndex`/`WorldCell` take a column modulo the width (one unsigned
+  compare on the fast path), `WorldInBounds` checks rows only, chunk columns
+  wrap, and nothing clamps a column to the map. Entities hold unwrapped
+  positions: the character is moved back a whole width when it crosses the
+  seam and `GameKeepInWorld` keeps every body and particle within half a
+  turn of it; `GameState.wrapShift` tells presentation to move the camera
+  and its effects by the same amount, and `Renderer.travel` keeps the sky
+  and backdrop continuous. Generation is periodic in x (noise lattices and
+  biome regions are whole numbers round the world). The light solve copies a
+  window that crosses the seam into planes of its own; the light texture
+  repeats across. Top and bottom are still the ends of the world.
 - Falling cells are processed bottom-to-top; horizontal traversal alternates.
 - `updatedTick` prevents a moved cell from updating twice in one tick.
 - Cell mutations wake only the affected chunk and crossed borders; generated

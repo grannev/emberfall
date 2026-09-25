@@ -36,16 +36,20 @@ void WorldMarkRegionDirty(World *world, Rectangle region)
     firstChunkY = (int)floorf(region.y / (float)WORLD_CHUNK_SIZE);
     lastChunkY = (int)floorf((region.y + region.height - 1.0f) /
                              (float)WORLD_CHUNK_SIZE);
-    if (firstChunkX < 0) firstChunkX = 0;
+    /* Columns wrap with the world; a region wider than it is all of it. */
+    if (lastChunkX - firstChunkX + 1 > world->chunkColumns) {
+        firstChunkX = 0;
+        lastChunkX = world->chunkColumns - 1;
+    }
     if (firstChunkY < 0) firstChunkY = 0;
-    if (lastChunkX > world->chunkColumns - 1) lastChunkX = world->chunkColumns - 1;
     if (lastChunkY > world->chunkRows - 1) lastChunkY = world->chunkRows - 1;
 
     for (chunkY = firstChunkY; chunkY <= lastChunkY; ++chunkY) {
         int chunkX;
 
         for (chunkX = firstChunkX; chunkX <= lastChunkX; ++chunkX) {
-            world->dirtyChunks[WorldChunkIndex(world, chunkX, chunkY)] = 1u;
+            world->dirtyChunks[WorldChunkIndex(
+                world, WorldWrapColumn(chunkX, world->chunkColumns), chunkY)] = 1u;
         }
     }
 }
@@ -78,11 +82,13 @@ void WorldPrepareVisible(World *world, Rectangle visible,
     firstVisibleRow = (int)floorf(visible.y / (float)WORLD_CHUNK_SIZE) - 1;
     lastVisibleRow =
         (int)floorf((visible.y + visible.height) / (float)WORLD_CHUNK_SIZE) + 1;
-    if (firstVisibleColumn < 0) firstVisibleColumn = 0;
-    if (firstVisibleRow < 0) firstVisibleRow = 0;
-    if (lastVisibleColumn > world->chunkColumns - 1) {
+    /* The visible columns may run past the seam; each is taken modulo the
+       world, and a view wider than the world is the world once. */
+    if (lastVisibleColumn - firstVisibleColumn + 1 > world->chunkColumns) {
+        firstVisibleColumn = 0;
         lastVisibleColumn = world->chunkColumns - 1;
     }
+    if (firstVisibleRow < 0) firstVisibleRow = 0;
     if (lastVisibleRow > world->chunkRows - 1) {
         lastVisibleRow = world->chunkRows - 1;
     }
@@ -90,9 +96,11 @@ void WorldPrepareVisible(World *world, Rectangle visible,
     /* Rebuild only the chunks that changed. The simulation sleeps on a settled
        world, and so must the renderer. */
     for (chunkY = firstVisibleRow; chunkY <= lastVisibleRow; ++chunkY) {
-        int chunkX;
+        int unwrappedX;
 
-        for (chunkX = firstVisibleColumn; chunkX <= lastVisibleColumn; ++chunkX) {
+        for (unwrappedX = firstVisibleColumn; unwrappedX <= lastVisibleColumn;
+             ++unwrappedX) {
+            int chunkX = WorldWrapColumn(unwrappedX, world->chunkColumns);
             size_t chunkIndex = (size_t)chunkY * (size_t)world->chunkColumns +
                                 (size_t)chunkX;
             int minimumX;

@@ -130,9 +130,9 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
     firstY = (int)floorf(minimumY) - 1;
     lastX = (int)floorf(maximumX) + 1;
     lastY = (int)floorf(maximumY) + 1;
-    if (firstX < 0) firstX = 0;
+    /* Rows only: the world wraps, and a body lying across the seam is
+       written into both sides of it. */
     if (firstY < 0) firstY = 0;
-    if (lastX > world->width - 1) lastX = world->width - 1;
     if (lastY > world->height - 1) lastY = world->height - 1;
 
     /* Two passes. The first asks whether every cell of the body can be

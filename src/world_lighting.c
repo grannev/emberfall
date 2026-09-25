@@ -6,6 +6,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 #include <raymath.h>
 
@@ -15,6 +16,25 @@ static int WorldLightIndex(const World *world, int lightX, int lightY)
 {
     return lightY * world->lightColumns + lightX;
 }
+
+/* What one solve works on: the four planes, how far apart their rows are,
+   and the columns of them to solve. Straight into the world's own planes when
+   the window lies inside the map; into a window-sized copy when it crosses
+   the seam where the world wraps, so that the sweeps — which run along a row
+   from one column to the next — can carry light across the seam as they do
+   across any other column. `origin` is the world column, unwrapped, that
+   column zero of the planes stands for; it is what places the lamp. */
+typedef struct WorldLightView {
+    float *sky;
+    float *ember;
+    const float *emission;
+    const float *opacity;
+    int stride;
+    int first;
+    int last;
+    int rows;
+    int origin;
+} WorldLightView;
 
 /* Rebuilds emission and opacity for one chunk's worth of light cells, and
    reports whether either actually changed.
@@ -109,23 +129,23 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
    Doing it per column rather than by propagation is what lets open air stay
    at full brightness however deep the world is, and why the solve window
    costs the sky nothing: a column is seeded independently of its neighbours. */
-static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
+static void WorldSeedSky(const WorldLightView *view)
 {
-    const int columns = world->lightColumns;
-    float *sky = world->lightSky;
-    const float *opacity = world->lightOpacity;
+    const int columns = view->stride;
+    float *sky = view->sky;
+    const float *opacity = view->opacity;
     int lightY;
     int lightX;
 
-    for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+    for (lightX = view->first; lightX <= view->last; ++lightX) {
         sky[lightX] = opacity[lightX] > 0.35f ? 0.0f : 1.0f;
     }
-    for (lightY = 1; lightY < world->lightRows; ++lightY) {
+    for (lightY = 1; lightY < view->rows; ++lightY) {
         const float *above = sky + (size_t)(lightY - 1) * (size_t)columns;
         const float *blocks = opacity + (size_t)lightY * (size_t)columns;
         float *row = sky + (size_t)lightY * (size_t)columns;
 
-        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+        for (lightX = view->first; lightX <= view->last; ++lightX) {
             row[lightX] = blocks[lightX] > 0.35f ? 0.0f : above[lightX];
         }
     }
@@ -135,24 +155,44 @@ static void WorldSeedSky(World *world, int firstColumn, int lastColumn)
    movable light. The player's lamp is ember rather than sky on purpose: it
    should warm a tunnel the way a flare does, not read as a hole cut through to
    daylight. */
-static void WorldSeedEmber(World *world, int firstColumn, int lastColumn)
+/* The lamp's column in the view's planes. The lamp is where the player is,
+   and the player is in the unwrapped space around the camera, so its column
+   is taken relative to the view's origin and then moved by whole turns of
+   the world until it lands on the view — which is the copy of the world the
+   player is actually standing in. */
+static int WorldLampViewColumn(const World *world, const WorldLightView *view)
+{
+    int column = (int)floorf(world->pointLight.x / (float)WORLD_LIGHT_SCALE) -
+                 view->origin;
+    int middle = (view->first + view->last) / 2;
+
+    while (column - middle > world->lightColumns / 2) {
+        column -= world->lightColumns;
+    }
+    while (middle - column > world->lightColumns / 2) {
+        column += world->lightColumns;
+    }
+    return column;
+}
+
+static void WorldSeedEmber(const World *world, const WorldLightView *view)
 {
     int lightX;
     int lightY;
 
-    for (lightY = 0; lightY < world->lightRows; ++lightY) {
-        int index = WorldLightIndex(world, firstColumn, lightY);
-        int span = lastColumn - firstColumn + 1;
+    for (lightY = 0; lightY < view->rows; ++lightY) {
+        size_t index = (size_t)lightY * (size_t)view->stride + (size_t)view->first;
+        int span = view->last - view->first + 1;
         int offset;
 
         for (offset = 0; offset < span; ++offset) {
-            world->lightEmber[index + offset] = world->lightEmission[index + offset];
+            view->ember[index + (size_t)offset] = view->emission[index + (size_t)offset];
         }
     }
 
     if (world->pointLightStrength > 0.0f && world->pointLightRadius > 0.0f) {
         float radius = world->pointLightRadius / (float)WORLD_LIGHT_SCALE;
-        int centerX = (int)(world->pointLight.x / (float)WORLD_LIGHT_SCALE);
+        int centerX = WorldLampViewColumn(world, view);
         int centerY = (int)(world->pointLight.y / (float)WORLD_LIGHT_SCALE);
         int span = (int)ceilf(radius);
 
@@ -162,16 +202,16 @@ static void WorldSeedEmber(World *world, int firstColumn, int lastColumn)
                 float dy = (float)(lightY - centerY);
                 float distance = sqrtf(dx * dx + dy * dy);
                 float value;
-                int index;
+                size_t index;
 
-                if (lightX < firstColumn || lightY < 0 || lightX > lastColumn ||
-                    lightY >= world->lightRows || distance > radius) {
+                if (lightX < view->first || lightY < 0 || lightX > view->last ||
+                    lightY >= view->rows || distance > radius) {
                     continue;
                 }
                 value = world->pointLightStrength * (1.0f - distance / radius);
-                index = WorldLightIndex(world, lightX, lightY);
-                if (value > world->lightEmber[index]) {
-                    world->lightEmber[index] = value;
+                index = (size_t)lightY * (size_t)view->stride + (size_t)lightX;
+                if (value > view->ember[index]) {
+                    view->ember[index] = value;
                 }
             }
         }
@@ -279,15 +319,14 @@ static void WorldSweepRow(float *restrict sky, float *restrict ember,
    The transmission of a row is resolved once per row into a scratch row the
    world owns, and read by both channels; that is the shared opacity lookup
    the paragraph above is about. */
-static void WorldRowTransmission(const World *world, int lightY, int firstColumn,
-                                 int lastColumn)
+static void WorldRowTransmission(const World *world, const WorldLightView *view,
+                                 int lightY)
 {
-    const float *opacity = world->lightOpacity +
-                           (size_t)lightY * (size_t)world->lightColumns;
+    const float *opacity = view->opacity + (size_t)lightY * (size_t)view->stride;
     float *through = world->lightScratch;
     int lightX;
 
-    for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+    for (lightX = view->first; lightX <= view->last; ++lightX) {
         through[lightX] =
             WORLD_LIGHT_OPEN_TRANSMISSION +
             (WORLD_LIGHT_SOLID_TRANSMISSION - WORLD_LIGHT_OPEN_TRANSMISSION) *
@@ -300,10 +339,10 @@ static void WorldRowTransmission(const World *world, int lightY, int firstColumn
    seeded at full sky and no ember, and the downward sweep leaves such a row
    exactly as it was seeded — so it is not swept. Most of a world four
    thousand cells tall is such rows. */
-static int WorldLightTopRow(const World *world, int firstColumn, int lastColumn)
+static int WorldLightTopRow(const World *world, const WorldLightView *view)
 {
-    const int columns = world->lightColumns;
-    int top = world->lightRows;
+    const int columns = view->stride;
+    int top = view->rows;
     int lightY;
 
     if (world->pointLightStrength > 0.0f && world->pointLightRadius > 0.0f) {
@@ -311,15 +350,15 @@ static int WorldLightTopRow(const World *world, int firstColumn, int lastColumn)
                       (int)ceilf(world->pointLightRadius / (float)WORLD_LIGHT_SCALE);
 
         if (lampTop < 0) lampTop = 0;
-        top = lampTop;
+        if (lampTop < top) top = lampTop;
     }
     for (lightY = 0; lightY < top; ++lightY) {
-        const float *opacity = world->lightOpacity + (size_t)lightY * (size_t)columns;
-        const float *emission = world->lightEmission + (size_t)lightY * (size_t)columns;
+        const float *opacity = view->opacity + (size_t)lightY * (size_t)columns;
+        const float *emission = view->emission + (size_t)lightY * (size_t)columns;
         float any = 0.0f;
         int lightX;
 
-        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+        for (lightX = view->first; lightX <= view->last; ++lightX) {
             any = WorldMaximum(any, WorldMaximum(opacity[lightX], emission[lightX]));
         }
         if (any > 0.0f) {
@@ -345,10 +384,10 @@ static float WorldRowMaximum(const float *row, int firstColumn, int lastColumn)
     return maximum;
 }
 
-static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
+static void WorldSolveView(World *world, const WorldLightView *view)
 {
-    const int columns = world->lightColumns;
-    const int rows = world->lightRows;
+    const int columns = view->stride;
+    const int rows = view->rows;
     const float *through = world->lightScratch;
     int lightY;
     int top;
@@ -356,9 +395,9 @@ static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
        root of two costs a call and changes nothing visible. */
     const float diagonal = 0.87f;
 
-    WorldSeedSky(world, firstColumn, lastColumn);
-    WorldSeedEmber(world, firstColumn, lastColumn);
-    top = WorldLightTopRow(world, firstColumn, lastColumn);
+    WorldSeedSky(view);
+    WorldSeedEmber(world, view);
+    top = WorldLightTopRow(world, view);
     world->lightStats.skippedRows = 0;
 
     /* Down from the first row with something in it: above it the sweep would
@@ -367,35 +406,126 @@ static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
         size_t rowOffset = (size_t)lightY * (size_t)columns;
         size_t aboveOffset = rowOffset - (size_t)columns;
 
-        WorldRowTransmission(world, lightY, firstColumn, lastColumn);
-        WorldSweepRow(world->lightSky + rowOffset, world->lightEmber + rowOffset,
-                      lightY > 0 ? world->lightSky + aboveOffset : NULL,
-                      lightY > 0 ? world->lightEmber + aboveOffset : NULL,
-                      through, firstColumn, lastColumn, 1, diagonal);
+        WorldRowTransmission(world, view, lightY);
+        WorldSweepRow(view->sky + rowOffset, view->ember + rowOffset,
+                      lightY > 0 ? view->sky + aboveOffset : NULL,
+                      lightY > 0 ? view->ember + aboveOffset : NULL,
+                      through, view->first, view->last, 1, diagonal);
     }
 
     for (lightY = rows - 1; lightY >= 0; --lightY) {
         size_t rowOffset = (size_t)lightY * (size_t)columns;
         size_t belowOffset = rowOffset + (size_t)columns;
 
-        WorldRowTransmission(world, lightY, firstColumn, lastColumn);
-        WorldSweepRow(world->lightSky + rowOffset, world->lightEmber + rowOffset,
-                      lightY + 1 < rows ? world->lightSky + belowOffset : NULL,
-                      lightY + 1 < rows ? world->lightEmber + belowOffset : NULL,
-                      through, firstColumn, lastColumn, -1, diagonal);
+        WorldRowTransmission(world, view, lightY);
+        WorldSweepRow(view->sky + rowOffset, view->ember + rowOffset,
+                      lightY + 1 < rows ? view->sky + belowOffset : NULL,
+                      lightY + 1 < rows ? view->ember + belowOffset : NULL,
+                      through, view->first, view->last, -1, diagonal);
         /* Up into empty sky the ember only fades, three per cent a row; once
            a whole row of it is below what the texture can show, every row
            above would be too, and they keep the zero they were seeded with.
            Sky is already full there and nothing up the column can raise it. */
         if (lightY < top &&
-            WorldRowMaximum(world->lightEmber + rowOffset, firstColumn,
-                            lastColumn) < WORLD_LIGHT_EMBER_FLOOR) {
+            WorldRowMaximum(view->ember + rowOffset, view->first, view->last) <
+                WORLD_LIGHT_EMBER_FLOOR) {
             world->lightStats.skippedRows = lightY + top;
             break;
         }
     }
     if (lightY < 0) {
         world->lightStats.skippedRows = top;
+    }
+}
+
+/* Makes sure the window planes can hold `width` columns. Grows only: the
+   largest window the camera has ever asked for, which is bounded by the
+   world's own width. */
+static bool WorldLightWindowReserve(World *world, int width)
+{
+    size_t needed = (size_t)width * (size_t)world->lightRows;
+    float *planes;
+
+    if (needed <= world->lightWindowCapacity) {
+        return true;
+    }
+    planes = realloc(world->lightWindow, needed * 4u * sizeof(*planes));
+    if (planes == NULL) {
+        return false;
+    }
+    world->lightWindow = planes;
+    world->lightWindowCapacity = needed;
+    return true;
+}
+
+/* Solves columns `firstColumn`..`lastColumn`, which are unwrapped: either
+   end may lie past the seam. */
+static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
+{
+    const int columns = world->lightColumns;
+    const int rows = world->lightRows;
+    WorldLightView view;
+    int width = lastColumn - firstColumn + 1;
+    int lightY;
+
+    if (firstColumn >= 0 && lastColumn < columns) {
+        view.sky = world->lightSky;
+        view.ember = world->lightEmber;
+        view.emission = world->lightEmission;
+        view.opacity = world->lightOpacity;
+        view.stride = columns;
+        view.first = firstColumn;
+        view.last = lastColumn;
+        view.rows = rows;
+        view.origin = 0;
+        WorldSolveView(world, &view);
+        return;
+    }
+
+    /* Across the seam: the window's inputs are copied into planes of its own
+       width, in order, solved there, and the result copied back. */
+    if (!WorldLightWindowReserve(world, width)) {
+        return;
+    }
+    {
+        size_t plane = (size_t)width * (size_t)rows;
+        float *emission = world->lightWindow;
+        float *opacity = emission + plane;
+
+        view.sky = opacity + plane;
+        view.ember = view.sky + plane;
+        view.emission = emission;
+        view.opacity = opacity;
+        view.stride = width;
+        view.first = 0;
+        view.last = width - 1;
+        view.rows = rows;
+        view.origin = firstColumn;
+        for (lightY = 0; lightY < rows; ++lightY) {
+            size_t source = (size_t)lightY * (size_t)columns;
+            size_t target = (size_t)lightY * (size_t)width;
+            int offset;
+
+            for (offset = 0; offset < width; ++offset) {
+                int column = WorldWrapColumn(firstColumn + offset, columns);
+
+                emission[target + (size_t)offset] = world->lightEmission[source + (size_t)column];
+                opacity[target + (size_t)offset] = world->lightOpacity[source + (size_t)column];
+            }
+        }
+        WorldSolveView(world, &view);
+        for (lightY = 0; lightY < rows; ++lightY) {
+            size_t source = (size_t)lightY * (size_t)width;
+            size_t target = (size_t)lightY * (size_t)columns;
+            int offset;
+
+            for (offset = 0; offset < width; ++offset) {
+                int column = WorldWrapColumn(firstColumn + offset, columns);
+
+                world->lightSky[target + (size_t)column] = view.sky[source + (size_t)offset];
+                world->lightEmber[target + (size_t)column] = view.ember[source + (size_t)offset];
+            }
+        }
     }
 }
 
@@ -437,8 +567,13 @@ void WorldUpdateLighting(World *world, Rectangle visible)
     lastColumn = (int)floorf((visible.x + visible.width) /
                              (float)WORLD_LIGHT_SCALE) +
                  WORLD_LIGHT_WINDOW_MARGIN;
-    if (firstColumn < 0) firstColumn = 0;
-    if (lastColumn > world->lightColumns - 1) lastColumn = world->lightColumns - 1;
+    /* The world wraps, so the window is not clamped to it: it may run past
+       either end, and the solve carries it across the seam. A window as wide
+       as the world is the whole world, from column zero. */
+    if (lastColumn - firstColumn + 1 >= world->lightColumns) {
+        firstColumn = 0;
+        lastColumn = world->lightColumns - 1;
+    }
     if (firstColumn > lastColumn) {
         return;
     }

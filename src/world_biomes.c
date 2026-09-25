@@ -176,35 +176,66 @@ static Rng GenerationFeatureRng(uint64_t seed, int feature,
     return rng;
 }
 
-static float ValueNoise1D(uint64_t seed, int x, int wavelength,
+/* Smooth noise along the world, periodic in its width: the world wraps, and
+   a noise that did not would put a cliff at the seam. The lattice is the
+   nearest whole number of wavelengths that fits round the world, so the
+   wavelength a caller asks for is the one it gets to within half of one. */
+static float ValueNoise1D(uint64_t seed, int x, int wavelength, int period,
                           enum GenerationChannel channel)
 {
+    int count;
+    float span;
+    float position;
     int lattice;
-    int remainder;
     float amount;
     float first;
     float second;
 
-    if (wavelength <= 0) return 0.0f;
-    if (x < 0) x = 0;
-    lattice = x / wavelength;
-    remainder = x % wavelength;
-    amount = SmoothStep((float)remainder / (float)wavelength);
-    first = GenerationUnit(seed, lattice, 0, (uint64_t)channel) * 2.0f - 1.0f;
-    second = GenerationUnit(seed, lattice + 1, 0, (uint64_t)channel) * 2.0f -
-             1.0f;
+    if (wavelength <= 0 || period <= 0) return 0.0f;
+    count = (int)((float)period / (float)wavelength + 0.5f);
+    if (count < 1) count = 1;
+    span = (float)period / (float)count;
+    position = (float)PositiveModulo(x, period) / span;
+    lattice = (int)floorf(position);
+    amount = SmoothStep(position - (float)lattice);
+    first = GenerationUnit(seed, PositiveModulo(lattice, count), 0,
+                           (uint64_t)channel) * 2.0f - 1.0f;
+    second = GenerationUnit(seed, PositiveModulo(lattice + 1, count), 0,
+                            (uint64_t)channel) * 2.0f - 1.0f;
     return LerpFloat(first, second, amount);
+}
+
+/* How far `x` is from `to` the short way round the world. */
+static int WrappedDistance(const World *world, int x, int to)
+{
+    int distance = PositiveModulo(x - to, world->width);
+
+    return distance > world->width / 2 ? world->width - distance : distance;
+}
+
+/* Biome regions: the nearest whole number of BIOME_REGION_WIDTH that fits
+   round the world, so the last region meets the first at the seam. */
+static int BiomeRegionCount(const World *world)
+{
+    int count = (int)((float)world->width / (float)BIOME_REGION_WIDTH + 0.5f);
+
+    return count < 1 ? 1 : count;
+}
+
+static float BiomeRegionWidth(const World *world)
+{
+    return (float)world->width / (float)BiomeRegionCount(world);
 }
 
 /* Bends a column sideways before it is turned into a region index, so that the
    seam between two biomes meanders instead of running straight down the map. */
 static int BiomeWarpedX(const World *world, int x)
 {
-    float warp = ValueNoise1D(world->seed, x, BIOME_WARP_WAVELENGTH,
+    float warp = ValueNoise1D(world->seed, x, BIOME_WARP_WAVELENGTH, world->width,
                               GENERATION_BIOME_WARP) *
                  (float)BIOME_BOUNDARY_WARP;
 
-    return ClampInt(x + (int)warp, 0, world->width - 1);
+    return PositiveModulo(x + (int)warp, world->width);
 }
 
 /* The contour that separates two blending biomes: smooth value noise on a coarse
@@ -282,7 +313,7 @@ static WorldBiome BiomeForRegion(const World *world, int region)
     };
     uint64_t layout = GenerationHash(world->seed, 0, 0,
                                      GENERATION_BIOME_ORDER);
-    int centerRegion = (world->width / 2) / BIOME_REGION_WIDTH;
+    int centerRegion = (int)((float)(world->width / 2) / BiomeRegionWidth(world));
     int relative = region - centerRegion;
     int direction = (layout & 4ull) != 0ull ? -1 : 1;
     int rotation = (int)(layout % (uint64_t)(WORLD_BIOME_COUNT - 1));
@@ -297,8 +328,11 @@ WorldBiome WorldBiomeAt(const World *world, int x)
     if (world == NULL || world->width <= 0) {
         return WORLD_BIOME_TEMPERATE;
     }
-    x = ClampInt(x, 0, world->width - 1);
-    return BiomeForRegion(world, BiomeWarpedX(world, x) / BIOME_REGION_WIDTH);
+    {
+        int region = (int)((float)BiomeWarpedX(world, x) / BiomeRegionWidth(world));
+
+        return BiomeForRegion(world, ClampInt(region, 0, BiomeRegionCount(world) - 1));
+    }
 }
 
 const char *WorldBiomeName(WorldBiome biome)
@@ -320,31 +354,28 @@ const char *WorldBiomeName(WorldBiome biome)
    the world gradually becomes rather than a place it switches to. */
 static BiomeSample BiomeSampleAt(const World *world, int x)
 {
-    int lastRegion;
-    int region;
-    int localX;
-    WorldBiome current;
+    int count = BiomeRegionCount(world);
+    float regionWidth = BiomeRegionWidth(world);
+    float warped = (float)BiomeWarpedX(world, x);
+    int region = ClampInt((int)(warped / regionWidth), 0, count - 1);
+    float localX = warped - (float)region * regionWidth;
+    WorldBiome current = BiomeForRegion(world, region);
 
-    x = BiomeWarpedX(world, ClampInt(x, 0, world->width - 1));
-    region = x / BIOME_REGION_WIDTH;
-    lastRegion = (world->width - 1) / BIOME_REGION_WIDTH;
-    localX = x - region * BIOME_REGION_WIDTH;
-    current = BiomeForRegion(world, region);
-
-    if (region > 0 && localX < BIOME_BLEND_WIDTH) {
-        float amount = (float)(localX + BIOME_BLEND_WIDTH) /
+    /* Every region has two neighbours: the world wraps, and the first region
+       blends into the last across the seam like any two others. */
+    if (count > 1 && localX < (float)BIOME_BLEND_WIDTH) {
+        float amount = (localX + (float)BIOME_BLEND_WIDTH) /
                        (float)(BIOME_BLEND_WIDTH * 2);
 
-        return (BiomeSample){BiomeForRegion(world, region - 1), current,
-                             SmoothStep(amount)};
+        return (BiomeSample){BiomeForRegion(world, PositiveModulo(region - 1, count)),
+                             current, SmoothStep(amount)};
     }
-    if (region < lastRegion &&
-        localX >= BIOME_REGION_WIDTH - BIOME_BLEND_WIDTH) {
-        float amount =
-            (float)(localX - (BIOME_REGION_WIDTH - BIOME_BLEND_WIDTH)) /
-            (float)(BIOME_BLEND_WIDTH * 2);
+    if (count > 1 && localX >= regionWidth - (float)BIOME_BLEND_WIDTH) {
+        float amount = (localX - (regionWidth - (float)BIOME_BLEND_WIDTH)) /
+                       (float)(BIOME_BLEND_WIDTH * 2);
 
-        return (BiomeSample){current, BiomeForRegion(world, region + 1),
+        return (BiomeSample){current,
+                             BiomeForRegion(world, PositiveModulo(region + 1, count)),
                              SmoothStep(amount)};
     }
     return (BiomeSample){current, current, 0.0f};
@@ -376,23 +407,25 @@ static float SurfaceHeightRaw(const World *world, int x)
 
     return WorldGroundY(
         world, shape.baseHeight +
-                   ValueNoise1D(world->seed, x, 1200, GENERATION_CONTINENT) *
+                   ValueNoise1D(world->seed, x, 1200, world->width,
+                                GENERATION_CONTINENT) *
                        shape.continentAmplitude +
-                   ValueNoise1D(world->seed, x, 260, GENERATION_HILLS) *
+                   ValueNoise1D(world->seed, x, 260, world->width,
+                                GENERATION_HILLS) *
                        shape.hillAmplitude +
-                   ValueNoise1D(world->seed, x, 52, GENERATION_DETAIL) *
+                   ValueNoise1D(world->seed, x, 52, world->width,
+                                GENERATION_DETAIL) *
                        shape.detailAmplitude);
 }
 
 static int SurfaceHeightAt(const World *world, int x)
 {
     int centerX = world->width / 2;
-    int distance = x - centerX;
+    int distance = WrappedDistance(world, x, centerX);
     float height = SurfaceHeightRaw(world, x);
     int minimumY;
     int maximumY;
 
-    if (distance < 0) distance = -distance;
     if (distance < SPAWN_PLATEAU_OUTER) {
         float amount = distance <= SPAWN_PLATEAU_INNER
                            ? 0.0f
@@ -480,8 +513,10 @@ static void WorldFillEllipse(World *world, int centerX, int centerY,
     int y;
 
     if (radiusX <= 0 || radiusY <= 0) return;
-    firstX = ClampInt(centerX - radiusX, 0, world->width - 1);
-    lastX = ClampInt(centerX + radiusX, 0, world->width - 1);
+    /* Columns are not clamped: the world wraps, and an ellipse across the
+       seam is written into both sides of it. */
+    firstX = centerX - radiusX;
+    lastX = centerX + radiusX;
     firstY = ClampInt(centerY - radiusY, 0, world->height - 1);
     lastY = ClampInt(centerY + radiusY, 0, world->height - 1);
 
@@ -580,7 +615,7 @@ static void GenerateCaves(World *world)
         int lobe;
         WorldBiome biome;
 
-        centerX = ClampInt(centerX, 4, world->width - 5);
+        centerX = PositiveModulo(centerX, world->width);
         surfaceY = SurfaceHeightAt(world, centerX);
         minimumY = surfaceY + (WorldGroundRows(world) / 18 > 18
                                    ? WorldGroundRows(world) / 18
@@ -630,7 +665,7 @@ static void GenerateCaves(World *world)
 
             WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
                              MATERIAL_EMPTY);
-            centerX = ClampInt(centerX + stepX, 4, world->width - 5);
+            centerX = PositiveModulo(centerX + stepX, world->width);
             centerY = ClampInt(centerY + stepY,
                                SurfaceHeightAt(world, centerX) + 12,
                                world->height - 10);
@@ -656,7 +691,7 @@ static void GenerateUndergroundFluids(World *world)
         CellMaterial liquid;
         WorldBiome biome;
 
-        centerX = ClampInt(centerX, 8, world->width - 9);
+        centerX = PositiveModulo(centerX, world->width);
         surfaceY = SurfaceHeightAt(world, centerX);
         biome = WorldBiomeAt(world, centerX);
         liquid = biome == WORLD_BIOME_VOLCANIC ? MATERIAL_LAVA : MATERIAL_WATER;
@@ -672,18 +707,15 @@ static void GenerateUndergroundFluids(World *world)
 
 static bool IsNearSpawn(const World *world, int x)
 {
-    int distance = x - world->width / 2;
-
-    if (distance < 0) distance = -distance;
-    return distance < SPAWN_FEATURE_CLEARANCE;
+    return WrappedDistance(world, x, world->width / 2) < SPAWN_FEATURE_CLEARANCE;
 }
 
 static void WorldPlaceMound(World *world, int centerX, int halfWidth,
                             int height, int foundationDepth,
                             CellMaterial material)
 {
-    int firstX = ClampInt(centerX - halfWidth, 0, world->width - 1);
-    int lastX = ClampInt(centerX + halfWidth, 0, world->width - 1);
+    int firstX = centerX - halfWidth;
+    int lastX = centerX + halfWidth;
     int x;
 
     if (halfWidth <= 0 || height <= 0) return;
@@ -738,8 +770,8 @@ static void WorldPlaceSurfaceBasin(World *world, int centerX, int radiusX,
 {
     int centerSurface = SurfaceHeightAt(world, centerX);
     int waterLine = centerSurface + 4;
-    int firstX = ClampInt(centerX, 0, world->width - 1);
-    int lastX = ClampInt(centerX, 0, world->width - 1);
+    int firstX = centerX;
+    int lastX = centerX;
     int x;
 
     if (radiusX <= 0 || depth <= 0) return;
@@ -753,11 +785,11 @@ static void WorldPlaceSurfaceBasin(World *world, int centerX, int radiusX,
      * the slope beyond. A lake spills at its lowest rim, so the span is walked
      * outward from the centre and stopped at the first column that cannot hold
      * the level. */
-    while (firstX > centerX - radiusX && firstX > 0 &&
+    while (firstX > centerX - radiusX &&
            SurfaceHeightAt(world, firstX - 1) <= waterLine) {
         --firstX;
     }
-    while (lastX < centerX + radiusX && lastX < world->width - 1 &&
+    while (lastX < centerX + radiusX &&
            SurfaceHeightAt(world, lastX + 1) <= waterLine) {
         ++lastX;
     }
@@ -805,7 +837,7 @@ static void GenerateSurfaceFeatures(World *world)
                       SURFACE_FEATURE_SPACING / 2 + RngRange(&rng, -72, 72);
         WorldBiome biome;
 
-        centerX = ClampInt(centerX, 12, world->width - 13);
+        centerX = PositiveModulo(centerX, world->width);
         if (IsNearSpawn(world, centerX)) continue;
         biome = WorldBiomeAt(world, centerX);
 
@@ -890,7 +922,7 @@ static void GenerateSurfacePonds(World *world)
                       POND_FEATURE_SPACING / 2 + RngRange(&rng, -60, 60);
         WorldBiome biome;
 
-        centerX = ClampInt(centerX, 12, world->width - 13);
+        centerX = PositiveModulo(centerX, world->width);
         if (IsNearSpawn(world, centerX)) continue;
         biome = WorldBiomeAt(world, centerX);
         if (biome == WORLD_BIOME_OCEAN) continue;

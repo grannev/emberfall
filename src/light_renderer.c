@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <rlgl.h>
+
 #include "material_render.h"
 #include "world_lighting.h"
 
@@ -120,10 +122,15 @@ bool LightRendererInit(LightRenderer *renderer, const World *world)
         return true;
     }
     /* Bilinear on purpose: it is the interpolation the CPU used to do for
-       every cell, done by the sampler instead. Clamped so the world's edge
-       does not borrow light from the far side of the map. */
+       every cell, done by the sampler instead. Repeated across, because the
+       world wraps: a page drawn one turn of the world along samples the same
+       light as the page it is, and the seam blends like any other column.
+       Clamped down, where the world does end. */
     SetTextureFilter(renderer->texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(renderer->texture, TEXTURE_WRAP_CLAMP);
+    rlTextureParameters(renderer->texture.id, RL_TEXTURE_WRAP_S,
+                        RL_TEXTURE_WRAP_REPEAT);
+    rlTextureParameters(renderer->texture.id, RL_TEXTURE_WRAP_T,
+                        RL_TEXTURE_WRAP_CLAMP);
     LightRendererSetConstants(renderer);
     renderer->ready = true;
     renderer->lastFrame.enabled = true;
@@ -201,9 +208,14 @@ void LightRendererSync(LightRenderer *renderer, World *world, Rectangle visible)
                LIGHT_UPLOAD_MARGIN;
     lastRow = (int)floorf((visible.y + visible.height) / (float)WORLD_LIGHT_SCALE) +
               LIGHT_UPLOAD_MARGIN;
-    if (firstColumn < 0) firstColumn = 0;
+    /* The world wraps and so does the texture: columns are kept unwrapped
+       here, and a window across the seam is uploaded as the two pieces of
+       the texture it covers. */
+    if (lastColumn - firstColumn + 1 > renderer->columns) {
+        firstColumn = 0;
+        lastColumn = renderer->columns - 1;
+    }
     if (firstRow < 0) firstRow = 0;
-    if (lastColumn > renderer->columns - 1) lastColumn = renderer->columns - 1;
     if (lastRow > renderer->rows - 1) lastRow = renderer->rows - 1;
     if (firstColumn <= lastColumn && firstRow <= lastRow &&
         (renderer->uploadedRevision != world->lightRevision ||
@@ -211,8 +223,21 @@ void LightRendererSync(LightRenderer *renderer, World *world, Rectangle visible)
          lastColumn > renderer->uploadedLastColumn ||
          firstRow < renderer->uploadedFirstRow ||
          lastRow > renderer->uploadedLastRow)) {
-        LightRendererUpload(renderer, world, firstColumn, lastColumn, firstRow,
-                            lastRow);
+        int columns = renderer->columns;
+        int start = ((firstColumn % columns) + columns) % columns;
+        int width = lastColumn - firstColumn + 1;
+
+        if (start + width <= columns) {
+            LightRendererUpload(renderer, world, start, start + width - 1, firstRow,
+                                lastRow);
+        } else {
+            LightRendererUpload(renderer, world, start, columns - 1, firstRow,
+                                lastRow);
+            LightRendererUpload(renderer, world, 0, start + width - 1 - columns,
+                                firstRow, lastRow);
+        }
+        renderer->uploadedFirstColumn = firstColumn;
+        renderer->uploadedLastColumn = lastColumn;
     }
     renderer->lastFrame.syncMilliseconds = (GetTime() - started) * 1000.0;
 }

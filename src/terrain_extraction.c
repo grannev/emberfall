@@ -84,8 +84,12 @@ TerrainExtractResult TerrainExtractComponent(World *world,
         component.maximumY < component.minimumY) {
         return ExtractFailure(terrain, TERRAIN_EXTRACT_INVALID);
     }
-    if (component.minimumX < 0 || component.minimumY < 0 ||
-        component.maximumX >= world->width || component.maximumY >= world->height) {
+    /* Rows must lie in the world. Columns need not: the world wraps, and a
+       component found across the seam is in the coordinates it was searched
+       in, which is where its body will be placed. It may be no wider than
+       the world, or it would contain the same column twice. */
+    if (component.minimumY < 0 || component.maximumY >= world->height ||
+        component.maximumX - component.minimumX + 1 > world->width) {
         return ExtractFailure(terrain, TERRAIN_EXTRACT_INVALID);
     }
 

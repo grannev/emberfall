@@ -110,6 +110,8 @@ void GameReset(GameState *game, uint64_t seed)
     }
 
     game->worldSeed = seed;
+    game->wrapShift = 0.0f;
+    game->wraps = 0;
     WorldGenerate(&game->world, seed);
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
     AbilitiesInit(&game->abilities, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
@@ -304,6 +306,61 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
     }
 }
 
+/* The world wraps: its right edge is joined to its left. The character is
+   kept inside the map — moved back a whole width when it crosses the seam —
+   and everything that moves is kept within half a turn of the world of it,
+   in the copy of the world the character is in. Terrain bodies and particles
+   hold unwrapped positions, and the world answers any column by wrapping it,
+   so this is only about agreeing on which copy: a body a few cells past the
+   seam from the character must be a few cells away in coordinates too, or
+   the two would never meet.
+
+   What cannot agree is what lies exactly opposite the character, half the
+   world away: two bodies there may straddle the line where "nearest copy"
+   flips, and would not collide with each other. Nothing the player can see
+   is ever there. */
+static float GameWrapAround(GameState *game, float x)
+{
+    float width = (float)game->world.width;
+    float offset = x - game->player.position.x;
+
+    if (offset > width * 0.5f) {
+        x -= width * ceilf((offset - width * 0.5f) / width);
+    } else if (offset < -width * 0.5f) {
+        x += width * ceilf((-offset - width * 0.5f) / width);
+    }
+    return x;
+}
+
+static void GameKeepInWorld(GameState *game)
+{
+    float width = (float)game->world.width;
+    int index;
+
+    game->wrapShift = 0.0f;
+    if (game->player.position.x < 0.0f || game->player.position.x >= width) {
+        float shift = -floorf(game->player.position.x / width) * width;
+
+        game->player.position.x += shift;
+        game->wrapShift = shift;
+        ++game->wraps;
+    }
+    for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
+        TerrainBody *body = &game->dynamicTerrain.bodies[index];
+
+        if (body->active) {
+            body->position.x = GameWrapAround(game, body->position.x);
+        }
+    }
+    for (index = 0; index < MAX_PARTICLES; ++index) {
+        Particle *particle = &game->particles.particles[index];
+
+        if (particle->active) {
+            particle->position.x = GameWrapAround(game, particle->position.x);
+        }
+    }
+}
+
 void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
                 GameEventBuffer *events)
 {
@@ -314,6 +371,7 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     if (game == NULL || input == NULL || game->world.cells == NULL) {
         return;
     }
+    game->wrapShift = 0.0f;
     deltaTime = Clamp(deltaTime, 0.0f, 0.05f);
     if (input->regeneratePressed) {
         GameRegenerate(game);
@@ -355,6 +413,7 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     TerrainInteractionUpdate(&game->interaction, &game->player,
                              &game->dynamicTerrain, &game->damage,
                              input->aimWorld, input->grabHeld, deltaTime);
+    GameKeepInWorld(game);
 }
 
 void GameUnload(GameState *game)

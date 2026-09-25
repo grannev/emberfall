@@ -89,6 +89,8 @@ bool PresentationFxSpawn(PresentationFxSystem *system,
 uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
                                      const GameEventBuffer *events);
 void PresentationFxUpdate(PresentationFxSystem *system, float deltaTime);
+/* Moves every live effect `dx` across: the world wrapped under them. */
+void PresentationFxShift(PresentationFxSystem *system, float dx);
 const PresentationFxStats *PresentationFxGetStats(
     const PresentationFxSystem *system);
 

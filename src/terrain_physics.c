@@ -67,9 +67,11 @@ static bool TerrainBodyIsLost(const TerrainBody *body, const World *world,
            will never recover, so the body is lost in the way that matters. */
         return true;
     }
-    return maximum.x < -config->killBoundsMargin ||
-           maximum.y < -config->killBoundsMargin ||
-           minimum.x > (float)world->width + config->killBoundsMargin ||
+    /* Above and below only. Across, the world wraps and nothing can leave
+       it; the game keeps every body within half a turn of the player. */
+    (void)minimum.x;
+    (void)maximum.x;
+    return maximum.y < -config->killBoundsMargin ||
            minimum.y > (float)world->height + config->killBoundsMargin;
 }
 
