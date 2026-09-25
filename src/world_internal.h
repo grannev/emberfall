@@ -106,6 +106,21 @@ static inline const Cell *WorldCellConst(const World *world, int x, int y)
 /* Same contract as the public WorldGetCell — outside the map reads as rock, so
    the world edge behaves like an unbreakable wall — without its null checks,
    which internal callers have already satisfied. */
+/* The back layer behind cell (x, y): MATERIAL_EMPTY where there is none,
+   which is the sky. */
+static inline CellMaterial WorldBackWallAt(const World *world, int x, int y)
+{
+    int column;
+
+    if (y < 0 || y >= world->height || world->backWalls == NULL) {
+        return MATERIAL_EMPTY;
+    }
+    column = WorldWrapX(world, x) / WORLD_BACK_WALL_SCALE;
+    return (CellMaterial)world->backWalls[(size_t)(y / WORLD_BACK_WALL_SCALE) *
+                                              (size_t)world->backWallColumns +
+                                          (size_t)column];
+}
+
 static inline CellMaterial WorldMaterialAt(const World *world, int x, int y)
 {
     if (!WorldInBounds(world, x, y)) {
@@ -239,6 +254,13 @@ float WorldGenUnit(uint64_t seed, int x, int y, uint64_t channel);
 Rng WorldGenFeatureRng(uint64_t seed, int feature, uint64_t channel);
 bool WorldGenNearSpawn(const World *world, int x);
 void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng);
+/* Sets the back layer over a box of cells (inclusive, columns wrapped) to
+   `material`, block by block. */
+void WorldGenSetBackWall(World *world, int firstX, int firstY, int lastX, int lastY,
+                         CellMaterial material);
+/* The natural back layer: rock behind everything under the ground's
+   surface, by biome and depth. */
+void WorldGenerateBackWalls(World *world);
 /* The structures and the sky islands, in the order the landscape needs
    them: underground before the surface is finished, the surface ruins before
    the sea is poured, the islands last of all. */

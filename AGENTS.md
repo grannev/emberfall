@@ -203,12 +203,26 @@ coherent phase with an explanatory message.
   targets fall back to the sharp scene. Resources are reused in steady state
   and recreated only on resize. HUD remains a backbuffer overlay; gameplay must
   not gain render-target or shader dependencies.
-- `SpaceRenderer` owns the space backdrop's textures (nebula, two star
-  layers, a ringed giant), built once from the seed; it draws in screen space
-  behind everything, faintly at night and fully as the view leaves the air
-  (`EnvironmentRendererSpaceAmount`). Stars are never drawn in world
-  coordinates again: scrolling one for one with the ground, they read as
-  specks in front of the player.
+- `SpaceRenderer` owns the space backdrop's textures (a muted nebula, two
+  star layers), built once from the seed; it draws in screen space behind
+  everything, faintly at night and, as the view leaves the air, only where
+  the environment's sky has gone dark (`EnvironmentRendererSpaceMask`).
+  Leaving the air is never a crossfade: the sky darkens from the top in
+  bands, the ranges sink and bend into the planet's curve, and the limb's
+  glow stands over it. Stars are never drawn in world coordinates again:
+  scrolling one for one with the ground, they read as specks in front of the
+  player.
+- The back layer (`World.backWalls`, one material per 4×4 block) is made with
+  the world and never changed by play; the page builder draws it wherever a
+  cell is empty, so underground air is a hollow in rock rather than a window
+  to the backdrop. It is presentation: nothing simulates or lights from it.
+- Plants stand behind the character: player collision and player-body
+  contacts skip flora, and passing through a canopy strips leaves out of the
+  world instead (`PlayerBrushFlora`). Everything else — drill, fire, laser,
+  blasts, detachment — still treats a tree as solid.
+- World features are sized against the landscape, not the character: trees,
+  caves, halls and gateways are many times his sixteen cells. Do not shrink
+  them to keep a count in a test.
 - `EnvironmentRenderer` is renderer-owned presentation state. Its 51 bounded
   procedural descriptors (four ranges of continuous ridge lines are drawn
   from noise, not descriptors) and palette are derived from the world seed without
@@ -362,8 +376,9 @@ coherent phase with an explanatory message.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
   `world_lighting.c`, `world_effects.c`, `world_render_data.c`,
-  `world_components.c`, `world_fluid.c` and `world_structures.c` (ruins,
-  dungeons, mines, crypts and sky islands, built on what `world_biomes.c`
+  `world_components.c`, `world_fluid.c` and `world_structures.c` (precursor
+  gateways, terraces, obelisks, vaults and reliquaries; wrecked ships,
+  outposts and mines; sky islands — built on what `world_biomes.c`
   made through the `WorldGen*` helpers in `world_internal.h`).
   `world_internal.h`, `world_thermal.h`, `world_lighting.h` and `world_fluid.h`
   are private to those files. Hot accessors live in the internal headers as `static inline` on

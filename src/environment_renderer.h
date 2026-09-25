@@ -175,18 +175,22 @@ EnvironmentPaletteDefinition EnvironmentRendererResolvedPalette(
    doing rather than what the state says. */
 EnvironmentProfile EnvironmentRendererResolvedProfile(
     const EnvironmentRenderer *renderer);
-/* The backdrop is drawn in three steps so the space renderer can go
-   between them: the sky's gradient; then the sun, the moon, the ranges and
-   the veil that dissolves them as the camera leaves the air; then the sun
-   and the moon again, over space. */
+/* The backdrop is drawn in two steps so the space renderer can go between
+   them: the sky, darkening from the top down as the camera leaves the air;
+   then the sun, the moon, the glow over the planet's limb and the ranges,
+   which sink, flatten and bend into the curve of the planet as the camera
+   climbs. Space shows only where the sky has gone dark: see
+   EnvironmentRendererSpaceMask. */
 void EnvironmentRendererDrawSky(EnvironmentRenderer *renderer, Camera2D camera,
                                 int width, int height);
 void EnvironmentRendererDrawLandscape(EnvironmentRenderer *renderer, Camera2D camera,
                                       int width, int height);
-void EnvironmentRendererDrawOrbs(EnvironmentRenderer *renderer, Camera2D camera,
-                                 int width, int height);
 /* How far out of the air the view is, 0 on the ground and 1 in space. */
 float EnvironmentRendererSpaceAmount(const EnvironmentRenderer *renderer);
+/* The rows of a target `height` tall between which the sky gives way to
+   space: fully dark above `fullY`, untouched below `clearY`. */
+void EnvironmentRendererSpaceMask(const EnvironmentRenderer *renderer, int height,
+                                  float *fullY, float *clearY);
 void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
                                      Camera2D camera, int width, int height);
 Rectangle EnvironmentRendererOverscanBounds(int width, int height);

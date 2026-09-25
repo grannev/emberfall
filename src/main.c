@@ -262,8 +262,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
    appears in the hint the moment it is defined and bound. */
 static void DrawControlsHint(void)
 {
-    const char *hint = "AD walk  |  Space jump, twice to fly or land  |  "
-                       "WASD fly  |  Shift run/boost";
+    const char *hint = "AD walk  |  Space jump, x2 fly/land  |  Shift run/boost";
     int fontSize = 18;
     int id;
     int width;
@@ -281,7 +280,7 @@ static void DrawControlsHint(void)
         hint = TextFormat("%s  |  %s %s", hint, binding,
                           AbilityDefinitionAt((AbilityId)id)->name);
     }
-    hint = TextFormat("%s  |  RMB grab terrain  |  R regenerate  |  F1 HUD",
+    hint = TextFormat("%s  |  RMB grab  |  R new world  |  F1 HUD",
                       hint);
     width = MeasureText(hint, fontSize);
     x = (GetScreenWidth() - width) / 2;

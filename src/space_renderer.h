@@ -3,19 +3,19 @@
 
 /* What lies beyond the sky: the backdrop of open space.
  *
- * Stars used to be drawn in the world's own coordinates, scrolling with the
- * ground one for one, and so they read as specks in front of the player
- * rather than as the depth of space. This is the other way round: a picture
- * as far away as a picture can be, drawn in screen space behind everything,
- * moving against the camera by a few thousandths — a nebula, two layers of
- * stars of many colours, a ringed giant hanging low, asteroids drifting
- * across. Its textures are made once from the world's seed and kept; a frame
- * costs a handful of textured quads and a few dozen blocks.
+ * A picture as far away as a picture can be, drawn in screen space behind
+ * everything and moving against the camera by a few thousandths: a muted
+ * nebula in stepped washes and two layers of stars of many colours. Its
+ * textures are made once from the world's seed and kept; a frame costs a
+ * handful of textured quads.
  *
- * It is drawn twice over a frame: faintly behind the landscape at night, so
- * the night sky has stars in it as far away as they belong, and fully over
- * the landscape as the camera climbs out of the air, where it is the only
- * backdrop there is. Presentation only; it never sees GameState or World.
+ * It is not faded in over the landscape. The environment darkens its sky
+ * from the top down as the camera climbs, and hands this a mask — full above
+ * one row of the screen, nothing below another — so the stars come out
+ * where the sky has gone dark and nowhere else: first overhead, then lower,
+ * until only the glow over the curve of the planet is left. At night the
+ * same stars stand in the whole sky, faintly. Presentation only; it never
+ * sees GameState or World.
  */
 
 #include <stdbool.h>
@@ -23,27 +23,11 @@
 
 #include <raylib.h>
 
-#define SPACE_ASTEROID_COUNT 16
-
-typedef struct SpaceAsteroid {
-    /* Where it sits in its layer, 0..1 across the wrap, 0..1 down the view. */
-    float x;
-    float y;
-    /* Radius in blocks, and how fast its layer moves against the camera. */
-    float radius;
-    float parallax;
-    /* Its own slow drift across, in blocks per second. */
-    float drift;
-    int salt;
-} SpaceAsteroid;
-
 typedef struct SpaceRenderer {
     uint64_t seed;
     Texture2D nebula;
     Texture2D starsFar;
     Texture2D starsNear;
-    Texture2D planet;
-    SpaceAsteroid asteroids[SPACE_ASTEROID_COUNT];
     bool ready;
 } SpaceRenderer;
 
@@ -53,15 +37,15 @@ bool SpaceRendererInit(SpaceRenderer *space, uint64_t seed);
 /* Rebuilds for a new world's seed; nothing when it is the same seed. */
 void SpaceRendererSyncSeed(SpaceRenderer *space, uint64_t seed);
 /* Draws the backdrop at `amount` (0..1) over the whole target, screen
-   space. `travel` is the camera's travel round the planet, so the parallax
-   does not jump at the seam. `full` adds the planet and the asteroids, which
-   belong to open space and not to a night sky seen from the ground. The
-   emissive variant draws only what glows: the brighter stars. */
+   space, masked to full above screen row `fullY` and to nothing below
+   `clearY`. `travel` is the camera's travel round the planet, so the
+   parallax does not jump at the seam. The emissive variant draws only what
+   glows: the brighter stars. */
 void SpaceRendererDraw(const SpaceRenderer *space, Camera2D camera, float travel,
-                       int width, int height, float amount, float time, bool full);
+                       int width, int height, float amount, float fullY, float clearY);
 void SpaceRendererDrawEmissive(const SpaceRenderer *space, Camera2D camera,
                                float travel, int width, int height, float amount,
-                               float time);
+                               float fullY, float clearY);
 void SpaceRendererUnload(SpaceRenderer *space);
 
 #endif

@@ -158,6 +158,8 @@ typedef struct Player {
     float boostTrailTimer;
     float boostBurstTimer;
     int drilledCells;
+    /* Leaves knocked out of a canopy this frame by passing through it. */
+    int brushedLeaves;
     /* One-frame event consumed by main for particles, audio and camera kick:
        the boost has just been engaged from rest. */
     bool boostEngaged;
@@ -251,6 +253,15 @@ Vector2 PlayerBodyUp(const Player *player);
    renderer swings the legs by a quarter of it either way, so a planted foot
    stays where it was put. */
 float PlayerStride(const Player *player);
+
+/* Faster than this through a canopy and leaves come away. */
+#define PLAYER_BRUSH_SPEED 70.0f
+/* Plants do not stop the character; passing through them costs them
+   instead. Knocks the leaves in the collider's path out of the world, more
+   of them the faster the pass, records the cut so a clump left hanging on
+   nothing comes down, and counts them in `brushedLeaves`. Returns the
+   count. */
+int PlayerBrushFlora(Player *player, World *world);
 /* Holds a pose for `holdTime` seconds. Held powers refresh it every frame with a
    short time; a one-shot like the force blast asks for the length of its own
    animation. */

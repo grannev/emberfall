@@ -442,3 +442,30 @@ void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position)
                           0.65f + RandomUnit(system) * 1.25f, -10.0f);
     }
 }
+
+void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velocity,
+                          int leaves)
+{
+    int count;
+    int i;
+
+    if (system == NULL || leaves <= 0) {
+        return;
+    }
+    count = leaves < 24 ? leaves : 24;
+    for (i = 0; i < count; ++i) {
+        float spread = (RandomUnit(system) - 0.5f) * 90.0f;
+        float lift = (RandomUnit(system) - 0.7f) * 60.0f;
+        Color color = i % 3 == 0 ? (Color){98, 150, 62, 240}
+                                 : (i % 3 == 1 ? (Color){60, 112, 48, 240}
+                                               : (Color){132, 170, 70, 240});
+        Particle *particle = ParticlesSpawnOne(
+            system,
+            (Vector2){position.x + (RandomUnit(system) - 0.5f) * 8.0f,
+                      position.y + (RandomUnit(system) - 0.5f) * 16.0f},
+            (Vector2){velocity.x * 0.35f + spread, velocity.y * 0.35f + lift}, color,
+            0.9f + RandomUnit(system) * 1.3f, 0.6f + RandomUnit(system) * 0.6f, 30.0f);
+
+        particle->contact = PARTICLE_CONTACT_BOUNCE;
+    }
+}

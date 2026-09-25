@@ -109,7 +109,12 @@ bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position
             float dx;
             float dy;
 
-            if (!WorldMaterialIsSolid(WorldGetCell(world, x, y))) {
+            CellMaterial material = WorldGetCell(world, x, y);
+
+            /* Plants stand behind the character, like the back wall: he
+               walks and flies through a tree, and it is the tree that pays
+               for it (PlayerBrushFlora), never him. */
+            if (!WorldMaterialIsSolid(material) || MaterialIsFlora(material)) {
                 continue;
             }
 
@@ -1063,4 +1068,78 @@ void PlayerApplyImpulse(Player *player, Vector2 impulse)
     }
     player->velocity.x += impulse.x;
     player->velocity.y += impulse.y;
+}
+
+int PlayerBrushFlora(Player *player, World *world)
+{
+    float speed;
+    float extent;
+    float share;
+    int firstX;
+    int lastX;
+    int firstY;
+    int lastY;
+    int minimumX = 0;
+    int minimumY = 0;
+    int maximumX = -1;
+    int maximumY = -1;
+    int removed = 0;
+    int y;
+
+    if (player == NULL || world == NULL) {
+        return 0;
+    }
+    player->brushedLeaves = 0;
+    speed = sqrtf(player->velocity.x * player->velocity.x +
+                  player->velocity.y * player->velocity.y);
+    if (speed < PLAYER_BRUSH_SPEED) {
+        return 0;
+    }
+    /* A run knocks a few leaves off; a flight at cruise strips a path; the
+       boost's drill takes the rest, wood and all. */
+    share = Clamp((speed - PLAYER_BRUSH_SPEED) / 220.0f, 0.12f, 1.0f);
+    extent = PlayerExtent(player);
+    firstX = (int)floorf(player->position.x - player->radius - 1.0f);
+    lastX = (int)floorf(player->position.x + player->radius + 1.0f);
+    firstY = (int)floorf(player->position.y - extent);
+    lastY = (int)floorf(player->position.y + extent);
+    for (y = firstY; y <= lastY; ++y) {
+        int x;
+
+        for (x = firstX; x <= lastX; ++x) {
+            uint32_t hash;
+
+            if (WorldGetCell(world, x, y) != MATERIAL_LEAF) {
+                continue;
+            }
+            /* Which leaves go is a hash of where they are and when, so a
+               replay strips the same ones. */
+            hash = (uint32_t)x * 0x9e3779b1u ^ (uint32_t)y * 0x85ebca77u ^
+                   (uint32_t)world->tick * 0xc2b2ae3du;
+            hash ^= hash >> 15;
+            hash *= 0x2c1b3c6du;
+            hash ^= hash >> 12;
+            if ((float)(hash & 0xffffu) / 65535.0f > share) {
+                continue;
+            }
+            WorldSetCell(world, x, y, MATERIAL_EMPTY);
+            ++removed;
+            if (maximumX < minimumX) {
+                minimumX = maximumX = x;
+                minimumY = maximumY = y;
+            } else {
+                if (x < minimumX) minimumX = x;
+                if (x > maximumX) maximumX = x;
+                if (y < minimumY) minimumY = y;
+                if (y > maximumY) maximumY = y;
+            }
+        }
+    }
+    if (removed > 0) {
+        /* A clump the path cut loose from its branch comes down as a body,
+           the ordinary way. */
+        WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);
+        player->brushedLeaves = removed;
+    }
+    return removed;
 }

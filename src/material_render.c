@@ -177,6 +177,53 @@ static float MaterialPatternTone(MaterialPattern pattern, int x, int y,
         face = MaterialLatticeValue(brick, course, 0x5bu) * 2.0f - 1.0f;
         return 0.45f * face + 0.25f * grain + (row == 0 ? 0.15f : 0.0f);
     }
+    case MATERIAL_PATTERN_PLATE: {
+        /* Plates ten by seven, every other row of plates moved half along;
+           a seam at the far edge of each, a rivet in from each corner. */
+        int band = (int)floorf((float)y / 7.0f);
+        int row = y - band * 7;
+        int shifted = x + ((band & 1) != 0 ? 5 : 0);
+        int plate = (int)floorf((float)shifted / 10.0f);
+        int column = shifted - plate * 10;
+        float face;
+
+        if (row == 6 || column == 9) {
+            return -1.0f;
+        }
+        if ((row == 1 || row == 4) && (column == 1 || column == 7)) {
+            return 0.95f;
+        }
+        face = MaterialLatticeValue(plate, band, 0x2du) * 2.0f - 1.0f;
+        return 0.35f * face + 0.25f * (MaterialValueNoise(x, y * 6, 5, 0x61u) * 2.0f - 1.0f) +
+               (row == 0 ? 0.3f : 0.0f) + 0.1f * grain;
+    }
+    case MATERIAL_PATTERN_ASHLAR: {
+        /* Blocks eight by five, every other course moved half a block, a
+           joint one cell wide. Every fourth course is a frieze: a stepped
+           key cut into it, the groove dark and its lip lit. */
+        int course = (int)floorf((float)y / 5.0f);
+        int row = y - course * 5;
+        int shifted = x + ((course & 1) != 0 ? 4 : 0);
+        int block = (int)floorf((float)shifted / 8.0f);
+        int column = shifted - block * 8;
+        float face;
+
+        if (row == 4 || column == 7) {
+            return -0.85f;
+        }
+        if ((course & 3) == 1 && row >= 1 && row <= 2) {
+            /* The key: a groove that climbs and falls every four cells. */
+            int step = ((x % 8) + 8) % 8;
+            bool groove = row == 1 ? (step == 0 || step == 1 || step == 2 || step == 4)
+                                   : (step == 2 || step == 4 || step == 5 || step == 6);
+
+            if (groove) {
+                return -0.7f;
+            }
+        }
+        face = MaterialLatticeValue(block, course, 0x77u) * 2.0f - 1.0f;
+        return 0.3f * face + 0.2f * grain + (row == 0 ? 0.25f : 0.0f);
+    }
     case MATERIAL_PATTERN_GRAIN:
     default:
         return grain;
@@ -296,4 +343,37 @@ MaterialRenderSample MaterialRenderAir(int y, int height)
        it can tell from "nothing here". */
     sample.emissive = (Color){0, 0, 0, MATERIAL_RENDER_AIR_ALPHA};
     return sample;
+}
+
+MaterialRenderSample MaterialRenderBackWall(CellMaterial wall, int x, int y)
+{
+    MaterialRenderContext context = {0};
+    MaterialRenderSample sample;
+    float grey;
+
+    /* A tone per cell, as a cell of that wall would carry; the accent
+       share is the same hash's. */
+    context.shade = (unsigned char)(MaterialCoordinateHash(x * 7 + 3, y * 5 + 1) & 63u);
+    sample = MaterialRenderCell(wall, AMBIENT_TEMPERATURE, x, y, context);
+    grey = ((float)sample.scene.r + (float)sample.scene.g + (float)sample.scene.b) / 3.0f;
+    sample.scene.r = (unsigned char)(((float)sample.scene.r * 0.8f + grey * 0.2f) * 0.42f);
+    sample.scene.g = (unsigned char)(((float)sample.scene.g * 0.8f + grey * 0.2f) * 0.42f);
+    sample.scene.b = (unsigned char)(((float)sample.scene.b * 0.8f + grey * 0.2f) * 0.46f);
+    sample.scene.a = 255;
+    sample.emissive = (Color){0, 0, 0, 255};
+    return sample;
+}
+
+MaterialRenderSample MaterialRenderOverWall(MaterialRenderSample front,
+                                            MaterialRenderSample wall)
+{
+    float amount = (float)front.scene.a / 255.0f;
+
+    front.scene = MaterialMix(wall.scene, (Color){front.scene.r, front.scene.g,
+                                                  front.scene.b, 255}, amount);
+    front.scene.a = 255;
+    if (front.emissive.a < 255) {
+        front.emissive.a = 255;
+    }
+    return front;
 }

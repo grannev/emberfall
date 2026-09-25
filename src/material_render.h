@@ -72,6 +72,16 @@ MaterialRenderSample MaterialRenderCell(CellMaterial material,
                                         int patternX, int patternY,
                                         MaterialRenderContext context);
 
+/* The unlit pixel of the back layer: `wall`'s own pattern at (x, y), set
+   back — darker and greyer than any cell in front of it, and opaque, so the
+   backdrop never shows through the ground. Whatever is empty in front of a
+   wall shows this instead of air. */
+MaterialRenderSample MaterialRenderBackWall(CellMaterial wall, int x, int y);
+/* A cell that lets what is behind it through — a liquid, a gas — laid over
+   the back wall behind it, opaque. */
+MaterialRenderSample MaterialRenderOverWall(MaterialRenderSample front,
+                                            MaterialRenderSample wall);
+
 /* The unlit pixel for air at world row `y` of a world `height` tall: a depth
    gradient the shader tints and veils. */
 MaterialRenderSample MaterialRenderAir(int y, int height);

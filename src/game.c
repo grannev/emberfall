@@ -196,6 +196,10 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
         ParticlesSpawnBoostTrail(&game->particles, player->position,
                                  player->velocity);
     }
+    if (player->brushedLeaves > 0) {
+        ParticlesSpawnLeaves(&game->particles, player->position, player->velocity,
+                             player->brushedLeaves);
+    }
     if (player->drilledCells > 0) {
         (void)GameEventsPush(events, (GameEvent){
             .type = GAME_EVENT_PLAYER_DRILL,
@@ -402,6 +406,7 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     game->player.runHeld = input->boostHeld;
     PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,
                  deltaTime);
+    (void)PlayerBrushFlora(&game->player, &game->world);
     GameActivatePlayerRegion(game);
     GamePublishPlayerFeedback(game, events);
 

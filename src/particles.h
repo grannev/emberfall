@@ -64,5 +64,9 @@ void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
 void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
                               Vector2 direction);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
+/* Leaves knocked out of a canopy: they tumble away from the pass and flutter
+   down. Only what was actually taken out of the world. */
+void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velocity,
+                          int leaves);
 
 #endif

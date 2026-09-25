@@ -161,7 +161,11 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     MaterialRenderSample sample;
 
                     if (material == MATERIAL_EMPTY) {
-                        sample = air;
+                        CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
+
+                        sample = wall != MATERIAL_EMPTY
+                                     ? MaterialRenderBackWall(wall, minimumX + x, y)
+                                     : air;
                         liquidRun[x] = 0;
                     } else {
                         MaterialRenderContext around;
@@ -179,6 +183,16 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                                                                         : 0;
                         sample = MaterialRenderCell(material, cell->temperature,
                                                     minimumX + x, y, around);
+                        /* See-through stuff in front of a wall is seen
+                           against the wall, not against the backdrop. */
+                        if (sample.scene.a < 255) {
+                            CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
+
+                            if (wall != MATERIAL_EMPTY) {
+                                sample = MaterialRenderOverWall(
+                                    sample, MaterialRenderBackWall(wall, minimumX + x, y));
+                            }
+                        }
                         if (MaterialIsLiquid(material)) {
                             if (liquidRun[x] < MATERIAL_RENDER_DEPTH_CAP) {
                                 ++liquidRun[x];

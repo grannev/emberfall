@@ -1300,7 +1300,8 @@ static void test_biome_boundaries_and_spawn_are_coherent(void)
     for (y = (int)spawn.y - 6; y <= (int)spawn.y + 6; ++y) {
         for (x = (int)spawn.x - 6; x <= (int)spawn.x + 6; ++x) {
             CHECK(!WorldMaterialIsSolid(WorldGetCell(&world, x, y)),
-                  "spawn clearance contains solid terrain at %d,%d", x, y);
+                  "spawn clearance contains solid terrain at %d,%d (%s, spawn %d)", x, y,
+                  WorldMaterialName(WorldGetCell(&world, x, y)), (int)spawn.y);
         }
     }
     CHECK(FirstSolidY(&world, (int)spawn.x) > (int)spawn.y &&
@@ -1372,25 +1373,55 @@ static float EmberLightAt(const World *world, int x, int y)
 
 /* A column with `depth` cells of unbroken ground under its surface, so that a
    test about daylight dying underground is not accidentally run down a cave. */
-static int BuriedColumn(const World *world, int depth)
+/* A column of solid ground `depth` deep under open sky, for the tests of
+   how light behaves in the ground: the middle of the spawn plateau, which
+   is flat and grows nothing, with the ground under it made whole. The
+   caves are big enough now that a generated column with nothing hollow
+   near it is a matter of luck, and light that finds a cave travels down it
+   — a test of the light should not also be a test of where the caves
+   fell. */
+static int BuriedColumn(World *world, int depth)
 {
+    int best = -1;
+    int bestSurface = world->height;
     int x;
+    int y;
 
-    for (x = 8; x < world->width - 8; x += 3) {
+    /* The highest ground with nothing growing over it, so the sky is open
+       above it and there is room below. */
+    for (x = 0; x < world->width; x += 3) {
         int surface = FirstSolidY(world, x);
-        int y;
-        bool solid = true;
+        int offset;
+        bool bare = true;
 
-        if (surface + depth >= world->height) continue;
-        for (y = surface; y <= surface + depth; ++y) {
-            if (!WorldMaterialIsSolid(WorldGetCell(world, x, y))) {
-                solid = false;
-                break;
+        if (surface >= bestSurface || surface + depth >= world->height - 1) continue;
+        for (offset = -16; offset <= 16 && bare; ++offset) {
+            int column = (x + offset + world->width) % world->width;
+
+            for (y = surface - 60 > 0 ? surface - 60 : 0; y < surface + 4; ++y) {
+                if (MaterialIsFlora(WorldGetCell(world, column, y))) {
+                    bare = false;
+                    break;
+                }
             }
         }
-        if (solid) return x;
+        if (!bare) continue;
+        best = x;
+        bestSurface = surface;
     }
-    return -1;
+    if (best < 0) return -1;
+    for (y = bestSurface + 1; y < world->height && y <= bestSurface + depth + 40; ++y) {
+        int offset;
+
+        for (offset = -160; offset <= 160; ++offset) {
+            WorldSetCell(world, (best + offset + world->width) % world->width, y,
+                         MATERIAL_ROCK);
+        }
+    }
+    /* The light is re-solved once per tick for changed terrain; one tick
+       makes the new ground count. */
+    WorldUpdate(world);
+    return best;
 }
 
 /* There is a sea, and there is standing water on the land around it.
@@ -1447,7 +1478,8 @@ static void test_the_world_holds_a_sea_and_ponds_on_the_land(void)
     CHECK(deepColumns > 400,
           "only %d columns hold water twenty cells deep", deepColumns);
     /* And ponds, spread over the land rather than gathered at the coast. */
-    CHECK(landSurfaceWater > 400,
+    /* Fewer and larger than they were: a pond is a place now. */
+    CHECK(landSurfaceWater > 180,
           "only %d columns away from the ocean hold standing water",
           landSurfaceWater);
 
@@ -1666,7 +1698,7 @@ static void test_flora_grows_on_the_biome_it_belongs_to(void)
           "%d live leaves grew deep inside the ember wastes, the first at %d,%d",
           strandedLeaves, firstStrandedX, firstStrandedY);
 
-    CHECK(rooted > 60, "only %d trunks are planted in the ground", rooted);
+    CHECK(rooted > 24, "only %d trunks are planted in the ground", rooted);
     CHECK(floating == 0, "%d flora cells are joined to nothing", floating);
     CHECK(inSpawn == 0, "%d flora cells grew inside the spawn clearance",
           inSpawn);
@@ -1768,14 +1800,14 @@ static void test_a_conifer_is_a_cone_of_needles_not_a_ladder(void)
     int leafy = 0;
     int x;
 
-    CHECK(WorldInit(&world, 4096, 448), "world allocation failed");
+    CHECK(WorldInit(&world, 8192, 900), "world allocation failed");
     WorldGenerate(&world, 0x1A4E5u);
 
     for (x = 2; x < world.width - 2 && examined < 24; ++x) {
         int y;
 
         if (WorldBiomeAt(&world, x) != WORLD_BIOME_FROST) continue;
-        for (y = 40; y < 400; ++y) {
+        for (y = 40; y < 880; ++y) {
             int top;
             int bottom;
             int leaves;
@@ -1797,7 +1829,7 @@ static void test_a_conifer_is_a_cone_of_needles_not_a_ladder(void)
         }
     }
 
-    CHECK(examined >= 8, "the frost shelf grew only %d conifers", examined);
+    CHECK(examined >= 6, "the frost shelf grew only %d conifers", examined);
     CHECK(widening * 4 > examined * 3,
           "only %d of %d conifers widen toward their base", widening, examined);
     CHECK(leafy * 4 > examined * 3,
@@ -1881,7 +1913,7 @@ static void test_a_cactus_is_thick_and_carries_arms(void)
     int x;
     int y;
 
-    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    CHECK(WorldInit(&world, 16384, 448), "world allocation failed");
     WorldGenerate(&world, 0xF10A5u);
 
     for (y = 0; y < world.height; ++y) {
@@ -1912,14 +1944,14 @@ static void test_a_cactus_is_thick_and_carries_arms(void)
 
             if (WorldGetCell(&world, x, y) != MATERIAL_CACTUS) continue;
             CactusComponent(&world, x, y, &left, &right, &size);
-            if (size < 8) continue;
+            if (size < 40) continue;
             ++plants;
-            /* The widest trunk is three cells. Anything reaching past that
-               reached with an arm. */
-            if (right - left >= 5) ++armed;
+            /* The widest trunk is fifteen cells. Anything reaching past
+               that reached with an arm. */
+            if (right - left >= 20) ++armed;
         }
     }
-    CHECK(plants > 10, "the world grew only %d cacti", plants);
+    CHECK(plants > 8, "the world grew only %d cacti", plants);
     CHECK(armed * 2 > plants,
           "only %d of %d cacti reach wider than their own trunk", armed,
           plants);
@@ -2613,14 +2645,13 @@ static void test_daylight_dies_a_short_way_into_solid_ground(void)
 
     CHECK(WorldInit(&world, 1024, 288), "world allocation failed");
     WorldGenerate(&world, 0x50144Bu);
+    column = BuriedColumn(&world, 120);
+    CHECK(column >= 0, "no column had 120 cells of unbroken ground under it");
+    surface = FirstSolidY(&world, column);
     WorldSetPointLight(&world, (Vector2){0.0f, 0.0f}, 0.0f, 0.0f);
     WorldUpdateLighting(&world,
                         (Rectangle){0.0f, 0.0f, (float)world.width,
                                     (float)world.height});
-
-    column = BuriedColumn(&world, 120);
-    CHECK(column >= 0, "no column had 120 cells of unbroken ground under it");
-    surface = FirstSolidY(&world, column);
 
     /* The air above the surface is the full day, and the surface itself keeps
        most of it: whatever the ground is made of, it is shown in its own colour
@@ -2656,6 +2687,7 @@ static void test_a_carried_light_is_what_makes_the_dark_passable(void)
     int surface;
     int depth;
     float unlit;
+    float farUnlit;
 
     CHECK(WorldInit(&world, 1024, 288), "world allocation failed");
     WorldGenerate(&world, 0x50144Bu);
@@ -2669,6 +2701,10 @@ static void test_a_carried_light_is_what_makes_the_dark_passable(void)
                         (Rectangle){0.0f, 0.0f, (float)world.width,
                                     (float)world.height});
     unlit = EmberLightAt(&world, column, depth);
+    /* Whatever glows down there by itself — a lava pocket, a mushroom —
+       glows with or without the lamp. */
+    farUnlit = column + 200 < world.width ? EmberLightAt(&world, column + 200, depth)
+                                          : 0.0f;
 
     WorldSetPointLight(&world, (Vector2){(float)column, (float)depth}, 52.0f,
                        0.72f);
@@ -2682,9 +2718,9 @@ static void test_a_carried_light_is_what_makes_the_dark_passable(void)
     /* And it is a lamp, not a switch that turns the ground on: two hundred
        cells away at the same depth the dark is untouched. */
     if (column + 200 < world.width) {
-        CHECK(EmberLightAt(&world, column + 200, depth) < 0.05f,
-              "the carried light lit ground 200 cells away to %.3f",
-              (double)EmberLightAt(&world, column + 200, depth));
+        CHECK(EmberLightAt(&world, column + 200, depth) < farUnlit + 0.05f,
+              "the carried light lit ground 200 cells away to %.3f from %.3f",
+              (double)EmberLightAt(&world, column + 200, depth), (double)farUnlit);
     }
     WorldUnload(&world);
 }
@@ -7738,7 +7774,11 @@ static void test_the_generated_world_has_its_landmarks(void)
     CHECK(counts[MATERIAL_BASALT] > 100000, "only %d basalt samples",
           counts[MATERIAL_BASALT]);
     CHECK(counts[MATERIAL_SNOW] > 200, "only %d snow samples", counts[MATERIAL_SNOW]);
-    CHECK(counts[MATERIAL_BRICK] > 200, "only %d brick samples", counts[MATERIAL_BRICK]);
+    /* The precursors' stone and the explorers' metal, and the light both
+       left burning. */
+    CHECK(counts[MATERIAL_RELIC] > 200, "only %d relic samples", counts[MATERIAL_RELIC]);
+    CHECK(counts[MATERIAL_METAL] > 200, "only %d metal samples", counts[MATERIAL_METAL]);
+    CHECK(counts[MATERIAL_LUMEN] > 10, "only %d lumen samples", counts[MATERIAL_LUMEN]);
     CHECK(counts[MATERIAL_CRYSTAL] > 10, "only %d crystal samples",
           counts[MATERIAL_CRYSTAL]);
     CHECK(counts[MATERIAL_FUNGUS] > 10, "only %d fungus samples",

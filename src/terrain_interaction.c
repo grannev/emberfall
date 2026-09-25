@@ -13,6 +13,8 @@
  */
 #include "terrain_interaction.h"
 
+#include "materials.h"
+
 #include <math.h>
 #include <stddef.h>
 
@@ -113,6 +115,13 @@ static Vector2 TerrainBodyPointVelocity(const TerrainBody *body, Vector2 at)
                      body->velocity.y + body->angularVelocity * leverX};
 }
 
+/* Whether a body's cell stands in the character's way: anything but air
+   and plants. */
+static bool TerrainInteractionBlocks(CellMaterial material)
+{
+    return material != MATERIAL_EMPTY && !MaterialIsFlora(material);
+}
+
 /* Solid cells past (x, y) in one direction before the raster opens, up to
    a bound: how far a point inside the body is from its surface that way. */
 static int TerrainInteractionSolidRun(const DynamicTerrainSystem *terrain,
@@ -127,7 +136,7 @@ static int TerrainInteractionSolidRun(const DynamicTerrainSystem *terrain,
         y += stepY;
         if (x < 0 || y < 0 || x >= body->width || y >= body->height ||
             run >= 24 ||
-            DynamicTerrainCellAt(terrain, handle, x, y) == MATERIAL_EMPTY) {
+            !TerrainInteractionBlocks(DynamicTerrainCellAt(terrain, handle, x, y))) {
             return run;
         }
         ++run;
@@ -168,8 +177,10 @@ static bool TerrainInteractionProbe(const DynamicTerrainSystem *terrain,
             float distance;
             float overlap;
 
-            if (DynamicTerrainCellAt(terrain, handle, localX, localY) ==
-                MATERIAL_EMPTY) {
+            /* A felled tree is still a tree: it stands behind the
+               character as it did before it fell. */
+            if (!TerrainInteractionBlocks(
+                    DynamicTerrainCellAt(terrain, handle, localX, localY))) {
                 continue;
             }
             nearestX = TerrainInteractionClamp(localCentre.x, (float)localX,

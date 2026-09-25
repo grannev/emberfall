@@ -359,6 +359,42 @@ static float EnvironmentHorizon(Camera2D camera, int height, float parallax,
                             (float)height * 0.96f);
 }
 
+/* ---- leaving the air ------------------------------------------------------
+
+   Climbing out of the atmosphere is not a crossfade. Three things happen, the
+   way they do on the way up in the painted backdrops' own language of stepped
+   bands:
+
+   - the sky goes dark from the top down, in bands, as the air under the
+     camera thins — the zenith first, the horizon last;
+   - the ranges sink, lose their height, and bend: the far edges of the
+     screen drop away faster than the middle, until the land is the curve of
+     a planet seen from above it;
+   - over that curve a stack of glowing bands stands up, the atmosphere seen
+     edge on, and it is the last of the sky that is left.
+
+   `climb` is 0 on the ground and 1 in space. */
+static float EnvironmentClimb(const EnvironmentRenderer *renderer)
+{
+    return EnvironmentClamp(1.0f - renderer->altitude, 0.0f, 1.0f);
+}
+
+/* How dark the sky is at screen fraction `t` (0 top, 1 bottom). */
+static float EnvironmentDarkAt(float climb, float t)
+{
+    return EnvironmentClamp((climb * 1.9f - 0.02f - t * 1.3f) * 1.6f, 0.0f, 1.0f);
+}
+
+/* How far column `x` of the land has sunk under the climb: all of it a
+   little, the edges a lot, which is the curve. */
+static float EnvironmentCurveDrop(float climb, float x, int width, int height)
+{
+    float across = (x - (float)width * 0.5f) / ((float)width * 0.5f);
+    float bend = powf(climb, 1.3f);
+
+    return climb * (float)height * 0.26f + bend * (float)height * 0.5f * across * across;
+}
+
 static void EnvironmentGenerateFeatures(EnvironmentRenderer *renderer,
                                         uint64_t seed)
 {
@@ -643,6 +679,26 @@ static void EnvironmentDrawSky(EnvironmentRenderer *renderer,
     DrawRectangle(0, horizon + height / 9, width, 2,
                   EnvironmentFade(palette->horizon, 0.12f));
     ++renderer->stats.sceneDrawCalls;
+
+    /* The dark coming down from the top, in steps. */
+    {
+        float climb = EnvironmentClimb(renderer);
+        int band = EnvironmentMaxInt(2, height / 45);
+        int y;
+
+        if (climb > 0.0f) {
+            for (y = (int)bounds.y; y < (int)(bounds.y + bounds.height); y += band) {
+                float dark = EnvironmentDarkAt(climb, ((float)y + (float)band * 0.5f) /
+                                                          (float)height);
+
+                dark = floorf(dark * 8.0f + 0.5f) / 8.0f;
+                if (dark <= 0.0f) continue;
+                DrawRectangle((int)bounds.x, y, (int)bounds.width, band,
+                              EnvironmentFade((Color){3, 4, 12, 255}, dark));
+                ++renderer->stats.sceneDrawCalls;
+            }
+        }
+    }
 
     for (index = 0; index < ENVIRONMENT_SKY_DETAIL_COUNT; ++index) {
         const EnvironmentFeature *detail = &renderer->skyDetails[index];
@@ -1039,10 +1095,13 @@ static void EnvironmentDrawRange(EnvironmentRenderer *renderer,
                                  const EnvironmentRange *range, Camera2D camera,
                                  int width, int height)
 {
-    float foot = EnvironmentHorizon(camera, height, range->parallax, range->base);
+    float horizon = EnvironmentHorizon(camera, height, range->parallax, range->base);
     float scale = EnvironmentViewScale(camera, width);
     float step = fmaxf(2.0f, floorf(3.0f * scale));
-    float amplitude = range->amplitude * scale * fmaxf(0.15f, profile->relief);
+    float climb = EnvironmentClimb(renderer);
+    /* From above, mountains are wrinkles. */
+    float amplitude = range->amplitude * scale * fmaxf(0.15f, profile->relief) *
+                      (1.0f - 0.8f * climb);
     Color body = EnvironmentToward(range->color, palette->skyBottom, range->fog);
     Color lit = EnvironmentToward(body, palette->horizon, 0.28f);
     Color mist = EnvironmentToward(body, palette->haze, 0.45f);
@@ -1055,6 +1114,8 @@ static void EnvironmentDrawRange(EnvironmentRenderer *renderer,
 
     snow = EnvironmentToward(snow, body, 0.12f);
     for (x = -step; x <= (float)width + step; x += step) {
+        float foot = horizon + floorf(EnvironmentCurveDrop(climb, x, width, height) / step) *
+                                   step;
         float u = EnvironmentRangeU(renderer, camera, range->parallax, scale, x);
         float ridge = EnvironmentRangeHeight(renderer, profile, u, range->salt);
         float top = floorf((foot - amplitude * ridge) / step) * step;
@@ -1285,11 +1346,12 @@ static void EnvironmentDrawRanges(EnvironmentRenderer *renderer,
             range.amplitude *= 1.0f - 0.85f * EnvironmentClamp(profile.sea, 0.0f, 1.0f);
         }
         EnvironmentDrawRange(renderer, palette, &profile, &range, camera, width, height);
-        if (index == 1) {
+        /* The small things on the land are lost first on the way up. */
+        if (index == 1 && EnvironmentClimb(renderer) < 0.2f) {
             EnvironmentDrawVolcanoes(renderer, palette, &profile, camera, width, height);
             EnvironmentDrawSea(renderer, palette, &profile, camera, width, height);
         }
-        if (index == 2) {
+        if (index == 2 && EnvironmentClimb(renderer) < 0.2f) {
             EnvironmentDrawTowers(renderer, palette, &profile, camera, width, height);
         }
     }
@@ -1309,13 +1371,54 @@ static void EnvironmentDrawHaze(EnvironmentRenderer *renderer,
         int bandHeight = (int)fmaxf(4.0f, band->height * (float)height);
         int y = (int)(band->y * (float)height +
                       sinf(renderer->time * 0.12f + band->phase) * 5.0f);
-        float alpha = 0.045f + 0.022f * (float)(index + 1);
+        float alpha = (0.045f + 0.022f * (float)(index + 1)) *
+                      (1.0f - EnvironmentClimb(renderer));
 
         DrawRectangleGradientH((int)x, y, bandWidth, bandHeight,
                                EnvironmentFade(palette->haze, 0.0f),
                                EnvironmentFade(palette->haze, alpha));
         ++renderer->stats.sceneDrawCalls;
     }
+}
+
+/* The atmosphere seen edge on: a stack of glowing bands standing over the
+   far range's curve, the horizon's own colour at the bottom going to a deep
+   blue at the top, each band thinner and fainter than the one below it.
+   Nothing on the ground — it grows as the dark comes down. */
+static void EnvironmentDrawLimb(EnvironmentRenderer *renderer,
+                                const EnvironmentPaletteDefinition *palette,
+                                Camera2D camera, int width, int height)
+{
+    float climb = EnvironmentClimb(renderer);
+    float strength = EnvironmentClamp(climb * 2.2f, 0.0f, 1.0f);
+    float scale = EnvironmentViewScale(camera, width);
+    float step = fmaxf(2.0f, floorf(3.0f * scale));
+    float horizon = EnvironmentHorizon(camera, height, 0.010f, 0.60f);
+    float thickness = (float)height * (0.05f + 0.07f * climb);
+    const int bands = 6;
+    Color deep = {40, 70, 150, 255};
+    float x;
+
+    if (strength <= 0.01f) {
+        return;
+    }
+    for (x = -step; x <= (float)width + step; x += step) {
+        float base = horizon + floorf(EnvironmentCurveDrop(climb, x, width, height) / step) *
+                                   step -
+                     (float)height * 0.02f;
+        int band;
+
+        for (band = 0; band < bands; ++band) {
+            float along = (float)band / (float)(bands - 1);
+            float bottom = base - floorf(thickness * along / step) * step;
+            float top = base - floorf(thickness * (along + 1.0f / (float)bands) / step) * step;
+            Color colour = EnvironmentToward(palette->horizon, deep, along);
+
+            DrawRectangle((int)x, (int)top, (int)step, (int)(bottom - top + step),
+                          EnvironmentFade(colour, strength * 0.5f * (1.0f - along * 0.85f)));
+        }
+    }
+    renderer->stats.sceneDrawCalls += 6u;
 }
 
 /* Resolves the palette for this frame and resets the counters; NULL when the
@@ -1374,43 +1477,9 @@ void EnvironmentRendererDrawLandscape(EnvironmentRenderer *renderer, Camera2D ca
        far ridges, not in front of them. */
     EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, false);
     EnvironmentDrawSun(renderer, camera, width, height, 1.0f, false);
+    EnvironmentDrawLimb(renderer, palette, camera, width, height);
     EnvironmentDrawRanges(renderer, palette, camera, width, height);
     EnvironmentDrawHaze(renderer, palette, camera, width, height);
-
-    /* And then dissolved back into its own sky by however far out of the air
-       the camera has climbed. Drawn as one veil of the sky's own colour rather
-       than by fading every layer: the layers overlap, and fading each of them
-       separately shows the ones behind through the ones in front, which reads
-       as the horizon becoming transparent rather than as its going away. */
-    if (renderer->altitude < 1.0f) {
-        Rectangle bounds = EnvironmentRendererOverscanBounds(width, height);
-        float amount = 1.0f - renderer->altitude;
-        Color top = EnvironmentFade(palette->skyTop, amount);
-        Color bottom = EnvironmentFade(palette->skyBottom, amount);
-
-        /* The sky's own gradient, laid back over the layers — not a flat fill.
-           Flooding with one colour dissolves the horizon and the sky with it,
-           and leaves a slab of paint where the atmosphere should be. */
-        DrawRectangleGradientV((int)bounds.x, (int)bounds.y, (int)bounds.width,
-                               (int)bounds.height, top, bottom);
-        ++renderer->stats.sceneDrawCalls;
-    }
-}
-
-void EnvironmentRendererDrawOrbs(EnvironmentRenderer *renderer, Camera2D camera,
-                                 int width, int height)
-{
-    float amount;
-
-    if (renderer == NULL || !renderer->stats.viewValid || renderer->altitude >= 1.0f) {
-        return;
-    }
-    /* The sun and the moon are not part of the horizon, and above the air
-       they are clearer than ever: laid back over the veil and over space as
-       the horizon goes. */
-    amount = 1.0f - renderer->altitude;
-    EnvironmentDrawMoon(renderer, camera, width, height, amount, false);
-    EnvironmentDrawSun(renderer, camera, width, height, amount, false);
 }
 
 float EnvironmentRendererSpaceAmount(const EnvironmentRenderer *renderer)
@@ -1418,7 +1487,19 @@ float EnvironmentRendererSpaceAmount(const EnvironmentRenderer *renderer)
     if (renderer == NULL) {
         return 0.0f;
     }
-    return EnvironmentClamp(1.0f - renderer->altitude, 0.0f, 1.0f);
+    return EnvironmentClimb(renderer);
+}
+
+void EnvironmentRendererSpaceMask(const EnvironmentRenderer *renderer, int height,
+                                  float *fullY, float *clearY)
+{
+    /* Where EnvironmentDarkAt reaches one and where it leaves zero. */
+    float climb = renderer != NULL ? EnvironmentClimb(renderer) : 0.0f;
+    float full = (climb * 1.9f - 0.02f - 1.0f / 1.6f) / 1.3f;
+    float clear = (climb * 1.9f - 0.02f) / 1.3f;
+
+    *fullY = full * (float)height;
+    *clearY = clear * (float)height;
 }
 
 void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,

@@ -233,6 +233,10 @@ bool WorldInit(World *world, int width, int height)
     world->lightOpacity = calloc(lightCount, sizeof(*world->lightOpacity));
     world->lightScratch = calloc((size_t)world->lightColumns,
                                  sizeof(*world->lightScratch));
+    world->backWallColumns = (width + WORLD_BACK_WALL_SCALE - 1) / WORLD_BACK_WALL_SCALE;
+    world->backWallRows = (height + WORLD_BACK_WALL_SCALE - 1) / WORLD_BACK_WALL_SCALE;
+    world->backWalls = calloc((size_t)world->backWallColumns * (size_t)world->backWallRows,
+                              sizeof(*world->backWalls));
     world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
     world->lightDirtyChunks = malloc(chunkCount * sizeof(*world->lightDirtyChunks));
     if (world->dirtyChunks != NULL) {
@@ -254,7 +258,7 @@ bool WorldInit(World *world, int width, int height)
         world->nextRowColumns == NULL || world->activeRowCount == NULL ||
         world->nextRowCount == NULL || world->chunkWater == NULL ||
         world->chunkLava == NULL || world->dirtyChunks == NULL ||
-        world->lightDirtyChunks == NULL ||
+        world->lightDirtyChunks == NULL || world->backWalls == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
         world->lightEmission == NULL || world->lightOpacity == NULL ||
         world->lightScratch == NULL) {
@@ -282,6 +286,7 @@ void WorldUnload(World *world)
     free(world->chunkLava);
     free(world->dirtyChunks);
     free(world->lightDirtyChunks);
+    free(world->backWalls);
     free(world->lightSky);
     free(world->lightEmber);
     free(world->lightEmission);

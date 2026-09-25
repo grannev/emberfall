@@ -318,6 +318,11 @@ static float DrillPitchFor(CellMaterial material)
         return 1.24f;
     case MATERIAL_ICE:
         return 1.55f;
+    case MATERIAL_METAL:
+        /* Plating shrieks. */
+        return 1.8f;
+    case MATERIAL_RELIC:
+        return 0.7f;
     default:
         return 1.0f;
     }

@@ -45,6 +45,14 @@ typedef enum MaterialPattern {
     /* Laid courses: bricks five cells long and two high, each its own tone,
        in a running bond with dark mortar between. */
     MATERIAL_PATTERN_BRICK,
+    /* Riveted plates ten cells by seven, a dark seam between them and a
+       rivet at each corner, each plate its own tone with a brushed streak
+       along it: hull and panel. */
+    MATERIAL_PATTERN_PLATE,
+    /* Dressed stone in great blocks eight by five in a running bond, thin
+       joints, and every fourth course a band with a stepped key carved
+       along it: precursor masonry. */
+    MATERIAL_PATTERN_ASHLAR,
 } MaterialPattern;
 
 typedef struct MaterialInfo {

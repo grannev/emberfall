@@ -52,6 +52,14 @@ typedef enum CellMaterial {
     MATERIAL_CRYSTAL,
     MATERIAL_SNOW,
     MATERIAL_FUNGUS,
+    /* What those who came before built with. Metal is hull plating: the
+       wrecks, the outposts, the mine workings, heavy and slow to heat.
+       Lumen is a lit panel set into it, cold light the colour of a screen.
+       Relic is the pale dressed stone of the precursor gateways, vaults and
+       platforms, cut in great blocks with a groove carved along its bands. */
+    MATERIAL_METAL,
+    MATERIAL_LUMEN,
+    MATERIAL_RELIC,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -242,6 +250,9 @@ typedef struct WorldTickStats {
     uint32_t processedChunks;
 } WorldTickStats;
 
+/* Cells per side of one back-wall block. */
+#define WORLD_BACK_WALL_SCALE 4
+
 typedef struct World {
     int width;
     int height;
@@ -309,6 +320,15 @@ typedef struct World {
        is on screen and so may stay pending for many frames. Sharing one flag
        makes the light refresh re-scan every off-screen chunk every frame. */
     uint8_t *lightDirtyChunks;
+    /* The back layer: what stands behind the cells, one material per block
+       of WORLD_BACK_WALL_SCALE cells square, made with the world and never
+       changed by play. Rock behind the ground, so a cave or a tunnel the
+       player digs is a hollow in something rather than a hole in the
+       picture; the builder's own wall behind a vault, a hold, an outpost.
+       Presentation reads it where a cell is empty; nothing simulates it. */
+    uint8_t *backWalls;
+    int backWallColumns;
+    int backWallRows;
     /* Coarse light field. `emission` and `opacity` are derived from the cells and
        refreshed only where chunks are dirty; `light` is solved from them when
        something that can change it has, and the renderer uploads the solved

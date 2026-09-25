@@ -34,13 +34,13 @@
    production one; a taller world still generates correctly, it just stops
    interleaving below the last row this covers. */
 #define BIOME_BLEND_ROWS_MAX 96
-#define CAVE_FEATURE_SPACING 64
+#define CAVE_FEATURE_SPACING 240
 #define HYDROLOGY_FEATURE_SPACING 256
-#define SURFACE_FEATURE_SPACING 512
+#define SURFACE_FEATURE_SPACING 900
 /* Ponds have their own, much denser grid than the landmark features do. Making
    the landmark grid denser instead would have multiplied the mounds as well,
    and a world with a hill every two hundred cells is a different world. */
-#define POND_FEATURE_SPACING 224
+#define POND_FEATURE_SPACING 420
 #define SPAWN_PLATEAU_INNER 48
 #define SPAWN_PLATEAU_OUTER 144
 #define SPAWN_FEATURE_CLEARANCE 176
@@ -103,10 +103,10 @@ typedef struct BiomeSample {
    what it lifts — a peak is bare rock under snow, and the trees stop below
    it. */
 static const BiomeSurfaceShape BIOME_SURFACES[WORLD_BIOME_COUNT] = {
-    [WORLD_BIOME_TEMPERATE] = {0.535f, 0.0252f, 0.0180f, 0.0048f, 0.140f, 0.0f},
-    [WORLD_BIOME_DUNES] = {0.555f, 0.0180f, 0.0264f, 0.0072f, 0.070f, 0.021f},
-    [WORLD_BIOME_FROST] = {0.495f, 0.0312f, 0.0216f, 0.0060f, 0.220f, 0.0f},
-    [WORLD_BIOME_VOLCANIC] = {0.465f, 0.0360f, 0.0360f, 0.0108f, 0.160f, 0.0f},
+    [WORLD_BIOME_TEMPERATE] = {0.535f, 0.0400f, 0.0440f, 0.0100f, 0.220f, 0.0f},
+    [WORLD_BIOME_DUNES] = {0.555f, 0.0300f, 0.0620f, 0.0140f, 0.110f, 0.052f},
+    [WORLD_BIOME_FROST] = {0.500f, 0.0480f, 0.0520f, 0.0120f, 0.300f, 0.0f},
+    [WORLD_BIOME_VOLCANIC] = {0.475f, 0.0520f, 0.0800f, 0.0200f, 0.240f, 0.0f},
     /* Well below WORLD_SEA_LEVEL, and with the gentlest relief of any biome: a
        sea floor is the one landscape the player looks at through a hundred
        cells of water, and every ridge on it is a ridge the light has to reach
@@ -433,9 +433,9 @@ static float MountainRelief(const World *world, int x)
                                            GENERATION_RANGES) +
                               0.05f) /
                              0.55f);
-    float ridge = 1.0f - fabsf(ValueNoise1D(world->seed, x, 420, world->width,
+    float ridge = 1.0f - fabsf(ValueNoise1D(world->seed, x, 900, world->width,
                                             GENERATION_RIDGES));
-    float peaks = 0.65f + 0.35f * ValueNoise1D(world->seed, x, 140, world->width,
+    float peaks = 0.65f + 0.35f * ValueNoise1D(world->seed, x, 320, world->width,
                                                GENERATION_PEAKS);
 
     return range * ridge * ridge * peaks;
@@ -447,11 +447,11 @@ static float SurfaceBaseFraction(const World *world, int x,
                                  const BiomeSurfaceShape *shape)
 {
     return shape->baseHeight +
-           ValueNoise1D(world->seed, x, 1200, world->width, GENERATION_CONTINENT) *
+           ValueNoise1D(world->seed, x, 2400, world->width, GENERATION_CONTINENT) *
                shape->continentAmplitude +
-           ValueNoise1D(world->seed, x, 260, world->width, GENERATION_HILLS) *
+           ValueNoise1D(world->seed, x, 620, world->width, GENERATION_HILLS) *
                shape->hillAmplitude +
-           ValueNoise1D(world->seed, x, 52, world->width, GENERATION_DETAIL) *
+           ValueNoise1D(world->seed, x, 120, world->width, GENERATION_DETAIL) *
                shape->detailAmplitude;
 }
 
@@ -501,8 +501,12 @@ static int SurfaceHeightAt(const World *world, int x)
                                  (float)(SPAWN_PLATEAU_OUTER -
                                          SPAWN_PLATEAU_INNER);
 
-        height = LerpFloat(SurfaceHeightRaw(world, centerX), height,
-                           SmoothStep(amount));
+        /* Above the sea, whatever the hills did there: a spawn is a place
+           to stand. */
+        float plateau = fminf(SurfaceHeightRaw(world, centerX),
+                              WorldSeaLevelY(world) - 24.0f);
+
+        height = LerpFloat(plateau, height, SmoothStep(amount));
     }
 
     minimumY = world->height > 16 ? 4 : 1;
@@ -681,6 +685,8 @@ static void GenerateBaseTerrain(World *world)
     }
 }
 
+static bool IsNearSpawn(const World *world, int x);
+
 static void GenerateCaves(World *world)
 {
     int featureCount =
@@ -691,7 +697,7 @@ static void GenerateCaves(World *world)
     for (feature = 0; feature < featureCount; ++feature) {
         Rng rng = GenerationFeatureRng(world->seed, feature, GENERATION_CAVES);
         int centerX = feature * CAVE_FEATURE_SPACING +
-                      CAVE_FEATURE_SPACING / 2 + RngRange(&rng, -20, 20);
+                      CAVE_FEATURE_SPACING / 2 + RngRange(&rng, -40, 40);
         int surfaceY;
         int minimumY;
         int maximumY;
@@ -721,33 +727,46 @@ static void GenerateCaves(World *world)
 
             switch (biome) {
                 case WORLD_BIOME_DUNES:
-                    radiusX = RngRange(&rng, 10, 28);
-                    radiusY = RngRange(&rng, 8, 20);
-                    stepX = RngRange(&rng, -20, 20);
-                    stepY = RngRange(&rng, -10, 10);
+                    radiusX = RngRange(&rng, 36, 100);
+                    radiusY = RngRange(&rng, 28, 72);
+                    stepX = RngRange(&rng, -72, 72);
+                    stepY = RngRange(&rng, -36, 36);
                     break;
                 case WORLD_BIOME_FROST:
-                    radiusX = RngRange(&rng, 7, 17);
-                    radiusY = RngRange(&rng, 12, 27);
-                    stepX = RngRange(&rng, -10, 10);
-                    stepY = RngRange(&rng, -18, 18);
+                    radiusX = RngRange(&rng, 26, 60);
+                    radiusY = RngRange(&rng, 44, 96);
+                    stepX = RngRange(&rng, -36, 36);
+                    stepY = RngRange(&rng, -64, 64);
                     break;
                 case WORLD_BIOME_VOLCANIC:
-                    radiusX = RngRange(&rng, 17, 38);
-                    radiusY = RngRange(&rng, 6, 14);
-                    stepX = RngRange(&rng, -27, 27);
-                    stepY = RngRange(&rng, -7, 7);
+                    radiusX = RngRange(&rng, 60, 136);
+                    radiusY = RngRange(&rng, 26, 50);
+                    stepX = RngRange(&rng, -96, 96);
+                    stepY = RngRange(&rng, -24, 24);
                     break;
                 case WORLD_BIOME_TEMPERATE:
                 case WORLD_BIOME_COUNT:
                 default:
-                    radiusX = RngRange(&rng, 14, 34);
-                    radiusY = RngRange(&rng, 8, 18);
-                    stepX = RngRange(&rng, -23, 23);
-                    stepY = RngRange(&rng, -10, 10);
+                    radiusX = RngRange(&rng, 50, 120);
+                    radiusY = RngRange(&rng, 28, 64);
+                    stepX = RngRange(&rng, -82, 82);
+                    stepY = RngRange(&rng, -36, 36);
                     break;
             }
 
+            /* Under the surface by more than the lobe's own height: a lobe
+               this size breaking out of the ground is a crater, not a cave.
+               The tunnels are what open the caves to the sky. */
+            {
+                int under = SurfaceHeightAt(world, centerX) + radiusY + 16;
+
+                if (centerY < under) centerY = under;
+                if (centerY + radiusY >= world->height - 8 ||
+                    IsNearSpawn(world, centerX)) {
+                    centerX = PositiveModulo(centerX + stepX, world->width);
+                    continue;
+                }
+            }
             WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
                              MATERIAL_EMPTY);
             centerX = PositiveModulo(centerX + stepX, world->width);
@@ -775,18 +794,25 @@ static void GenerateUndergroundFluids(World *world)
         int maximumY;
         CellMaterial liquid;
         WorldBiome biome;
+        int radiusX;
+        int radiusY;
 
         centerX = PositiveModulo(centerX, world->width);
         surfaceY = SurfaceHeightAt(world, centerX);
         biome = WorldBiomeAt(world, centerX);
         liquid = biome == WORLD_BIOME_VOLCANIC ? MATERIAL_LAVA : MATERIAL_WATER;
+        radiusX = RngRange(&rng, 50, 96);
+        radiusY = RngRange(&rng, 24, 48);
+        /* Deep enough that the pocket and its lining stay under the ground
+           however big the pocket is. */
         minimumY = surfaceY + WorldGroundRows(world) /
-                                   (biome == WORLD_BIOME_DUNES ? 4 : 6);
-        maximumY = world->height - 24;
+                                   (biome == WORLD_BIOME_DUNES ? 4 : 6) +
+                   radiusY + 12;
+        maximumY = world->height - 24 - radiusY;
         if (minimumY >= maximumY) continue;
 
-        WorldPlacePocket(world, centerX, RngRange(&rng, minimumY, maximumY),
-                         RngRange(&rng, 14, 29), RngRange(&rng, 7, 15), liquid);
+        WorldPlacePocket(world, centerX, RngRange(&rng, minimumY, maximumY), radiusX,
+                         radiusY, liquid);
     }
 }
 
@@ -930,48 +956,48 @@ static void GenerateSurfaceFeatures(World *world)
             case WORLD_BIOME_TEMPERATE:
                 if ((feature & 1) == 0) {
                     WorldPlaceSurfaceBasin(world, centerX,
-                                           RngRange(&rng, 44, 78),
-                                           RngRange(&rng, 14, 25),
+                                           RngRange(&rng, 140, 250),
+                                           RngRange(&rng, 44, 80),
                                            MATERIAL_WATER, false);
                 } else {
-                    WorldPlaceMound(world, centerX, RngRange(&rng, 24, 45),
-                                    RngRange(&rng, 12, 27), 18,
+                    WorldPlaceMound(world, centerX, RngRange(&rng, 76, 144),
+                                    RngRange(&rng, 38, 86), 18,
                                     MATERIAL_DIRT);
                 }
                 break;
             case WORLD_BIOME_DUNES:
                 if (feature % 4 == 0) {
                     WorldPlaceSurfaceBasin(world, centerX,
+                                           RngRange(&rng, 90, 154),
                                            RngRange(&rng, 28, 48),
-                                           RngRange(&rng, 9, 15),
                                            MATERIAL_WATER, false);
                 } else {
-                    WorldPlaceMound(world, centerX, RngRange(&rng, 42, 76),
-                                    RngRange(&rng, 14, 31), 12,
+                    WorldPlaceMound(world, centerX, RngRange(&rng, 134, 244),
+                                    RngRange(&rng, 44, 100), 12,
                                     MATERIAL_SAND);
                 }
                 break;
             case WORLD_BIOME_FROST:
                 if ((feature & 1) == 0) {
                     WorldPlaceSurfaceBasin(world, centerX,
-                                           RngRange(&rng, 42, 70),
-                                           RngRange(&rng, 13, 23),
+                                           RngRange(&rng, 134, 224),
+                                           RngRange(&rng, 42, 74),
                                            MATERIAL_WATER, true);
                 } else {
-                    WorldPlaceMound(world, centerX, RngRange(&rng, 18, 34),
-                                    RngRange(&rng, 18, 38), 10,
+                    WorldPlaceMound(world, centerX, RngRange(&rng, 58, 108),
+                                    RngRange(&rng, 58, 122), 10,
                                     MATERIAL_ICE);
                 }
                 break;
             case WORLD_BIOME_VOLCANIC:
                 if ((feature & 1) == 0) {
                     WorldPlaceSurfaceBasin(world, centerX,
-                                           RngRange(&rng, 31, 58),
-                                           RngRange(&rng, 11, 20),
+                                           RngRange(&rng, 100, 186),
+                                           RngRange(&rng, 36, 64),
                                            MATERIAL_LAVA, false);
                 } else {
-                    WorldPlaceMound(world, centerX, RngRange(&rng, 22, 43),
-                                    RngRange(&rng, 20, 44), 20,
+                    WorldPlaceMound(world, centerX, RngRange(&rng, 70, 138),
+                                    RngRange(&rng, 64, 140), 20,
                                     MATERIAL_ROCK);
                 }
                 break;
@@ -1013,8 +1039,8 @@ static void GenerateSurfacePonds(World *world)
         if (biome == WORLD_BIOME_OCEAN) continue;
         if (RngRange(&rng, 0, 99) >= 64) continue;
 
-        WorldPlaceSurfaceBasin(world, centerX, RngRange(&rng, 15, 31),
-                               RngRange(&rng, 7, 14),
+        WorldPlaceSurfaceBasin(world, centerX, RngRange(&rng, 43, 90),
+                               RngRange(&rng, 20, 40),
                                biome == WORLD_BIOME_VOLCANIC ? MATERIAL_LAVA
                                                              : MATERIAL_WATER,
                                biome == WORLD_BIOME_FROST);
@@ -1328,7 +1354,7 @@ static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
        at the top; the crown is supposed to start where the trunk first
        divides, and the rest of the height comes from the divisions. */
     FloraGrowLimb(world, (float)x + 0.5f, (float)groundY - 0.5f,
-                  -1.5708f + lean, (float)trunkHeight * 0.62f, depth, 5, rng,
+                  -1.5708f + lean, (float)trunkHeight * 0.62f, depth, 16, rng,
                   canopy, canopyRadius);
 }
 
@@ -1477,7 +1503,7 @@ static void FloraCactusColumn(World *world, int x, int topY, int bottomY,
 static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
                              int height)
 {
-    int width = RngRange(rng, 0, 99) < 55 ? 4 : 3;
+    int width = RngRange(rng, 0, 99) < 55 ? 15 : 13;
     int top = groundY - height;
     int arms = RngRange(rng, 0, 99) < 68 ? 2 : 1;
     int arm;
@@ -1487,7 +1513,7 @@ static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
     /* Trunk-width clearance only. Demanding room for the arms as well is what
        once made trees vanish from every slope: any hillside violates a box as
        wide as the plant, and the limbs already stop at whatever they meet. */
-    if (!FloraSpaceIsClear(world, x, groundY - 1, width / 2, height)) {
+    if (!FloraSpaceIsClear(world, x + width / 2, groundY - 1, 1, height * 2 / 3)) {
         return;
     }
     FloraCactusColumn(world, x, top, groundY - 1, width);
@@ -1495,13 +1521,13 @@ static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
     for (arm = 0; arm < arms; ++arm) {
         /* Arms are hung on the lower half of the trunk and never at the same
            height, so a two-armed cactus is lopsided the way a real one is. */
-        int elbowY = groundY - height / 2 + RngRange(rng, -2, 4) - arm * 3;
+        int elbowY = groundY - height / 2 + RngRange(rng, -8, 16) - arm * 12;
         /* How far out the elbow sits, then how far up the arm climbs from it.
            The climb is measured against what is left of the trunk above the
            elbow, so an arm never overtops its own plant. */
-        int reach = RngRange(rng, 4, 8);
-        int rise = RngRange(rng, 7, 15);
-        int armWidth = width > 3 ? 3 : 2;
+        int reach = RngRange(rng, 16, 30);
+        int rise = RngRange(rng, 30, 60);
+        int armWidth = width > 13 ? 11 : 9;
         int armX = side > 0 ? x + width - 1 + reach : x - reach - armWidth + 1;
         int armTop = elbowY - rise;
 
@@ -1570,16 +1596,16 @@ static void GenerateFlora(World *world)
                    trunk would stand on, and asking for the trunk afterwards
                    found that cell occupied — which is how raising the tree
                    chance made the forest thinner. */
-                if (RngRange(&rng, 0, 999) < 48) {
+                if (RngRange(&rng, 0, 999) < 9) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
-                                        RngRange(&rng, 12, 21),
-                                        RngRange(&rng, 4, 8), MATERIAL_LEAF);
+                                        RngRange(&rng, 96, 150),
+                                        RngRange(&rng, 22, 36), MATERIAL_LEAF);
                 }
                 /* Grass on almost every exposed cell of soil: it is the
                    cheapest thing that makes ground read as living. */
                 if (RngRange(&rng, 0, 99) < 86 &&
                     WorldMaterialAt(world, x, surface - 1) == MATERIAL_EMPTY) {
-                    int tuft = RngRange(&rng, 0, 99) < 34 ? 3 : 2;
+                    int tuft = RngRange(&rng, 5, 12);
                     int blade;
 
                     /* One cell alone is a tint on the ground; a tuft is
@@ -1600,9 +1626,9 @@ static void GenerateFlora(World *world)
                 if (ground != MATERIAL_SAND) break;
                 /* Sparse, but not so sparse that a screen of desert holds
                    none: a cactus is the only landmark a dune field has. */
-                if (RngRange(&rng, 0, 999) < 28) {
+                if (RngRange(&rng, 0, 999) < 22) {
                     FloraPlaceCactus(world, x, surface, &rng,
-                                     RngRange(&rng, 17, 32));
+                                     RngRange(&rng, 76, 130));
                 }
                 break;
             case WORLD_BIOME_FROST:
@@ -1612,9 +1638,9 @@ static void GenerateFlora(World *world)
                 }
                 /* Pines: a narrow, tall canopy that reaches most of the way down
                    the trunk, which is what separates them from the broadleaf. */
-                if (RngRange(&rng, 0, 999) < 30) {
+                if (RngRange(&rng, 0, 999) < 8) {
                     FloraPlaceConifer(world, x, surface, &rng,
-                                      RngRange(&rng, 30, 54), MATERIAL_LEAF);
+                                      RngRange(&rng, 130, 220), MATERIAL_LEAF);
                 }
                 break;
             case WORLD_BIOME_VOLCANIC:
@@ -1622,9 +1648,9 @@ static void GenerateFlora(World *world)
                 /* Dead trunks: the same branching with nothing hanging on
                    it. The ember wastes are what the other biomes look like
                    after they have burned. */
-                if (RngRange(&rng, 0, 999) < 30) {
+                if (RngRange(&rng, 0, 999) < 8) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
-                                        RngRange(&rng, 13, 24), 0,
+                                        RngRange(&rng, 64, 110), 0,
                                         MATERIAL_EMPTY);
                 }
                 break;
@@ -1717,7 +1743,7 @@ typedef enum CavernTheme {
     CAVERN_LAVA,
 } CavernTheme;
 
-#define CAVERN_FEATURE_SPACING 900
+#define CAVERN_FEATURE_SPACING 1400
 
 /* A spike of `material` hanging from (x, y) when `direction` is 1, or rising
    from it when -1: two cells wide at its root, tapering to one. */
@@ -1728,7 +1754,7 @@ static void WorldPlaceSpike(World *world, int x, int y, int length, int directio
 
     for (step = 0; step < length; ++step) {
         int row = y + step * direction;
-        int half = (length - step) * 2 / length;
+        int half = (length - step) * (length / 6 + 2) / length;
         int column;
 
         for (column = x - half; column <= x + half; ++column) {
@@ -1744,14 +1770,19 @@ static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int 
 {
     int y;
     int top = floorY - height;
+    /* A stalk as thick as the mushroom is tall allows: a giant on a thread
+       is a lollipop. */
+    int stalk = height > 60 ? 9 : (height > 30 ? 6 : (height > 10 ? 3 : 1));
+    int offset;
 
     for (y = floorY - 1; y > top; --y) {
         if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) return;
     }
     for (y = floorY - 1; y > top; --y) {
-        WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
-        if (height > 10) {
-            WorldSetGeneratedCell(world, x + 1, y, MATERIAL_WOOD);
+        for (offset = 0; offset < stalk; ++offset) {
+            if (WorldMaterialAt(world, x + offset, y) == MATERIAL_EMPTY) {
+                WorldSetGeneratedCell(world, x + offset, y, MATERIAL_WOOD);
+            }
         }
     }
     for (y = top - capRadius / 2; y <= top; ++y) {
@@ -1759,7 +1790,7 @@ static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int 
         float across = (float)(top - y) / (float)(capRadius / 2 + 1);
         int half = (int)((float)capRadius * sqrtf(1.0f - across * across));
 
-        for (column = x - half; column <= x + half + (height > 10 ? 1 : 0); ++column) {
+        for (column = x - half; column <= x + half + stalk - 1; ++column) {
             if (!WorldInBounds(world, column, y)) continue;
             if (WorldMaterialAt(world, column, y) != MATERIAL_EMPTY) continue;
             WorldSetGeneratedCell(world, column, y, MATERIAL_FUNGUS);
@@ -1780,8 +1811,8 @@ static void GenerateCaverns(World *world)
                                          CAVERN_FEATURE_SPACING / 2 +
                                          RngRange(&rng, -200, 200),
                                      world->width);
-        int radiusX = RngRange(&rng, 70, 150);
-        int radiusY = RngRange(&rng, 28, 58);
+        int radiusX = RngRange(&rng, 220, 420);
+        int radiusY = RngRange(&rng, 90, 160);
         int top = SurfaceHeightAt(world, centerX) + radiusY + 60;
         int bottom = (int)WorldGroundY(world, 0.95f) - radiusY;
         int centerY;
@@ -1836,9 +1867,9 @@ static void GenerateCaverns(World *world)
                     WorldSetGeneratedCell(world, centerX + dx, y, MATERIAL_EMPTY);
                 }
             }
-            if (dx % 9 == 0 && shape > 0.3f && RngRange(&rng, 0, 99) < 55) {
+            if (dx % 30 == 0 && shape > 0.3f && RngRange(&rng, 0, 99) < 55) {
                 WorldPlaceSpike(world, centerX + dx, ceiling - 1,
-                                RngRange(&rng, 3, 4 + (int)(10.0f * shape)), 1,
+                                RngRange(&rng, 14, 18 + (int)(46.0f * shape)), 1,
                                 theme == CAVERN_CRYSTAL ? MATERIAL_CRYSTAL : host);
             }
         }
@@ -1863,7 +1894,7 @@ static void GenerateCaverns(World *world)
             break;
         }
         case CAVERN_GROVE:
-            for (dx = -radiusX + 8; dx <= radiusX - 8; dx += RngRange(&rng, 7, 16)) {
+            for (dx = -radiusX + 30; dx <= radiusX - 30; dx += RngRange(&rng, 32, 70)) {
                 int x = centerX + dx;
                 int y = centerY;
 
@@ -1872,12 +1903,12 @@ static void GenerateCaverns(World *world)
                     ++y;
                 }
                 if (y >= centerY + radiusY) continue;
-                WorldPlaceMushroom(world, x, y + 1, RngRange(&rng, 5, 18),
-                                   RngRange(&rng, 3, 8));
+                WorldPlaceMushroom(world, x, y + 1, RngRange(&rng, 30, 84),
+                                   RngRange(&rng, 14, 32));
             }
             break;
         case CAVERN_CRYSTAL:
-            for (dx = -radiusX + 6; dx <= radiusX - 6; dx += RngRange(&rng, 5, 13)) {
+            for (dx = -radiusX + 20; dx <= radiusX - 20; dx += RngRange(&rng, 20, 50)) {
                 int x = centerX + dx;
                 int y = centerY;
 
@@ -1886,7 +1917,7 @@ static void GenerateCaverns(World *world)
                     ++y;
                 }
                 if (y >= centerY + radiusY) continue;
-                WorldPlaceSpike(world, x, y, RngRange(&rng, 5, 22), -1,
+                WorldPlaceSpike(world, x, y, RngRange(&rng, 24, 90), -1,
                                 MATERIAL_CRYSTAL);
             }
             break;
@@ -1930,8 +1961,10 @@ static void GenerateTunnels(World *world)
             angle = PI - angle;
         }
         for (step = 0; step < steps; ++step) {
-            float radius = 3.0f + 2.5f * (0.5f + 0.5f * sinf((float)step * 0.07f +
-                                                         (float)feature));
+            /* Never narrower than the character is tall: a tunnel is a way
+               down, and one a walker has to crouch through is a wall. */
+            float radius = 20.0f + 10.0f * (0.5f + 0.5f * sinf((float)step * 0.03f +
+                                                           (float)feature));
             int cx = (int)x;
             int cy = (int)y;
             int r = (int)ceilf(radius);
@@ -1955,8 +1988,8 @@ static void GenerateTunnels(World *world)
             } else {
                 angle += (PI * 0.5f - angle) * 0.02f;
             }
-            x += cosf(angle) * 2.0f;
-            y += sinf(angle) * 2.0f;
+            x += cosf(angle) * 6.0f;
+            y += sinf(angle) * 6.0f;
             if (y >= (float)world->height - 20.0f) break;
         }
     }
@@ -2100,8 +2133,8 @@ bool WorldGenNearSpawn(const World *world, int x)
 
 void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng)
 {
-    FloraPlaceBroadleaf(world, x, groundY, rng, RngRange(rng, 12, 21),
-                        RngRange(rng, 4, 8), MATERIAL_LEAF);
+    FloraPlaceBroadleaf(world, x, groundY, rng, RngRange(rng, 80, 130),
+                        RngRange(rng, 20, 32), MATERIAL_LEAF);
 }
 
 void WorldGenerateBiomeTerrain(World *world)
@@ -2114,6 +2147,9 @@ void WorldGenerateBiomeTerrain(World *world)
     GenerateUndergroundFluids(world);
     GenerateSurfaceFeatures(world);
     GenerateSurfacePonds(world);
+    /* The back layer from the ground as it now lies, before anything is
+       built: what the builders leave replaces it behind their rooms. */
+    WorldGenerateBackWalls(world);
     /* Ruins and dungeons after the ground has its final shape, and before
        the sea is poured: a sunken temple fills with the sea around it. */
     WorldGenerateUnderground(world);
@@ -2131,4 +2167,105 @@ void WorldGenerateBiomeTerrain(World *world)
     /* The islands in the sky last: they carry their own soil, grass and
        trees, and nothing below should grow up into them. */
     WorldGenerateIslands(world);
+}
+
+void WorldGenSetBackWall(World *world, int firstX, int firstY, int lastX, int lastY,
+                         CellMaterial material)
+{
+    int blockY;
+
+    if (world->backWalls == NULL) return;
+    if (firstY < 0) firstY = 0;
+    if (lastY >= world->height) lastY = world->height - 1;
+    for (blockY = firstY / WORLD_BACK_WALL_SCALE; blockY <= lastY / WORLD_BACK_WALL_SCALE;
+         ++blockY) {
+        int blockX;
+
+        for (blockX = (int)floorf((float)firstX / (float)WORLD_BACK_WALL_SCALE);
+             blockX <= (int)floorf((float)lastX / (float)WORLD_BACK_WALL_SCALE); ++blockX) {
+            int column = PositiveModulo(blockX, world->backWallColumns);
+
+            world->backWalls[(size_t)blockY * (size_t)world->backWallColumns +
+                             (size_t)column] = (uint8_t)material;
+        }
+    }
+}
+
+/* The natural back layer.
+ *
+ * Noita's caves are hollows in a rock the player can see behind them, and so
+ * is every tunnel the player digs; without it a cave here was a hole cut out
+ * of the picture with the sky's backdrop showing through the middle of the
+ * ground. So under the surface everything has a wall behind it: soil or
+ * sand or ice near the top by biome, rock under that, basalt in the deep.
+ *
+ * "Under the surface" is the ground's own top smoothed across fifty
+ * columns by a median: a valley wider than that keeps its sky, a tunnel
+ * mouth or a shaft narrower than that is still inside the hill. Measured
+ * once, as generated, and never again — digging reveals the wall that was
+ * always there. */
+#define BACK_WALL_MEDIAN_REACH 24
+
+static int BackWallCompare(const void *first, const void *second)
+{
+    int a = *(const int *)first;
+    int b = *(const int *)second;
+
+    return (a > b) - (a < b);
+}
+
+void WorldGenerateBackWalls(World *world)
+{
+    int *tops;
+    int blockX;
+
+    if (world->backWalls == NULL || world->width < 2 * BACK_WALL_MEDIAN_REACH) return;
+    tops = malloc((size_t)world->width * sizeof(*tops));
+    if (tops == NULL) return;
+    {
+        int x;
+
+        for (x = 0; x < world->width; ++x) {
+            tops[x] = SurfaceSolidY(world, x);
+            if (tops[x] < 0) tops[x] = world->height;
+        }
+    }
+    for (blockX = 0; blockX < world->backWallColumns; ++blockX) {
+        int samples[BACK_WALL_MEDIAN_REACH + 1];
+        int count = 0;
+        int centre = blockX * WORLD_BACK_WALL_SCALE + WORLD_BACK_WALL_SCALE / 2;
+        int offset;
+        int top;
+        WorldBiome biome = WorldBiomeAt(world, centre % world->width);
+        int deep = (int)WorldGroundY(world, 0.80f);
+        int blockY;
+
+        for (offset = -BACK_WALL_MEDIAN_REACH; offset <= BACK_WALL_MEDIAN_REACH;
+             offset += 2) {
+            samples[count++] = tops[PositiveModulo(centre + offset, world->width)];
+        }
+        qsort(samples, (size_t)count, sizeof(samples[0]), BackWallCompare);
+        top = samples[count / 2] + 6;
+        for (blockY = top / WORLD_BACK_WALL_SCALE + 1; blockY < world->backWallRows;
+             ++blockY) {
+            int y = blockY * WORLD_BACK_WALL_SCALE;
+            int depth = y - top;
+            CellMaterial wall;
+
+            if (y >= deep) {
+                wall = MATERIAL_BASALT;
+            } else if (depth < 70) {
+                wall = biome == WORLD_BIOME_DUNES    ? MATERIAL_SAND
+                       : biome == WORLD_BIOME_FROST  ? MATERIAL_ICE
+                       : biome == WORLD_BIOME_VOLCANIC ? MATERIAL_ROCK
+                       : biome == WORLD_BIOME_OCEAN  ? MATERIAL_SAND
+                                                     : MATERIAL_DIRT;
+            } else {
+                wall = MATERIAL_ROCK;
+            }
+            world->backWalls[(size_t)blockY * (size_t)world->backWallColumns +
+                             (size_t)blockX] = (uint8_t)wall;
+        }
+    }
+    free(tops);
 }

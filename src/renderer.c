@@ -460,24 +460,30 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
-    /* The backdrop, far to near: the sky; the stars behind it at night, as
-       far away as they belong; the sun, the moon and the ranges, dissolving
-       as the camera leaves the air; open space over what is left of them;
-       and the sun and the moon over space. */
+    /* The backdrop, far to near: the sky, gone dark from the top by however
+       far the camera has climbed; space where it is dark — faintly over the
+       whole sky at night; then the sun, the moon, the glow over the limb and
+       the ranges bending into the curve of the planet. */
     EnvironmentRendererDrawSky(&renderer->environment, presentationCamera,
                                renderer->targetWidth, renderer->targetHeight);
-    SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
-                      renderer->targetWidth, renderer->targetHeight,
-                      0.75f * (1.0f - GameDaylightAt(game->dayPhase)),
-                      renderer->presentationTime, false);
+    {
+        float climb = EnvironmentRendererSpaceAmount(&renderer->environment);
+        float night = 0.75f * (1.0f - GameDaylightAt(game->dayPhase)) * (1.0f - climb);
+        float fullY;
+        float clearY;
+
+        EnvironmentRendererSpaceMask(&renderer->environment, renderer->targetHeight,
+                                     &fullY, &clearY);
+        SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
+                          renderer->targetWidth, renderer->targetHeight, night,
+                          (float)renderer->targetHeight * 2.0f,
+                          (float)renderer->targetHeight * 2.0f + 1.0f);
+        SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
+                          renderer->targetWidth, renderer->targetHeight,
+                          climb > 0.0f ? 1.0f : 0.0f, fullY, clearY);
+    }
     EnvironmentRendererDrawLandscape(&renderer->environment, presentationCamera,
                                      renderer->targetWidth, renderer->targetHeight);
-    SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
-                      renderer->targetWidth, renderer->targetHeight,
-                      EnvironmentRendererSpaceAmount(&renderer->environment),
-                      renderer->presentationTime, true);
-    EnvironmentRendererDrawOrbs(&renderer->environment, presentationCamera,
-                                renderer->targetWidth, renderer->targetHeight);
     BeginMode2D(presentationCamera);
         /* Between the backdrop and the terrain, and inside the camera, because
            a cloud is at an altitude rather than at a place on the screen: the
@@ -535,12 +541,24 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         BeginTextureMode(renderer->emissiveTarget);
         ClearBackground(BLANK);
         /* The brighter stars bloom, in space and faintly in a night sky. */
-        SpaceRendererDrawEmissive(
-            &renderer->space, presentationCamera, renderer->travel,
-            renderer->targetWidth, renderer->targetHeight,
-            fmaxf(EnvironmentRendererSpaceAmount(&renderer->environment),
-                  0.5f * (1.0f - GameDaylightAt(game->dayPhase))),
-            renderer->presentationTime);
+        {
+            float climb = EnvironmentRendererSpaceAmount(&renderer->environment);
+            float fullY;
+            float clearY;
+
+            EnvironmentRendererSpaceMask(&renderer->environment, renderer->targetHeight,
+                                         &fullY, &clearY);
+            SpaceRendererDrawEmissive(
+                &renderer->space, presentationCamera, renderer->travel,
+                renderer->targetWidth, renderer->targetHeight,
+                0.5f * (1.0f - GameDaylightAt(game->dayPhase)) * (1.0f - climb),
+                (float)renderer->targetHeight * 2.0f,
+                (float)renderer->targetHeight * 2.0f + 1.0f);
+            SpaceRendererDrawEmissive(&renderer->space, presentationCamera,
+                                      renderer->travel, renderer->targetWidth,
+                                      renderer->targetHeight, climb > 0.0f ? 1.0f : 0.0f,
+                                      fullY, clearY);
+        }
         EnvironmentRendererDrawEmissive(&renderer->environment,
                                         presentationCamera,
                                         renderer->targetWidth,
