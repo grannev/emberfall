@@ -88,5 +88,7 @@ AppInput InputPoll(const World *world, Camera2D camera)
     input.game.grabHeld = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
     input.game.regeneratePressed = IsKeyPressed(KEY_R);
     input.toggleDebugPressed = IsKeyPressed(KEY_F1);
+    input.zoomSteps = GetMouseWheelMove();
+    input.menuPressed = IsKeyPressed(KEY_ESCAPE);
     return input;
 }

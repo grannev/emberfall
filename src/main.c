@@ -18,11 +18,40 @@
 #define WINDOW_HEIGHT 720
 #define VIEW_WIDTH 320.0f
 #define VIEW_HEIGHT 180.0f
+/* How far the wheel may take the view: a scale of the logical 320x180 view,
+   below one to look closer, above to see more. Zooming out makes the page
+   cache and the light window grow with what is on screen; three times the
+   view at full boost widening is still a few dozen pages. */
+#define VIEW_ZOOM_CLOSEST 0.5f
+#define VIEW_ZOOM_FURTHEST 3.0f
+/* Each wheel notch scales the view by this much; the camera eases to it. */
+#define VIEW_ZOOM_STEP 1.15f
+
+/* The player's zoom, kept apart from the camera's own widening at speed: the
+   two multiply, so a boost still pulls back from wherever the player left
+   the view. */
+typedef struct ViewZoom {
+    float target;
+    float current;
+} ViewZoom;
+
+static void ViewZoomUpdate(ViewZoom *zoom, float steps, float deltaTime)
+{
+    if (steps != 0.0f) {
+        zoom->target *= powf(VIEW_ZOOM_STEP, -steps);
+        zoom->target = Clamp(zoom->target, VIEW_ZOOM_CLOSEST, VIEW_ZOOM_FURTHEST);
+    }
+    /* Eased in log space, so zooming out from close takes as long as zooming
+       in from far. */
+    zoom->current = expf(logf(zoom->current) +
+                         (logf(zoom->target) - logf(zoom->current)) *
+                             (1.0f - expf(-12.0f * deltaTime)));
+}
 
 static float CameraZoomForWindow(float viewScale)
 {
-    if (!isfinite(viewScale) || viewScale < 1.0f) {
-        viewScale = 1.0f;
+    if (!isfinite(viewScale) || viewScale < VIEW_ZOOM_CLOSEST) {
+        viewScale = VIEW_ZOOM_CLOSEST;
     }
     float horizontal = (float)GetScreenWidth() / (VIEW_WIDTH * viewScale);
     float vertical = (float)GetScreenHeight() / (VIEW_HEIGHT * viewScale);
@@ -327,6 +356,7 @@ int main(int argc, char **argv)
        on it rather than sent chasing it across a world four thousand cells
        tall. */
     Vector2 lastPlayerPosition;
+    ViewZoom viewZoom = {1.0f, 1.0f};
     int exitCode = 0;
 
     for (argument = 1; argument < argc; ++argument) {
@@ -424,11 +454,15 @@ int main(int argc, char **argv)
             (Vector2){(float)GetScreenWidth() * 0.5f,
                       (float)GetScreenHeight() * 0.5f};
         stableCamera.rotation = 0.0f;
-        stableCamera.zoom = CameraZoomForWindow(cameraFeedback.viewScale);
+        stableCamera.zoom =
+            CameraZoomForWindow(cameraFeedback.viewScale * viewZoom.current);
         stableCamera.target = ClampCameraTarget(
             stableCamera.target, stableCamera.zoom, &game.world);
         aimCamera = stableCamera;
         input = InputPoll(&game.world, aimCamera);
+        if (!smokeTest) {
+            ViewZoomUpdate(&viewZoom, input.zoomSteps, deltaTime);
+        }
         cursorCell = input.cursorCell;
         aimPosition = input.game.aimWorld;
         if (input.toggleDebugPressed) {
@@ -489,13 +523,16 @@ int main(int argc, char **argv)
                 game.player.position.y + cameraOutput.lookahead.y};
 
             desiredCamera = ClampCameraTarget(
-                lead, CameraZoomForWindow(cameraOutput.viewScale), &game.world);
+                lead,
+                CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current),
+                &game.world);
         }
         cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
                          (1.0f - expf(-8.0f * deltaTime));
         cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
                          (1.0f - expf(-8.0f * deltaTime));
-        stableCamera.zoom = CameraZoomForWindow(cameraOutput.viewScale);
+        stableCamera.zoom =
+            CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current);
         stableCamera.target = ClampCameraTarget(cameraFocus, stableCamera.zoom,
                                                 &game.world);
         presentationCamera =

@@ -13,6 +13,11 @@ typedef struct AppInput {
     GameInput game;
     Vector2 cursorCell;
     bool toggleDebugPressed;
+    /* Notches of the mouse wheel this frame, positive away from the player:
+       the camera zooms in on it. Presentation only — gameplay never sees it. */
+    float zoomSteps;
+    /* Escape: the menu. */
+    bool menuPressed;
 } AppInput;
 
 AppInput InputPoll(const World *world, Camera2D camera);
