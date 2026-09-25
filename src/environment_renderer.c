@@ -21,7 +21,8 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {18, 18, 26, 255},
         .haze = {151, 91, 63, 255},
         .accent = {255, 113, 42, 255},
-        .profile = {1.00f, 0.86f, 1.18f, 0.75f, 0.00f, 0.85f},
+        .profile = {1.00f, 0.86f, 1.18f, 0.75f, 0.00f, 0.85f,
+                    0.00f, 1.00f, 0.00f, 0.00f},
     },
     /* The sea's horizon, and now the ocean biome's own backdrop. It used to
        carry eight towers and a real ridge, which is the one silhouette a sea
@@ -39,7 +40,8 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {5, 20, 35, 255},
         .haze = {55, 129, 151, 255},
         .accent = {80, 216, 243, 255},
-        .profile = {0.05f, 1.62f, 0.24f, 0.00f, 0.00f, 0.45f},
+        .profile = {0.05f, 1.62f, 0.24f, 0.00f, 0.00f, 0.45f,
+                    0.00f, 0.00f, 1.00f, 0.00f},
     },
     [ENVIRONMENT_PALETTE_VERDIGRIS_STORM] = {
         .name = "VERDIGRIS STORM",
@@ -52,7 +54,8 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {11, 27, 28, 255},
         .haze = {100, 120, 85, 255},
         .accent = {188, 225, 103, 255},
-        .profile = {0.42f, 1.20f, 0.70f, 0.25f, 1.00f, 0.15f},
+        .profile = {0.42f, 1.20f, 0.70f, 0.25f, 1.00f, 0.15f,
+                    0.35f, 0.00f, 0.00f, 0.00f},
     },
     [ENVIRONMENT_PALETTE_AMBER_DUNES] = {
         .name = "AMBER DUNES",
@@ -65,7 +68,8 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {22, 20, 22, 255},
         .haze = {172, 138, 88, 255},
         .accent = {255, 196, 96, 255},
-        .profile = {0.08f, 1.45f, 0.55f, 0.00f, 0.00f, 0.35f},
+        .profile = {0.08f, 1.45f, 0.55f, 0.00f, 0.00f, 0.35f,
+                    0.00f, 0.00f, 0.00f, 0.85f},
     },
     [ENVIRONMENT_PALETTE_GLACIER_SHELF] = {
         .name = "GLACIER SHELF",
@@ -78,7 +82,8 @@ static const EnvironmentPaletteDefinition PALETTES[ENVIRONMENT_PALETTE_COUNT] = 
         .nearSilhouette = {14, 24, 36, 255},
         .haze = {126, 160, 184, 255},
         .accent = {186, 233, 255, 255},
-        .profile = {0.82f, 0.95f, 1.05f, 0.10f, 0.45f, 0.55f},
+        .profile = {0.82f, 0.95f, 1.05f, 0.10f, 0.45f, 0.55f,
+                    1.00f, 0.00f, 0.00f, 0.00f},
     },
 };
 
@@ -196,6 +201,11 @@ EnvironmentProfile EnvironmentRendererResolvedProfile(
                        (to->profile.treeline - from->profile.treeline) * amount;
     blended.plume = from->profile.plume +
                     (to->profile.plume - from->profile.plume) * amount;
+    blended.snow = from->profile.snow + (to->profile.snow - from->profile.snow) * amount;
+    blended.volcanoes = from->profile.volcanoes +
+                        (to->profile.volcanoes - from->profile.volcanoes) * amount;
+    blended.sea = from->profile.sea + (to->profile.sea - from->profile.sea) * amount;
+    blended.mesa = from->profile.mesa + (to->profile.mesa - from->profile.mesa) * amount;
     return blended;
 }
 
@@ -391,6 +401,16 @@ static void EnvironmentGenerateFeatures(EnvironmentRenderer *renderer,
             .phase = EnvironmentUnit(seed, (uint64_t)index + 721u) * 6.2831853f,
         };
     }
+    for (index = 0; index < ENVIRONMENT_ISLAND_COUNT; ++index) {
+        renderer->islands[index] = (EnvironmentFeature){
+            .x = ((float)index + 0.2f + EnvironmentUnit(seed, (uint64_t)index + 1001u) * 0.6f) /
+                 (float)ENVIRONMENT_ISLAND_COUNT,
+            .y = 0.14f + EnvironmentUnit(seed, (uint64_t)index + 1031u) * 0.22f,
+            .width = 0.5f + EnvironmentUnit(seed, (uint64_t)index + 1061u),
+            .height = 0.4f + EnvironmentUnit(seed, (uint64_t)index + 1091u),
+            .phase = EnvironmentUnit(seed, (uint64_t)index + 1121u) * 6.2831853f,
+        };
+    }
     for (index = 0; index < ENVIRONMENT_NEAR_SPIRE_COUNT; ++index) {
         renderer->nearSpires[index] = (EnvironmentFeature){
             .x = ((float)index + EnvironmentUnit(seed, (uint64_t)index + 801u)) /
@@ -561,6 +581,7 @@ bool EnvironmentRendererStateIsValid(const EnvironmentRenderer *renderer)
         renderer != NULL ? renderer->hazeBands : NULL,
         renderer != NULL ? renderer->skyDetails : NULL,
         renderer != NULL ? renderer->nearSpires : NULL,
+        renderer != NULL ? renderer->islands : NULL,
     };
     const int counts[] = {
         ENVIRONMENT_FAR_PEAK_COUNT,
@@ -568,6 +589,7 @@ bool EnvironmentRendererStateIsValid(const EnvironmentRenderer *renderer)
         ENVIRONMENT_HAZE_BAND_COUNT,
         ENVIRONMENT_SKY_DETAIL_COUNT,
         ENVIRONMENT_NEAR_SPIRE_COUNT,
+        ENVIRONMENT_ISLAND_COUNT,
     };
     size_t group;
 
@@ -792,69 +814,6 @@ static void EnvironmentDrawMoon(EnvironmentRenderer *renderer, Camera2D camera,
     }
 }
 
-/* A ridge drawn as a stack of columns rather than as a triangle.
- *
- * The world is squares and every effect in it is squares; a smooth hypotenuse
- * on the horizon is the one edge in the picture that came from a different
- * program. Each column's height comes from a shape that runs between a cone and
- * a flat-topped mesa, so the same code draws a volcanic spire and a dune by
- * being handed a different number, and the crest is broken by the same hash the
- * beams use so no two ridges repeat. */
-static void EnvironmentRidge(EnvironmentRenderer *renderer, float centreX,
-                             float foot, float halfWidth, float peakHeight,
-                             float sharpness, float step, Color color,
-                             int salt)
-{
-    float x;
-
-    if (halfWidth <= 0.0f || peakHeight <= 0.0f || step <= 0.0f) {
-        return;
-    }
-    for (x = -halfWidth; x <= halfWidth; x += step) {
-        float unit = fabsf(x) / halfWidth;
-        /* Cone and mesa, mixed. The mesa is flat across its middle and falls
-           away steeply at the sides; the cone falls away linearly from its
-           apex. */
-        float cone = 1.0f - unit;
-        float mesa = unit < 0.62f ? 1.0f : (1.0f - unit) / 0.38f;
-        float shape = mesa + (cone - mesa) * sharpness;
-        float ragged;
-        float top;
-
-        if (shape <= 0.0f) continue;
-        ragged = 1.0f - 0.16f * BeamNoise((int)(x / step), salt, 71);
-        top = foot - peakHeight * shape * ragged;
-        /* Snapped, so the crest steps in whole blocks like everything else. */
-        top = floorf(top / step) * step;
-        DrawRectangleV((Vector2){centreX + x, top},
-                       (Vector2){step + 1.0f, foot - top + 1.0f}, color);
-    }
-    ++renderer->stats.sceneDrawCalls;
-}
-
-/* Trees along a crest: short ragged columns, drawn in the same silhouette
-   colour so they read as part of the ridge rather than as objects on it. */
-static void EnvironmentTreeline(EnvironmentRenderer *renderer, float fromX,
-                                float toX, float crestY, float density,
-                                float step, Color color, int salt)
-{
-    float x;
-
-    if (density <= 0.01f || step <= 0.0f) {
-        return;
-    }
-    for (x = fromX; x <= toX; x += step * 2.0f) {
-        float roll = BeamNoise((int)(x / step), salt, 83);
-        float height;
-
-        if (roll > density * 0.55f) continue;
-        height = step * (2.0f + BeamNoise((int)(x / step), salt, 89) * 5.0f);
-        DrawRectangleV((Vector2){x, crestY - height},
-                       (Vector2){step, height + 1.0f}, color);
-    }
-    ++renderer->stats.sceneDrawCalls;
-}
-
 /* A smudge rising off a peak: volcanic smoke, or snow blown off a ridge. */
 static void EnvironmentPlume(EnvironmentRenderer *renderer, float x, float top,
                              float amount, float step, float time, Color color,
@@ -880,123 +839,418 @@ static void EnvironmentPlume(EnvironmentRenderer *renderer, float x, float top,
     ++renderer->stats.sceneDrawCalls;
 }
 
-static void EnvironmentDrawFarLayer(EnvironmentRenderer *renderer,
-                                    const EnvironmentPaletteDefinition *palette,
-                                    Camera2D camera, int width, int height)
+/* ---- the ranges ----------------------------------------------------------
+ *
+ * The backdrop is four ranges one behind the other, each a continuous ridge
+ * line rather than a row of separate peaks: a horizon is a line the eye
+ * follows, and a row of cones is a row of objects. Each is drawn in blocks a
+ * few pixels across, like everything else, and each is further into the sky's
+ * own colour than the one in front of it — atmospheric perspective is most of
+ * what makes a flat picture read as distance. The top block of every column
+ * catches the light, and the foot of each range sinks into the mist of the
+ * valley in front of the next.
+ */
+
+typedef struct EnvironmentRange {
+    /* How fast it scrolls against the camera, and where its foot is. */
+    float parallax;
+    float base;
+    /* Peak height in backdrop pixels at scale one. */
+    float amplitude;
+    /* How far into the sky's colour it has faded, 0..1. */
+    float fog;
+    /* Its own colour before the fog. */
+    Color color;
+    /* Trees along it, 0..1 of the profile's treeline. */
+    float trees;
+    int salt;
+} EnvironmentRange;
+
+/* Smooth value noise in backdrop units, 0..1. */
+static float EnvironmentNoise(const EnvironmentRenderer *renderer, float u,
+                              float wavelength, int salt)
 {
-    float horizon = EnvironmentHorizon(camera, height, 0.018f, 0.64f);
-    float scale = EnvironmentViewScale(camera, width);
-    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
-    /* One block of the backdrop, in screen pixels. Coarser than a world cell
-       because the backdrop is far away: a horizon drawn at the same pitch as
-       the ground in front of it stops reading as distance. */
-    float step = fmaxf(2.0f, 3.0f * scale);
-    Color farColor = EnvironmentToward(palette->farSilhouette,
-                                       palette->skyBottom, 0.24f);
-    int index;
+    float position = u / wavelength;
+    float cell = floorf(position);
+    float t = position - cell;
+    int seedSalt = (int)(renderer->seed & 0x7fffu) + salt * 131;
+    float a = BeamNoise((int)cell, seedSalt, 17);
+    float b = BeamNoise((int)cell + 1, seedSalt, 17);
 
-    DrawRectangle(0, (int)horizon, width, height - (int)horizon + 1, farColor);
-    ++renderer->stats.sceneDrawCalls;
-    for (index = 0; index < ENVIRONMENT_FAR_PEAK_COUNT; ++index) {
-        const EnvironmentFeature *peak = &renderer->farPeaks[index];
-        float x = EnvironmentFeatureX(peak, renderer, camera, width, 0.018f, 0.0f);
-        float halfWidth = (28.0f + peak->width * 46.0f) * scale * profile.breadth;
-        float peakHeight = (42.0f + peak->height * 92.0f) * scale * profile.relief;
-        float foot = horizon + 2.0f + peak->y * 12.0f;
+    t = t * t * (3.0f - 2.0f * t);
+    return a + (b - a) * t;
+}
 
-        EnvironmentRidge(renderer, x, foot, halfWidth, peakHeight,
-                         profile.sharpness, step, farColor, index * 13);
-        EnvironmentPlume(renderer, x, foot - peakHeight, profile.plume, step,
-                         renderer->time,
-                         EnvironmentToward(palette->haze, palette->skyBottom,
-                                           0.35f),
-                         index);
+/* The ridge height of a range at `u`, 0..1: rolling where the profile is
+   soft, ridged and peaked where it is sharp, stepped where it is mesa. */
+static float EnvironmentRangeHeight(const EnvironmentRenderer *renderer,
+                                    const EnvironmentProfile *profile, float u,
+                                    int salt)
+{
+    float breadth = fmaxf(0.4f, profile->breadth);
+    float broad = EnvironmentNoise(renderer, u, 380.0f * breadth, salt + 1);
+    float middle = EnvironmentNoise(renderer, u, 130.0f * breadth, salt + 2);
+    float fine = EnvironmentNoise(renderer, u, 38.0f, salt + 3);
+    float ridge = 1.0f - fabsf(EnvironmentNoise(renderer, u, 210.0f * breadth, salt + 4) *
+                                   2.0f - 1.0f);
+    float soft = 0.55f * broad + 0.32f * middle + 0.13f * fine;
+    float sharp = 0.55f * ridge * ridge + 0.30f * broad + 0.15f * fine;
+    float height = soft + (sharp - soft) * EnvironmentClamp(profile->sharpness, 0.0f, 1.0f);
+
+    if (profile->mesa > 0.01f) {
+        float steps = height * 4.0f;
+        float step = floorf(steps);
+        float rise = steps - step;
+        float stepped = (step + rise * rise * rise * rise * rise * rise) / 4.0f;
+
+        height += (stepped - height) * EnvironmentClamp(profile->mesa, 0.0f, 1.0f);
+    }
+    return EnvironmentClamp(height, 0.0f, 1.0f);
+}
+
+/* Where column `x` of the screen is along a range, in backdrop units. */
+static float EnvironmentRangeU(const EnvironmentRenderer *renderer, Camera2D camera,
+                               float parallax, float scale, float x)
+{
+    float shift = (camera.target.x + renderer->travel) * camera.zoom * parallax;
+
+    return (x + shift) / scale;
+}
+
+/* A tree silhouette on a crest: a pine where the snow is, a round crown
+   elsewhere. */
+static void EnvironmentTree(float x, float crest, float step, float size, bool pine,
+                            Color color)
+{
+    int row;
+    int rows = (int)size;
+
+    if (pine) {
+        for (row = 0; row < rows; ++row) {
+            float half = floorf((float)(row + 1) * 0.5f) * step;
+
+            DrawRectangleV((Vector2){x - half, crest - (float)(rows - row) * step},
+                           (Vector2){half * 2.0f + step, step}, color);
+        }
+        return;
+    }
+    DrawRectangleV((Vector2){x, crest - step * 2.0f}, (Vector2){step, step * 2.0f},
+                   color);
+    for (row = 0; row < rows; ++row) {
+        float half = floorf(sqrtf((float)(row * (rows - row))) * 0.8f) * step;
+
+        DrawRectangleV((Vector2){x - half, crest - step * 2.0f - (float)(rows - row) * step},
+                       (Vector2){half * 2.0f + step, step}, color);
     }
 }
 
-static void EnvironmentDrawStructures(
-    EnvironmentRenderer *renderer,
-    const EnvironmentPaletteDefinition *palette, Camera2D camera, int width,
-    int height)
+static void EnvironmentDrawRange(EnvironmentRenderer *renderer,
+                                 const EnvironmentPaletteDefinition *palette,
+                                 const EnvironmentProfile *profile,
+                                 const EnvironmentRange *range, Camera2D camera,
+                                 int width, int height)
 {
-    float horizon = EnvironmentHorizon(camera, height, 0.045f, 0.79f);
+    float foot = EnvironmentHorizon(camera, height, range->parallax, range->base);
     float scale = EnvironmentViewScale(camera, width);
-    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
+    float step = fmaxf(2.0f, floorf(3.0f * scale));
+    float amplitude = range->amplitude * scale * fmaxf(0.15f, profile->relief);
+    Color body = EnvironmentToward(range->color, palette->skyBottom, range->fog);
+    Color lit = EnvironmentToward(body, palette->horizon, 0.28f);
+    Color mist = EnvironmentToward(body, palette->haze, 0.45f);
+    Color snow = EnvironmentToward((Color){232, 240, 250, 255}, palette->skyBottom,
+                                   range->fog * 0.8f);
+    Color treeColor = EnvironmentToward(body, palette->nearSilhouette, 0.18f);
+    float snowLine = 1.0f - 0.55f * EnvironmentClamp(profile->snow, 0.0f, 1.0f);
+    bool pines = profile->snow > 0.5f;
+    float x;
+
+    snow = EnvironmentToward(snow, body, 0.12f);
+    for (x = -step; x <= (float)width + step; x += step) {
+        float u = EnvironmentRangeU(renderer, camera, range->parallax, scale, x);
+        float ridge = EnvironmentRangeHeight(renderer, profile, u, range->salt);
+        float top = floorf((foot - amplitude * ridge) / step) * step;
+        float bottom = (float)height + 1.0f;
+
+        /* The body, sinking into the valley mist toward its foot. */
+        DrawRectangleGradientV((int)x, (int)top, (int)step,
+                               (int)(foot + step - top), body, mist);
+        if (bottom > foot + step) {
+            DrawRectangle((int)x, (int)(foot + step), (int)step,
+                          (int)(bottom - foot - step), mist);
+        }
+        /* Snow on what reaches above the line, deeper the higher. */
+        if (profile->snow > 0.01f && ridge > snowLine) {
+            float depth = floorf((ridge - snowLine) * amplitude * 0.9f / step) * step +
+                          step;
+
+            DrawRectangle((int)x, (int)top, (int)step, (int)depth, snow);
+        } else {
+            /* The crest catches the light. */
+            DrawRectangle((int)x, (int)top, (int)step, (int)step, lit);
+        }
+        /* Trees on the crest. */
+        if (range->trees > 0.01f && profile->treeline > 0.01f &&
+            (profile->snow < 0.01f || ridge <= snowLine)) {
+            float roll = BeamNoise((int)floorf(u / 7.0f), range->salt, 83);
+
+            if (roll < range->trees * profile->treeline * 0.4f &&
+                fmodf(fabsf(u), 7.0f) < 7.0f * step / scale / 3.0f) {
+                EnvironmentTree(x, top, step,
+                                3.0f + BeamNoise((int)floorf(u / 7.0f), range->salt, 89) * 4.0f,
+                                pines, treeColor);
+            }
+        }
+    }
+    renderer->stats.sceneDrawCalls += 4u;
+}
+
+/* The volcanoes on the middle range: cones rising out of it, a notch at the
+   top where the crater is, and smoke above. Their crater glows in the
+   emissive plane. */
+static bool EnvironmentVolcano(const EnvironmentRenderer *renderer,
+                               const EnvironmentProfile *profile, Camera2D camera,
+                               int width, int height, int index, float *x, float *foot,
+                               float *halfWidth, float *peak)
+{
+    const EnvironmentFeature *feature = &renderer->farPeaks[index];
+    float scale = EnvironmentViewScale(camera, width);
+
+    if ((float)index >= profile->volcanoes * 4.0f) {
+        return false;
+    }
+    *x = EnvironmentFeatureX(feature, renderer, camera, width, 0.022f, 0.0f);
+    *foot = EnvironmentHorizon(camera, height, 0.022f, 0.70f) + 4.0f;
+    *halfWidth = (60.0f + feature->width * 70.0f) * scale;
+    *peak = (90.0f + feature->height * 90.0f) * scale;
+    return true;
+}
+
+static void EnvironmentDrawVolcanoes(EnvironmentRenderer *renderer,
+                                     const EnvironmentPaletteDefinition *palette,
+                                     const EnvironmentProfile *profile,
+                                     Camera2D camera, int width, int height)
+{
+    float scale = EnvironmentViewScale(camera, width);
+    float step = fmaxf(2.0f, floorf(3.0f * scale));
+    Color body = EnvironmentToward(palette->farSilhouette, palette->skyBottom, 0.22f);
+    Color lit = EnvironmentToward(body, palette->horizon, 0.3f);
+    int index;
+
+    for (index = 0; index < 4; ++index) {
+        float x;
+        float foot;
+        float halfWidth;
+        float peak;
+        float dx;
+
+        if (!EnvironmentVolcano(renderer, profile, camera, width, height, index, &x,
+                                &foot, &halfWidth, &peak)) {
+            continue;
+        }
+        for (dx = -halfWidth; dx <= halfWidth; dx += step) {
+            float unit = fabsf(dx) / halfWidth;
+            /* Concave flanks, and a crater notch in the top eighth. */
+            float shape = (1.0f - unit) * (1.0f - unit) * 0.35f + (1.0f - unit) * 0.65f;
+            float top;
+
+            if (unit < 0.12f) shape = 0.92f - 0.08f * (1.0f - unit / 0.12f);
+            top = floorf((foot - peak * shape) / step) * step;
+            DrawRectangle((int)(x + dx), (int)top, (int)step, (int)(foot - top + step),
+                          body);
+            DrawRectangle((int)(x + dx), (int)top, (int)step, (int)step, lit);
+        }
+        EnvironmentPlume(renderer, x, foot - peak * 0.92f, profile->plume, step * 1.6f,
+                         renderer->time,
+                         EnvironmentToward(palette->haze, palette->skyBottom, 0.25f), index);
+        renderer->stats.sceneDrawCalls += 2u;
+    }
+}
+
+/* A ruined tower on the middle range: tapered, broken at the top into a
+   jagged stump, a window or two still lit. The emissive pass draws the lit
+   windows from the same geometry. */
+static bool EnvironmentTower(const EnvironmentRenderer *renderer,
+                             const EnvironmentProfile *profile, Camera2D camera,
+                             int width, int height, int index, float *x, float *foot,
+                             float *bodyWidth, float *bodyHeight)
+{
+    const EnvironmentFeature *structure = &renderer->structures[index];
+    float scale = EnvironmentViewScale(camera, width);
+    float u;
+    float ridge;
+    float rangeFoot;
+
+    if ((float)index >= profile->towers * (float)ENVIRONMENT_STRUCTURE_COUNT) {
+        return false;
+    }
+    *x = EnvironmentFeatureX(structure, renderer, camera, width, 0.045f, 0.0f);
+    /* Standing on the range, not floating in front of it. */
+    u = EnvironmentRangeU(renderer, camera, 0.045f, scale, *x);
+    ridge = EnvironmentRangeHeight(renderer, profile, u, 300);
+    rangeFoot = EnvironmentHorizon(camera, height, 0.045f, 0.80f);
+    *foot = rangeFoot - 70.0f * scale * fmaxf(0.15f, profile->relief) * ridge + 6.0f;
+    *bodyWidth = (10.0f + structure->width * 14.0f) * scale;
+    *bodyHeight = (40.0f + structure->height * 70.0f) * scale;
+    return true;
+}
+
+static void EnvironmentDrawTowers(EnvironmentRenderer *renderer,
+                                  const EnvironmentPaletteDefinition *palette,
+                                  const EnvironmentProfile *profile, Camera2D camera,
+                                  int width, int height)
+{
+    float scale = EnvironmentViewScale(camera, width);
+    float step = fmaxf(2.0f, floorf(3.0f * scale));
+    Color body = EnvironmentToward(palette->midSilhouette, palette->skyBottom, 0.10f);
     int index;
 
     for (index = 0; index < ENVIRONMENT_STRUCTURE_COUNT; ++index) {
-        const EnvironmentFeature *structure = &renderer->structures[index];
+        float x;
+        float foot;
+        float bodyWidth;
+        float bodyHeight;
+        float row;
 
-        /* A desert horizon has no towers on it, and a forest has a couple. The
-           count is a fraction of the eight rather than a flag, so a crossing
-           thins them out instead of switching them off. */
-        if ((float)index >= profile.towers *
-                                (float)ENVIRONMENT_STRUCTURE_COUNT) {
+        if (!EnvironmentTower(renderer, profile, camera, width, height, index, &x, &foot,
+                              &bodyWidth, &bodyHeight)) {
             continue;
         }
-        float x = EnvironmentFeatureX(structure, renderer, camera, width,
-                                      0.045f, 0.0f);
-        float bodyWidth = (12.0f + structure->width * 34.0f) * scale;
-        float bodyHeight = (88.0f + structure->height * 210.0f) * scale;
-        float top = horizon - bodyHeight + structure->y * 18.0f;
-        Color body = EnvironmentToward(palette->midSilhouette,
-                                       palette->skyBottom, 0.10f);
-        Color cap = EnvironmentToward(body, palette->haze, 0.18f);
-        float flicker = 0.72f +
-                        0.28f * sinf(renderer->time * 1.35f + structure->phase);
+        for (row = 0.0f; row < bodyHeight; row += step) {
+            float taper = 1.0f - 0.18f * row / bodyHeight;
+            float half = floorf(bodyWidth * 0.5f * taper / step) * step;
+            float y = foot - row - step;
+            float column;
 
-        DrawRectangle((int)(x - bodyWidth * 0.5f), (int)top, (int)bodyWidth,
-                      height - (int)top + 8, body);
-        DrawRectangle((int)(x - bodyWidth * 0.68f), (int)top,
-                      (int)(bodyWidth * 1.36f),
-                      (int)fmaxf(2.0f, 4.0f * scale), cap);
-        DrawLineEx((Vector2){x, top},
-                   (Vector2){x + (structure->phase > 3.1415926f ? -1.0f : 1.0f) *
-                                      8.0f * scale,
-                             top - (12.0f + structure->height * 20.0f) * scale},
-                   fmaxf(1.0f, scale), cap);
-        DrawRectangle((int)(x - 1.0f),
-                      (int)(top + bodyHeight * (0.20f + structure->y * 0.45f)),
-                      EnvironmentMaxInt(1, (int)(3.0f * scale)),
-                      EnvironmentMaxInt(1, (int)(2.0f * scale)),
-                      EnvironmentFade(palette->accent, 0.62f * flicker));
-        renderer->stats.sceneDrawCalls += 4u;
+            /* The broken top: the last fifth is ragged, block by block. */
+            for (column = -half; column <= half; column += step) {
+                if (row > bodyHeight * 0.8f &&
+                    BeamNoise((int)(column / step), (int)(row / step) + index * 37, 97) <
+                        (row - bodyHeight * 0.8f) / (bodyHeight * 0.2f)) {
+                    continue;
+                }
+                DrawRectangle((int)(x + column), (int)y, (int)step, (int)step, body);
+            }
+        }
+        renderer->stats.sceneDrawCalls += 1u;
     }
 }
 
-static void EnvironmentDrawNearLayer(EnvironmentRenderer *renderer,
-                                     const EnvironmentPaletteDefinition *palette,
-                                     Camera2D camera, int width, int height)
+/* Islands in the far sky: a flat grassy top, a torn underside, and a thread
+   of water falling from some of them. */
+static void EnvironmentDrawIslands(EnvironmentRenderer *renderer,
+                                   const EnvironmentPaletteDefinition *palette,
+                                   Camera2D camera, int width, int height)
 {
-    float horizon = EnvironmentHorizon(camera, height, 0.075f, 0.88f);
     float scale = EnvironmentViewScale(camera, width);
-    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
-    float step = fmaxf(2.0f, 3.0f * scale);
+    float step = fmaxf(2.0f, floorf(2.0f * scale));
+    Color body = EnvironmentToward(palette->farSilhouette, palette->skyBottom, 0.55f);
+    Color top = EnvironmentToward(body, palette->horizon, 0.35f);
+    Color water = EnvironmentFade(EnvironmentToward((Color){170, 210, 240, 255},
+                                                    palette->skyBottom, 0.4f),
+                                  0.55f);
     int index;
 
-    DrawRectangle(0, (int)horizon, width, height - (int)horizon + 1,
-                  palette->nearSilhouette);
-    ++renderer->stats.sceneDrawCalls;
-    for (index = 0; index < ENVIRONMENT_NEAR_SPIRE_COUNT; ++index) {
-        const EnvironmentFeature *spire = &renderer->nearSpires[index];
-        float x = EnvironmentFeatureX(spire, renderer, camera, width, 0.075f,
-                                      0.0f);
-        float halfWidth = (12.0f + spire->width * 26.0f) * scale *
-                          profile.breadth;
-        float spireHeight = (28.0f + spire->height * 82.0f) * scale *
-                            profile.relief;
-        float foot = horizon + spire->y * 14.0f;
+    for (index = 0; index < ENVIRONMENT_ISLAND_COUNT; ++index) {
+        const EnvironmentFeature *island = &renderer->islands[index];
+        float x = EnvironmentFeatureX(island, renderer, camera, width, 0.008f,
+                                      0.6f + (float)index * 0.15f);
+        float y = floorf((island->y * (float)height -
+                          (camera.target.y - 210.0f) * camera.zoom * 0.004f) / step) *
+                  step;
+        float halfWidth = (26.0f + island->width * 40.0f) * scale;
+        float depth = (14.0f + island->height * 24.0f) * scale;
+        float dx;
 
-        EnvironmentRidge(renderer, x, foot, halfWidth, spireHeight,
-                         profile.sharpness, step, palette->nearSilhouette,
-                         index * 29 + 5);
-        /* A crest of trees on the near ridge, where a forest biome has one. */
-        EnvironmentTreeline(renderer, x - halfWidth, x + halfWidth,
-                            foot - spireHeight * 0.34f, profile.treeline, step,
-                            palette->nearSilhouette, index * 31);
+        y += sinf(renderer->time * 0.2f + island->phase) * 2.0f;
+        for (dx = -halfWidth; dx <= halfWidth; dx += step) {
+            float unit = fabsf(dx) / halfWidth;
+            float hang = depth * powf(fmaxf(0.0f, 1.0f - unit * unit), 0.7f) *
+                         (0.7f + 0.3f * BeamNoise((int)(dx / step), index, 61));
+            float bottom = floorf((y + hang) / step) * step;
+
+            DrawRectangle((int)(x + dx), (int)y, (int)step, (int)(bottom - y + step), body);
+            DrawRectangle((int)(x + dx), (int)(y - step), (int)step, (int)step, top);
+        }
+        /* A waterfall off one edge of every other island. */
+        if ((index & 1) == 0) {
+            float fall = x + halfWidth * 0.7f;
+
+            DrawRectangle((int)fall, (int)y, (int)step, (int)(depth * 3.0f), water);
+        }
+        renderer->stats.sceneDrawCalls += 2u;
     }
-    EnvironmentTreeline(renderer, 0.0f, (float)width, horizon,
-                        profile.treeline, step, palette->nearSilhouette, 907);
+}
+
+/* Open water in front of the far ranges: a flat band with the light lying on
+   it in broken lines. */
+static void EnvironmentDrawSea(EnvironmentRenderer *renderer,
+                               const EnvironmentPaletteDefinition *palette,
+                               const EnvironmentProfile *profile, Camera2D camera,
+                               int width, int height)
+{
+    float amount = EnvironmentClamp(profile->sea, 0.0f, 1.0f);
+    float horizon = EnvironmentHorizon(camera, height, 0.03f, 0.72f);
+    float scale = EnvironmentViewScale(camera, width);
+    float step = fmaxf(2.0f, floorf(2.0f * scale));
+    Color sea = EnvironmentFade(EnvironmentToward(palette->midSilhouette, palette->horizon,
+                                                  0.25f),
+                                amount);
+    Color glint = EnvironmentFade(palette->horizon, 0.55f * amount);
+    float y;
+
+    if (amount <= 0.01f) {
+        return;
+    }
+    DrawRectangle(0, (int)horizon, width, height - (int)horizon + 1, sea);
+    for (y = horizon + step; y < (float)height; y += step * 3.0f) {
+        float depth = (y - horizon) / ((float)height - horizon);
+        float x;
+
+        for (x = 0.0f; x < (float)width; x += step * 8.0f) {
+            float u = EnvironmentRangeU(renderer, camera, 0.03f + depth * 0.05f, scale, x);
+            float roll = BeamNoise((int)(u / 9.0f), (int)(y / step), 53);
+
+            if (roll < 0.35f) {
+                DrawRectangle((int)x, (int)y, (int)(step * (3.0f + roll * 8.0f)),
+                              (int)step,
+                              EnvironmentFade(glint, 0.55f * amount * (1.0f - depth)));
+            }
+        }
+    }
+    renderer->stats.sceneDrawCalls += 2u;
+}
+
+static void EnvironmentDrawRanges(EnvironmentRenderer *renderer,
+                                  const EnvironmentPaletteDefinition *palette,
+                                  Camera2D camera, int width, int height)
+{
+    EnvironmentProfile profile = EnvironmentRendererResolvedProfile(renderer);
+    EnvironmentRange ranges[4] = {
+        {0.010f, 0.60f, 200.0f, 0.62f, palette->farSilhouette, 0.0f, 100},
+        {0.022f, 0.68f, 165.0f, 0.36f, palette->farSilhouette, 0.0f, 200},
+        {0.045f, 0.80f, 70.0f, 0.12f, palette->midSilhouette, 0.6f, 300},
+        {0.075f, 0.90f, 56.0f, 0.0f, palette->nearSilhouette, 1.0f, 400},
+    };
+    int index;
+
+    EnvironmentDrawIslands(renderer, palette, camera, width, height);
+    for (index = 0; index < 4; ++index) {
+        /* The sea lies in front of the far ranges and the land beyond it is
+           low: over open water the nearer ranges drop away. */
+        EnvironmentRange range = ranges[index];
+
+        if (index >= 2) {
+            range.amplitude *= 1.0f - 0.85f * EnvironmentClamp(profile.sea, 0.0f, 1.0f);
+        }
+        EnvironmentDrawRange(renderer, palette, &profile, &range, camera, width, height);
+        if (index == 1) {
+            EnvironmentDrawVolcanoes(renderer, palette, &profile, camera, width, height);
+            EnvironmentDrawSea(renderer, palette, &profile, camera, width, height);
+        }
+        if (index == 2) {
+            EnvironmentDrawTowers(renderer, palette, &profile, camera, width, height);
+        }
+    }
 }
 
 static void EnvironmentDrawHaze(EnvironmentRenderer *renderer,
@@ -1055,9 +1309,7 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
        far ridges, not in front of them. */
     EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, false);
     EnvironmentDrawSun(renderer, camera, width, height, 1.0f, false);
-    EnvironmentDrawFarLayer(renderer, palette, camera, width, height);
-    EnvironmentDrawStructures(renderer, palette, camera, width, height);
-    EnvironmentDrawNearLayer(renderer, palette, camera, width, height);
+    EnvironmentDrawRanges(renderer, palette, camera, width, height);
     EnvironmentDrawHaze(renderer, palette, camera, width, height);
 
     /* And then dissolved back into its own sky by however far out of the air
@@ -1090,7 +1342,6 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
 {
     const EnvironmentPaletteDefinition *palette;
     EnvironmentProfile profile;
-    float horizon;
     float scale;
     int index;
 
@@ -1107,42 +1358,47 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
        as it is in the scene, so they bloom only where the sky shows. */
     EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, true);
     EnvironmentDrawSun(renderer, camera, width, height, 1.0f, true);
-    horizon = EnvironmentHorizon(camera, height, 0.045f, 0.79f);
-    scale = EnvironmentViewScale(camera, width);
     profile = EnvironmentRendererResolvedProfile(renderer);
+    scale = EnvironmentViewScale(camera, width);
+    /* Lit windows in the ruined towers, from the same geometry the scene
+       drew them with. */
     for (index = 0; index < ENVIRONMENT_STRUCTURE_COUNT; ++index) {
         const EnvironmentFeature *structure = &renderer->structures[index];
-
-        /* A desert horizon has no towers on it, and a forest has a couple. The
-           count is a fraction of the eight rather than a flag, so a crossing
-           thins them out instead of switching them off. */
-        if ((float)index >= profile.towers *
-                                (float)ENVIRONMENT_STRUCTURE_COUNT) {
-            continue;
-        }
-        float x = EnvironmentFeatureX(structure, renderer, camera, width,
-                                      0.045f, 0.0f);
-        float bodyHeight = (88.0f + structure->height * 210.0f) * scale;
-        float top = horizon - bodyHeight + structure->y * 18.0f;
+        float x;
+        float foot;
+        float bodyWidth;
+        float bodyHeight;
         float flicker = 0.68f +
                         0.32f * sinf(renderer->time * 1.35f + structure->phase);
-        int lightY = (int)(top + bodyHeight *
-                                     (0.20f + structure->y * 0.45f));
 
-        DrawRectangle((int)(x - 1.0f), lightY,
+        if (!EnvironmentTower(renderer, &profile, camera, width, height, index, &x,
+                              &foot, &bodyWidth, &bodyHeight)) {
+            continue;
+        }
+        DrawRectangle((int)(x - scale), (int)(foot - bodyHeight * (0.35f + structure->y * 0.3f)),
                       EnvironmentMaxInt(1, (int)(3.0f * scale)),
-                      EnvironmentMaxInt(1, (int)(2.0f * scale)),
-                      EnvironmentFade(palette->accent, 0.52f * flicker));
+                      EnvironmentMaxInt(1, (int)(3.0f * scale)),
+                      EnvironmentFade(palette->accent, 0.55f * flicker));
         ++renderer->stats.emissiveDrawCalls;
         ++renderer->stats.emissiveContributors;
-        if ((index % 3) == 0) {
-            DrawRectangle((int)x, (int)(top - 15.0f * scale), 1,
-                          (int)(bodyHeight * 0.38f),
-                          EnvironmentFade(palette->accent,
-                                          0.085f * flicker));
-            ++renderer->stats.emissiveDrawCalls;
-            ++renderer->stats.emissiveContributors;
+    }
+    /* The craters. */
+    for (index = 0; index < 4; ++index) {
+        float x;
+        float foot;
+        float halfWidth;
+        float peak;
+        float pulse = 0.75f + 0.25f * sinf(renderer->time * 0.9f + (float)index);
+
+        if (!EnvironmentVolcano(renderer, &profile, camera, width, height, index, &x,
+                                &foot, &halfWidth, &peak)) {
+            continue;
         }
+        DrawRectangle((int)(x - halfWidth * 0.1f), (int)(foot - peak * 0.93f),
+                      (int)(halfWidth * 0.2f), (int)fmaxf(3.0f, 4.0f * scale),
+                      EnvironmentFade(palette->accent, 0.8f * pulse));
+        ++renderer->stats.emissiveDrawCalls;
+        ++renderer->stats.emissiveContributors;
     }
 }
 

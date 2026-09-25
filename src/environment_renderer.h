@@ -18,6 +18,8 @@
 #define ENVIRONMENT_HAZE_BAND_COUNT 5
 #define ENVIRONMENT_SKY_DETAIL_COUNT 12
 #define ENVIRONMENT_NEAR_SPIRE_COUNT 6
+/* Islands hanging in the far sky, like the ones the world has in its own. */
+#define ENVIRONMENT_ISLAND_COUNT 4
 
 typedef enum EnvironmentPalette {
     ENVIRONMENT_PALETTE_AUTO = -1,
@@ -58,6 +60,14 @@ typedef struct EnvironmentProfile {
     float treeline;
     /* Smudges rising off the far peaks, 0..1: volcanic plumes, or blown snow. */
     float plume;
+    /* How far down the peaks the snow reaches, 0..1. */
+    float snow;
+    /* How many volcanoes stand on the middle range, 0..1, their craters lit. */
+    float volcanoes;
+    /* Open sea in front of the far ranges instead of land, 0..1. */
+    float sea;
+    /* How much the ranges step into flat-topped mesas, 0..1. */
+    float mesa;
 } EnvironmentProfile;
 
 typedef struct EnvironmentPaletteDefinition {
@@ -88,6 +98,7 @@ typedef struct EnvironmentRenderer {
     EnvironmentFeature hazeBands[ENVIRONMENT_HAZE_BAND_COUNT];
     EnvironmentFeature skyDetails[ENVIRONMENT_SKY_DETAIL_COUNT];
     EnvironmentFeature nearSpires[ENVIRONMENT_NEAR_SPIRE_COUNT];
+    EnvironmentFeature islands[ENVIRONMENT_ISLAND_COUNT];
     EnvironmentRendererStats stats;
     uint64_t seed;
     float time;
