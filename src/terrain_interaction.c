@@ -113,6 +113,27 @@ static Vector2 TerrainBodyPointVelocity(const TerrainBody *body, Vector2 at)
                      body->velocity.y + body->angularVelocity * leverX};
 }
 
+/* Solid cells past (x, y) in one direction before the raster opens, up to
+   a bound: how far a point inside the body is from its surface that way. */
+static int TerrainInteractionSolidRun(const DynamicTerrainSystem *terrain,
+                                      TerrainBodyHandle handle,
+                                      const TerrainBody *body, int x, int y,
+                                      int stepX, int stepY)
+{
+    int run = 0;
+
+    for (;;) {
+        x += stepX;
+        y += stepY;
+        if (x < 0 || y < 0 || x >= body->width || y >= body->height ||
+            run >= 24 ||
+            DynamicTerrainCellAt(terrain, handle, x, y) == MATERIAL_EMPTY) {
+            return run;
+        }
+        ++run;
+    }
+}
+
 /* Deepest overlap between the player's circle and one body's occupied cells,
    all in the body's frame. Returns false when they do not touch.
 
@@ -169,13 +190,28 @@ static bool TerrainInteractionProbe(const DynamicTerrainSystem *terrain,
             } else {
                 /* The centre is inside the cell, so there is no direction to
                    read off the offset. Leave along the shortest way out of the
-                   cell box: it is the smallest correction that frees the
-                   player, and it is a function of the geometry rather than of
-                   whatever the last frame happened to do. */
-                float left = localCentre.x - (float)localX;
-                float right = (float)localX + 1.0f - localCentre.x;
-                float up = localCentre.y - (float)localY;
-                float down = (float)localY + 1.0f - localCentre.y;
+                   solid — not out of this one cell, which inside a slab only
+                   leads into the next: the capsule's feet can be cells deep
+                   in a slanted face while its middle only grazes it. It is
+                   the smallest correction that frees the player, and a
+                   function of the geometry rather than of whatever the last
+                   frame happened to do. */
+                float left = localCentre.x - (float)localX +
+                             (float)TerrainInteractionSolidRun(terrain, handle,
+                                                               body, localX,
+                                                               localY, -1, 0);
+                float right = (float)localX + 1.0f - localCentre.x +
+                              (float)TerrainInteractionSolidRun(terrain, handle,
+                                                                body, localX,
+                                                                localY, 1, 0);
+                float up = localCentre.y - (float)localY +
+                           (float)TerrainInteractionSolidRun(terrain, handle,
+                                                             body, localX,
+                                                             localY, 0, -1);
+                float down = (float)localY + 1.0f - localCentre.y +
+                             (float)TerrainInteractionSolidRun(terrain, handle,
+                                                               body, localX,
+                                                               localY, 0, 1);
                 float least = left;
 
                 *localNormal = (Vector2){-1.0f, 0.0f};
@@ -191,6 +227,42 @@ static bool TerrainInteractionProbe(const DynamicTerrainSystem *terrain,
     }
     *depth = best;
     return true;
+}
+
+/* The collider is a capsule: its head, its middle and its feet, each a
+   circle of its radius, and the deepest of the three is the contact. Three
+   circles half a height apart cover the segment with room to spare, since the
+   radius is more than half of that spacing. Returns the depth, zero when
+   nothing touches. */
+static float TerrainInteractionProbeCapsule(const DynamicTerrainSystem *terrain,
+                                            TerrainBodyHandle handle,
+                                            const TerrainBody *body,
+                                            const Player *player,
+                                            Vector2 *localContact,
+                                            Vector2 *localNormal)
+{
+    static const float along[3] = {-1.0f, 0.0f, 1.0f};
+    float depth = 0.0f;
+    int part;
+
+    for (part = 0; part < 3; ++part) {
+        Vector2 partContact = {0.0f, 0.0f};
+        Vector2 partNormal = {0.0f, -1.0f};
+        float partDepth = 0.0f;
+        Vector2 localCentre = TerrainBodyWorldToLocal(
+            body, player->position.x,
+            player->position.y + along[part] * player->halfHeight);
+
+        if (TerrainInteractionProbe(terrain, handle, body, localCentre,
+                                    player->radius, &partContact, &partNormal,
+                                    &partDepth) &&
+            partDepth > depth) {
+            depth = partDepth;
+            *localContact = partContact;
+            *localNormal = partNormal;
+        }
+    }
+    return depth;
 }
 
 /* Rotates a local direction into the world. The transform helpers move points;
@@ -307,7 +379,6 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     TerrainBodyHandle handle = {(uint16_t)slot, body->generation};
     Vector2 minimum;
     Vector2 maximum;
-    Vector2 localCentre;
     /* Initialised because the compiler cannot see that the probe writes both
        whenever it reports a contact, and a warning left standing is a warning
        nobody reads. */
@@ -329,16 +400,14 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     /* Rejected on the box before a single trigonometric call. */
     if (player->position.x + player->radius < minimum.x ||
         player->position.x - player->radius > maximum.x ||
-        player->position.y + player->radius < minimum.y ||
-        player->position.y - player->radius > maximum.y) {
+        player->position.y + PlayerExtent(player) < minimum.y ||
+        player->position.y - PlayerExtent(player) > maximum.y) {
         return false;
     }
 
-    localCentre = TerrainBodyWorldToLocal(body, player->position.x,
-                                          player->position.y);
-    if (!TerrainInteractionProbe(terrain, handle, body, localCentre,
-                                 player->radius, &localContact, &localNormal,
-                                 &depth)) {
+    depth = TerrainInteractionProbeCapsule(terrain, handle, body, player,
+                                           &localContact, &localNormal);
+    if (depth <= 0.0f) {
         return false;
     }
     /* Asked only once the player is actually touching the body: carving on
@@ -360,6 +429,35 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
        must not be shoved aside to make room for them. */
     player->position.x += normal.x * depth;
     player->position.y += normal.y * depth;
+    /* Out of the deepest part may still leave another part in: a slanted
+       face touches the feet and the hips at once. A few more pushes, of
+       position only — the momentum is exchanged once, below. */
+    {
+        int pass;
+
+        for (pass = 0; pass < 3; ++pass) {
+            Vector2 moreContact = localContact;
+            Vector2 moreNormal = localNormal;
+            float more = TerrainInteractionProbeCapsule(terrain, handle, body,
+                                                        player, &moreContact,
+                                                        &moreNormal);
+            Vector2 away;
+
+            if (more <= 0.0f) {
+                break;
+            }
+            away = TerrainInteractionRotate(body, moreNormal);
+            player->position.x += away.x * more;
+            player->position.y += away.y * more;
+        }
+    }
+    /* Pushed up by it: the character is standing on it, and can walk on it
+       and jump off it as off the ground. */
+    if (player->mode == PLAYER_MODE_WALK && normal.y < -0.6f) {
+        player->grounded = true;
+        player->airTime = 0.0f;
+        player->jumped = false;
+    }
 
     pointVelocity = TerrainBodyPointVelocity(body, contact);
     approach = (player->velocity.x - pointVelocity.x) * normal.x +

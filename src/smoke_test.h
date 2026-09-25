@@ -68,6 +68,14 @@ typedef struct SmokeMovement {
     bool turned;
     bool reversed;
     bool stopped;
+    /* On foot: the fastest run along the floor, how many frames of it were
+       on the ground, how high the jump rose, and whether the second jump
+       took off into flight. */
+    float walkFloorY;
+    float runSpeed;
+    float jumpRise;
+    int groundedFrames;
+    bool tookOff;
 } SmokeMovement;
 
 typedef struct SmokeTest {

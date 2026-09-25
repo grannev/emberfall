@@ -22,6 +22,12 @@ typedef struct GameInput {
        button does. Kept out of the ability array on purpose — it is not a power,
        it has no cooldown, and it does nothing to the world on its own. */
     bool grabHeld;
+    /* Jump: the press edge and the hold, and the press edge of up. On foot
+       both jump; in flight only jump counts, so tapping up twice while
+       climbing does not land the flight. */
+    bool jumpPressed;
+    bool jumpHeld;
+    bool upPressed;
     bool regeneratePressed;
 } GameInput;
 

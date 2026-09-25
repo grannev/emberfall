@@ -338,7 +338,7 @@ static float EnvironmentFeatureX(const EnvironmentFeature *feature,
 
 static float EnvironmentViewScale(Camera2D camera, int width)
 {
-    float scale = camera.zoom * 320.0f / (float)width;
+    float scale = camera.zoom * 426.0f / (float)width;
 
     return EnvironmentClamp(scale, 0.42f, 1.20f);
 }
@@ -704,7 +704,7 @@ static EnvironmentOrb EnvironmentOrbAt(float phase, Camera2D camera, int width,
 
 static int EnvironmentBlock(int height)
 {
-    return EnvironmentMaxInt(1, height / 180);
+    return EnvironmentMaxInt(1, height / 240);
 }
 
 /* A soft radial glow: `inner` at the centre fading to nothing at `radius`,

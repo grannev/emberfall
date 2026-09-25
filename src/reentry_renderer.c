@@ -226,7 +226,7 @@ static void ReentryDrawAll(const AtmosphereSystem *atmosphere, const Player *pla
     }
     if (player != NULL &&
         ReentryShapeFor(&shape, player->position, player->velocity,
-                        player->radius, atmosphere->playerHeat, 0x5a11) &&
+                        PlayerExtent(player) * 0.7f, atmosphere->playerHeat, 0x5a11) &&
         ReentryVisible(visible, shape.centre, shape.size * 4.0f + 40.0f)) {
         ReentryDrawShape(&shape, frame, emissive);
     }

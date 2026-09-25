@@ -149,6 +149,108 @@ static void DrawLimb(Vector2 from, Vector2 to, int thickness, Color color)
 
 #define SHOULDER_UP PLAYER_SHOULDER_UP
 
+/* Thigh and shin, in body units: a leg straight down from the hips at -0.6
+   would reach 6.8 below them, a little past the soles at -7, so a standing
+   leg is always a touch bent and never locks. */
+#define LEG_UPPER 3.4f
+#define LEG_LOWER 3.4f
+
+/* Two-bone reach from `hip` to `foot` in body-frame units, the knee bending
+   toward +x — forward, since the frame's side axis is turned to face the way
+   the character looks. A foot out of reach is drawn at full stretch. */
+static Vector2 PlayerKnee(Vector2 hip, Vector2 foot)
+{
+    float dx = foot.x - hip.x;
+    float dy = foot.y - hip.y;
+    float length = sqrtf(dx * dx + dy * dy);
+    float distance = length;
+    float along;
+    float out;
+    Vector2 across;
+
+    if (length < 0.001f) {
+        return (Vector2){hip.x + LEG_UPPER, hip.y};
+    }
+    if (distance > LEG_UPPER + LEG_LOWER - 0.01f) {
+        distance = LEG_UPPER + LEG_LOWER - 0.01f;
+    }
+    along = (LEG_UPPER * LEG_UPPER - LEG_LOWER * LEG_LOWER + distance * distance) /
+            (2.0f * distance);
+    out = sqrtf(fmaxf(0.0f, LEG_UPPER * LEG_UPPER - along * along));
+    dx /= length;
+    dy /= length;
+    across = (Vector2){-dy, dx};
+    if (across.x < 0.0f) {
+        across = (Vector2){dy, -dx};
+    }
+    return (Vector2){hip.x + dx * along + across.x * out,
+                     hip.y + dy * along + across.y * out};
+}
+
+/* A leg in world space: a thigh two cells thick, a shin the same with a
+   knee pad where they meet, and a boot three cells long pointing the way
+   the character faces. Two cells of limb at this scale read as a leg; one
+   read as a drawn line. */
+static void PlayerDrawLeg(const BodyFrame *frame, Vector2 hip, Vector2 knee,
+                          Vector2 foot, Color thigh, Color shin, Color boot)
+{
+    DrawLimb(hip, knee, 2, thigh);
+    DrawLimb(knee, foot, 2, shin);
+    DrawBodyCell(knee, 1, boot);
+    DrawBodyCell(foot, 2, boot);
+    DrawBodyCell((Vector2){foot.x + frame->side.x * 1.4f,
+                           foot.y + frame->side.y * 1.4f},
+                 2, boot);
+}
+
+/* Where the feet go on foot, in body-frame units (x forward, y up from the
+   hips). On the ground the two feet run half a cycle apart: each is planted
+   and swept back under the body for half the cycle and lifted and carried
+   forward for the other, the sweep a quarter stride either way so a planted
+   foot keeps pace with the ground. In the air the legs gather — a knee up on
+   the way up, reaching for the ground on the way down. */
+static void PlayerWalkFeet(const Player *player, float facing, float ground,
+                           Vector2 *lead, Vector2 *trail)
+{
+    float moving = Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f);
+    float reach = PlayerStride(player) * 0.25f / PLAYER_BODY_SCALE;
+    /* Running backward — facing the cursor, moving away from it — plays the
+       cycle in reverse, so the planted foot still sweeps with the ground. */
+    float direction = player->velocity.x * facing >= 0.0f ? 1.0f : -1.0f;
+    float phase = player->walkPhase * 2.0f * PI;
+    float lift = 1.2f + 1.4f * Clamp((fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
+                                         (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED),
+                                     0.0f, 1.0f);
+    int leg;
+
+    if (!player->grounded) {
+        if (player->velocity.y < 0.0f) {
+            *lead = (Vector2){1.6f, ground + 2.6f};
+            *trail = (Vector2){-1.0f, ground + 0.6f};
+        } else {
+            *lead = (Vector2){0.9f, ground + 0.8f};
+            *trail = (Vector2){-0.7f, ground + 1.4f};
+        }
+        return;
+    }
+    for (leg = 0; leg < 2; ++leg) {
+        float at = phase + (leg == 0 ? 0.0f : PI);
+        /* Forward when the swing carries it forward: the lifted half. */
+        float swing = sinf(at) * reach * direction;
+        float raised = fmaxf(0.0f, cosf(at)) * lift;
+        Vector2 stand = {leg == 0 ? 0.7f : -0.5f, ground};
+        Vector2 step = {swing, ground + raised};
+        Vector2 foot = {stand.x + (step.x - stand.x) * moving,
+                        stand.y + (step.y - stand.y) * moving};
+
+        if (leg == 0) {
+            *lead = foot;
+        } else {
+            *trail = foot;
+        }
+    }
+}
+
 /* Where the hands reach, in body-frame coordinates: x across the shoulders, y
    from the hips toward the head. Absolute rather than relative to some offset,
    because a hand placed by an unexplained constant is a hand nobody can move
@@ -213,6 +315,33 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
     }
     default:
         break;
+    }
+
+    if (player->mode == PLAYER_MODE_WALK) {
+        /* On foot the arms swing against the legs, wider at a run, and go
+           up and out in a jump. */
+        float moving = player->grounded
+                           ? Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f)
+                           : 0.0f;
+        float swing = sinf(player->walkPhase * 2.0f * PI) * moving *
+                      (1.4f + 1.2f * Clamp((fabsf(player->velocity.x) -
+                                            PLAYER_WALK_SPEED) /
+                                               (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED),
+                                           0.0f, 1.0f));
+
+        if (!player->grounded) {
+            float rise = player->velocity.y < 0.0f ? 1.0f : 0.4f;
+
+            restLead = (Vector2){2.6f, SHOULDER_UP + 0.6f + 1.4f * rise};
+            restTrail = (Vector2){-2.4f, SHOULDER_UP - 0.4f + 1.0f * rise};
+        } else {
+            restLead = (Vector2){0.9f - swing, 0.5f + fabsf(swing) * 0.3f};
+            restTrail = (Vector2){-0.7f + swing, 0.7f + fabsf(swing) * 0.3f};
+        }
+        lead->x = restLead.x + aimLocal.x * 1.2f;
+        lead->y = restLead.y + aimLocal.y * 1.2f;
+        *trail = restTrail;
+        return;
     }
 
     /* Free flight: the leading arm still tracks the cursor, so aim stays
@@ -421,7 +550,18 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     }
 
     wave = sinf(player->animationTime * (player->boosting ? 15.0f : 5.0f));
-    bob = (1.0f - lean) * sinf(player->animationTime * 2.4f) * 0.7f;
+    if (player->mode == PLAYER_MODE_WALK) {
+        /* The hips dip as each foot takes the weight, twice a cycle; standing,
+           a breath. */
+        float moving = player->grounded
+                           ? Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f)
+                           : 0.0f;
+
+        bob = -fabsf(sinf(player->walkPhase * 2.0f * PI)) * 0.45f * moving +
+              sinf(player->animationTime * 1.8f) * 0.12f * (1.0f - moving);
+    } else {
+        bob = (1.0f - lean) * sinf(player->animationTime * 2.4f) * 0.7f;
+    }
     frame.origin = (Vector2){player->position.x + frame.up.x * bob,
                              player->position.y + frame.up.y * bob};
 
@@ -516,42 +656,61 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     }
 
     /* ---- legs ---- */
-    /* Knees stay drawn back while hovering, the way someone hangs in the air in
-       every superhero film, and straighten out as the body lays down. */
-    kneeDrop = 3.6f - 0.9f * lean;
-    /* Tucked back, not thrown out sideways: too much and the far foot leaves
-       the silhouette entirely and reads as a loose block beside the body. */
-    footBack = (1.3f - 1.0f * lean) + wave * 0.35f * (1.0f - lean);
-    /* A wide enough stance that the two legs stay two legs. Placed closer
-       together they overlap into one block and the character loses its legs
-       entirely below the belt. */
-    hipLead = BodyPoint(&frame, -0.6f, 1.0f);
-    hipTrail = BodyPoint(&frame, -0.6f, -1.0f);
-    kneeLead = BodyPoint(&frame, -0.6f - kneeDrop, 1.3f + 0.3f * (1.0f - lean));
-    kneeTrail = BodyPoint(&frame, -0.6f - kneeDrop, -1.3f - 0.3f * (1.0f - lean));
-    {
-        Vector2 footLead = {
-            kneeLead.x - frame.up.x * BODY(2.2f) + back.x * BODY(footBack),
-            kneeLead.y - frame.up.y * BODY(2.2f) + back.y * BODY(footBack)};
-        Vector2 footTrail = {
-            kneeTrail.x - frame.up.x * BODY(2.2f) + back.x * BODY(footBack),
-            kneeTrail.y - frame.up.y * BODY(2.2f) + back.y * BODY(footBack)};
+    if (player->mode == PLAYER_MODE_WALK) {
+        /* The soles on the bottom of the collider, wherever the bob has put
+           the hips. */
+        float ground = -PlayerExtent(player) / PLAYER_BODY_SCALE - bob + 0.4f;
+        Vector2 footLead;
+        Vector2 footTrail;
+        Vector2 hips[2] = {{0.6f, -0.6f}, {-0.6f, -0.6f}};
+        Vector2 knees[2];
 
-        /* Thigh thicker than shin, and a boot at the end, so a leg reads as a
-           leg rather than as a drawn line. */
-        /* Thigh thicker than shin, and a boot at the end, so a leg reads as a
-           leg rather than as a drawn line. */
-        DrawLimb(hipTrail, kneeTrail, 2, limbDark);
-        DrawLimb(kneeTrail, footTrail, 1, limbDark);
-        DrawBodyCell(footTrail, 2, limbDark);
-        DrawLimb(hipLead, kneeLead, 2, limbMid);
-        DrawLimb(kneeLead, footLead, 1, limbMid);
-        DrawBodyCell(footLead, 2, trim);
+        PlayerWalkFeet(player, frame.side.x >= 0.0f ? 1.0f : -1.0f, ground,
+                       &footLead, &footTrail);
+        knees[0] = PlayerKnee(hips[0], footLead);
+        knees[1] = PlayerKnee(hips[1], footTrail);
+        hipLead = BodyPoint(&frame, hips[0].y, hips[0].x);
+        hipTrail = BodyPoint(&frame, hips[1].y, hips[1].x);
+        kneeLead = BodyPoint(&frame, knees[0].y, knees[0].x);
+        kneeTrail = BodyPoint(&frame, knees[1].y, knees[1].x);
+        PlayerDrawLeg(&frame, hipTrail, kneeTrail,
+                      BodyPoint(&frame, footTrail.y, footTrail.x), limbDark,
+                      limbDark, limbDark);
+        PlayerDrawLeg(&frame, hipLead, kneeLead,
+                      BodyPoint(&frame, footLead.y, footLead.x), limbMid,
+                      limbMid, trim);
+    } else {
+        /* Knees stay drawn back while hovering, the way someone hangs in the
+           air in every superhero film, and straighten out as the body lays
+           down. */
+        Vector2 footLead;
+        Vector2 footTrail;
+
+        kneeDrop = 3.4f - 0.9f * lean;
+        /* Tucked back, not thrown out sideways: too much and the far foot
+           leaves the silhouette entirely and reads as a loose block beside
+           the body. */
+        footBack = (1.3f - 1.0f * lean) + wave * 0.35f * (1.0f - lean);
+        /* A wide enough stance that the two legs stay two legs. */
+        hipLead = BodyPoint(&frame, -0.6f, 0.6f);
+        hipTrail = BodyPoint(&frame, -0.6f, -0.6f);
+        kneeLead = BodyPoint(&frame, -0.6f - kneeDrop, 1.1f + 0.3f * (1.0f - lean));
+        kneeTrail = BodyPoint(&frame, -0.6f - kneeDrop, -1.1f - 0.3f * (1.0f - lean));
+        footLead = (Vector2){
+            kneeLead.x - frame.up.x * BODY(2.6f) + back.x * BODY(footBack),
+            kneeLead.y - frame.up.y * BODY(2.6f) + back.y * BODY(footBack)};
+        footTrail = (Vector2){
+            kneeTrail.x - frame.up.x * BODY(2.6f) + back.x * BODY(footBack),
+            kneeTrail.y - frame.up.y * BODY(2.6f) + back.y * BODY(footBack)};
+        PlayerDrawLeg(&frame, hipTrail, kneeTrail, footTrail, limbDark,
+                           limbDark, limbDark);
+        PlayerDrawLeg(&frame, hipLead, kneeLead, footLead, limbMid,
+                           limbMid, trim);
     }
 
     /* ---- arms ---- */
-    shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.2f);
-    shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.2f);
+    shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.4f);
+    shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.4f);
     PlayerHandTargets(player, aimLocal, pushLocal, lean, wave, &leadHand,
                       &trailHand);
     {
@@ -567,12 +726,12 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
                                   frame.side.y * BODY(0.6f)};
 
         DrawLimb(shoulderTrail, trailElbow, 2, limbDark);
-        DrawLimb(trailElbow, trailPoint, 1, limbDark);
-        DrawBodyCell(trailPoint, 1, limbDark);
+        DrawLimb(trailElbow, trailPoint, 2, limbDark);
+        DrawBodyCell(trailPoint, 2, limbDark);
 
         DrawLimb(shoulderLead, leadElbow, 2, limbMid);
-        DrawLimb(leadElbow, leadPoint, 1, lit);
-        DrawBodyCell(leadPoint, 1, trim);
+        DrawLimb(leadElbow, leadPoint, 2, lit);
+        DrawBodyCell(leadPoint, 2, trim);
         DrawBodyCell((Vector2){leadPoint.x + aimX * BODY(0.9f),
                                leadPoint.y + aimY * BODY(0.9f)},
                      1, skin);
@@ -594,20 +753,29 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     }
 
     /* ---- torso, neck, head ---- */
-    FillBodyRect(&frame, -0.5f, 3.5f, 1.0f, dark, mid, lit);
+    FillBodyRect(&frame, -0.5f, 3.4f, 1.2f, dark, mid, lit);
+    /* Shoulder plates, a shade proud of the chest: the suit has a
+       structure, and the arms have somewhere to hang from. */
+    FillBodyRect(&frame, 2.9f, 3.6f, 1.5f, dark, trim, trim);
     /* A belt breaks the torso into a chest and a waist; without it the body is
        one undifferentiated block whatever tones it carries. */
-    FillBodyRect(&frame, -0.3f, -0.1f, 1.0f, capeShade, capeCore, capeEdge);
+    FillBodyRect(&frame, -0.4f, 0.1f, 1.2f, capeShade, capeCore, capeEdge);
+    DrawBodyCell(BodyPoint(&frame, -0.15f, 0.5f), 1, trim);
     /* One cyan mark on the chest. Any more and the eye has nowhere to settle:
        the visor stops being the face and becomes another light. */
-    DrawBodyCell(BodyPoint(&frame, 2.0f, 0.35f), 1, accent);
+    DrawBodyCell(BodyPoint(&frame, 2.0f, 0.5f), 1, accent);
+    DrawBodyCell(BodyPoint(&frame, 1.4f, -0.5f), 1, dark);
 
     /* One cell of neck. Without the gap the head merges into the shoulders and
        the whole figure reads as a single block. */
-    DrawBodyCell(BodyPoint(&frame, 4.2f, 0.0f), 1, dark);
+    DrawBodyCell(BodyPoint(&frame, 4.1f, 0.0f), 1, dark);
 
     head = BodyPoint(&frame, 6.0f, 0.25f * aimLocal.x);
-    FillBodyRect(&frame, 5.2f, 6.9f, 1.0f, dark, mid, lit);
+    /* A helmet: a dome a little wider than the neck, a crest along the top
+       and the visor across the front of the face. */
+    FillBodyRect(&frame, 4.8f, 7.0f, 1.2f, dark, mid, lit);
+    FillBodyRect(&frame, 7.0f, 7.3f, 0.6f, dark, lit, lit);
+    DrawBodyCell(BodyPoint(&frame, 7.5f, -0.7f), 1, trim);
     {
         /* The visor looks where the cursor is, independently of the body. */
         Vector2 visor = {head.x + frame.side.x * BODY(0.9f) +
@@ -616,10 +784,13 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
                              aimY * BODY(0.5f)};
 
         DrawBodyCell(visor, 1, accent);
+        DrawBodyCell((Vector2){visor.x - frame.side.x * BODY(0.8f),
+                               visor.y - frame.side.y * BODY(0.8f)},
+                     1, accent);
         DrawBodyCell((Vector2){visor.x + frame.up.x * BODY(0.6f),
                                visor.y + frame.up.y * BODY(0.6f)},
                      1, accent);
-        DrawBodyCell(BodyPoint(&frame, 5.4f, -0.9f), 1, skin);
+        DrawBodyCell(BodyPoint(&frame, 5.2f, -0.9f), 1, skin);
     }
 
     if (silhouette) {

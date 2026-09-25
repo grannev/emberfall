@@ -20,14 +20,17 @@ void PlayerInit(Player *player, Vector2 position)
     player->impactNormal = (Vector2){0.0f, 0.0f};
     player->drillPosition = position;
     player->drillMaterial = MATERIAL_EMPTY;
-    player->acceleration = 250.0f;
-    player->maxSpeed = 118.0f;
-    player->boostAcceleration = 720.0f;
-    player->boostSpeed = 380.0f;
+    /* Half as fast again as when the view was 320 cells across and the
+       character eight tall: the view is now 426 across and the character
+       sixteen, and the flight has to cross the screen as it did. */
+    player->acceleration = 360.0f;
+    player->maxSpeed = 170.0f;
+    player->boostAcceleration = 1060.0f;
+    player->boostSpeed = 560.0f;
     player->boostDrag = 0.24f;
-    player->sonicSpeed = 352.0f;
+    player->sonicSpeed = 520.0f;
     player->boostGrace = 0.0f;
-    player->drillSpeed = 92.0f;
+    player->drillSpeed = 135.0f;
     player->drillHeat = 0.72f;
     /* A third of the steering left at top speed. Enough to pick a line through
        a cavern at the boost ceiling, not enough to turn a corner: the cost of
@@ -38,10 +41,21 @@ void PlayerInit(Player *player, Vector2 position)
     player->brakingAuthority = 2.6f;
     player->drag = 1.1f;
     player->restitution = 0.34f;
-    /* Scaled with the drawn figure. The collider and the body have to agree or
-       the character stands with his shins in the ground, which is what a
-       thirteen-cell figure on a 3.2-cell collider already looked like. */
-    player->radius = 3.2f * PLAYER_BODY_SCALE;
+    /* A capsule round the drawn figure, from the soles at seven body units
+       under the hips to the helmet at seven over them. The collider and the
+       body have to agree or the character stands with his shins in the
+       ground. */
+    player->radius = 2.3f * PLAYER_BODY_SCALE;
+    player->halfHeight = 4.7f * PLAYER_BODY_SCALE;
+    player->mode = PLAYER_MODE_FLY;
+    player->jumpPressed = false;
+    player->jumpHeld = false;
+    player->grounded = false;
+    player->airTime = 0.0f;
+    player->jumped = false;
+    player->flightTapTimer = -1.0f;
+    player->runHeld = false;
+    player->walkPhase = 0.0f;
     player->impactStrength = 0.0f;
     player->impactTimer = 0.0f;
     player->animationTime = 0.0f;
@@ -58,12 +72,31 @@ void PlayerInit(Player *player, Vector2 position)
     player->boostTrailEmitted = false;
 }
 
-static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position)
+float PlayerExtent(const Player *player)
 {
+    return player != NULL ? player->halfHeight + player->radius : 0.0f;
+}
+
+Vector2 PlayerFeet(const Player *player)
+{
+    if (player == NULL) {
+        return (Vector2){0.0f, 0.0f};
+    }
+    return (Vector2){player->position.x, player->position.y + PlayerExtent(player)};
+}
+
+/* The capsule against the cells: each solid cell's box is measured against
+   the collider's vertical segment, and it overlaps when that distance is under
+   the radius. Two clamps and a compare a cell, like the circle before it. */
+bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position)
+{
+    float extent = player->halfHeight + player->radius;
     int minimumX = (int)floorf(position.x - player->radius);
     int maximumX = (int)floorf(position.x + player->radius);
-    int minimumY = (int)floorf(position.y - player->radius);
-    int maximumY = (int)floorf(position.y + player->radius);
+    int minimumY = (int)floorf(position.y - extent);
+    int maximumY = (int)floorf(position.y + extent);
+    float top = position.y - player->halfHeight;
+    float bottom = position.y + player->halfHeight;
     int y;
 
     for (y = minimumY; y <= maximumY; ++y) {
@@ -71,6 +104,7 @@ static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 p
 
         for (x = minimumX; x <= maximumX; ++x) {
             float nearestX;
+            float segmentY;
             float nearestY;
             float dx;
             float dy;
@@ -79,10 +113,13 @@ static bool PlayerCollidesAt(const Player *player, const World *world, Vector2 p
                 continue;
             }
 
+            /* The point of the segment nearest the box, then the point of the
+               box nearest that. */
+            segmentY = Clamp((float)y + 0.5f, top, bottom);
             nearestX = Clamp(position.x, (float)x, (float)x + 1.0f);
-            nearestY = Clamp(position.y, (float)y, (float)y + 1.0f);
+            nearestY = Clamp(segmentY, (float)y, (float)y + 1.0f);
             dx = position.x - nearestX;
-            dy = position.y - nearestY;
+            dy = segmentY - nearestY;
             if (dx * dx + dy * dy < player->radius * player->radius) {
                 return true;
             }
@@ -127,7 +164,7 @@ static void PlayerRecordDrillMaterial(Player *player, const World *world, Vector
    of the same nominal radius leaves standing. Returns the cells removed. */
 static int PlayerCutFree(Player *player, World *world, Vector2 at)
 {
-    int base = (int)ceilf(player->radius);
+    int base = (int)ceilf(PlayerExtent(player));
     int removed = 0;
     int attempt;
 
@@ -173,6 +210,18 @@ Vector2 PlayerBodyUp(const Player *player)
     }
     return (Vector2){cosf(uprightAngle + turn * lean),
                      sinf(uprightAngle + turn * lean)};
+}
+
+float PlayerStride(const Player *player)
+{
+    float pace;
+
+    if (player == NULL) {
+        return 14.0f;
+    }
+    pace = (fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
+           (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED);
+    return 14.0f + 9.0f * Clamp(pace, 0.0f, 1.0f);
 }
 
 /* Distance up the body axis from the hips to the visor. The renderer builds the
@@ -306,8 +355,11 @@ bool PlayerIsDrilling(const Player *player)
 
 float PlayerDrillRadius(const Player *player)
 {
-    return player->radius * (player->boosting ? PLAYER_DRILL_WIDTH_BOOST
-                                              : PLAYER_DRILL_WIDTH_IDLE);
+    /* Round the whole figure: the collider is a capsule from boots to
+       helmet, and a tunnel cut round the waist alone would be one the
+       character could not fit down. */
+    return PlayerExtent(player) * (player->boosting ? PLAYER_DRILL_WIDTH_BOOST
+                                                    : PLAYER_DRILL_WIDTH_IDLE);
 }
 
 /* Leaves the tunnel wall glowing.
@@ -554,6 +606,199 @@ static void PlayerUpdateBoostEngagement(Player *player, Vector2 input,
     player->boostBurstTimer = PLAYER_BOOST_BURST_TIME;
 }
 
+/* ---- on foot ---------------------------------------------------------------- */
+
+/* Which way the character moves this frame: takes off on the second jump in
+   the air, lands a flight on a double tap of jump, and flies wherever there
+   is nothing to stand on because nothing pulls. Consumes the jump press when
+   it is spent on a change of mode. */
+static void PlayerUpdateMode(Player *player, float gravityScale, float deltaTime)
+{
+    if (player->flightTapTimer >= 0.0f) {
+        player->flightTapTimer += deltaTime;
+        if (player->flightTapTimer > PLAYER_DOUBLE_TAP_TIME) {
+            player->flightTapTimer = -1.0f;
+        }
+    }
+    if (gravityScale < 0.05f) {
+        player->mode = PLAYER_MODE_FLY;
+        return;
+    }
+    if (player->mode == PLAYER_MODE_WALK) {
+        /* In the air past the grace of a ledge: the second jump takes off. */
+        if (player->jumpPressed && !player->grounded &&
+            player->airTime > PLAYER_COYOTE_TIME) {
+            player->mode = PLAYER_MODE_FLY;
+            player->jumpPressed = false;
+            /* A lift on take-off, so the flight starts rather than the fall
+               simply stopping. */
+            if (player->velocity.y > -60.0f) {
+                player->velocity.y = -60.0f;
+            }
+        }
+        return;
+    }
+    if (player->jumpPressed) {
+        if (player->flightTapTimer >= 0.0f) {
+            /* The second tap: back on foot, falling. */
+            player->mode = PLAYER_MODE_WALK;
+            player->flightTapTimer = -1.0f;
+            player->grounded = false;
+            player->airTime = PLAYER_COYOTE_TIME + 0.001f;
+            player->jumped = true;
+        } else {
+            player->flightTapTimer = 0.0f;
+        }
+        player->jumpPressed = false;
+    }
+}
+
+/* Lands the collider on whatever is under it, within a step: walking down a
+   slope of cells keeps the feet on it instead of stepping off each cell into
+   the air. */
+static bool PlayerSnapDown(Player *player, const World *world)
+{
+    int drop;
+
+    for (drop = 1; drop <= PLAYER_STEP_HEIGHT; ++drop) {
+        Vector2 candidate = {player->position.x, player->position.y + (float)drop};
+
+        if (PlayerCollidesAt(player, world, candidate)) {
+            return false;
+        }
+        if (PlayerCollidesAt(player, world,
+                             (Vector2){candidate.x, candidate.y + 0.6f})) {
+            player->position = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void PlayerUpdateWalk(Player *player, World *world, Vector2 input,
+                             float gravityScale, float deltaTime)
+{
+    float target = input.x * (player->runHeld ? PLAYER_RUN_SPEED : PLAYER_WALK_SPEED);
+    float acceleration = player->grounded ? PLAYER_GROUND_ACCELERATION
+                                          : PLAYER_AIR_ACCELERATION;
+    float change = target - player->velocity.x;
+    float gravity = PLAYER_GRAVITY * gravityScale;
+    bool wasGrounded = player->grounded;
+    float moveX;
+    float moveY;
+    int moveSteps;
+    int step;
+    float stepTime;
+
+    player->boosting = false;
+    player->boostGrace = 0.0f;
+    player->thrusting = fabsf(input.x) > 0.0f;
+    player->thrust = (Vector2){input.x, 0.0f};
+
+    /* Along the ground: toward the speed asked for, quickly on the ground
+       and more gently in the air. */
+    if (change > acceleration * deltaTime) change = acceleration * deltaTime;
+    if (change < -acceleration * deltaTime) change = -acceleration * deltaTime;
+    player->velocity.x += change;
+
+    if (player->jumpPressed &&
+        (player->grounded || player->airTime <= PLAYER_COYOTE_TIME)) {
+        player->velocity.y = -PLAYER_JUMP_SPEED;
+        player->grounded = false;
+        player->airTime = PLAYER_COYOTE_TIME + 0.001f;
+        player->jumped = true;
+    }
+    player->velocity.y += gravity * deltaTime;
+    /* Let go of jump on the way up and the rise is cut short: a tap is a hop,
+       a hold is a leap. */
+    if (player->jumped && !player->jumpHeld && player->velocity.y < 0.0f) {
+        player->velocity.y += gravity * 1.6f * deltaTime;
+    }
+    if (player->velocity.y > PLAYER_FALL_SPEED_LIMIT) {
+        player->velocity.y = PLAYER_FALL_SPEED_LIMIT;
+    }
+
+    moveX = player->velocity.x * deltaTime;
+    moveY = player->velocity.y * deltaTime;
+    moveSteps = (int)ceilf(fmaxf(fabsf(moveX), fabsf(moveY)) / 0.5f);
+    if (moveSteps < 1) moveSteps = 1;
+    if (moveSteps > PLAYER_MAX_MOVE_SUBSTEPS) moveSteps = PLAYER_MAX_MOVE_SUBSTEPS;
+    stepTime = deltaTime / (float)moveSteps;
+
+    for (step = 0; step < moveSteps; ++step) {
+        Vector2 candidate = player->position;
+
+        candidate.x += player->velocity.x * stepTime;
+        if (!PlayerCollidesAt(player, world, candidate)) {
+            player->position.x = candidate.x;
+        } else {
+            /* Up a step, if there is one within reach and room above it. */
+            bool climbed = false;
+
+            if (wasGrounded || player->grounded) {
+                int lift;
+
+                for (lift = 1; lift <= PLAYER_STEP_HEIGHT; ++lift) {
+                    Vector2 raised = {candidate.x, player->position.y - (float)lift};
+
+                    if (!PlayerCollidesAt(player, world, raised)) {
+                        player->position = raised;
+                        climbed = true;
+                        break;
+                    }
+                }
+            }
+            if (!climbed) {
+                player->velocity.x = 0.0f;
+            }
+        }
+
+        candidate = player->position;
+        candidate.y += player->velocity.y * stepTime;
+        if (!PlayerCollidesAt(player, world, candidate)) {
+            player->position.y = candidate.y;
+        } else {
+            if (player->velocity.y > 0.0f) {
+                player->grounded = true;
+            }
+            player->velocity.y = 0.0f;
+        }
+    }
+
+    player->grounded = PlayerCollidesAt(
+        player, world, (Vector2){player->position.x, player->position.y + 0.6f});
+    if (!player->grounded && wasGrounded && player->velocity.y >= 0.0f &&
+        !player->jumpPressed) {
+        player->grounded = PlayerSnapDown(player, world);
+    }
+    if (player->grounded) {
+        player->airTime = 0.0f;
+        player->jumped = false;
+        if (player->velocity.y > 0.0f) {
+            player->velocity.y = 0.0f;
+        }
+    } else {
+        player->airTime += deltaTime;
+    }
+
+    player->position.y = Clamp(player->position.y, PlayerExtent(player),
+                               (float)world->height - PlayerExtent(player));
+    if (player->grounded) {
+        player->walkPhase += fabsf(player->velocity.x) * deltaTime /
+                             PlayerStride(player);
+        player->walkPhase -= floorf(player->walkPhase);
+    }
+    player->animationTime += deltaTime;
+    if (fabsf(input.x) > 0.0f) {
+        player->facingRight = input.x > 0.0f;
+    }
+    player->leanAmount += (0.0f - player->leanAmount) * (1.0f - expf(-12.0f * deltaTime));
+    player->poseTimer = fmaxf(0.0f, player->poseTimer - deltaTime);
+    if (player->poseTimer <= 0.0f) {
+        player->pose = PLAYER_POSE_FLY;
+    }
+}
+
 void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
                   float deltaTime)
 {
@@ -581,6 +826,15 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->boostBurstTimer = fmaxf(0.0f, player->boostBurstTimer - deltaTime);
     player->thrusting = false;
     player->thrust = (Vector2){0.0f, 0.0f};
+    PlayerUpdateMode(player, WorldGravityScaleAt(world, player->position.y), deltaTime);
+    if (player->mode == PLAYER_MODE_WALK) {
+        PlayerUpdateWalk(player, world, input,
+                         WorldGravityScaleAt(world, player->position.y), deltaTime);
+        player->jumpPressed = false;
+        return;
+    }
+    player->grounded = false;
+    player->jumpPressed = false;
     inputLength = sqrtf(input.x * input.x + input.y * input.y);
     if (inputLength > 0.0f) {
         input.x /= inputLength;
@@ -733,8 +987,8 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     /* Only held in vertically: the world wraps across, and the game moves
        the character back into the map a whole width at a time when it
        crosses the seam (GameUpdate), with everything around it. */
-    player->position.y = Clamp(player->position.y, player->radius,
-                               (float)world->height - player->radius);
+    player->position.y = Clamp(player->position.y, PlayerExtent(player),
+                               (float)world->height - PlayerExtent(player));
 
     if (fabsf(player->velocity.x) > 1.0f) {
         player->facingRight = player->velocity.x > 0.0f;

@@ -16,7 +16,7 @@ AtmosphereConfig AtmosphereDefaultConfig(void)
        re-entry, whatever the altitude — no heat, no drag, no sparks. Only a
        boosted dive or a slab falling out of orbit is going fast enough, and
        both pass 300. */
-    config.entrySpeed = 200.0f;
+    config.entrySpeed = 300.0f;
     /* Heat per second per unit of speed over the entry speed, in units of
        the entry speed: a full boost (380, 0.9 over) in the thick of the
        corridor is ablaze in a fifth of a second; just over the threshold it
@@ -107,17 +107,21 @@ static void AtmosphereScorch(AtmosphereSystem *system, const Player *player,
     int centreX = (int)floorf(player->position.x);
     int centreY = (int)floorf(player->position.y);
     int extent = (int)ceilf(player->radius + system->config.scorchRadius);
+    int tall = (int)ceilf(PlayerExtent(player) + system->config.scorchRadius);
     float reach = player->radius + system->config.scorchRadius;
     int y;
 
-    for (y = centreY - extent; y <= centreY + extent; ++y) {
+    for (y = centreY - tall; y <= centreY + tall; ++y) {
         int x;
 
         for (x = centreX - extent; x <= centreX + extent; ++x) {
             CellMaterial material = WorldGetCell(world, x, y);
             const MaterialInfo *info;
             float dx = (float)x + 0.5f - player->position.x;
-            float dy = (float)y + 0.5f - player->position.y;
+            /* Distance to the capsule's segment, not its centre. */
+            float dy = fmaxf(fabsf((float)y + 0.5f - player->position.y) -
+                                 player->halfHeight,
+                             0.0f);
             float distance = sqrtf(dx * dx + dy * dy);
             float band;
             float target;

@@ -509,6 +509,14 @@ static void RunSmokeAcceptance(GameState *game, SmokeAcceptance *state,
 #define MOVE_SHOT_FRAME (MOVE_DRILL + 22)
 #define MOVE_STOP (MOVE_SHOT + 4)
 #define MOVE_END (MOVE_STOP + 130)
+/* On foot, on a floor laid in the corridor: a walk that becomes a run, a
+   jump, and the second jump that takes off. */
+#define WALK_START (MOVE_END)
+#define WALK_RUN (WALK_START + 40)
+#define WALK_SHOT_FRAME (WALK_RUN + 30)
+#define WALK_JUMP (WALK_RUN + 60)
+#define WALK_TAKEOFF (WALK_JUMP + 16)
+#define WALK_END (WALK_TAKEOFF + 30)
 
 
 /* Clear sky to fly through. Long enough to hold a full boost run: the player
@@ -571,6 +579,7 @@ static void RunSmokeMovement(GameState *game, SmokeMovement *state, int frame,
         SetupSmokeMovementScene(&game->world, state->origin);
         game->player.position = (Vector2){state->origin.x, state->origin.y};
         game->player.velocity = (Vector2){0.0f, 0.0f};
+        game->player.mode = PLAYER_MODE_FLY;
         input->move = (Vector2){0.0f, 0.0f};
         input->boostHeld = false;
         return;
@@ -649,6 +658,65 @@ static void RunSmokeMovement(GameState *game, SmokeMovement *state, int frame,
     input->boostHeld = false;
     state->finalSpeed = speed;
     state->stopped = state->stopped || speed < 20.0f;
+}
+
+static void RunSmokeWalk(GameState *game, SmokeMovement *state, int frame,
+                         GameInput *input)
+{
+    Player *player = &game->player;
+
+    memset(input->ability, 0, sizeof(input->ability));
+    input->grabHeld = false;
+    input->regeneratePressed = false;
+    input->jumpPressed = false;
+    input->jumpHeld = false;
+    input->upPressed = false;
+    input->boostHeld = false;
+    input->move = (Vector2){0.0f, 0.0f};
+    input->aimWorld = (Vector2){player->position.x + 40.0f, player->position.y};
+
+    if (frame == WALK_START) {
+        int floorY = (int)state->origin.y + 30;
+        int x;
+        int row;
+
+        for (row = floorY; row < floorY + 12; ++row) {
+            for (x = (int)player->position.x - 60;
+                 x <= (int)player->position.x + 700; ++x) {
+                WorldSetCell(&game->world, x, row, MATERIAL_ROCK);
+            }
+        }
+        state->walkFloorY = (float)floorY;
+        player->position.y = (float)floorY - PlayerExtent(player) - 0.5f;
+        player->velocity = (Vector2){0.0f, 0.0f};
+        player->mode = PLAYER_MODE_WALK;
+        player->grounded = false;
+        return;
+    }
+    if (frame < WALK_JUMP) {
+        input->move = (Vector2){1.0f, 0.0f};
+        input->boostHeld = frame >= WALK_RUN;
+        if (player->grounded) {
+            ++state->groundedFrames;
+            if (fabsf(player->velocity.x) > state->runSpeed) {
+                state->runSpeed = fabsf(player->velocity.x);
+            }
+        }
+        return;
+    }
+    input->move = (Vector2){1.0f, 0.0f};
+    input->jumpHeld = frame < WALK_TAKEOFF;
+    input->jumpPressed = frame == WALK_JUMP || frame == WALK_TAKEOFF;
+    {
+        float feet = player->position.y + PlayerExtent(player);
+        float rise = state->walkFloorY - feet;
+
+        if (frame < WALK_TAKEOFF && rise > state->jumpRise) {
+            state->jumpRise = rise;
+        }
+    }
+    state->tookOff = state->tookOff ||
+                     (frame > WALK_TAKEOFF && player->mode == PLAYER_MODE_FLY);
 }
 
 static bool RunSmokeFireContainmentProbe(void)
@@ -925,8 +993,12 @@ void SmokeTestScriptInput(SmokeTest *smoke, GameState *game, AppInput *input,
         RunSmokeAcceptance(game, &smoke->acceptance, frame, &input->game);
         *aimPosition = input->game.aimWorld;
         *cursorCell = *aimPosition;
-    } else {
+    } else if (frame < WALK_START) {
         RunSmokeMovement(game, &smoke->movement, frame, &input->game);
+        *aimPosition = input->game.aimWorld;
+        *cursorCell = *aimPosition;
+    } else {
+        RunSmokeWalk(game, &smoke->movement, frame, &input->game);
         *aimPosition = input->game.aimWorld;
         *cursorCell = *aimPosition;
     }
@@ -1221,11 +1293,14 @@ void SmokeTestCapture(SmokeTest *smoke)
     if (frame == MOVE_SHOT_FRAME) {
         TakeScreenshot("build/emberfall-movement.png");
     }
+    if (frame == WALK_SHOT_FRAME) {
+        TakeScreenshot("build/emberfall-walk.png");
+    }
 }
 
 bool SmokeTestAdvance(SmokeTest *smoke)
 {
-    return ++smoke->frame >= MOVE_END;
+    return ++smoke->frame >= WALK_END;
 }
 
 int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
@@ -1257,7 +1332,8 @@ int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
                "move_cruise=%.1f move_boost=%.1f move_peak=%.1f "
                "move_drill=%.1f->%.1f move_turn=%.1f move_drilled=%d "
                "move_brake=%.1f->%.1f in %d frames move_reverse=%.1f "
-               "move_final=%.1f\n",
+               "move_final=%.1f walk_run=%.1f walk_grounded=%d "
+               "walk_jump=%.1f walk_takeoff=%d\n",
                frameStats->bloomWidth, frameStats->bloomHeight,
                frameStats->offscreenPasses, frameStats->renderTargets,
                smoke->bloomSubmissionTotal / (double)smoke->bloomFrames,
@@ -1305,7 +1381,9 @@ int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
                (double)movement->drillLowSpeed, (double)movement->turnLateral,
                movement->drilled, (double)movement->brakeFrom,
                (double)movement->finalSpeed, movement->brakeFrames,
-               (double)movement->reverseSpeed, (double)movement->finalSpeed);
+               (double)movement->reverseSpeed, (double)movement->finalSpeed,
+               (double)movement->runSpeed, movement->groundedFrames,
+               (double)movement->jumpRise, movement->tookOff);
     }
 
     passed = smoke->reactionObserved && smoke->laserHitObserved &&
@@ -1336,6 +1414,11 @@ int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
              movement->drillLowSpeed >= movement->drillEntrySpeed * 0.92f &&
              movement->turned && movement->drilled > 0 && movement->reversed &&
              movement->stopped && fabsf(smoke->thrownSpin) > 0.0f &&
+             /* On foot: it ran on the floor at a run's pace, jumped more than
+                its own height and took off on the second jump. */
+             movement->runSpeed >= PLAYER_RUN_SPEED * 0.9f &&
+             movement->groundedFrames > 40 && movement->jumpRise > 12.0f &&
+             movement->tookOff &&
              /* Two uploads — scene and emissive — for each body that ever
                 existed, and not one more: a body whose raster never changes
                 must not be re-uploaded per frame. */
@@ -1358,7 +1441,7 @@ int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
             "env=%d/valid%d/camera%d/zoom%d/palettes0x%x "
             "play=d%d/p%d/g%d/D%d/t%d/c%d/s%d/f%d/fx%d/cam%d "
             "move=cruise%.0f/boost%.0f/peak%.0f/drill%.0f->%.0f/turn%.0f/"
-            "drilled%d/rev%d/stop%d "
+            "drilled%d/rev%d/stop%d walk=run%.0f/ground%d/jump%.0f/fly%d "
             "updates=%u lighting=%d chunks=%d(peak)/%d\n",
             smoke->reactionObserved, smoke->laserHitObserved,
             smoke->explosionObserved, smoke->forceObserved, smoke->cryoObserved,
@@ -1381,7 +1464,9 @@ int SmokeTestReport(const SmokeTest *smoke, const GameState *game,
             (double)movement->boostSpeed, (double)movement->peakSpeed,
             (double)movement->drillEntrySpeed, (double)movement->drillLowSpeed,
             (double)movement->turnLateral, movement->drilled, movement->reversed,
-            movement->stopped, smoke->terrainTextureUpdates,
+            movement->stopped, (double)movement->runSpeed,
+            movement->groundedFrames, (double)movement->jumpRise,
+            movement->tookOff, smoke->terrainTextureUpdates,
             smoke->lightingObserved, smoke->mostActiveChunks,
             game->world.chunkColumns * game->world.chunkRows);
     return 2;

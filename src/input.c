@@ -114,6 +114,9 @@ AppInput InputPoll(const World *world, Camera2D camera)
        is not a power: no cooldown, no world effect of its own, nothing to put
        in the ability table. */
     input.game.grabHeld = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+    input.game.jumpPressed = IsKeyPressed(KEY_SPACE);
+    input.game.jumpHeld = IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_W);
+    input.game.upPressed = IsKeyPressed(KEY_W);
     input.game.regeneratePressed = IsKeyPressed(KEY_R);
     input.toggleDebugPressed = IsKeyPressed(KEY_F1);
     input.zoomSteps = GetMouseWheelMove();

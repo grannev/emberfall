@@ -114,6 +114,8 @@ void GameReset(GameState *game, uint64_t seed)
     game->wraps = 0;
     WorldGenerate(&game->world, seed);
     PlayerInit(&game->player, WorldPlayerSpawn(&game->world));
+    /* A new world starts on foot, standing on it. */
+    game->player.mode = PLAYER_MODE_WALK;
     AbilitiesInit(&game->abilities, RngStreamSeed(seed, GAME_RNG_STREAM_POWERS));
     ParticlesInit(&game->particles, RngStreamSeed(seed, GAME_RNG_STREAM_PARTICLES));
     /* A new world cannot keep pieces cut from the old one. WorldGenerate has
@@ -390,6 +392,14 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
                            events, deltaTime);
     FluidInteractionUpdatePlayer(&game->fluid, &game->player, &game->world,
                                  events, deltaTime);
+    /* On foot, up is a jump as well as jump is; in flight only jump is, and
+       two taps of it land. Shift is the boost in the air and a run on the
+       ground. */
+    game->player.jumpPressed =
+        input->jumpPressed ||
+        (game->player.mode == PLAYER_MODE_WALK && input->upPressed);
+    game->player.jumpHeld = input->jumpHeld;
+    game->player.runHeld = input->boostHeld;
     PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,
                  deltaTime);
     GameActivatePlayerRegion(game);

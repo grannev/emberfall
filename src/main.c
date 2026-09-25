@@ -18,9 +18,9 @@
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 720
-#define VIEW_WIDTH 320.0f
-#define VIEW_HEIGHT 180.0f
-/* How far the wheel may take the view: a scale of the logical 320x180 view,
+#define VIEW_WIDTH 426.0f
+#define VIEW_HEIGHT 240.0f
+/* How far the wheel may take the view: a scale of the logical 426x240 view,
    below one to look closer, above to see more. Zooming out makes the page
    cache and the light window grow with what is on screen; three times the
    view at full boost widening is still a few dozen pages. */
@@ -95,6 +95,14 @@ static Rectangle VisibleWorldRectangle(Camera2D camera)
 
 static const char *PlayerBoostLabel(const Player *player, float speed)
 {
+    if (player->mode == PLAYER_MODE_WALK) {
+        if (!player->grounded) {
+            return "JUMP";
+        }
+        return fabsf(player->velocity.x) > PLAYER_WALK_SPEED + 4.0f
+                   ? "RUN"
+                   : (fabsf(player->velocity.x) > 4.0f ? "WALK" : "STAND");
+    }
     if (!player->boosting) {
         return "HOVER";
     }
@@ -254,7 +262,8 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
    appears in the hint the moment it is defined and bound. */
 static void DrawControlsHint(void)
 {
-    const char *hint = "WASD fly  |  Shift boost/drill";
+    const char *hint = "AD walk  |  Space jump, twice to fly or land  |  "
+                       "WASD fly  |  Shift run/boost";
     int fontSize = 18;
     int id;
     int width;

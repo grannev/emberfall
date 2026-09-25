@@ -17,6 +17,34 @@ typedef enum PlayerPose {
     PLAYER_POSE_PUSH
 } PlayerPose;
 
+/* How the character moves: on foot, with gravity, or flying. A double jump
+   takes off; a double tap of jump in the air lands the flight and lets the
+   character fall again. Where nothing pulls — above the space line — there
+   is no walking, and the character flies whatever the mode says. */
+typedef enum PlayerMode {
+    PLAYER_MODE_FLY = 0,
+    PLAYER_MODE_WALK,
+} PlayerMode;
+
+/* On foot, in cells and seconds. The character is sixteen cells tall: a walk
+   is four of its heights a second, a run seven, and a jump clears about one
+   and a half of them. */
+#define PLAYER_WALK_SPEED 64.0f
+#define PLAYER_RUN_SPEED 118.0f
+#define PLAYER_GROUND_ACCELERATION 760.0f
+#define PLAYER_AIR_ACCELERATION 420.0f
+#define PLAYER_GRAVITY 620.0f
+#define PLAYER_JUMP_SPEED 205.0f
+#define PLAYER_FALL_SPEED_LIMIT 560.0f
+/* The tallest step the character walks up without jumping, in cells: the
+   world is cells, and ground that rises a cell at a time is a slope, not a
+   series of walls. */
+#define PLAYER_STEP_HEIGHT 4
+/* Seconds after walking off an edge in which a jump still counts as from the
+   ground, and seconds within which two taps of jump in flight land it. */
+#define PLAYER_COYOTE_TIME 0.1f
+#define PLAYER_DOUBLE_TAP_TIME 0.32f
+
 /* Most pieces one frame of movement is ever broken into. The step is half a
    cell, and the largest displacement a frame can produce is the top speed times
    the longest step the game will take, so this covers it with room to spare:
@@ -27,14 +55,14 @@ typedef enum PlayerPose {
    tunnel the size of the collider reads as a worm hole; what a body moving this
    fast should leave is a corridor with room around it. The idle figure is what
    a player pressed into a wall below the drill threshold scrapes free. */
-#define PLAYER_DRILL_WIDTH_IDLE 1.15f
-#define PLAYER_DRILL_WIDTH_BOOST 2.00f
+#define PLAYER_DRILL_WIDTH_IDLE 1.02f
+#define PLAYER_DRILL_WIDTH_BOOST 1.15f
 
 /* The shove the engine gives the moment it lights, in cells per second. It is
    what makes engaging the boost a decision the player feels rather than a
    number quietly changing: the ceiling alone would be reached a third of a
    second later and read as the same flight, slightly faster. */
-#define PLAYER_BOOST_ENGAGE_IMPULSE 86.0f
+#define PLAYER_BOOST_ENGAGE_IMPULSE 125.0f
 /* How long the ring behind the character lasts after the engine lights. Shared
    with the renderer, which draws the ring's progress from it: two copies of one
    duration is a ring that finishes before or after the burst it belongs to. */
@@ -95,7 +123,29 @@ typedef struct Player {
     float brakingAuthority;
     float drag;
     float restitution;
+    /* The collider: a vertical capsule, a segment `halfHeight` either side of
+       the position with `radius` round it — from the soles of the boots to the
+       top of the helmet. The position is the hips. */
     float radius;
+    float halfHeight;
+    PlayerMode mode;
+    /* This frame's jump input, set by the caller before PlayerUpdate: the
+       press edge and whether the button is held (a short tap is a short hop). */
+    bool jumpPressed;
+    bool jumpHeld;
+    /* Standing on something, and for how long it has been since that was
+       last true. */
+    bool grounded;
+    float airTime;
+    /* A jump was taken from the ground and the next one in the air takes off. */
+    bool jumped;
+    /* Seconds since the last tap of jump in flight, for the double tap that
+       lands it; negative when there is none pending. */
+    float flightTapTimer;
+    /* Walking wants to run: Shift on foot. */
+    bool runHeld;
+    /* The walk cycle, advancing with ground speed. */
+    float walkPhase;
     float impactStrength;
     float impactTimer;
     float animationTime;
@@ -118,6 +168,13 @@ typedef struct Player {
 } Player;
 
 void PlayerInit(Player *player, Vector2 position);
+/* How far the collider reaches from the position up and down: halfHeight
+   plus radius. */
+float PlayerExtent(const Player *player);
+/* Where the soles of the boots are. */
+Vector2 PlayerFeet(const Player *player);
+/* True when the collider would overlap solid ground at `position`. */
+bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position);
 void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
                   float deltaTime);
 void PlayerResolveWorldCollision(Player *player, World *world);
@@ -154,18 +211,18 @@ Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim);
 /* Cells per body unit.
  *
  * The figure is written in body units — the shoulders at 3.2, the visor at 6.0,
- * the knee a little under five below it — and this is the one number that turns
- * those into cells. It exists because the character was drawn some thirteen
- * cells tall, and at that size a full-grown tree stood barely a head above him
- * and the world read as a set of props built for a giant. Shrinking him is the
- * cheaper half of fixing the proportions: everything else in the world gains
- * scale for free.
+ * the feet seven below the hips — and this is the one number that turns those
+ * into cells. The view is 426 cells across, the scale Noita shows its world
+ * at, and the character stands some sixteen cells tall in it: tall enough to
+ * carry a helmet, a belt, boots and a gait, small enough that a tree stands
+ * over him and a cavern is a place rather than a corridor.
  *
  * It has to be shared rather than living in the renderer, because the beams are
- * cast from the same body frame they are drawn in. A scale applied to the
- * drawing alone would put the eyes in one place and the laser's muzzle in
- * another — the exact bug the visor origin already had once. */
-#define PLAYER_BODY_SCALE 0.62f
+ * cast from the same body frame they are drawn in, and the collider is the
+ * same height as the drawing. A scale applied to the drawing alone would put
+ * the eyes in one place and the laser's muzzle in another — the exact bug the
+ * visor origin already had once. */
+#define PLAYER_BODY_SCALE 1.2f
 
 /* Where the shoulders sit along the body axis, and how far a two-handed power
    reaches past them, in body units. Here rather than in the renderer because
@@ -189,6 +246,11 @@ Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing);
    axis while the laser is cast from a point measured straight up in world space
    are two different heads, and the player sees both. */
 Vector2 PlayerBodyUp(const Player *player);
+/* Cells the body travels over one whole walking cycle, two steps: longer as
+   the walk becomes a run. The gait advances by distance over this, and the
+   renderer swings the legs by a quarter of it either way, so a planted foot
+   stays where it was put. */
+float PlayerStride(const Player *player);
 /* Holds a pose for `holdTime` seconds. Held powers refresh it every frame with a
    short time; a one-shot like the force blast asks for the length of its own
    animation. */

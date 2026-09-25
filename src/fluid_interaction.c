@@ -9,11 +9,11 @@
 
 #include "materials.h"
 
-/* Samples through the collider: three columns by three rows. Nine reads a
-   frame, and enough to tell a character standing in the shallows from one
-   that has gone under. */
+/* Samples through the collider: three columns by five rows, the capsule
+   being tall. Fifteen reads a frame, and enough to tell a character standing
+   in the shallows from one that has gone under. */
 #define FLUID_SAMPLE_COLUMNS 3
-#define FLUID_SAMPLE_ROWS 3
+#define FLUID_SAMPLE_ROWS 5
 /* Hysteresis on "in the liquid". */
 #define FLUID_ENTER_FRACTION 0.25f
 #define FLUID_ENTER_FRACTION_IN_SPRAY 0.75f
@@ -30,8 +30,8 @@
    the speeds where each starts and where each is at its greatest. Everything
    here moves cells — a pass at the sound barrier over a lake has to be a
    column of water standing in the air behind the character, not a ripple. */
-#define FLUID_FLYOVER_MIN_HALF_WIDTH 8
-#define FLUID_FLYOVER_MAX_HALF_WIDTH 30
+#define FLUID_FLYOVER_MIN_HALF_WIDTH 12
+#define FLUID_FLYOVER_MAX_HALF_WIDTH 44
 #define FLUID_FLYOVER_MIN_DEPTH 3
 #define FLUID_FLYOVER_MAX_DEPTH 14
 #define FLUID_FLYOVER_MIN_STRENGTH 6
@@ -43,11 +43,12 @@ FluidInteractionConfig FluidInteractionDefaultConfig(void)
 {
     FluidInteractionConfig config;
 
-    config.splashSpeed = 60.0f;
-    config.wakeSpeed = 40.0f;
-    config.flyoverHeight = 9.0f;
-    config.flyoverSpeed = 90.0f;
-    config.sonicFlyoverHeight = 22.0f;
+    /* Half as fast again as for the eight-cell character: the flight is. */
+    config.splashSpeed = 87.0f;
+    config.wakeSpeed = 58.0f;
+    config.flyoverHeight = 14.0f;
+    config.flyoverSpeed = 130.0f;
+    config.sonicFlyoverHeight = 32.0f;
     config.flyoverInterval = 0.015f;
     config.sonicBoilHeight = 5.0f;
     return config;
@@ -81,14 +82,26 @@ static float FluidSubmergedFraction(const World *world, const Player *player,
     int column;
     int row;
     int best = MATERIAL_EMPTY;
+    /* The collider is a capsule, tall rather than round: sample all of it.
+       A drilling character is in a corridor of steam as wide as the drill,
+       and what they are in is the water round that corridor. */
+    float extent = PlayerExtent(player);
+    float across = player->radius;
+
+    if (PlayerIsDrilling(player)) {
+        float wall = PlayerDrillRadius(player) + 1.5f;
+
+        if (wall > across) across = wall;
+        if (wall > extent) extent = wall;
+    }
 
     for (row = 0; row < FLUID_SAMPLE_ROWS; ++row) {
-        float y = at.y - player->radius +
-                  2.0f * player->radius * (float)row / (float)(FLUID_SAMPLE_ROWS - 1);
+        float y = at.y - extent +
+                  2.0f * extent * (float)row / (float)(FLUID_SAMPLE_ROWS - 1);
 
         for (column = 0; column < FLUID_SAMPLE_COLUMNS; ++column) {
-            float x = at.x - player->radius +
-                      2.0f * player->radius * (float)column /
+            float x = at.x - across +
+                      2.0f * across * (float)column /
                           (float)(FLUID_SAMPLE_COLUMNS - 1);
             CellMaterial material = WorldGetCell(world, (int)floorf(x),
                                                  (int)floorf(y));
@@ -114,7 +127,7 @@ static int FluidSurfaceRow(const World *world, const Player *player, Vector2 at)
 {
     int x = (int)floorf(at.x);
     int y = (int)floorf(at.y);
-    int reach = (int)ceilf(player->radius) + 6;
+    int reach = (int)ceilf(PlayerExtent(player)) + 6;
     int probe;
     int surface = y;
 
@@ -172,7 +185,7 @@ static void FluidFlyover(FluidInteractionState *state, const Player *player,
                          World *world, GameEventBuffer *events, float speed)
 {
     int x = (int)floorf(player->position.x);
-    int bottom = (int)floorf(player->position.y + player->radius);
+    int bottom = (int)floorf(player->position.y + PlayerExtent(player));
     float reach = speed >= player->sonicSpeed ? state->config.sonicFlyoverHeight
                                               : state->config.flyoverHeight;
     /* Wider, deeper and faster the faster: a wall at the sound barrier, a
@@ -297,6 +310,15 @@ void FluidInteractionUpdatePlayer(FluidInteractionState *state,
        never saw an entry at all. */
     ahead.x = player->position.x + player->velocity.x * deltaTime;
     ahead.y = player->position.y + player->velocity.y * deltaTime;
+    /* A drill clears a whole bite past the frame's end, a bite as wide as
+       the drill, so the water a drilling character meets is always steam
+       before they reach it: look past the bite. */
+    if (PlayerIsDrilling(player) && speed > 0.0f) {
+        float bite = 2.0f * PlayerDrillRadius(player);
+
+        ahead.x += player->velocity.x / speed * bite;
+        ahead.y += player->velocity.y / speed * bite;
+    }
     fractionAhead = FluidSubmergedFraction(world, player, ahead, &liquidAhead);
 
     /* Just after a low pass the air around the character is full of the

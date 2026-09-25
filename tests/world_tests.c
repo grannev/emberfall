@@ -10577,8 +10577,9 @@ static void test_movement_survives_an_absurd_velocity(void)
         CHECK(player.velocity.x == player.velocity.x &&
                   player.velocity.y == player.velocity.y,
               "the velocity went non-finite at step %d", step);
-        CHECK(player.position.x >= 0.0f && player.position.x <= 256.0f &&
-                  player.position.y >= 0.0f && player.position.y <= 128.0f,
+        /* Across, the world wraps and the game brings the character back;
+           down and up it ends. */
+        CHECK(player.position.y >= 0.0f && player.position.y <= 128.0f,
               "the player left the world at (%.2f, %.2f)",
               (double)player.position.x, (double)player.position.y);
     }
@@ -10814,7 +10815,7 @@ static void test_a_boosted_dive_still_splashes(void)
     PlayerInit(&player, (Vector2){128.0f, 60.0f});
     player.velocity = (Vector2){0.0f, player.boostSpeed};
     FluidInteractionInit(&fluid);
-    for (step = 0; step < 20; ++step) {
+    for (step = 0; step < 14; ++step) {
         GameEventsClear(&events);
         FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
         splashes += CountEvents(&events, GAME_EVENT_LIQUID_SPLASH);
@@ -10877,7 +10878,7 @@ static void test_falling_through_the_air_burns_the_player_without_slowing_them(v
     AtmosphereInit(&atmosphere);
     PlayerInit(&player, (Vector2){32.0f, (WorldSpaceLineY(&world) +
                                           WorldCloudLineY(&world)) * 0.5f});
-    player.velocity = (Vector2){0.0f, 300.0f};
+    player.velocity = (Vector2){0.0f, 450.0f};
     speed = player.velocity.y;
     for (step = 0; step < 60; ++step) {
         GameEventsClear(&events);
@@ -10961,7 +10962,7 @@ static void test_a_body_falling_from_space_is_slowed_and_heated(void)
                             (Vector2){64.0f, middle});
     slow = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK,
                             (Vector2){192.0f, middle});
-    DynamicTerrainGet(&terrain, fast)->velocity = (Vector2){0.0f, 300.0f};
+    DynamicTerrainGet(&terrain, fast)->velocity = (Vector2){0.0f, 450.0f};
     /* Faster than the character cruises, and still under the entry speed:
        no friction at all. */
     DynamicTerrainGet(&terrain, slow)->velocity = (Vector2){0.0f, 150.0f};
@@ -11023,7 +11024,8 @@ static void test_a_low_fast_pass_lifts_the_water(void)
     FillRect(&world, 0, 201, 511, 255, MATERIAL_ROCK);
     Tick(&world, 60);
     /* Skimming two cells above the surface at speed. */
-    PlayerInit(&player, (Vector2){40.0f, 120.0f - 2.0f - 3.2f * PLAYER_BODY_SCALE});
+    PlayerInit(&player, (Vector2){40.0f, 0.0f});
+    player.position.y = 120.0f - 2.0f - PlayerExtent(&player);
     player.velocity = (Vector2){260.0f, 0.0f};
     FluidInteractionInit(&fluid);
     for (step = 0; step < 40; ++step) {
@@ -11031,7 +11033,7 @@ static void test_a_low_fast_pass_lifts_the_water(void)
         FluidInteractionUpdatePlayer(&fluid, &player, &world, &events, MOVEMENT_STEP);
         ripples += CountEvents(&events, GAME_EVENT_LIQUID_RIPPLE);
         PlayerUpdate(&player, &world, (Vector2){1.0f, 0.0f}, true, MOVEMENT_STEP);
-        player.position.y = 120.0f - 2.0f - 3.2f * PLAYER_BODY_SCALE;
+        player.position.y = 120.0f - 2.0f - PlayerExtent(&player);
         WorldUpdate(&world);
         for (x = 0; x < 512; ++x) {
             if (WorldGetCell(&world, x, 119) == MATERIAL_WATER ||
@@ -11526,7 +11528,7 @@ static void test_beams_leave_from_the_eyes(void)
         CHECK(toCentre > player.radius * 0.5f,
               "aim %d starts %.2f from the centre, inside a collider of %.2f",
               index, (double)toCentre, (double)player.radius);
-        CHECK(toCentre < player.radius * 3.0f,
+        CHECK(toCentre < PlayerExtent(&player) * 1.5f,
               "aim %d starts %.2f away, nowhere near the character", index,
               (double)toCentre);
         /* Above the middle: the head, not the feet. */
