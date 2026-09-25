@@ -44,6 +44,32 @@ static bool AbilityRequested(const AbilityBinding *binding)
     return pressed ? IsKeyPressed(binding->key) : IsKeyDown(binding->key);
 }
 
+MenuInput InputPollMenu(void)
+{
+    static Vector2 lastMouse = {-1.0f, -1.0f};
+    MenuInput input = {0};
+    int character;
+
+    input.up = IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W);
+    input.down = IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S);
+    input.left = IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_A);
+    input.right = IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D);
+    input.confirm = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                    IsKeyPressed(KEY_SPACE);
+    input.back = IsKeyPressed(KEY_ESCAPE);
+    input.erase = IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE);
+    input.mouse = GetMousePosition();
+    input.mouseMoved = input.mouse.x != lastMouse.x || input.mouse.y != lastMouse.y;
+    lastMouse = input.mouse;
+    input.click = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    while ((character = GetCharPressed()) > 0 &&
+           input.characterCount < (int)(sizeof(input.characters) /
+                                        sizeof(input.characters[0]))) {
+        input.characters[input.characterCount++] = character;
+    }
+    return input;
+}
+
 const char *InputAbilityBinding(AbilityId id)
 {
     int index;

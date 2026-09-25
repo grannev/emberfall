@@ -11,7 +11,9 @@
 #include "camera_feedback.h"
 #include "game.h"
 #include "input.h"
+#include "menu.h"
 #include "renderer.h"
+#include "settings.h"
 #include "smoke_test.h"
 
 #define WINDOW_WIDTH 1280
@@ -285,6 +287,25 @@ static void DrawControlsHint(void)
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
 }
 
+/* Puts the settings into effect. Every one of them is presentation or
+   platform; none reaches the simulation. The smoke run keeps its own fixed
+   configuration and is never touched by a player's file. */
+static void ApplySettings(const Settings *settings)
+{
+    bool borderless = IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
+
+    SetMasterVolume(settings->masterVolume);
+    SetTargetFPS(SettingsFrameLimitRate(settings->frameLimit));
+    if (settings->vsync) {
+        SetWindowState(FLAG_VSYNC_HINT);
+    } else {
+        ClearWindowState(FLAG_VSYNC_HINT);
+    }
+    if (settings->fullscreen != borderless) {
+        ToggleBorderlessWindowed();
+    }
+}
+
 /* Presentation consumes transient gameplay facts after GameUpdate. Gameplay
    neither plays sounds nor shakes a Camera2D, and adding another consumer does
    not require another one-frame flag on Player or PowerSystem. */
@@ -347,7 +368,12 @@ int main(int argc, char **argv)
     /* Static rather than on the frame: the run keeps a few hundred bytes of
        measurements, and main's stack is not where they belong. */
     static SmokeTest smoke;
-    bool debugHud = true;
+    Settings settings = SettingsDefaults();
+    char settingsPath[512];
+    bool settingsFile = false;
+    Menu menu;
+    bool menuOpen = false;
+    bool quit = false;
     bool smokeTest = false;
     int argument;
     Vector2 cameraFocus;
@@ -357,6 +383,10 @@ int main(int argc, char **argv)
        tall. */
     Vector2 lastPlayerPosition;
     ViewZoom viewZoom = {1.0f, 1.0f};
+    /* The cursor and the aim survive a frame spent in the menu: the world
+       under it is drawn as the last frame of play left it. */
+    Vector2 cursorCell = {0.0f, 0.0f};
+    Vector2 aimPosition = {0.0f, 0.0f};
     int exitCode = 0;
 
     for (argument = 1; argument < argc; ++argument) {
@@ -395,7 +425,14 @@ int main(int argc, char **argv)
        desktop: a compositor presents an unfocused window at one frame a
        second, and a run that waits for the swap takes seven minutes instead
        of ten seconds. */
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | (smokeTest ? 0u : FLAG_VSYNC_HINT));
+    /* The player's settings, read before the window exists so vsync can be
+       asked for when it is created. */
+    if (!smokeTest && SettingsPath(settingsPath, sizeof(settingsPath))) {
+        settingsFile = true;
+        (void)SettingsLoad(&settings, settingsPath);
+    }
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE |
+                   (!smokeTest && settings.vsync ? FLAG_VSYNC_HINT : 0u));
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "EMBERFALL - pixel physics sandbox");
     if (!IsWindowReady()) {
         fprintf(stderr, "Failed to initialize the raylib window.\n");
@@ -404,8 +441,13 @@ int main(int argc, char **argv)
 
     SetWindowMinSize(640, 360);
     SetTargetFPS(smokeTest ? 0 : 120);
-    SetExitKey(KEY_ESCAPE);
+    /* Escape opens the menu; the menu's QUIT and the window's close button
+       are the ways out. */
+    SetExitKey(KEY_NULL);
     (void)GameAudioInit(&audio);
+    if (!smokeTest) {
+        ApplySettings(&settings);
+    }
 
     if (!GameInit(&game, config) ||
         !RendererInit(&renderer, &game, environmentPalette)) {
@@ -420,8 +462,14 @@ int main(int argc, char **argv)
     if (smokeTest) {
         SmokeTestPrepare(&smoke, &game);
     }
+    MenuInit(&menu);
+    menu.worldSeed = game.worldSeed;
+    /* The game opens on the menu, over the world it has just made; the smoke
+       run goes straight to play. */
+    menuOpen = !smokeTest;
     cameraFocus = game.player.position;
     lastPlayerPosition = game.player.position;
+    aimPosition = (Vector2){game.player.position.x + 24.0f, game.player.position.y};
     CameraFeedbackInit(&cameraFeedback);
     stableCamera.target = cameraFocus;
     stableCamera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
@@ -429,20 +477,16 @@ int main(int argc, char **argv)
     stableCamera.rotation = 0.0f;
     stableCamera.zoom = CameraZoomForWindow(1.0f);
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !quit) {
         /* The smoke run steps at exactly one fixed tick per frame. Real frame
            time makes the number of simulation ticks a frame runs depend on how
            busy the machine is, which turns every assertion about where a body
            got to into a coin flip — and the reference screenshot with it. */
         float deltaTime = smokeTest ? game.config.fixedStep
                                     : fminf(GetFrameTime(), 0.05f);
-        AppInput input;
         Camera2D aimCamera;
         Camera2D presentationCamera;
-        Vector2 desiredCamera;
-        CameraFeedbackOutput cameraOutput;
-        Vector2 cursorCell;
-        Vector2 aimPosition;
+        CameraFeedbackOutput cameraOutput = {0};
 
         if (smokeTest) {
             SmokeTestBeginFrame(&smoke, &game, &renderer, &cameraFeedback);
@@ -459,86 +503,169 @@ int main(int argc, char **argv)
         stableCamera.target = ClampCameraTarget(
             stableCamera.target, stableCamera.zoom, &game.world);
         aimCamera = stableCamera;
-        input = InputPoll(&game.world, aimCamera);
-        if (!smokeTest) {
-            ViewZoomUpdate(&viewZoom, input.zoomSteps, deltaTime);
-        }
-        cursorCell = input.cursorCell;
-        aimPosition = input.game.aimWorld;
-        if (input.toggleDebugPressed) {
-            debugHud = !debugHud;
-        }
-        if (smokeTest) {
-            SmokeTestScriptInput(&smoke, &game, &input, &aimPosition, &cursorCell);
-        }
+        presentationCamera = aimCamera;
 
-        GameUpdate(&game, &input.game, deltaTime, &events);
-        if (input.game.regeneratePressed) {
-            cameraFocus = game.player.position;
-            CameraFeedbackClear(&cameraFeedback);
-            RendererClearPresentation(&renderer);
-        } else if (Vector2Distance(game.player.position, lastPlayerPosition) >
-                   VIEW_HEIGHT * 0.66f) {
-            /* Boost covers under forty cells in the longest frame; two thirds
-               of a screen in one frame is a teleport, never flight. */
-            cameraFocus = game.player.position;
-        }
-        lastPlayerPosition = game.player.position;
-        {
-            GameAudioState sounding = {0};
+        if (menuOpen) {
+            MenuInput menuInput = InputPollMenu();
+            MenuAction action = MenuUpdate(&menu, &menuInput, &settings,
+                                           GetScreenWidth(), GetScreenHeight(),
+                                           deltaTime);
 
-            sounding.laser = AbilityStateAt(&game.abilities, ABILITY_LASER)->active;
-            sounding.drilling = game.player.drilledCells > 0;
-            sounding.drillMaterial = game.player.drillMaterial;
-            sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
-            GameAudioUpdate(&audio, sounding, deltaTime);
-        }
-        PresentGameAudio(&events, &audio);
-        CameraFeedbackConsumeEvents(&cameraFeedback, &events,
-                                    game.player.position);
-        RendererUpdatePresentation(&renderer, &events, deltaTime);
-        if (smokeTest) {
-            SmokeTestObserveUpdate(&smoke, &game, &events);
-        }
+            /* The world waits under the menu: nothing is simulated and nothing
+               sounds. Before the first world is entered the camera drifts
+               slowly along it, so the menu opens onto a place rather than a
+               still. */
+            GameEventsClear(&events);
+            GameAudioUpdate(&audio, (GameAudioState){0}, deltaTime);
+            if (!menu.worldEntered) {
+                cameraFocus.x += 14.0f * deltaTime;
+                stableCamera.target =
+                    ClampCameraTarget(cameraFocus, stableCamera.zoom, &game.world);
+                presentationCamera = stableCamera;
+            }
+            switch (action.type) {
+            case MENU_ACTION_CONTINUE:
+                menuOpen = false;
+                if (!menu.worldEntered) {
+                    cameraFocus = game.player.position;
+                }
+                menu.worldEntered = true;
+                break;
+            case MENU_ACTION_NEW_WORLD:
+                if (action.seeded) {
+                    GameReset(&game, action.seed);
+                } else {
+                    GameRegenerate(&game);
+                }
+                menu.worldSeed = game.worldSeed;
+                menu.worldEntered = true;
+                menuOpen = false;
+                cameraFocus = game.player.position;
+                lastPlayerPosition = game.player.position;
+                stableCamera.target = cameraFocus;
+                CameraFeedbackClear(&cameraFeedback);
+                RendererClearPresentation(&renderer);
+                break;
+            case MENU_ACTION_SETTINGS_CHANGED:
+                ApplySettings(&settings);
+                if (settingsFile) {
+                    (void)SettingsSave(&settings, settingsPath);
+                }
+                break;
+            case MENU_ACTION_QUIT:
+                quit = true;
+                break;
+            case MENU_ACTION_NONE:
+            default:
+                break;
+            }
+        } else {
+            AppInput input = InputPoll(&game.world, aimCamera);
+            Vector2 desiredCamera;
 
-        cameraOutput = CameraFeedbackUpdate(
-            &cameraFeedback,
-            (CameraFeedbackMotion){
-                .velocity = game.player.velocity,
-                .normalSpeed = game.player.maxSpeed,
-                .maximumSpeed = game.player.boostSpeed,
-                .viewWidth = VIEW_WIDTH,
-                .viewHeight = VIEW_HEIGHT,
-            },
-            deltaTime);
-        if (smokeTest) {
-            SmokeTestObserveCamera(&smoke, cameraOutput);
-        }
-        /* Widening belongs to the stable camera used on the next input frame.
-           The immediate kick is applied only to the presentation copy below,
-           so transient feedback never changes mouse-to-world conversion. */
-        {
-            Vector2 lead = {
-                game.player.position.x + cameraOutput.lookahead.x,
-                game.player.position.y + cameraOutput.lookahead.y};
+            if (!smokeTest) {
+                ViewZoomUpdate(&viewZoom, input.zoomSteps * settings.zoomSpeed,
+                               deltaTime);
+            }
+            cursorCell = input.cursorCell;
+            aimPosition = input.game.aimWorld;
+            if (input.toggleDebugPressed) {
+                settings.showDebugHud = !settings.showDebugHud;
+                if (settingsFile) {
+                    (void)SettingsSave(&settings, settingsPath);
+                }
+            }
+            if (smokeTest) {
+                SmokeTestScriptInput(&smoke, &game, &input, &aimPosition, &cursorCell);
+            }
 
-            desiredCamera = ClampCameraTarget(
-                lead,
-                CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current),
-                &game.world);
+            GameUpdate(&game, &input.game, deltaTime, &events);
+            if (input.game.regeneratePressed) {
+                cameraFocus = game.player.position;
+                menu.worldSeed = game.worldSeed;
+                CameraFeedbackClear(&cameraFeedback);
+                RendererClearPresentation(&renderer);
+            } else if (Vector2Distance(game.player.position, lastPlayerPosition) >
+                       VIEW_HEIGHT * 0.66f) {
+                /* Boost covers under forty cells in the longest frame; two
+                   thirds of a screen in one frame is a teleport, never
+                   flight. */
+                cameraFocus = game.player.position;
+            }
+            lastPlayerPosition = game.player.position;
+            {
+                GameAudioState sounding = {0};
+
+                sounding.laser = AbilityStateAt(&game.abilities, ABILITY_LASER)->active;
+                sounding.drilling = game.player.drilledCells > 0;
+                sounding.drillMaterial = game.player.drillMaterial;
+                sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
+                GameAudioUpdate(&audio, sounding, deltaTime);
+            }
+            PresentGameAudio(&events, &audio);
+            CameraFeedbackConsumeEvents(&cameraFeedback, &events,
+                                        game.player.position);
+            RendererUpdatePresentation(&renderer, &events, deltaTime);
+            if (smokeTest) {
+                SmokeTestObserveUpdate(&smoke, &game, &events);
+            }
+
+            cameraOutput = CameraFeedbackUpdate(
+                &cameraFeedback,
+                (CameraFeedbackMotion){
+                    .velocity = game.player.velocity,
+                    .normalSpeed = game.player.maxSpeed,
+                    .maximumSpeed = game.player.boostSpeed,
+                    .viewWidth = VIEW_WIDTH,
+                    .viewHeight = VIEW_HEIGHT,
+                },
+                deltaTime);
+            if (smokeTest) {
+                SmokeTestObserveCamera(&smoke, cameraOutput);
+            }
+            /* The player's own taste in shake. Scaled here, after the
+               smoke run has seen the real output, and never below what
+               widening at speed needs: the view scale is not shake. */
+            if (!smokeTest) {
+                cameraOutput.impulseOffset.x *= settings.screenShake;
+                cameraOutput.impulseOffset.y *= settings.screenShake;
+                cameraOutput.rotationDegrees *= settings.screenShake;
+                cameraOutput.zoomKick *= settings.screenShake;
+            }
+            /* Widening belongs to the stable camera used on the next input
+               frame. The immediate kick is applied only to the presentation
+               copy below, so transient feedback never changes mouse-to-world
+               conversion. */
+            {
+                Vector2 lead = {
+                    game.player.position.x + cameraOutput.lookahead.x,
+                    game.player.position.y + cameraOutput.lookahead.y};
+
+                desiredCamera = ClampCameraTarget(
+                    lead,
+                    CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current),
+                    &game.world);
+            }
+            cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
+                             (1.0f - expf(-8.0f * deltaTime));
+            cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
+                             (1.0f - expf(-8.0f * deltaTime));
+            stableCamera.zoom =
+                CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current);
+            stableCamera.target = ClampCameraTarget(cameraFocus, stableCamera.zoom,
+                                                    &game.world);
+            presentationCamera =
+                CameraFeedbackApplyTransient(aimCamera, cameraOutput);
+            presentationCamera.target = ClampCameraTarget(
+                presentationCamera.target, presentationCamera.zoom, &game.world);
+
+            /* Escape opens the menu at the end of the frame, over the world
+               exactly as this frame left it. */
+            if (input.menuPressed && !smokeTest) {
+                menuOpen = true;
+                MenuOpen(&menu);
+            }
         }
-        cameraFocus.x += (desiredCamera.x - cameraFocus.x) *
-                         (1.0f - expf(-8.0f * deltaTime));
-        cameraFocus.y += (desiredCamera.y - cameraFocus.y) *
-                         (1.0f - expf(-8.0f * deltaTime));
-        stableCamera.zoom =
-            CameraZoomForWindow(cameraOutput.viewScale * viewZoom.current);
-        stableCamera.target = ClampCameraTarget(cameraFocus, stableCamera.zoom,
-                                                &game.world);
-        presentationCamera =
-            CameraFeedbackApplyTransient(aimCamera, cameraOutput);
-        presentationCamera.target = ClampCameraTarget(
-            presentationCamera.target, presentationCamera.zoom, &game.world);
 
         /* The player carries their own light. Without it a bored tunnel would
            be unplayably dark the moment it leaves the reach of daylight, and
@@ -561,10 +688,26 @@ int main(int argc, char **argv)
            if RendererComposite ever has no valid scene target to draw. */
         ClearBackground((Color){2, 4, 9, 255});
         RendererComposite(&renderer);
-        if (debugHud && !(smokeTest && SmokeTestHidesHud(&smoke))) {
-            DrawDebugHud(&game, &events, &renderer, cursorCell);
+        if (smokeTest && (smoke.frame == 5 || smoke.frame == 6)) {
+            /* The smoke run never opens the menu, so it is photographed
+               here, drawn over a frame of play: the main screen, then the
+               settings. */
+            Menu shown = menu;
+
+            shown.screen = smoke.frame == 5 ? MENU_SCREEN_MAIN : MENU_SCREEN_SETTINGS;
+            shown.selected = smoke.frame == 5 ? 0 : 1;
+            MenuDraw(&shown, &settings, GetScreenWidth(), GetScreenHeight());
+        } else if (menuOpen) {
+            MenuDraw(&menu, &settings, GetScreenWidth(), GetScreenHeight());
+        } else {
+            if ((smokeTest || settings.showDebugHud) &&
+                !(smokeTest && SmokeTestHidesHud(&smoke))) {
+                DrawDebugHud(&game, &events, &renderer, cursorCell);
+            }
+            if (smokeTest || settings.showControls) {
+                DrawControlsHint();
+            }
         }
-        DrawControlsHint();
         if (smokeTest) {
             SmokeTestCapture(&smoke);
         }

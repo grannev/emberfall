@@ -1178,6 +1178,12 @@ void SmokeTestCapture(SmokeTest *smoke)
     if (frame == 3) {
         TakeScreenshot("build/emberfall-beam.png");
     }
+    if (frame == 5) {
+        TakeScreenshot("build/emberfall-menu.png");
+    }
+    if (frame == 6) {
+        TakeScreenshot("build/emberfall-settings.png");
+    }
     if (frame == 10) {
         TakeScreenshot("build/emberfall-cryo.png");
     }
