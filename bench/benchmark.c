@@ -24,7 +24,7 @@
 /* Tracks the production map. A benchmark measuring a world the game no longer
    ships is a benchmark of nothing: the height decides how much sky the light
    field has to fill and how deep the ground the simulation walks is. */
-#define BENCH_WORLD_HEIGHT 2048
+#define BENCH_WORLD_HEIGHT 4096
 /* Every scenario lays its fixtures out in ground-band rows, the coordinates
    they were tuned in when the band was the whole world; the sky the world has
    grown above the band is added here, so the fixtures stay where they were

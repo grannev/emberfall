@@ -295,20 +295,75 @@ static void WorldRowTransmission(const World *world, int lightY, int firstColumn
     }
 }
 
+/* The first row of the window with anything in it for the light to act on:
+   opacity, emission, or the player's lamp. Every row above it is open air,
+   seeded at full sky and no ember, and the downward sweep leaves such a row
+   exactly as it was seeded — so it is not swept. Most of a world four
+   thousand cells tall is such rows. */
+static int WorldLightTopRow(const World *world, int firstColumn, int lastColumn)
+{
+    const int columns = world->lightColumns;
+    int top = world->lightRows;
+    int lightY;
+
+    if (world->pointLightStrength > 0.0f && world->pointLightRadius > 0.0f) {
+        int lampTop = (int)(world->pointLight.y / (float)WORLD_LIGHT_SCALE) -
+                      (int)ceilf(world->pointLightRadius / (float)WORLD_LIGHT_SCALE);
+
+        if (lampTop < 0) lampTop = 0;
+        top = lampTop;
+    }
+    for (lightY = 0; lightY < top; ++lightY) {
+        const float *opacity = world->lightOpacity + (size_t)lightY * (size_t)columns;
+        const float *emission = world->lightEmission + (size_t)lightY * (size_t)columns;
+        float any = 0.0f;
+        int lightX;
+
+        for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+            any = WorldMaximum(any, WorldMaximum(opacity[lightX], emission[lightX]));
+        }
+        if (any > 0.0f) {
+            return lightY;
+        }
+    }
+    return top;
+}
+
+/* Below half a step of the eight-bit texture the field is uploaded into:
+   ember this faint is zero on screen, and the upward sweep stops carrying it
+   into empty sky once a whole row of it has fallen this far. */
+#define WORLD_LIGHT_EMBER_FLOOR (0.5f / 255.0f)
+
+static float WorldRowMaximum(const float *row, int firstColumn, int lastColumn)
+{
+    float maximum = 0.0f;
+    int lightX;
+
+    for (lightX = firstColumn; lightX <= lastColumn; ++lightX) {
+        maximum = WorldMaximum(maximum, row[lightX]);
+    }
+    return maximum;
+}
+
 static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
 {
     const int columns = world->lightColumns;
     const int rows = world->lightRows;
     const float *through = world->lightScratch;
     int lightY;
+    int top;
     /* Diagonal neighbours are one and a half cells away, near enough; the exact
        root of two costs a call and changes nothing visible. */
     const float diagonal = 0.87f;
 
     WorldSeedSky(world, firstColumn, lastColumn);
     WorldSeedEmber(world, firstColumn, lastColumn);
+    top = WorldLightTopRow(world, firstColumn, lastColumn);
+    world->lightStats.skippedRows = 0;
 
-    for (lightY = 0; lightY < rows; ++lightY) {
+    /* Down from the first row with something in it: above it the sweep would
+       write back exactly what the seed wrote. */
+    for (lightY = top; lightY < rows; ++lightY) {
         size_t rowOffset = (size_t)lightY * (size_t)columns;
         size_t aboveOffset = rowOffset - (size_t)columns;
 
@@ -328,6 +383,19 @@ static void WorldSolveLight(World *world, int firstColumn, int lastColumn)
                       lightY + 1 < rows ? world->lightSky + belowOffset : NULL,
                       lightY + 1 < rows ? world->lightEmber + belowOffset : NULL,
                       through, firstColumn, lastColumn, -1, diagonal);
+        /* Up into empty sky the ember only fades, three per cent a row; once
+           a whole row of it is below what the texture can show, every row
+           above would be too, and they keep the zero they were seeded with.
+           Sky is already full there and nothing up the column can raise it. */
+        if (lightY < top &&
+            WorldRowMaximum(world->lightEmber + rowOffset, firstColumn,
+                            lastColumn) < WORLD_LIGHT_EMBER_FLOOR) {
+            world->lightStats.skippedRows = lightY + top;
+            break;
+        }
+    }
+    if (lightY < 0) {
+        world->lightStats.skippedRows = top;
     }
 }
 

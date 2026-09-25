@@ -870,10 +870,20 @@ void SmokeTestBeginFrame(SmokeTest *smoke, GameState *game, Renderer *renderer,
         smoke->groundPosition = game->player.position;
         smoke->groundVelocity = game->player.velocity;
     }
-    if (frame >= 18 && frame <= 26) {
+    if (frame >= 18 && frame <= 22) {
         game->player.position.y =
             (float)game->world.height * WORLD_SPACE_LINE * 0.9f;
         game->player.velocity = (Vector2){40.0f, 0.0f};
+    }
+    /* Then down through the air at boost speed, already burning: the heat
+       takes most of a second to build and the run has four frames for it,
+       so it is asked for, like midnight. What the photograph is for is the
+       cap of glowing air standing ahead of the character. */
+    if (frame >= 23 && frame <= 26) {
+        game->player.position.y =
+            (WorldSpaceLineY(&game->world) + WorldCloudLineY(&game->world)) * 0.5f;
+        game->player.velocity = (Vector2){90.0f, 360.0f};
+        game->atmosphere.playerHeat = 0.9f;
     }
     if (frame == 27) {
         /* Put back exactly where it was: the acceptance run that starts here
@@ -1185,8 +1195,11 @@ void SmokeTestCapture(SmokeTest *smoke)
     if (frame == 16) {
         TakeScreenshot("build/emberfall-night.png");
     }
-    if (frame == 26) {
+    if (frame == 22) {
         TakeScreenshot("build/emberfall-space.png");
+    }
+    if (frame == 26) {
+        TakeScreenshot("build/emberfall-reentry.png");
     }
     if (frame == 10) {
         TakeScreenshot("build/emberfall-smoke.png");

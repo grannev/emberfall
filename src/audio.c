@@ -21,7 +21,8 @@ typedef enum SynthKind {
     SYNTH_CHILL,
     SYNTH_CHILL_IMPACT,
     SYNTH_BOOST,
-    SYNTH_SPLASH
+    SYNTH_SPLASH,
+    SYNTH_REENTRY
 } SynthKind;
 
 static float SynthNoise(uint32_t *state)
@@ -146,6 +147,17 @@ static float SynthSample(SynthKind kind, float time, float duration,
         return (thump * 0.72f + rush * 1.8f + crack * 0.28f) * decay * release;
     }
 
+    if (kind == SYNTH_REENTRY) {
+        /* Not a bang: a wall of air. Broad noise under a low tone that
+           wavers, held flat rather than struck, so a burn that lasts seconds
+           is one continuous roar and not sixty impacts. */
+        float roar = SynthLowPass(SynthNoise(noiseState), filterState, 0.09f);
+        float body = sinf(time * 2.0f * PI * (58.0f + 9.0f * sinf(time * 13.0f)));
+        float swell = time < 0.06f ? time / 0.06f : 1.0f;
+
+        return (roar * 2.6f + body * 0.5f) * swell * release * 0.6f;
+    }
+
     if (kind == SYNTH_SPLASH) {
         /* A slap and a wash: a short low thump for the surface giving way,
            then filtered noise falling away as the spray comes down. */
@@ -224,6 +236,7 @@ bool GameAudioInit(GameAudio *audio)
     audio->chillImpact = SynthCreateSound(SYNTH_CHILL_IMPACT, 0.12f);
     audio->boost = SynthCreateSound(SYNTH_BOOST, 0.52f);
     audio->splash = SynthCreateSound(SYNTH_SPLASH, 0.46f);
+    audio->reentry = SynthCreateSound(SYNTH_REENTRY, 0.60f);
     SetMasterVolume(0.72f);
 
     if (IsSoundValid(audio->laser)) SetSoundVolume(audio->laser, 0.34f);
@@ -238,6 +251,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
     if (IsSoundValid(audio->chillImpact)) SetSoundVolume(audio->chillImpact, 0.26f);
     if (IsSoundValid(audio->boost)) SetSoundVolume(audio->boost, 0.45f);
+    if (IsSoundValid(audio->reentry)) SetSoundVolume(audio->reentry, 0.4f);
     if (IsSoundValid(audio->splash)) SetSoundVolume(audio->splash, 0.5f);
     return true;
 }
@@ -317,6 +331,7 @@ void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime)
 
     audio->reactionCooldown = fmaxf(0.0f, audio->reactionCooldown - deltaTime);
     audio->splashCooldown = fmaxf(0.0f, audio->splashCooldown - deltaTime);
+    audio->reentryCooldown = fmaxf(0.0f, audio->reentryCooldown - deltaTime);
     audio->impactCooldown = fmaxf(0.0f, audio->impactCooldown - deltaTime);
     audio->laserImpactCooldown = fmaxf(
         0.0f, audio->laserImpactCooldown - deltaTime);
@@ -440,6 +455,23 @@ void GameAudioPlayReaction(GameAudio *audio)
     audio->reactionCooldown = 0.13f;
 }
 
+void GameAudioPlayReentry(GameAudio *audio, float heat)
+{
+    float weight;
+
+    if (audio == NULL || !audio->ready || audio->reentryCooldown > 0.0f ||
+        !IsSoundValid(audio->reentry)) {
+        return;
+    }
+    weight = Clamp(heat, 0.0f, 1.0f);
+    SetSoundPitch(audio->reentry, 0.82f + 0.3f * weight);
+    SetSoundVolume(audio->reentry, 0.12f + 0.4f * weight);
+    PlaySound(audio->reentry);
+    /* Just under the sound's own length, so the roar overlaps into itself
+       and reads as continuous rather than as a stutter. */
+    audio->reentryCooldown = 0.5f;
+}
+
 void GameAudioPlaySplash(GameAudio *audio, float strength)
 {
     float weight;
@@ -474,6 +506,7 @@ void GameAudioUnload(GameAudio *audio)
         if (IsSoundValid(audio->chill)) UnloadSound(audio->chill);
         if (IsSoundValid(audio->chillImpact)) UnloadSound(audio->chillImpact);
         if (IsSoundValid(audio->splash)) UnloadSound(audio->splash);
+        if (IsSoundValid(audio->reentry)) UnloadSound(audio->reentry);
         if (IsSoundValid(audio->boost)) UnloadSound(audio->boost);
         CloseAudioDevice();
     }

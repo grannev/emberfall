@@ -670,6 +670,41 @@ static void PresentationFxSpawnRipple(PresentationFxSystem *system,
     }, spawned);
 }
 
+/* Re-entry: the sparks streaming off behind. The cap in front — the bow of
+   glowing air — is reentry_renderer.c's, drawn every frame from the heat,
+   so here there is only the tail. Drawn from the event alone — how hot, how
+   big, which way — so it serves the character and a slab out of orbit with
+   the same code. */
+static void PresentationFxSpawnReentry(PresentationFxSystem *system,
+                                       const GameEvent *event, uint16_t *spawned)
+{
+    float heat = PresentationFxClamp(event->strength, 0.0f, 1.0f);
+    float size = event->radius > 0.5f ? event->radius : 0.5f;
+    int index;
+
+    /* Three streaks behind, fanned by the presentation RNG so the tail
+       flickers rather than pulsing in step with the event interval. */
+    for (index = 0; index < 3; ++index) {
+        float spread = (PresentationFxRandomUnit(system) - 0.5f) * 0.5f;
+        Vector2 back = {-event->direction.x, -event->direction.y};
+        Vector2 fan = {back.x - back.y * spread, back.y + back.x * spread};
+        float reach = size * (1.4f + 2.6f * heat) *
+                      (0.6f + 0.6f * PresentationFxRandomUnit(system));
+
+        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+            .type = PRESENTATION_FX_TRAIL,
+            .priority = PRESENTATION_FX_PRIORITY_LOW,
+            .start = event->position,
+            .end = Vector2Add(event->position, Vector2Scale(fan, reach)),
+            .color = {255, (unsigned char)(150.0f + 60.0f * (1.0f - heat)), 70, 255},
+            .width = size * 0.35f,
+            .intensity = 0.3f + 0.4f * heat,
+            .lifetime = 0.2f + 0.2f * heat,
+            .emissive = true,
+        }, spawned);
+    }
+}
+
 uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
                                      const GameEventBuffer *events)
 {
@@ -750,6 +785,12 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
         case GAME_EVENT_LIQUID_RIPPLE:
             PresentationFxSpawnRipple(system, event, &spawned);
             break;
+        case GAME_EVENT_REENTRY:
+            if (system->reentrySpawnCooldown <= 0.0f) {
+                PresentationFxSpawnReentry(system, event, &spawned);
+                system->reentrySpawnCooldown = 0.05f;
+            }
+            break;
         default:
             break;
         }
@@ -775,6 +816,8 @@ void PresentationFxUpdate(PresentationFxSystem *system, float deltaTime)
                                       system->cryoSpawnCooldown - deltaTime);
     system->drillSpawnCooldown = fmaxf(0.0f,
                                        system->drillSpawnCooldown - deltaTime);
+    system->reentrySpawnCooldown = fmaxf(0.0f,
+                                         system->reentrySpawnCooldown - deltaTime);
     /* Contact heat is presentation time, not simulation ticks or render-event
        count. Accumulating here keeps the ramp identical at 30, 60 and 144 Hz;
        ConsumeEvents below either preserves the streak or resets it. */

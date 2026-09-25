@@ -78,6 +78,7 @@ typedef struct PresentationFxSystem {
     float laserSpawnCooldown;
     float cryoSpawnCooldown;
     float drillSpawnCooldown;
+    float reentrySpawnCooldown;
     bool laserContactValid;
 } PresentationFxSystem;
 

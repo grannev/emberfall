@@ -17,6 +17,7 @@
 #include "fluid_interaction.h"
 #include "terrain_fluid.h"
 #include "terrain_stability.h"
+#include "atmosphere.h"
 #include "terrain_interaction.h"
 #include "world.h"
 
@@ -74,6 +75,7 @@ typedef struct GameState {
     TerrainFluidSystem bodyFluid;
     /* Ceilings that were just opened up, waiting to be asked if they hold. */
     TerrainStabilitySystem stability;
+    AtmosphereSystem atmosphere;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

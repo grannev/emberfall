@@ -430,10 +430,33 @@ int TerrainDamageFracture(TerrainDamageSystem *system,
     return created;
 }
 
+static void TerrainDamageDriveHeat(TerrainDamageSystem *system,
+                                   DynamicTerrainSystem *terrain,
+                                   TerrainBodyHandle handle, Vector2 worldCentre,
+                                   float radius, float strength, bool lower);
+
 void TerrainDamageHeatAround(TerrainDamageSystem *system,
                              DynamicTerrainSystem *terrain,
                              TerrainBodyHandle handle, Vector2 worldCentre,
                              float radius, float strength)
+{
+    TerrainDamageDriveHeat(system, terrain, handle, worldCentre, radius, strength,
+                           false);
+}
+
+void TerrainDamageTemperAround(TerrainDamageSystem *system,
+                               DynamicTerrainSystem *terrain,
+                               TerrainBodyHandle handle, Vector2 worldCentre,
+                               float radius, float strength)
+{
+    TerrainDamageDriveHeat(system, terrain, handle, worldCentre, radius, strength,
+                           true);
+}
+
+static void TerrainDamageDriveHeat(TerrainDamageSystem *system,
+                                   DynamicTerrainSystem *terrain,
+                                   TerrainBodyHandle handle, Vector2 worldCentre,
+                                   float radius, float strength, bool lower)
 {
     TerrainBody *body = DynamicTerrainGet(terrain, handle);
     Vector2 local;
@@ -443,8 +466,8 @@ void TerrainDamageHeatAround(TerrainDamageSystem *system,
     int lastY;
     int localY;
 
-    if (system == NULL || body == NULL || !(strength > 0.0f) ||
-        !(radius > 0.0f)) {
+    if (system == NULL || body == NULL || !(strength >= 0.0f) ||
+        !(radius > 0.0f) || (!lower && !(strength > 0.0f))) {
         return;
     }
     /* Local space, for the same reason the carve uses it: rotation preserves
@@ -484,6 +507,18 @@ void TerrainDamageHeatAround(TerrainDamageSystem *system,
                                                      localY)) {
                 DynamicTerrainSetCell(terrain, handle, localX, localY, material,
                                       target);
+            } else if (lower && target < DynamicTerrainTemperatureAt(terrain, handle,
+                                                                     localX, localY)) {
+                /* Tempering: the face cools toward what the air asks now, a
+                   step at a time, so a slab out of the corridor fades rather
+                   than snapping cold. */
+                float current = DynamicTerrainTemperatureAt(terrain, handle,
+                                                            localX, localY);
+                float next = current - (current - target) * 0.35f;
+
+                if (next < 1.0f) next = 0.0f;
+                DynamicTerrainSetCell(terrain, handle, localX, localY, material,
+                                      next);
             }
         }
     }

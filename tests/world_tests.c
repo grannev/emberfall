@@ -29,6 +29,7 @@
 #include "terrain_extraction.h"
 #include "terrain_fluid.h"
 #include "terrain_stability.h"
+#include "atmosphere.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
 #include "input.h"
@@ -2539,6 +2540,68 @@ static void test_a_forced_backdrop_outranks_the_ground(void)
     CHECK(EnvironmentRendererStatistics(&environment)->palette ==
               ENVIRONMENT_PALETTE_ABYSSAL_BLUE,
           "a biome overrode the palette the session was started with");
+}
+
+/* The sky of a world four thousand cells tall is thousands of rows of open
+   air, and the solve used to sweep every one of them twice for nothing: the
+   frame cost of a moving lamp doubled when the world did. The downward sweep
+   now starts at the first row with something in it and the upward one stops
+   once its ember has faded out, and what was skipped must be exactly what the
+   texture would have shown — full sky, no ember. */
+static void test_the_light_solve_skips_the_empty_sky(void)
+{
+    World world;
+    Rectangle view;
+    int lightX;
+    int lightY;
+    int top;
+    int skipped;
+    bool wrong = false;
+
+    CHECK(WorldInit(&world, 256, 4096), "world allocation failed");
+    FillRect(&world, 0, 3800, world.width - 1, world.height - 1, MATERIAL_ROCK);
+    FillRect(&world, 100, 3790, 140, 3799, MATERIAL_LAVA);
+    view = (Rectangle){0.0f, 0.0f, (float)world.width, (float)world.height};
+    WorldSetDaylight(&world, 1.0f);
+    WorldSetPointLight(&world, (Vector2){128.0f, 3780.0f}, 48.0f, 1.0f);
+    WorldUpdateLighting(&world, view);
+    skipped = world.lightStats.skippedRows;
+    CHECK(skipped > world.lightRows, "only %d of %d sky rows were skipped",
+          skipped, 2 * world.lightRows);
+
+    /* Everything above where the upward sweep stopped reads as open sky with
+       nothing glowing in it, to the precision the texture keeps. */
+    top = world.lightRows;
+    for (lightY = 0; lightY < world.lightRows && top == world.lightRows; ++lightY) {
+        for (lightX = 0; lightX < world.lightColumns; ++lightX) {
+            if (world.lightEmber[lightY * world.lightColumns + lightX] > 0.0f) {
+                top = lightY;
+                break;
+            }
+        }
+    }
+    for (lightY = 0; lightY < top; ++lightY) {
+        for (lightX = 0; lightX < world.lightColumns; ++lightX) {
+            if (world.lightSky[lightY * world.lightColumns + lightX] != 1.0f) {
+                wrong = true;
+            }
+        }
+    }
+    CHECK(!wrong, "a skipped sky row is not full daylight");
+    CHECK(top > 0 && top < 3780 / WORLD_LIGHT_SCALE,
+          "the ember reaches row %d, not a way into the sky and no further", top);
+
+    /* A lamp in the sky itself is swept: the player carries their light up
+       with them. */
+    WorldSetPointLight(&world, (Vector2){128.0f, 400.0f}, 48.0f, 1.0f);
+    WorldUpdateLighting(&world, view);
+    CHECK(EmberLightAt(&world, 128, 400) > 0.9f,
+          "the lamp in the sky lights only %.2f around it",
+          (double)EmberLightAt(&world, 128, 400));
+    CHECK(EmberLightAt(&world, 150, 400) > 0.2f,
+          "the lamp's light did not spread in the sky: %.2f",
+          (double)EmberLightAt(&world, 150, 400));
+    WorldUnload(&world);
 }
 
 static void test_daylight_dies_a_short_way_into_solid_ground(void)
@@ -6609,18 +6672,20 @@ static void test_ice_floats_and_rock_sinks(void)
     TerrainBodyHandle rock;
     const TerrainBody *iceBody;
     const TerrainBody *rockBody;
-    const float surfaceY = 40.0f;
+    /* The basin sits well under the cloud line, so this is a test about
+       buoyancy at full gravity rather than about the weightless band. */
+    const float surfaceY = 80.0f;
 
     CHECK(WorldInit(&world, 160, 128), "world allocation failed");
-    FillRect(&world, 0, 100, 159, 127, MATERIAL_ROCK);
-    FillRect(&world, 0, 0, 3, 99, MATERIAL_ROCK);
-    FillRect(&world, 156, 0, 159, 99, MATERIAL_ROCK);
-    FillRect(&world, 4, (int)surfaceY, 155, 99, MATERIAL_WATER);
+    FillRect(&world, 0, 110, 159, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 60, 3, 109, MATERIAL_ROCK);
+    FillRect(&world, 156, 60, 159, 109, MATERIAL_ROCK);
+    FillRect(&world, 4, (int)surfaceY, 155, 109, MATERIAL_WATER);
     Tick(&world, 60);
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainFluidInit(&bodyFluid);
-    ice = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ICE, (Vector2){40.0f, 20.0f});
-    rock = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK, (Vector2){120.0f, 20.0f});
+    ice = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ICE, (Vector2){40.0f, 66.0f});
+    rock = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK, (Vector2){120.0f, 66.0f});
     FluidTick(&terrain, &world, &events, 900);
 
     iceBody = DynamicTerrainGetConst(&terrain, ice);
@@ -6635,8 +6700,8 @@ static void test_ice_floats_and_rock_sinks(void)
        read as fully under; what matters is that it stopped at the top. */
     CHECK(iceBody->submerged > 0.5f,
           "the floating floe is %.2f submerged", (double)iceBody->submerged);
-    CHECK(BodyLowestPoint(rockBody) > 95.0f,
-          "the rock stopped at %.2f instead of sinking to the bottom at 100",
+    CHECK(BodyLowestPoint(rockBody) > 105.0f,
+          "the rock stopped at %.2f instead of sinking to the bottom at 110",
           (double)BodyLowestPoint(rockBody));
     /* Its bottom row reads the rock it rests on, not water. */
     CHECK(rockBody->submerged > 0.6f, "the sunk rock is %.2f submerged",
@@ -10365,6 +10430,183 @@ static void test_a_boosted_dive_still_splashes(void)
     WorldUnload(&world);
 }
 
+/* --- re-entry ------------------------------------------------------------ */
+
+static AtmosphereSystem atmosphere;
+
+/* The corridor is the air between the two lines gravity fades across: none
+   in space, none under the clouds, most in the middle. */
+static void test_the_atmosphere_is_a_corridor_between_the_lines(void)
+{
+    World world;
+    float space;
+    float cloud;
+    float middle;
+
+    CHECK(WorldInit(&world, 64, 4096), "world allocation failed");
+    space = WorldSpaceLineY(&world);
+    cloud = WorldCloudLineY(&world);
+    middle = (space + cloud) * 0.5f;
+    CHECK(AtmosphereCorridorAt(&world, space - 40.0f) == 0.0f,
+          "space has air in it: %.3f",
+          (double)AtmosphereCorridorAt(&world, space - 40.0f));
+    CHECK(AtmosphereCorridorAt(&world, cloud + 40.0f) == 0.0f,
+          "the air under the clouds counts as re-entry air");
+    CHECK(AtmosphereCorridorAt(&world, middle) > 0.9f,
+          "the middle of the band is only %.3f dense",
+          (double)AtmosphereCorridorAt(&world, middle));
+    /* The band is a real descent at the production height, not a line. */
+    CHECK(cloud - space > 900.0f, "the corridor is only %.0f cells deep",
+          (double)(cloud - space));
+    WorldUnload(&world);
+}
+
+/* The character burns on the way down and cools once through, and the air
+   never takes a cell per second of their speed: nothing slows the player. */
+static void test_falling_through_the_air_burns_the_player_without_slowing_them(void)
+{
+    World world;
+    Player player;
+    GameEventBuffer events;
+    float speed;
+    int reentries = 0;
+    int step;
+    float peak = 0.0f;
+
+    CHECK(WorldInit(&world, 64, 4096), "world allocation failed");
+    AtmosphereInit(&atmosphere);
+    PlayerInit(&player, (Vector2){32.0f, (WorldSpaceLineY(&world) +
+                                          WorldCloudLineY(&world)) * 0.5f});
+    player.velocity = (Vector2){0.0f, 300.0f};
+    speed = player.velocity.y;
+    for (step = 0; step < 60; ++step) {
+        GameEventsClear(&events);
+        AtmosphereUpdatePlayer(&atmosphere, &player, &world, &events, MOVEMENT_STEP);
+        reentries += CountEvents(&events, GAME_EVENT_REENTRY);
+        if (atmosphere.playerHeat > peak) peak = atmosphere.playerHeat;
+    }
+    CHECK(atmosphere.stats.playerEntries == 1, "the player caught fire %d times",
+          atmosphere.stats.playerEntries);
+    CHECK(reentries > 3, "the burn reported %d events", reentries);
+    CHECK(peak > 0.5f, "the burn only reached %.2f", (double)peak);
+    CHECK(player.velocity.y == speed,
+          "the air slowed the player from %.2f to %.2f", (double)speed,
+          (double)player.velocity.y);
+
+    /* Out through the clouds: the heat goes, and so does the burn. */
+    player.position.y = WorldCloudLineY(&world) + 200.0f;
+    for (step = 0; step < 240; ++step) {
+        GameEventsClear(&events);
+        AtmosphereUpdatePlayer(&atmosphere, &player, &world, &events, MOVEMENT_STEP);
+    }
+    CHECK(atmosphere.playerHeat == 0.0f, "the player still carries %.2f heat",
+          (double)atmosphere.playerHeat);
+    CHECK(atmosphere.stats.playerExits == 1, "the burn ended %d times",
+          atmosphere.stats.playerExits);
+    WorldUnload(&world);
+}
+
+/* Flying without boost is never re-entry: at cruise speed, in the thickest
+   of the corridor, for as long as you like, there is no heat and nothing is
+   published. */
+static void test_cruising_through_the_air_never_burns(void)
+{
+    World world;
+    Player player;
+    GameEventBuffer events;
+    int reentries = 0;
+    int step;
+
+    CHECK(WorldInit(&world, 64, 4096), "world allocation failed");
+    AtmosphereInit(&atmosphere);
+    PlayerInit(&player, (Vector2){32.0f, (WorldSpaceLineY(&world) +
+                                          WorldCloudLineY(&world)) * 0.5f});
+    /* Cruise, and the edge of what the boost impulse alone gives. */
+    player.velocity = (Vector2){0.0f, player.maxSpeed + 70.0f};
+    for (step = 0; step < 600; ++step) {
+        GameEventsClear(&events);
+        AtmosphereUpdatePlayer(&atmosphere, &player, &world, &events, MOVEMENT_STEP);
+        reentries += CountEvents(&events, GAME_EVENT_REENTRY);
+    }
+    CHECK(atmosphere.playerHeat == 0.0f, "cruising built %.3f heat",
+          (double)atmosphere.playerHeat);
+    CHECK(reentries == 0 && atmosphere.stats.playerEntries == 0,
+          "cruising published %d re-entry events", reentries);
+    WorldUnload(&world);
+}
+
+/* A slab dropped from orbit is slowed by the air and arrives glowing; one
+   drifting through it is neither. */
+static void test_a_body_falling_from_space_is_slowed_and_heated(void)
+{
+    World world;
+    GameEventBuffer events;
+    TerrainBodyHandle fast;
+    TerrainBodyHandle slow;
+    const TerrainBody *fastBody;
+    const TerrainBody *slowBody;
+    float middle;
+    float fastBefore;
+    float hottest = 0.0f;
+    int localX;
+    int localY;
+    int step;
+
+    CHECK(WorldInit(&world, 256, 4096), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    AtmosphereInit(&atmosphere);
+    middle = (WorldSpaceLineY(&world) + WorldCloudLineY(&world)) * 0.5f;
+    fast = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK,
+                            (Vector2){64.0f, middle});
+    slow = MakeMaterialBody(&terrain, 8, 8, MATERIAL_ROCK,
+                            (Vector2){192.0f, middle});
+    DynamicTerrainGet(&terrain, fast)->velocity = (Vector2){0.0f, 300.0f};
+    /* Faster than the character cruises, and still under the entry speed:
+       no friction at all. */
+    DynamicTerrainGet(&terrain, slow)->velocity = (Vector2){0.0f, 150.0f};
+    DynamicTerrainWakeBody(&terrain, fast);
+    DynamicTerrainWakeBody(&terrain, slow);
+    fastBefore = DynamicTerrainGetConst(&terrain, fast)->velocity.y;
+
+    for (step = 0; step < 30; ++step) {
+        GameEventsClear(&events);
+        AtmosphereUpdateBodies(&atmosphere, &terrain, &damage, &world, &events,
+                               1.0f / 60.0f);
+        /* Held in the corridor, so the test is about the air and not about
+           how far thirty ticks of falling carries them. */
+        DynamicTerrainGet(&terrain, fast)->position.y = middle;
+        DynamicTerrainGet(&terrain, slow)->position.y = middle;
+    }
+    fastBody = DynamicTerrainGetConst(&terrain, fast);
+    slowBody = DynamicTerrainGetConst(&terrain, slow);
+    CHECK(fastBody->velocity.y < fastBefore - 5.0f,
+          "the air did not slow the falling slab: %.2f against %.2f",
+          (double)fastBody->velocity.y, (double)fastBefore);
+    CHECK(atmosphere.stats.bodyEntries == 1, "%d bodies caught fire",
+          atmosphere.stats.bodyEntries);
+    CHECK(atmosphere.bodyHeat[fast.index] > 0.4f,
+          "the falling slab reached only %.2f heat",
+          (double)atmosphere.bodyHeat[fast.index]);
+    CHECK(atmosphere.bodyHeat[slow.index] == 0.0f,
+          "the drifting slab heated to %.2f",
+          (double)atmosphere.bodyHeat[slow.index]);
+    CHECK(slowBody->velocity.y == 150.0f, "the slow slab was braked to %.2f",
+          (double)slowBody->velocity.y);
+    for (localY = 0; localY < 8; ++localY) {
+        for (localX = 0; localX < 8; ++localX) {
+            float temperature = DynamicTerrainTemperatureAt(&terrain, fast,
+                                                            localX, localY);
+
+            if (temperature > hottest) hottest = temperature;
+        }
+    }
+    CHECK(hottest > 200.0f, "the leading face reached only %.0f degrees",
+          (double)hottest);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_low_fast_pass_lifts_the_water(void)
 {
     World world;
@@ -12978,6 +13220,7 @@ int main(void)
     RUN(test_a_forced_backdrop_takes_effect_at_once);
     RUN(test_a_forced_backdrop_outranks_the_ground);
     RUN(test_daylight_dies_a_short_way_into_solid_ground);
+    RUN(test_the_light_solve_skips_the_empty_sky);
     RUN(test_a_carried_light_is_what_makes_the_dark_passable);
     RUN(test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it);
     RUN(test_the_same_seed_always_generates_the_same_world);
@@ -13177,6 +13420,10 @@ int main(void)
     RUN(test_diving_in_fast_throws_a_crown);
     RUN(test_a_boosted_dive_still_splashes);
     RUN(test_a_low_fast_pass_lifts_the_water);
+    RUN(test_the_atmosphere_is_a_corridor_between_the_lines);
+    RUN(test_falling_through_the_air_burns_the_player_without_slowing_them);
+    RUN(test_cruising_through_the_air_never_burns);
+    RUN(test_a_body_falling_from_space_is_slowed_and_heated);
     RUN(test_leaving_the_water_fast_splashes);
     RUN(test_a_boosting_player_drills_through_a_terrain_body);
     RUN(test_drilling_through_a_slab_can_split_it);

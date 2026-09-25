@@ -6,6 +6,7 @@
 #include "particle_renderer.h"
 #include "player_renderer.h"
 #include "presentation_fx_renderer.h"
+#include "reentry_renderer.h"
 #include "terrain_grab_renderer.h"
 
 typedef struct BloomTuning {
@@ -467,6 +468,11 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition);
+        /* In front of the character and the bodies: the cap of glowing air
+           stands ahead of whatever is burning through it. */
+        ReentryRendererDraw(&game->atmosphere, &game->player,
+                            &game->dynamicTerrain, visible,
+                            renderer->presentationTime);
         AbilityRendererDraw(&game->abilities, &game->player,
                             renderer->presentationTime);
         /* After the player, so the beam of force reads as leaving the hand
@@ -508,6 +514,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             PlayerRendererDrawSilhouette(&game->player, aimPosition);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
+            ReentryRendererDrawEmissive(&game->atmosphere, &game->player,
+                                        &game->dynamicTerrain, visible,
+                                        renderer->presentationTime);
             AbilityRendererDrawEmissive(&game->abilities, &game->player,
                                         renderer->presentationTime);
             TerrainGrabRendererDrawEmissive(&game->interaction,

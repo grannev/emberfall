@@ -109,6 +109,14 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   marked `fracturePending` and split when one frees, never left as two rocks
   moving as one. Bodies are welded back only when every cell has a place,
   and water under a body is lifted to the surface, never destroyed.
+- Re-entry (`atmosphere.c`) lives in the band between the space and cloud
+  lines, read from `WorldGravityScaleAt` so the air starts where the pull
+  does. Below `entrySpeed` — above the character's cruise — the air does
+  nothing at all: flight without boost never burns. The character is heated
+  there and never slowed — the air is a material like any other; a body is braked and its leading face heated
+  through `TerrainDamageTemperAround`, and cools out of the band. The world
+  is 4096 tall so that leaving and coming back are journeys: a corridor of a
+  thousand cells, and five hundred of open space above it.
 - A liquid cell under liquid stores no head: its head is read by walking up
   its column, bounded. Only a cell with rock over it stores one. Storing the
   chain sent a wave of head changes through an ocean after one blast and
@@ -157,7 +165,7 @@ coherent phase with an explanatory message.
 - Baseline CPU allocation was 275.12 MiB before GPU state: 216 MiB cells,
   54 MiB persistent pixels, 5.06 MiB lighting, and minor metadata. The
   persistent pixel buffer is gone, `Cell` is packed to 12 bytes, and the sky
-  above the ground band is never written, so the 16384x2048 map is 392 MiB
+  above the ground band is never written, so the 16384x4096 map is 768 MiB
   virtual and about 162 MiB resident. The giant world texture is gone as well:
   `WorldRenderer` keeps a cache of 256x256 pages and only the visible ones are
   resident, so world size is no longer bounded by `GL_MAX_TEXTURE_SIZE`.
@@ -193,6 +201,11 @@ coherent phase with an explanatory message.
   solids enter bloom, ordinary bright terrain does not. Particle emission is
   explicit presentation metadata and must be reset whenever a pool slot is
   reused.
+- The light solve skips open sky: the downward sweep starts at the first row
+  with opacity, emission or the lamp, and the upward sweep stops once a row
+  of ember in open air is below half a step of the 8-bit texture. Anything
+  that starts to glow in the sky must reach the field through emission or
+  the lamp, or the skip will not see it.
 - Page pixels are unlit. `LightRenderer` uploads the world's coarse light
   field into a small texture and its shader lights pages and terrain bodies by
   world position, so a moving lamp or a turning day never rebuilds a chunk.

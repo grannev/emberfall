@@ -16,10 +16,17 @@
    in a band of that many rows at the bottom whatever the height, so raising
    this raises the ceiling and lengthens the climb to space without deepening
    the soil or growing the hills, and the rows of sky it adds cost no memory
-   until something is written into them. At 2048 the surface sits some 1200
-   cells under the space line, twice what it was at 1440, with 180 cells of
-   space above the line to fly in. */
-#define DEFAULT_WORLD_HEIGHT 2048
+   until something is written into them.
+
+   At 4096 the surface sits some 2000 cells under the cloud line, the
+   atmosphere the character burns through on the way down is a corridor over
+   a thousand cells deep, and above it there are five hundred cells of open
+   space to fly in — enough that leaving and re-entering are journeys with a
+   middle rather than a line crossed twice in a second. The cell array is
+   805 MiB of address space and the same ~162 MiB resident as before, since
+   not one of the added rows is ever written; the light field, which is
+   solved eight cells at a time, doubles to 10 MiB. */
+#define DEFAULT_WORLD_HEIGHT 4096
 #define DEFAULT_FIXED_STEP (1.0f / 60.0f)
 #define DEFAULT_ACTIVE_RADIUS_X 480.0f
 #define DEFAULT_ACTIVE_RADIUS_Y 288.0f
@@ -81,6 +88,7 @@ bool GameInit(GameState *game, GameConfig config)
     FluidInteractionInit(&game->fluid);
     TerrainFluidInit(&game->bodyFluid);
     TerrainStabilityInit(&game->stability);
+    AtmosphereInit(&game->atmosphere);
     /* A session with no configured seed still has to be describable after the
        fact, so one is drawn once here and every world in the session follows
        from it. The debug HUD shows the world's seed for that reason. */
@@ -119,6 +127,7 @@ void GameReset(GameState *game, uint64_t seed)
     FluidInteractionInit(&game->fluid);
     TerrainFluidInit(&game->bodyFluid);
     TerrainStabilityInit(&game->stability);
+    AtmosphereInit(&game->atmosphere);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -260,6 +269,12 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         /* Before the bodies are stepped: the liquid a body is in changes the
            velocity the step integrates, and a body that breaks the surface
            this step shoves the liquid before the liquid's next tick. */
+        /* Before the bodies are integrated, like the liquid: the air a body
+           is falling through changes how fast it is going and how hot it is
+           by the time it lands. */
+        AtmosphereUpdateBodies(&game->atmosphere, &game->dynamicTerrain,
+                               &game->damage, &game->world, events,
+                               game->config.fixedStep);
         TerrainFluidUpdate(&game->bodyFluid, &game->dynamicTerrain, &game->world,
                            events, game->config.fixedStep);
         TerrainPhysicsUpdate(&game->dynamicTerrain, &game->world,
@@ -307,6 +322,10 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     /* Before the character moves: the liquid they are in sets the drag they
        integrate this frame, and the surface they are about to break is
        still where they are about to break it. */
+    /* On the frame, beside the liquid, and before the character moves: the
+       air never slows them, it only heats them. */
+    AtmosphereUpdatePlayer(&game->atmosphere, &game->player, &game->world,
+                           events, deltaTime);
     FluidInteractionUpdatePlayer(&game->fluid, &game->player, &game->world,
                                  events, deltaTime);
     PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,

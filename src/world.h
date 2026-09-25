@@ -337,6 +337,13 @@ typedef struct World {
     int solvedFirstColumn;
     int solvedLastColumn;
     bool lightSolved;
+    /* Rows of the last solve's two sweeps that were open sky and not swept:
+       the downward sweep starts at the first row with anything in it, and
+       the upward one stops once its ember has faded out in the air. A
+       workload counter for the bench and the tests, not a timing. */
+    struct {
+        int skippedRows;
+    } lightStats;
 } World;
 
 bool WorldInit(World *world, int width, int height);
@@ -371,9 +378,16 @@ void WorldSetDaylight(World *world, float daylight);
  * Fractions of the world's height rather than fixed cells, because a test world
  * a hundred and forty cells tall has to have the same three bands as a
  * production one, in the same places relative to its ground.
+ *
+ * The two fractions were raised with the world's height. Re-entry is a thing
+ * that happens in the band between them (`atmosphere.h`), and it has to be
+ * long enough to be a descent: at the production height the corridor is over
+ * a thousand cells deep and the open space above it is five hundred, so
+ * leaving the atmosphere and coming back are journeys rather than a line
+ * crossed twice in a second.
  */
-#define WORLD_SPACE_LINE 0.09f
-#define WORLD_CLOUD_LINE 0.30f
+#define WORLD_SPACE_LINE 0.14f
+#define WORLD_CLOUD_LINE 0.42f
 
 /* ---- the ground band ----------------------------------------------------
  *

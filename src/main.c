@@ -292,6 +292,13 @@ static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
             GameAudioPlaySplash(audio, event->strength +
                                            (float)event->count * 0.25f);
             break;
+        case GAME_EVENT_REENTRY:
+            /* Only the character's own burn: the air roaring around a slab
+               half a map away is not something the character can hear. */
+            if (event->count == 0) {
+                GameAudioPlayReentry(audio, event->strength);
+            }
+            break;
         default:
             break;
         }
@@ -315,6 +322,11 @@ int main(int argc, char **argv)
     bool smokeTest = false;
     int argument;
     Vector2 cameraFocus;
+    /* Where the character stood at the end of the last frame: a jump further
+       than a flight could make in one is a teleport, and the camera is put
+       on it rather than sent chasing it across a world four thousand cells
+       tall. */
+    Vector2 lastPlayerPosition;
     int exitCode = 0;
 
     for (argument = 1; argument < argc; ++argument) {
@@ -379,6 +391,7 @@ int main(int argc, char **argv)
         SmokeTestPrepare(&smoke, &game);
     }
     cameraFocus = game.player.position;
+    lastPlayerPosition = game.player.position;
     CameraFeedbackInit(&cameraFeedback);
     stableCamera.target = cameraFocus;
     stableCamera.offset = (Vector2){(float)GetScreenWidth() * 0.5f,
@@ -430,7 +443,13 @@ int main(int argc, char **argv)
             cameraFocus = game.player.position;
             CameraFeedbackClear(&cameraFeedback);
             RendererClearPresentation(&renderer);
+        } else if (Vector2Distance(game.player.position, lastPlayerPosition) >
+                   VIEW_HEIGHT * 0.66f) {
+            /* Boost covers under forty cells in the longest frame; two thirds
+               of a screen in one frame is a teleport, never flight. */
+            cameraFocus = game.player.position;
         }
+        lastPlayerPosition = game.player.position;
         {
             GameAudioState sounding = {0};
 

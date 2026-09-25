@@ -22,8 +22,10 @@ typedef struct GameAudio {
     Sound chillImpact;
     Sound boost;
     Sound splash;
+    Sound reentry;
     float reactionCooldown;
     float splashCooldown;
+    float reentryCooldown;
     float impactCooldown;
     float laserImpactCooldown;
     float chillImpactCooldown;
@@ -57,6 +59,8 @@ void GameAudioPlayBoost(GameAudio *audio);
 /* A surface broken: louder and lower the harder the hit, `strength` being the
    speed of what hit it. */
 void GameAudioPlaySplash(GameAudio *audio, float strength);
+/* The roar of the air on something burning through it. `heat` is 0..1. */
+void GameAudioPlayReentry(GameAudio *audio, float heat);
 void GameAudioUnload(GameAudio *audio);
 
 #endif

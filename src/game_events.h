@@ -32,6 +32,12 @@ typedef enum GameEventType {
        above it, a push arriving from below. `position`, `strength` and
        `material` as above, `radius` how wide. */
     GAME_EVENT_LIQUID_RIPPLE,
+    /* Something is burning its way down through the atmosphere. `position`
+       is where it is, `direction` the way it is going, `strength` how far
+       into the burn it is (0..1), `radius` how big it is, `count` the cells
+       of body (zero for the character). Repeated while the burn lasts, at
+       most every `eventInterval`. */
+    GAME_EVENT_REENTRY,
     GAME_EVENT_COUNT
 } GameEventType;
 

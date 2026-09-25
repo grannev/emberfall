@@ -138,6 +138,14 @@ int TerrainDamageApplyCircle(TerrainDamageSystem *system,
    one should glow at its edges exactly as a tunnel through the static world
    does; without this a slab is the one thing in the game that can be drilled
    without getting hot. */
+/* The same band, driven both ways: cells hotter than the target cool a step
+   toward it and cells cooler are raised to it. What re-entry does to a body's
+   leading face — hot in the corridor, fading out of it — and at strength zero
+   a bounded cooling of the face. */
+void TerrainDamageTemperAround(TerrainDamageSystem *system,
+                               DynamicTerrainSystem *terrain,
+                               TerrainBodyHandle handle, Vector2 worldCentre,
+                               float radius, float strength);
 void TerrainDamageHeatAround(TerrainDamageSystem *system,
                              DynamicTerrainSystem *terrain,
                              TerrainBodyHandle handle, Vector2 worldCentre,
