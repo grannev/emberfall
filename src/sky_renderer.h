@@ -85,11 +85,8 @@ typedef struct SkyCloudLayer {
 
 typedef struct SkyRendererStats {
     uint16_t cloudsDrawn;
-    uint16_t starsDrawn;
     /* Clouds rasterised and uploaded this frame. */
     uint16_t cloudsBuilt;
-    /* Whether the camera is looking at the weightless band at all. */
-    bool spaceVisible;
 } SkyRendererStats;
 
 typedef struct SkyCloudTexture {

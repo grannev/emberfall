@@ -311,6 +311,9 @@ bool RendererInit(Renderer *renderer, const GameState *game,
     }
     *renderer = (Renderer){0};
     SkyRendererInit(&renderer->sky, game->worldSeed);
+    /* A backdrop without its textures simply draws nothing: space is not a
+       reason to refuse to start. */
+    (void)SpaceRendererInit(&renderer->space, game->worldSeed);
     if (!SkyRendererLoad(&renderer->sky)) {
         TraceLog(LOG_WARNING, "RENDER: Cloud textures unavailable; the sky has no clouds");
     }
@@ -401,6 +404,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     }
     EnvironmentRendererSyncSeed(&renderer->environment, game->worldSeed);
     SkyRendererSyncSeed(&renderer->sky, game->worldSeed);
+    SpaceRendererSyncSeed(&renderer->space, game->worldSeed);
     /* Comparing dimensions every frame is cheap and catches windowed,
        fullscreen and platform-driven resize paths. Allocation only happens
        when the dimensions really changed. */
@@ -456,9 +460,24 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
     BeginTextureMode(renderer->sceneTarget);
     ClearBackground((Color){2, 4, 9, 255});
-    EnvironmentRendererDrawScene(&renderer->environment, presentationCamera,
-                                 renderer->targetWidth,
-                                 renderer->targetHeight);
+    /* The backdrop, far to near: the sky; the stars behind it at night, as
+       far away as they belong; the sun, the moon and the ranges, dissolving
+       as the camera leaves the air; open space over what is left of them;
+       and the sun and the moon over space. */
+    EnvironmentRendererDrawSky(&renderer->environment, presentationCamera,
+                               renderer->targetWidth, renderer->targetHeight);
+    SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
+                      renderer->targetWidth, renderer->targetHeight,
+                      0.75f * (1.0f - GameDaylightAt(game->dayPhase)),
+                      renderer->presentationTime, false);
+    EnvironmentRendererDrawLandscape(&renderer->environment, presentationCamera,
+                                     renderer->targetWidth, renderer->targetHeight);
+    SpaceRendererDraw(&renderer->space, presentationCamera, renderer->travel,
+                      renderer->targetWidth, renderer->targetHeight,
+                      EnvironmentRendererSpaceAmount(&renderer->environment),
+                      renderer->presentationTime, true);
+    EnvironmentRendererDrawOrbs(&renderer->environment, presentationCamera,
+                                renderer->targetWidth, renderer->targetHeight);
     BeginMode2D(presentationCamera);
         /* Between the backdrop and the terrain, and inside the camera, because
            a cloud is at an altitude rather than at a place on the screen: the
@@ -476,9 +495,8 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                         renderer->presentationTime);
         rlPopMatrix();
         renderer->lastFrame.skyClouds = SkyRendererStatistics(&renderer->sky)->cloudsDrawn;
-        renderer->lastFrame.skyStars = SkyRendererStatistics(&renderer->sky)->starsDrawn;
-        renderer->lastFrame.skySpaceVisible =
-            SkyRendererStatistics(&renderer->sky)->spaceVisible;
+        renderer->lastFrame.spaceAmount =
+            EnvironmentRendererSpaceAmount(&renderer->environment);
         /* The world and whatever was torn out of it, lit by the same field:
            a slab is as dark as the cave it is carried into. */
         LightRendererBegin(&renderer->light, &game->world, LIGHT_PASS_SCENE);
@@ -516,6 +534,13 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
         BeginTextureMode(renderer->emissiveTarget);
         ClearBackground(BLANK);
+        /* The brighter stars bloom, in space and faintly in a night sky. */
+        SpaceRendererDrawEmissive(
+            &renderer->space, presentationCamera, renderer->travel,
+            renderer->targetWidth, renderer->targetHeight,
+            fmaxf(EnvironmentRendererSpaceAmount(&renderer->environment),
+                  0.5f * (1.0f - GameDaylightAt(game->dayPhase))),
+            renderer->presentationTime);
         EnvironmentRendererDrawEmissive(&renderer->environment,
                                         presentationCamera,
                                         renderer->targetWidth,
@@ -628,5 +653,6 @@ void RendererUnload(Renderer *renderer)
     LightRendererUnload(&renderer->light);
     WorldRendererUnload(&renderer->world);
     SkyRendererUnload(&renderer->sky);
+    SpaceRendererUnload(&renderer->space);
     *renderer = (Renderer){0};
 }

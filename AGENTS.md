@@ -203,6 +203,12 @@ coherent phase with an explanatory message.
   targets fall back to the sharp scene. Resources are reused in steady state
   and recreated only on resize. HUD remains a backbuffer overlay; gameplay must
   not gain render-target or shader dependencies.
+- `SpaceRenderer` owns the space backdrop's textures (nebula, two star
+  layers, a ringed giant), built once from the seed; it draws in screen space
+  behind everything, faintly at night and fully as the view leaves the air
+  (`EnvironmentRendererSpaceAmount`). Stars are never drawn in world
+  coordinates again: scrolling one for one with the ground, they read as
+  specks in front of the player.
 - `EnvironmentRenderer` is renderer-owned presentation state. Its 51 bounded
   procedural descriptors (four ranges of continuous ridge lines are drawn
   from noise, not descriptors) and palette are derived from the world seed without

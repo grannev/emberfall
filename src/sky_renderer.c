@@ -427,110 +427,6 @@ static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
     }
 }
 
-/* The dark above, and the stars in it. Drawn as a veil over the backdrop rather
-   than as a replacement for it, so the horizon still shows through at the
-   bottom of the band and the transition is a climb rather than a cut. */
-static void SkyDrawSpace(SkyRenderer *sky, Rectangle visible, int worldHeight,
-                         float daylight, bool emissive)
-{
-    float spaceY = (float)worldHeight * WORLD_SPACE_LINE;
-    float cloudY = (float)worldHeight * WORLD_CLOUD_LINE;
-    float top = visible.y;
-    float bottom = visible.y + visible.height;
-    float step = 2.0f;
-    float y;
-    int column;
-
-    if (top >= cloudY) {
-        return;
-    }
-    sky->stats.spaceVisible = true;
-
-    if (!emissive) {
-        /* Banded rather than a gradient fill: the world is squares, and two
-           cells of solid colour at a time is what everything else in the
-           picture is made of. */
-        for (y = top; y < cloudY && y < bottom; y += step) {
-            /* Nothing at the cloud line, everything at the space line — but the
-               darkening starts some way up the band. Spreading it across the
-               whole band put a veil over the entire daytime sky and turned every
-               backdrop into a silhouette against black: the sky between the
-               clouds and space is still sky, and only the top of it is not.
-             *
-               Where it starts, and how fast it closes, are a fraction of the
-               band rather than a distance, so they hold whatever the world's
-               height is. They were tuned when that band was a hundred and
-               eighty cells deep, and on a taller world the same fractions left
-               the ground's painted horizon showing at seventy per cent through
-               air the player had already climbed above — hills at eye level,
-               seen from orbit. Beginning sooner and closing faster is what
-               makes the top of the climb read as space rather than as a dim
-               afternoon. */
-            float height = (cloudY - y) / (cloudY - spaceY);
-            float amount = (height - 0.20f) / 0.80f;
-            unsigned char alpha;
-
-            if (amount < 0.0f) amount = 0.0f;
-            if (amount > 1.0f) amount = 1.0f;
-            alpha = (unsigned char)(250.0f * amount * amount * sqrtf(amount));
-            DrawRectangleV((Vector2){visible.x, y},
-                           (Vector2){visible.width, step},
-                           (Color){2, 3, 8, alpha});
-        }
-    }
-
-    /* Stars on a lattice, one per cell of it, so they are spread rather than
-       clustered. The lattice is fine because the band is thin: the whole of
-       space is a sixth of the world's height, and a coarse grid put four stars
-       in it.
-
-       They are not clipped at the world's top edge. The camera can see above it
-       and there is no reason for space to stop where the cell array does — a
-       hard line of stars ending in nothing is worse than no stars at all. */
-    {
-        const float lattice = 10.0f;
-        float starTop = top - lattice;
-        float starBottom = cloudY < bottom ? cloudY : bottom;
-        int row;
-
-        for (column = (int)floorf(visible.x / lattice) - 1;
-             column <= (int)floorf((visible.x + visible.width) / lattice) + 1;
-             ++column) {
-            for (row = (int)floorf(starTop / lattice);
-                 row <= (int)floorf(starBottom / lattice) + 1; ++row) {
-                float starX = (float)column * lattice +
-                              SkyUnit(sky->seed, column, row, 23) * lattice;
-                float starY = (float)row * lattice +
-                              SkyUnit(sky->seed, column, row, 29) * lattice;
-                float depth = 1.0f - (starY - spaceY) / (cloudY - spaceY);
-                float brightness;
-                unsigned char level;
-
-                if (starY >= cloudY) continue;
-                if (depth < 0.0f) depth = 0.0f;
-                if (depth > 1.0f) depth = 1.0f;
-                if (SkyUnit(sky->seed, column, row, 31) < 0.62f) continue;
-                /* Depth decides most of it and daylight only the rest. Washing
-                   stars out by day is right at ground level and wrong here:
-                   above the air there is nothing left to scatter the light, and
-                   a black sky with no stars in it is not space, it is a black
-                   rectangle. */
-                brightness = depth * (0.52f + 0.48f * (1.0f - daylight));
-                if (brightness < 0.05f) continue;
-                level = (unsigned char)(255.0f * brightness);
-                BeamBlock(starX, starY, emissive ? 2.0f : 1.0f,
-                          (Color){level, level,
-                                  (unsigned char)(level > 235u ? 255u
-                                                              : level + 20u),
-                                  255});
-                if (!emissive) {
-                    ++sky->stats.starsDrawn;
-                }
-            }
-        }
-    }
-}
-
 void SkyRendererDraw(SkyRenderer *sky, Rectangle visible, int worldHeight,
                      float daylight, float time)
 {
@@ -540,7 +436,6 @@ void SkyRendererDraw(SkyRenderer *sky, Rectangle visible, int worldHeight,
     }
     sky->stats = (SkyRendererStats){0};
     ++sky->frame;
-    SkyDrawSpace(sky, visible, worldHeight, daylight, false);
     SkyDrawClouds(sky, visible, worldHeight, daylight, time, false);
 }
 
@@ -551,6 +446,5 @@ void SkyRendererDrawEmissive(SkyRenderer *sky, Rectangle visible,
         visible.height <= 0.0f) {
         return;
     }
-    SkyDrawSpace(sky, visible, worldHeight, daylight, true);
     SkyDrawClouds(sky, visible, worldHeight, daylight, time, true);
 }

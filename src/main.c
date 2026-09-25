@@ -223,7 +223,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         game->damage.stats.cellsCarved,
                         game->damage.stats.fractureSplits),
              24, 243, 14, (Color){228, 208, 140, 255});
-    DrawText(TextFormat("ENV: %s | %u+%u DRAWS | %02d:%02d %s | SKY %u/%u",
+    DrawText(TextFormat("ENV: %s | %u+%u DRAWS | %02d:%02d %s | CLOUDS %u | SPACE %d%%",
                         environmentPalette != NULL ? environmentPalette->name
                                                    : "INVALID",
                         (unsigned int)frameStats->environmentSceneDrawCalls,
@@ -234,8 +234,7 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         (int)(game->dayPhase * 1440.0f) % 60,
                         GameDaylightAt(game->dayPhase) > 0.5f ? "DAY" : "NIGHT",
                         (unsigned int)frameStats->skyClouds,
-                        (unsigned int)frameStats->skyStars,
-                        frameStats->skySpaceVisible ? " ORBIT" : ""),
+                        (int)(frameStats->spaceAmount * 100.0f)),
              24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */

@@ -10,7 +10,7 @@ SOURCES := src/main.c src/smoke_test.c src/menu.c src/settings.c src/game.c src/
 	$(WORLD_SOURCES) \
 	src/renderer.c src/environment_renderer.c src/world_renderer.c src/light_renderer.c \
 	src/presentation_fx.c src/camera_feedback.c \
-	src/presentation_fx_renderer.c src/reentry_renderer.c src/beam_render.c src/sky_renderer.c src/terrain_grab_renderer.c \
+	src/presentation_fx_renderer.c src/reentry_renderer.c src/space_renderer.c src/beam_render.c src/sky_renderer.c src/terrain_grab_renderer.c \
 	src/terrain_body_render_data.c \
 	src/terrain_body_renderer.c \
 	src/player.c src/player_renderer.c src/abilities.c src/ability_renderer.c \

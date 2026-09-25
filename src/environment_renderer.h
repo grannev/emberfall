@@ -175,8 +175,18 @@ EnvironmentPaletteDefinition EnvironmentRendererResolvedPalette(
    doing rather than what the state says. */
 EnvironmentProfile EnvironmentRendererResolvedProfile(
     const EnvironmentRenderer *renderer);
-void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
-                                  Camera2D camera, int width, int height);
+/* The backdrop is drawn in three steps so the space renderer can go
+   between them: the sky's gradient; then the sun, the moon, the ranges and
+   the veil that dissolves them as the camera leaves the air; then the sun
+   and the moon again, over space. */
+void EnvironmentRendererDrawSky(EnvironmentRenderer *renderer, Camera2D camera,
+                                int width, int height);
+void EnvironmentRendererDrawLandscape(EnvironmentRenderer *renderer, Camera2D camera,
+                                      int width, int height);
+void EnvironmentRendererDrawOrbs(EnvironmentRenderer *renderer, Camera2D camera,
+                                 int width, int height);
+/* How far out of the air the view is, 0 on the ground and 1 in space. */
+float EnvironmentRendererSpaceAmount(const EnvironmentRenderer *renderer);
 void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
                                      Camera2D camera, int width, int height);
 Rectangle EnvironmentRendererOverscanBounds(int width, int height);

@@ -1318,15 +1318,12 @@ static void EnvironmentDrawHaze(EnvironmentRenderer *renderer,
     }
 }
 
-void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
-                                  Camera2D camera, int width, int height)
+/* Resolves the palette for this frame and resets the counters; NULL when the
+   view or the state cannot be drawn. */
+static const EnvironmentPaletteDefinition *EnvironmentBeginFrame(
+    EnvironmentRenderer *renderer, EnvironmentPaletteDefinition *resolved,
+    Camera2D camera, int width, int height)
 {
-    const EnvironmentPaletteDefinition *palette;
-    EnvironmentPaletteDefinition resolved;
-
-    if (renderer == NULL) {
-        return;
-    }
     renderer->stats.sceneDrawCalls = 0u;
     renderer->stats.emissiveDrawCalls = 0u;
     renderer->stats.emissiveContributors = 0u;
@@ -1334,19 +1331,45 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
     renderer->stats.viewValid =
         EnvironmentRendererViewIsValid(camera, width, height) &&
         EnvironmentRendererStateIsValid(renderer);
-    resolved = EnvironmentRendererResolvedPalette(renderer);
-    palette = EnvironmentPaletteDefinitionAt(renderer->palette) != NULL
-                  ? &resolved
-                  : NULL;
-    if (!renderer->stats.viewValid || palette == NULL) {
+    *resolved = EnvironmentRendererResolvedPalette(renderer);
+    if (!renderer->stats.viewValid ||
+        EnvironmentPaletteDefinitionAt(renderer->palette) == NULL) {
+        return NULL;
+    }
+    return resolved;
+}
+
+void EnvironmentRendererDrawSky(EnvironmentRenderer *renderer, Camera2D camera,
+                                int width, int height)
+{
+    EnvironmentPaletteDefinition resolved;
+    const EnvironmentPaletteDefinition *palette;
+
+    if (renderer == NULL) {
         return;
     }
-
+    palette = EnvironmentBeginFrame(renderer, &resolved, camera, width, height);
+    if (palette == NULL) {
+        return;
+    }
     /* The environment is screen-space procedural geometry. Camera target and
        zoom drive parallax, but transient camera rotation is deliberately not
        applied as a 2D transform: the full target remains covered and shake can
        never reveal empty corners. */
     EnvironmentDrawSky(renderer, palette, camera, width, height);
+}
+
+void EnvironmentRendererDrawLandscape(EnvironmentRenderer *renderer, Camera2D camera,
+                                      int width, int height)
+{
+    EnvironmentPaletteDefinition resolved;
+    const EnvironmentPaletteDefinition *palette;
+
+    if (renderer == NULL || !renderer->stats.viewValid) {
+        return;
+    }
+    resolved = EnvironmentRendererResolvedPalette(renderer);
+    palette = &resolved;
     /* In the sky and behind every hill: a setting sun goes down behind the
        far ridges, not in front of them. */
     EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, false);
@@ -1371,12 +1394,31 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
         DrawRectangleGradientV((int)bounds.x, (int)bounds.y, (int)bounds.width,
                                (int)bounds.height, top, bottom);
         ++renderer->stats.sceneDrawCalls;
-        /* The sun and the moon are not part of the horizon, and above the
-           air they are clearer than ever: laid back over the veil as it
-           thickens. */
-        EnvironmentDrawMoon(renderer, camera, width, height, amount, false);
-        EnvironmentDrawSun(renderer, camera, width, height, amount, false);
     }
+}
+
+void EnvironmentRendererDrawOrbs(EnvironmentRenderer *renderer, Camera2D camera,
+                                 int width, int height)
+{
+    float amount;
+
+    if (renderer == NULL || !renderer->stats.viewValid || renderer->altitude >= 1.0f) {
+        return;
+    }
+    /* The sun and the moon are not part of the horizon, and above the air
+       they are clearer than ever: laid back over the veil and over space as
+       the horizon goes. */
+    amount = 1.0f - renderer->altitude;
+    EnvironmentDrawMoon(renderer, camera, width, height, amount, false);
+    EnvironmentDrawSun(renderer, camera, width, height, amount, false);
+}
+
+float EnvironmentRendererSpaceAmount(const EnvironmentRenderer *renderer)
+{
+    if (renderer == NULL) {
+        return 0.0f;
+    }
+    return EnvironmentClamp(1.0f - renderer->altitude, 0.0f, 1.0f);
 }
 
 void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,

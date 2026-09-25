@@ -8,6 +8,7 @@
 
 #include "environment_renderer.h"
 #include "sky_renderer.h"
+#include "space_renderer.h"
 #include "game.h"
 #include "light_renderer.h"
 #include "presentation_fx.h"
@@ -36,8 +37,9 @@ typedef struct RendererFrameStats {
     EnvironmentPalette environmentPalette;
     bool environmentViewValid;
     uint16_t skyClouds;
-    uint16_t skyStars;
-    bool skySpaceVisible;
+    /* How far out of the air the view is, 0..1: space's share of the
+       backdrop. */
+    float spaceAmount;
     bool bloomEnabled;
     bool lightingEnabled;
     uint32_t lightUploads;
@@ -51,6 +53,7 @@ typedef struct Renderer {
     WorldRenderer world;
     LightRenderer light;
     EnvironmentRenderer environment;
+    SpaceRenderer space;
     SkyRenderer sky;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;
