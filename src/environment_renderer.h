@@ -119,6 +119,9 @@ typedef struct EnvironmentRenderer {
        noon at a quarter, sunset at a half, midnight at three quarters. What
        puts the sun and the moon where they are. */
     float dayPhase;
+    /* Days that have turned over while this renderer watched: the moon's
+       phase. Presentation only. */
+    unsigned int days;
     /* The camera's travel round the planet beyond its position, so the
        parallax does not jump when the view is moved back over the seam. */
     float travel;

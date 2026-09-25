@@ -176,7 +176,11 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
         ParticlesSpawnBoostBurst(&game->particles, player->position,
                                  player->velocity);
     }
-    if (player->impactStrength >= 14.0f) {
+    /* Only a boosted collision is an impact the player is shown: bumping a
+       wall or landing in ordinary flight has no flash, no dust, no shake and
+       no sound — the player asked for them gone, it is how the character
+       moves every second and it is not an event. */
+    if (player->impactStrength >= 14.0f && player->boosting) {
         (void)GameEventsPush(events, (GameEvent){
             .type = GAME_EVENT_PLAYER_IMPACT,
             .position = player->impactPosition,

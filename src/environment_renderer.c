@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <rlgl.h>
+
 #include "beam_render.h"
 
 /* Three deliberately restrained identities. Their silhouettes are kept below
@@ -241,10 +243,17 @@ void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
 
 void EnvironmentRendererSetDayPhase(EnvironmentRenderer *renderer, float dayPhase)
 {
+    float wrapped;
+
     if (renderer == NULL) {
         return;
     }
-    renderer->dayPhase = dayPhase - floorf(dayPhase);
+    wrapped = dayPhase - floorf(dayPhase);
+    /* A day turned over: the moon moves on to its next phase. */
+    if (wrapped < renderer->dayPhase - 0.5f) {
+        ++renderer->days;
+    }
+    renderer->dayPhase = wrapped;
 }
 
 void EnvironmentRendererSetTravel(EnvironmentRenderer *renderer, float travel)
@@ -698,119 +707,199 @@ static int EnvironmentBlock(int height)
     return EnvironmentMaxInt(1, height / 180);
 }
 
-/* A disc of blocks, `radius` blocks across its half, in `color`. */
-static void EnvironmentDisc(EnvironmentRenderer *renderer, float centreX,
-                            float centreY, int radius, int block, Color color,
-                            bool emissive)
+/* A soft radial glow: `inner` at the centre fading to nothing at `radius`,
+   drawn as a fan of triangles with a colour per vertex so the falloff is
+   smooth. Light is the one thing in the picture that is not made of blocks:
+   a halo drawn in blocks reads as a target, not as brightness. */
+static void EnvironmentGlow(float x, float y, float radius, Color inner, int segments)
 {
-    int row;
+    int index;
 
-    for (row = -radius; row <= radius; ++row) {
-        int half = (int)floorf(sqrtf((float)(radius * radius - row * row)) + 0.35f);
+    if (radius <= 0.5f || inner.a == 0u) return;
+    rlBegin(RL_TRIANGLES);
+    for (index = 0; index < segments; ++index) {
+        float a0 = (float)index / (float)segments * 2.0f * PI;
+        float a1 = (float)(index + 1) / (float)segments * 2.0f * PI;
 
-        DrawRectangle((int)centreX - half * block - block / 2,
-                      (int)centreY + row * block - block / 2,
-                      (2 * half + 1) * block, block, color);
-        if (emissive) {
-            ++renderer->stats.emissiveDrawCalls;
-        } else {
-            ++renderer->stats.sceneDrawCalls;
-        }
+        rlColor4ub(inner.r, inner.g, inner.b, inner.a);
+        rlVertex2f(x, y);
+        rlColor4ub(inner.r, inner.g, inner.b, 0);
+        rlVertex2f(x + cosf(a1) * radius, y + sinf(a1) * radius);
+        rlColor4ub(inner.r, inner.g, inner.b, 0);
+        rlVertex2f(x + cosf(a0) * radius, y + sinf(a0) * radius);
     }
+    rlEnd();
 }
 
-/* The sun: a white-gold disc, deepening to orange and red as it sets, in a
-   halo that widens as it nears the horizon — the air it is seen through is
-   thicker there. */
+/* One ray: a long thin wedge from the sun, bright at its root and gone at its
+   tip. */
+static void EnvironmentRay(float x, float y, float angle, float length, float spread,
+                           Color color)
+{
+    float left = angle - spread;
+    float right = angle + spread;
+
+    rlBegin(RL_TRIANGLES);
+    rlColor4ub(color.r, color.g, color.b, color.a);
+    rlVertex2f(x, y);
+    rlColor4ub(color.r, color.g, color.b, 0);
+    rlVertex2f(x + cosf(right) * length, y + sinf(right) * length);
+    rlColor4ub(color.r, color.g, color.b, 0);
+    rlVertex2f(x + cosf(left) * length, y + sinf(left) * length);
+    rlEnd();
+}
+
+/* The sun: a pixel disc white at the heart and gold at the limb, in a
+   great soft glow, with long rays turning slowly about it. As it sinks the
+   air it is seen through thickens: the disc swells and reddens, the glow
+   spreads wide and warm, and the rays lie longer over the horizon. */
 static void EnvironmentDrawSun(EnvironmentRenderer *renderer, Camera2D camera,
                                int width, int height, float alpha, bool emissive)
 {
     EnvironmentOrb orb = EnvironmentOrbAt(renderer->dayPhase, camera, width, height);
     int block = EnvironmentBlock(height);
     float low;
-    Color disc;
-    Color halo;
-    int ring;
+    int radius;
+    int row;
+    int ray;
+    Color glow;
+    Color rim;
+    Color core;
 
     if (!orb.visible || alpha <= 0.0f) {
         return;
     }
-    low = 1.0f - EnvironmentClamp(orb.elevation * 2.5f, 0.0f, 1.0f);
-    disc = (Color){255, (unsigned char)(246.0f - 120.0f * low),
-                   (unsigned char)(208.0f - 170.0f * low), 255};
-    halo = (Color){255, (unsigned char)(200.0f - 90.0f * low),
-                   (unsigned char)(120.0f - 90.0f * low), 255};
+    low = 1.0f - EnvironmentClamp(orb.elevation * 2.2f, 0.0f, 1.0f);
     if (emissive) {
-        /* Blooms less as it sinks: the backdrop hills are not drawn in the
-           emissive plane and cannot hide a sun going down behind them. */
-        alpha *= EnvironmentClamp((orb.elevation - 0.04f) / 0.25f, 0.0f, 1.0f);
+        /* The far ranges are not drawn in the emissive plane and cannot hide
+           a sun going down behind them, so its bloom fades as it sinks. */
+        alpha *= EnvironmentClamp((orb.elevation - 0.03f) / 0.22f, 0.0f, 1.0f);
         if (alpha <= 0.0f) {
             return;
         }
     }
-    for (ring = 4; ring >= 1; --ring) {
-        EnvironmentDisc(renderer, orb.x, orb.y, 7 + ring * (3 + (int)(4.0f * low)),
-                        block,
-                        EnvironmentFade(halo, alpha * (0.05f + 0.06f * low) *
-                                                  (float)(5 - ring) / 4.0f),
-                        emissive);
+    radius = 11 + (int)(4.0f * low);
+    glow = (Color){255, (unsigned char)(226.0f - 90.0f * low),
+                   (unsigned char)(160.0f - 110.0f * low),
+                   (unsigned char)(255.0f * alpha * (0.34f + 0.18f * low))};
+    rim = (Color){255, (unsigned char)(196.0f - 96.0f * low),
+                  (unsigned char)(92.0f - 70.0f * low), 255};
+    core = (Color){255, 252, (unsigned char)(236.0f - 60.0f * low), 255};
+
+    /* The glow, in two layers: a wide faint one and a tight bright one. */
+    EnvironmentGlow(orb.x, orb.y, (float)(radius * block) * (9.0f + 6.0f * low), glow, 48);
+    EnvironmentGlow(orb.x, orb.y, (float)(radius * block) * 3.2f,
+                    EnvironmentFade(glow, alpha * 0.55f), 40);
+    /* Rays, turning slowly, each its own length. */
+    for (ray = 0; ray < 12; ++ray) {
+        float angle = (float)ray / 12.0f * 2.0f * PI + renderer->time * 0.018f +
+                      0.26f * sinf((float)ray * 1.7f);
+        float length = (float)(radius * block) *
+                       (5.0f + 4.5f * BeamNoise(ray, 7, 11) + 3.0f * low);
+
+        EnvironmentRay(orb.x, orb.y, angle, length, 0.035f + 0.02f * BeamNoise(ray, 9, 13),
+                       EnvironmentFade(glow, alpha * (emissive ? 0.25f : 0.18f)));
     }
-    EnvironmentDisc(renderer, orb.x, orb.y, 7, block,
-                    EnvironmentFade(disc, alpha), emissive);
-    /* A hotter core, a block in from the rim, so the disc reads as a light
-       and not as a plate. */
-    EnvironmentDisc(renderer, orb.x, orb.y, 5, block,
-                    EnvironmentFade((Color){255, 252, 236, 255}, alpha * 0.8f),
-                    emissive);
+    /* The disc, in blocks: limb-darkened from a white heart to a gold rim. */
+    for (row = -radius; row <= radius; ++row) {
+        int column;
+        int half = (int)floorf(sqrtf((float)(radius * radius - row * row)) + 0.4f);
+
+        for (column = -half; column <= half; ++column) {
+            float r = sqrtf((float)(row * row + column * column)) / (float)radius;
+            Color cell = r < 0.55f
+                             ? core
+                             : (Color){(unsigned char)((float)core.r + ((float)rim.r - (float)core.r) * (r - 0.55f) / 0.45f),
+                                       (unsigned char)((float)core.g + ((float)rim.g - (float)core.g) * (r - 0.55f) / 0.45f),
+                                       (unsigned char)((float)core.b + ((float)rim.b - (float)core.b) * (r - 0.55f) / 0.45f),
+                                       255};
+
+            DrawRectangle((int)orb.x + column * block - block / 2,
+                          (int)orb.y + row * block - block / 2, block, block,
+                          EnvironmentFade(cell, alpha));
+        }
+    }
+    if (emissive) {
+        ++renderer->stats.emissiveDrawCalls;
+    } else {
+        renderer->stats.sceneDrawCalls += 4u;
+    }
 }
 
-/* The moon: a pale disc with its seas and craters picked out by the same
-   hash the ridges use, and a faint cold halo. */
+/* The moon: a sphere lit from one side, the lit part growing and shrinking
+   night by night; the dark side shows faintly by the light of the world
+   below it. Seas and craters are pressed into it, each crater with a lit
+   rim on the side toward the light and a shadow on the other. A cold glow
+   stands around it. */
 static void EnvironmentDrawMoon(EnvironmentRenderer *renderer, Camera2D camera,
                                 int width, int height, float alpha, bool emissive)
 {
     EnvironmentOrb orb = EnvironmentOrbAt(renderer->dayPhase - 0.5f, camera, width,
                                           height);
     int block = EnvironmentBlock(height);
-    const int radius = 5;
+    const int radius = 10;
+    /* The phase: a lunar month of eight days, starting from full. */
+    float cycle = (float)((renderer->days + 4u) % 8u) / 8.0f + renderer->dayPhase / 8.0f;
+    float lightAngle = cycle * 2.0f * PI;
+    float lightX = sinf(lightAngle);
+    float lightZ = -cosf(lightAngle);
     int row;
 
     if (!orb.visible || alpha <= 0.0f) {
         return;
     }
     if (emissive) {
-        alpha *= 0.35f * EnvironmentClamp((orb.elevation - 0.04f) / 0.25f, 0.0f, 1.0f);
+        alpha *= 0.4f * EnvironmentClamp((orb.elevation - 0.03f) / 0.22f, 0.0f, 1.0f);
         if (alpha <= 0.0f) {
             return;
         }
     }
-    EnvironmentDisc(renderer, orb.x, orb.y, radius + 4, block,
-                    EnvironmentFade((Color){170, 196, 230, 255}, alpha * 0.07f),
-                    emissive);
-    EnvironmentDisc(renderer, orb.x, orb.y, radius, block,
-                    EnvironmentFade((Color){222, 228, 236, 255}, alpha), emissive);
-    if (emissive) {
-        return;
-    }
+    EnvironmentGlow(orb.x, orb.y, (float)(radius * block) * 6.0f,
+                    (Color){150, 180, 230, (unsigned char)(255.0f * alpha * 0.16f)}, 40);
+    EnvironmentGlow(orb.x, orb.y, (float)(radius * block) * 2.2f,
+                    (Color){190, 210, 245, (unsigned char)(255.0f * alpha * 0.22f)}, 32);
     for (row = -radius; row <= radius; ++row) {
         int column;
+        int half = (int)floorf(sqrtf((float)(radius * radius - row * row)) + 0.4f);
 
-        for (column = -radius; column <= radius; ++column) {
-            float noise;
+        for (column = -half; column <= half; ++column) {
+            float nx = (float)column / (float)radius;
+            float ny = (float)row / (float)radius;
+            float nz = sqrtf(fmaxf(0.0f, 1.0f - nx * nx - ny * ny));
+            float lit = nx * lightX + nz * lightZ;
+            float sea = BeamNoise(column / 3 + 20, row / 3 + 20, 0x51) < 0.32f ? 1.0f : 0.0f;
+            float crater = BeamNoise(column + 40, row + 40, 0x6d00);
+            float shade;
+            float tone;
+            Color cell;
 
-            if (row * row + column * column > radius * radius) {
-                continue;
+            /* Light: smooth across the terminator by two blocks, and a faint
+               earthshine on the night side. */
+            shade = EnvironmentClamp(lit * 3.0f + 0.35f, 0.0f, 1.0f);
+            tone = 0.10f + 0.90f * shade;
+            tone *= 0.82f + 0.18f * nz;
+            if (sea > 0.0f) tone *= 0.82f;
+            if (crater > 0.93f) {
+                tone *= 0.72f;
+            } else if (crater > 0.88f) {
+                tone *= 1.10f;
             }
-            noise = BeamNoise(column + 40, row + 40, 0x6d00);
-            if (noise < 0.72f) {
-                continue;
+            if (emissive) {
+                tone *= shade;
             }
+            cell = (Color){(unsigned char)EnvironmentClamp(226.0f * tone, 0.0f, 255.0f),
+                           (unsigned char)EnvironmentClamp(230.0f * tone, 0.0f, 255.0f),
+                           (unsigned char)EnvironmentClamp(240.0f * tone + 14.0f * (1.0f - shade), 0.0f, 255.0f),
+                           255};
             DrawRectangle((int)orb.x + column * block - block / 2,
                           (int)orb.y + row * block - block / 2, block, block,
-                          EnvironmentFade((Color){168, 176, 190, 255},
-                                          alpha * (noise > 0.9f ? 0.9f : 0.6f)));
-            ++renderer->stats.sceneDrawCalls;
+                          EnvironmentFade(cell, alpha));
         }
+    }
+    if (emissive) {
+        ++renderer->stats.emissiveDrawCalls;
+    } else {
+        renderer->stats.sceneDrawCalls += 2u;
     }
 }
 
@@ -1135,52 +1224,6 @@ static void EnvironmentDrawTowers(EnvironmentRenderer *renderer,
     }
 }
 
-/* Islands in the far sky: a flat grassy top, a torn underside, and a thread
-   of water falling from some of them. */
-static void EnvironmentDrawIslands(EnvironmentRenderer *renderer,
-                                   const EnvironmentPaletteDefinition *palette,
-                                   Camera2D camera, int width, int height)
-{
-    float scale = EnvironmentViewScale(camera, width);
-    float step = fmaxf(2.0f, floorf(2.0f * scale));
-    Color body = EnvironmentToward(palette->farSilhouette, palette->skyBottom, 0.55f);
-    Color top = EnvironmentToward(body, palette->horizon, 0.35f);
-    Color water = EnvironmentFade(EnvironmentToward((Color){170, 210, 240, 255},
-                                                    palette->skyBottom, 0.4f),
-                                  0.55f);
-    int index;
-
-    for (index = 0; index < ENVIRONMENT_ISLAND_COUNT; ++index) {
-        const EnvironmentFeature *island = &renderer->islands[index];
-        float x = EnvironmentFeatureX(island, renderer, camera, width, 0.008f,
-                                      0.6f + (float)index * 0.15f);
-        float y = floorf((island->y * (float)height -
-                          (camera.target.y - 210.0f) * camera.zoom * 0.004f) / step) *
-                  step;
-        float halfWidth = (26.0f + island->width * 40.0f) * scale;
-        float depth = (14.0f + island->height * 24.0f) * scale;
-        float dx;
-
-        y += sinf(renderer->time * 0.2f + island->phase) * 2.0f;
-        for (dx = -halfWidth; dx <= halfWidth; dx += step) {
-            float unit = fabsf(dx) / halfWidth;
-            float hang = depth * powf(fmaxf(0.0f, 1.0f - unit * unit), 0.7f) *
-                         (0.7f + 0.3f * BeamNoise((int)(dx / step), index, 61));
-            float bottom = floorf((y + hang) / step) * step;
-
-            DrawRectangle((int)(x + dx), (int)y, (int)step, (int)(bottom - y + step), body);
-            DrawRectangle((int)(x + dx), (int)(y - step), (int)step, (int)step, top);
-        }
-        /* A waterfall off one edge of every other island. */
-        if ((index & 1) == 0) {
-            float fall = x + halfWidth * 0.7f;
-
-            DrawRectangle((int)fall, (int)y, (int)step, (int)(depth * 3.0f), water);
-        }
-        renderer->stats.sceneDrawCalls += 2u;
-    }
-}
-
 /* Open water in front of the far ranges: a flat band with the light lying on
    it in broken lines. */
 static void EnvironmentDrawSea(EnvironmentRenderer *renderer,
@@ -1233,7 +1276,6 @@ static void EnvironmentDrawRanges(EnvironmentRenderer *renderer,
     };
     int index;
 
-    EnvironmentDrawIslands(renderer, palette, camera, width, height);
     for (index = 0; index < 4; ++index) {
         /* The sea lies in front of the far ranges and the land beyond it is
            low: over open water the nearer ranges drop away. */

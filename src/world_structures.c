@@ -721,6 +721,21 @@ void WorldGenerateUnderground(World *world)
 
 /* ---- islands in the sky ---------------------------------------------------- */
 
+/* The top of an island's column: the first solid cell at or below `fromY`,
+   within `reach`. The ground search the rest of the generator uses starts
+   at the ground band and would never see an island in space. */
+static int IslandTopY(const World *world, int x, int fromY, int reach)
+{
+    int y;
+
+    for (y = fromY; y < fromY + reach && y < world->height; ++y) {
+        if (MaterialIsSolid(WorldMaterialAt(world, x, y))) {
+            return y;
+        }
+    }
+    return -1;
+}
+
 /* An island: a flat top of soil under grass, gently domed, and an underside
    of rock that hangs down in a rough point, as if it were torn out of the
    ground below and never fell. Wider than the detach search window, so it
@@ -750,7 +765,7 @@ static void PlaceIsland(World *world, Rng *rng, int centerX, int baseY, int half
     /* Trees, away from the edges, before the grass: a tree needs clear
        ground either side of its trunk. */
     for (x = -halfWidth + 20; x < halfWidth - 20; x += RngRange(rng, 14, 32)) {
-        int top = WorldGenSolidY(world, centerX + x);
+        int top = IslandTopY(world, centerX + x, baseY - 12, 24);
 
         if (top > 0 && top < baseY + 4) {
             WorldGenPlaceTree(world, centerX + x, top, rng);
@@ -758,7 +773,7 @@ static void PlaceIsland(World *world, Rng *rng, int centerX, int baseY, int half
     }
     /* Grass on every piece of the top still open to the sky. */
     for (x = -halfWidth; x <= halfWidth; ++x) {
-        int top = WorldGenSolidY(world, centerX + x);
+        int top = IslandTopY(world, centerX + x, baseY - 12, 24);
 
         if (top > 0 && top < baseY + 12 &&
             WorldMaterialAt(world, centerX + x, top) == MATERIAL_DIRT &&
@@ -769,7 +784,7 @@ static void PlaceIsland(World *world, Rng *rng, int centerX, int baseY, int half
     /* A shrine on some: four pillars and a lintel, a crystal at its heart. */
     if (RngRange(rng, 0, 99) < 45) {
         int shrineX = centerX + RngRange(rng, -halfWidth / 3, halfWidth / 3);
-        int ground = WorldGenSolidY(world, shrineX);
+        int ground = IslandTopY(world, shrineX, baseY - 12, 24);
         int pillar;
 
         if (ground > 0) {
@@ -821,22 +836,18 @@ void WorldGenerateIslands(World *world)
                                       world->width);
         int halfWidth = RngRange(&rng, 100, 170);
         int depth = RngRange(&rng, 40, 90);
-        int highest = world->height;
-        int x;
+        int lowest;
         int baseY;
 
-        if (RngRange(&rng, 0, 99) >= 70 || WorldGenNearSpawn(world, centerX)) continue;
-        /* Clear of whatever is below it, peaks included, by a good margin. */
-        for (x = centerX - halfWidth - 60; x <= centerX + halfWidth + 60; x += 8) {
-            int top = WorldGenSolidY(world, x);
-
-            if (top >= 0 && top < highest) highest = top;
-        }
-        baseY = highest - depth - RngRange(&rng, 160, 360);
-        if (baseY < (int)WorldGroundY(world, 0.0f) + 40) {
-            baseY = (int)WorldGroundY(world, 0.0f) + 40;
-        }
-        if (baseY + depth > highest - 80) continue;
+        if (RngRange(&rng, 0, 99) >= 70) continue;
+        /* Only where nothing pulls: above the space line, the whole island
+           — its trees on top and its hanging underside — clear of the top
+           of the world and of the band where the pull begins. An island in
+           the air under the clouds would be the one thing there that does
+           not fall. */
+        lowest = (int)WorldSpaceLineY(world) - depth - 24;
+        if (lowest < 90) continue;
+        baseY = RngRange(&rng, 90, lowest);
         PlaceIsland(world, &rng, centerX, baseY, halfWidth, depth);
     }
 }
