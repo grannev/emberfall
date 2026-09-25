@@ -80,11 +80,26 @@ static bool TerrainBodyRendererBuildPixels(
                 renderer->sceneStaging[index] = BLANK;
                 renderer->emissiveStaging[index] = BLANK;
             } else {
-                MaterialRenderSample sample = MaterialRenderCell(
+                MaterialRenderContext around;
+                MaterialRenderSample sample;
+
+                /* The raster's own neighbours: outside it is open air, so a
+                   slab's top edge catches the light like a ledge does. A
+                   body's liquid has no depth — it has none to have. */
+                around.shade = DynamicTerrainShadeAt(terrain, key.handle,
+                                                     localX, localY);
+                around.openAbove = MaterialRenderOpenFace(
+                    material, DynamicTerrainCellAt(terrain, key.handle, localX,
+                                                   localY - 1));
+                around.openBelow = MaterialRenderOpenFace(
+                    material, DynamicTerrainCellAt(terrain, key.handle, localX,
+                                                   localY + 1));
+                around.liquidDepth = 0;
+                sample = MaterialRenderCell(
                     material,
                     DynamicTerrainTemperatureAt(terrain, key.handle,
                                                 localX, localY),
-                    body->sourceX + localX, body->sourceY + localY);
+                    body->sourceX + localX, body->sourceY + localY, around);
 
                 renderer->sceneStaging[index] = sample.scene;
                 renderer->emissiveStaging[index] = sample.emissive;

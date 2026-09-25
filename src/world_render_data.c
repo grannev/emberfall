@@ -12,6 +12,8 @@
 
 #include <raymath.h>
 
+#include "materials.h"
+
 #include "material_render.h"
 #include "world_internal.h"
 
@@ -58,6 +60,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
     int firstVisibleRow;
     int lastVisibleRow;
     int chunkY;
+    int liquidRun[WORLD_CHUNK_SIZE];
 
     if (world == NULL || world->cells == NULL || world->dirtyChunks == NULL ||
         visitor == NULL) {
@@ -110,8 +113,34 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             if (maximumY > world->height) maximumY = world->height;
             width = maximumX - minimumX;
 
+            /* Liquid over each column at the chunk's top edge, counted up
+               into the chunk above, then carried down the rows: the depth a
+               cell has darkened to, without a walk per cell. */
+            {
+                int column;
+
+                for (column = 0; column < width; ++column) {
+                    int above = 0;
+
+                    while (above < MATERIAL_RENDER_DEPTH_CAP &&
+                           minimumY - above - 1 >= 0 &&
+                           MaterialIsLiquid((CellMaterial)WorldCellConst(
+                                                world, minimumX + column,
+                                                minimumY - above - 1)
+                                                ->material)) {
+                        ++above;
+                    }
+                    liquidRun[column] = above;
+                }
+            }
+
             for (y = minimumY; y < maximumY; ++y) {
                 const Cell *row = WorldCellConst(world, minimumX, y);
+                const Cell *rowAbove = y > 0 ? WorldCellConst(world, minimumX, y - 1)
+                                             : NULL;
+                const Cell *rowBelow = y + 1 < world->height
+                                           ? WorldCellConst(world, minimumX, y + 1)
+                                           : NULL;
                 Color *scene = uploadPixels + (size_t)(y - minimumY) * (size_t)width;
                 Color *emissive =
                     emissivePixels + (size_t)(y - minimumY) * (size_t)width;
@@ -120,12 +149,36 @@ void WorldPrepareVisible(World *world, Rectangle visible,
 
                 for (x = 0; x < width; ++x) {
                     const Cell *cell = &row[x];
-                    MaterialRenderSample sample =
-                        cell->material == MATERIAL_EMPTY
-                            ? air
-                            : MaterialRenderCell((CellMaterial)cell->material,
-                                                 cell->temperature,
-                                                 minimumX + x, y);
+                    CellMaterial material = (CellMaterial)cell->material;
+                    MaterialRenderSample sample;
+
+                    if (material == MATERIAL_EMPTY) {
+                        sample = air;
+                        liquidRun[x] = 0;
+                    } else {
+                        MaterialRenderContext around;
+                        CellMaterial above = rowAbove != NULL
+                                                 ? (CellMaterial)rowAbove[x].material
+                                                 : MATERIAL_EMPTY;
+                        CellMaterial below = rowBelow != NULL
+                                                 ? (CellMaterial)rowBelow[x].material
+                                                 : MATERIAL_ROCK;
+
+                        around.shade = (unsigned char)cell->shade;
+                        around.openAbove = MaterialRenderOpenFace(material, above);
+                        around.openBelow = MaterialRenderOpenFace(material, below);
+                        around.liquidDepth = MaterialIsLiquid(material) ? liquidRun[x]
+                                                                        : 0;
+                        sample = MaterialRenderCell(material, cell->temperature,
+                                                    minimumX + x, y, around);
+                        if (MaterialIsLiquid(material)) {
+                            if (liquidRun[x] < MATERIAL_RENDER_DEPTH_CAP) {
+                                ++liquidRun[x];
+                            }
+                        } else {
+                            liquidRun[x] = 0;
+                        }
+                    }
 
                     scene[x] = sample.scene;
                     emissive[x] = sample.emissive;

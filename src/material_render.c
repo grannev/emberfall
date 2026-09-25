@@ -82,9 +82,123 @@ static Color MaterialHeatTint(Color base, const MaterialInfo *info,
     return base;
 }
 
+/* Smooth value noise on a lattice `scale` cells apart, 0..1. The pattern
+   layer only: what gives a material its structure — a clump, a band, a
+   streak — is continuous across cells, and a hash per cell is only grain. */
+static float MaterialLatticeValue(int x, int y, uint32_t salt)
+{
+    return (float)((MaterialCoordinateHash(x, y) ^ salt) * 0x9e3779b1u >> 8) /
+           16777216.0f;
+}
+
+static float MaterialValueNoise(int x, int y, int scale, uint32_t salt)
+{
+    int cellX = (int)floorf((float)x / (float)scale);
+    int cellY = (int)floorf((float)y / (float)scale);
+    float fx = ((float)x - (float)cellX * (float)scale) / (float)scale;
+    float fy = ((float)y - (float)cellY * (float)scale) / (float)scale;
+    float a = MaterialLatticeValue(cellX, cellY, salt);
+    float b = MaterialLatticeValue(cellX + 1, cellY, salt);
+    float c = MaterialLatticeValue(cellX, cellY + 1, salt);
+    float d = MaterialLatticeValue(cellX + 1, cellY + 1, salt);
+
+    fx = fx * fx * (3.0f - 2.0f * fx);
+    fy = fy * fy * (3.0f - 2.0f * fy);
+    return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
+}
+
+/* The cell's own grain as a tone in -1..1, from its shade. Stepped by a
+   permutation so that neighbouring shade values are not neighbouring
+   tones — the accent takes the lowest shades, and the tone must not. */
+static float MaterialGrainTone(unsigned char shade)
+{
+    return (float)((shade * 37u + 11u) & 63u) / 31.5f - 1.0f;
+}
+
+/* Where the material's pattern puts this cell, -1 (dark) to 1 (light). */
+static float MaterialPatternTone(MaterialPattern pattern, int x, int y,
+                                 unsigned char shade, int liquidDepth)
+{
+    float grain = MaterialGrainTone(shade);
+
+    switch (pattern) {
+    case MATERIAL_PATTERN_CLUMP: {
+        /* Clumps a few cells across, and grain over them. */
+        float clump = MaterialValueNoise(x, y, 4, 0x51u) * 2.0f - 1.0f;
+
+        return 0.7f * clump + 0.45f * grain;
+    }
+    case MATERIAL_PATTERN_STRATA: {
+        /* Bands along the rows that wander up and down over tens of cells,
+           each band its own tone, with fine grain inside it. */
+        float wander = MaterialValueNoise(x, 0, 23, 0x7au) * 7.0f;
+        int band = (int)floorf(((float)y + wander) / 3.0f);
+        float bandTone = MaterialLatticeValue(band, 0, 0x3cu) * 2.0f - 1.0f;
+        float grit = MaterialValueNoise(x, y, 2, 0x19u) * 2.0f - 1.0f;
+
+        return 0.75f * bandTone + 0.2f * grit + 0.2f * grain;
+    }
+    case MATERIAL_PATTERN_FIBRE: {
+        /* Streaks down the columns, drifting a little so the grain is not
+           ruled with a pen. */
+        int column = x + (int)floorf(MaterialValueNoise(x, y, 11, 0x2bu) * 2.0f);
+        float streak = MaterialLatticeValue(column, 0, 0x6du) * 2.0f - 1.0f;
+
+        return 0.7f * streak + 0.35f * grain;
+    }
+    case MATERIAL_PATTERN_CRYSTAL: {
+        /* Glints along the diagonal, broken by noise. */
+        float glint = MaterialValueNoise(x + y, x - y, 5, 0x44u) * 2.0f - 1.0f;
+
+        return 0.6f * glint + 0.35f * grain;
+    }
+    case MATERIAL_PATTERN_FLUID: {
+        /* Broad soft swirls, fainter the deeper, over a darkening with
+           depth that the caller counted. */
+        float swirl = MaterialValueNoise(x, y, 7, 0x0fu) * 2.0f - 1.0f;
+        float depth = (float)liquidDepth / 10.0f;
+
+        if (depth > 1.0f) depth = 1.0f;
+        return 0.35f * swirl * (1.0f - depth) + 0.15f * grain - 0.9f * depth;
+    }
+    case MATERIAL_PATTERN_GRAIN:
+    default:
+        return grain;
+    }
+}
+
+static Color MaterialMix(Color from, Color to, float amount)
+{
+    if (amount <= 0.0f) return from;
+    if (amount > 1.0f) amount = 1.0f;
+    return (Color){
+        (unsigned char)((float)from.r + ((float)to.r - (float)from.r) * amount),
+        (unsigned char)((float)from.g + ((float)to.g - (float)from.g) * amount),
+        (unsigned char)((float)from.b + ((float)to.b - (float)from.b) * amount),
+        (unsigned char)((float)from.a + ((float)to.a - (float)from.a) * amount),
+    };
+}
+
+bool MaterialRenderOpenFace(CellMaterial material, CellMaterial neighbour)
+{
+    if (MaterialIsSolid(material)) {
+        return !MaterialIsSolid(neighbour);
+    }
+    if (MaterialIsLiquid(material)) {
+        return !MaterialIsLiquid(neighbour);
+    }
+    return neighbour != material;
+}
+
+static bool MaterialHasPalette(const MaterialInfo *info)
+{
+    return info->dark.a != 0u || info->light.a != 0u;
+}
+
 MaterialRenderSample MaterialRenderCell(CellMaterial material,
                                         float temperature,
-                                        int variationX, int variationY)
+                                        int patternX, int patternY,
+                                        MaterialRenderContext context)
 {
     const MaterialInfo *info = MaterialAt(material);
     MaterialRenderSample sample = {BLANK, BLANK};
@@ -98,7 +212,35 @@ MaterialRenderSample MaterialRenderCell(CellMaterial material,
     }
 
     color = info->color;
-    variation = (int)(MaterialCoordinateHash(variationX, variationY) % 13u) - 6;
+    if (MaterialHasPalette(info)) {
+        float tone = MaterialPatternTone(info->pattern, patternX, patternY,
+                                         context.shade, context.liquidDepth);
+
+        /* A top face catches the light and an underside is in shadow: the
+           edge of every ledge, grain and canopy reads as a shape rather
+           than as a flat fill. A liquid's surface is lit harder still — it
+           is the line the eye follows. */
+        if (context.openAbove) {
+            tone += info->pattern == MATERIAL_PATTERN_FLUID    ? 1.1f
+                    : info->pattern == MATERIAL_PATTERN_GRAIN ? 0.25f
+                                                              : 0.55f;
+        }
+        /* Loose grains have no ledges to shade: a heap is ragged at every
+           row, and full-strength faces on it read as ruled stripes. */
+        if (context.openBelow && info->pattern != MATERIAL_PATTERN_FLUID) {
+            tone -= info->pattern == MATERIAL_PATTERN_GRAIN ? 0.15f : 0.45f;
+        }
+        color = tone < 0.0f ? MaterialMix(info->color, info->dark, -tone)
+                            : MaterialMix(info->color, info->light, tone);
+        /* The accent: a pebble, a vein, a knot, a spark. Carried by the
+           shade, so a pebble in a falling pile stays a pebble. Never on a
+           liquid's lit surface, which is the surface's own colour. */
+        if (context.shade < info->accentShare &&
+            !(context.openAbove && info->pattern == MATERIAL_PATTERN_FLUID)) {
+            color = MaterialMix(color, info->accent, 0.85f);
+        }
+    }
+    variation = (int)(MaterialCoordinateHash(patternX, patternY) % 13u) - 6;
     color.r = ChannelWithVariation(color.r, info->variationR, variation);
     color.g = ChannelWithVariation(color.g, info->variationG, variation);
     color.b = ChannelWithVariation(color.b, info->variationB, variation);

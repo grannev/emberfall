@@ -422,6 +422,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                              (int)game->player.position.x)));
     EnvironmentRendererSetDaylight(&renderer->environment,
                                    GameDaylightAt(game->dayPhase));
+    EnvironmentRendererSetDayPhase(&renderer->environment, game->dayPhase);
     /* Full backdrop at and below the clouds, none at and above the space line.
        Asked here because the environment renderer is never given a World and
        could not work it out; the answer itself belongs to the world, beside the

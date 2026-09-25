@@ -118,6 +118,46 @@ void WorldSetGeneratedCell(World *world, int x, int y,
     cell->lifetime = 0;
     cell->effectStamp = 0;
     cell->heatHeld = 0;
+    cell->shade = WorldShadeFor(x, y, material) & 63u;
+}
+
+uint8_t WorldShadeFor(int x, int y, CellMaterial material)
+{
+    uint32_t value = (uint32_t)x * 0x9e3779b1u ^ (uint32_t)y * 0x85ebca77u ^
+                     (uint32_t)material * 0xc2b2ae3du;
+
+    value ^= value >> 15;
+    value *= 0x2c1b3c6du;
+    value ^= value >> 12;
+    return (uint8_t)(value & 63u);
+}
+
+uint8_t WorldGetShade(const World *world, int x, int y)
+{
+    if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
+        return 0u;
+    }
+    return (uint8_t)WorldCellConst(world, x, y)->shade;
+}
+
+void WorldSetShade(World *world, int x, int y, uint8_t shade)
+{
+    Cell *cell;
+
+    if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
+        return;
+    }
+    cell = WorldCell(world, x, y);
+    if (cell->material == MATERIAL_EMPTY || cell->shade == (shade & 63u)) {
+        return;
+    }
+    cell->shade = shade & 63u;
+    /* Only what the cell looks like changed: the page has to be rebuilt, and
+       nothing has to be simulated. */
+    if (world->dirtyChunks != NULL) {
+        world->dirtyChunks[WorldChunkIndex(world, x / WORLD_CHUNK_SIZE,
+                                           y / WORLD_CHUNK_SIZE)] = 1u;
+    }
 }
 
 void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
@@ -135,6 +175,7 @@ void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
     cell->lifetime = 0;
     cell->effectStamp = 0;
     cell->heatHeld = 0;
+    cell->shade = WorldShadeFor(x, y, material) & 63u;
     WorldWakeCellAndNeighbors(world, x, y);
 }
 

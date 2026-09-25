@@ -217,6 +217,12 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                 continue;
             }
             WorldSetCell(world, worldX, worldY, material);
+            /* Its tone comes back with it: a slab welded where it landed
+               looks like the slab, not like fresh ground of its material. */
+            WorldSetShade(world, worldX, worldY,
+                          DynamicTerrainShadeAt(terrain, handle,
+                                                (int)floorf(local.x),
+                                                (int)floorf(local.y)));
             ++system->stats.cellsWelded;
         }
     }

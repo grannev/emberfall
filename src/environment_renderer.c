@@ -1,10 +1,10 @@
 #include "environment_renderer.h"
 
-#include "beam_render.h"
-
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
+
+#include "beam_render.h"
 
 /* Three deliberately restrained identities. Their silhouettes are kept below
    foreground material contrast; accent is the only colour submitted to the
@@ -227,6 +227,14 @@ void EnvironmentRendererSetDaylight(EnvironmentRenderer *renderer,
         return;
     }
     renderer->daylight = EnvironmentClamp(daylight, 0.0f, 1.0f);
+}
+
+void EnvironmentRendererSetDayPhase(EnvironmentRenderer *renderer, float dayPhase)
+{
+    if (renderer == NULL) {
+        return;
+    }
+    renderer->dayPhase = dayPhase - floorf(dayPhase);
 }
 
 void EnvironmentRendererSetAltitude(EnvironmentRenderer *renderer,
@@ -458,6 +466,7 @@ void EnvironmentRendererInit(EnvironmentRenderer *renderer, uint64_t seed,
     renderer->fadeFrom = renderer->palette;
     renderer->fade = 1.0f;
     renderer->daylight = 1.0f;
+    renderer->dayPhase = 0.25f;
     renderer->altitude = 1.0f;
     renderer->stats.viewValid = true;
 }
@@ -613,6 +622,165 @@ static void EnvironmentDrawSky(EnvironmentRenderer *renderer,
         DrawRectangle((int)x, (int)(detail->y * (float)height), size, size,
                       EnvironmentFade(color, 0.18f + 0.22f * twinkle));
         ++renderer->stats.sceneDrawCalls;
+    }
+}
+
+/* ---- the sun and the moon -------------------------------------------------
+
+   Both ride one arc across the backdrop: up from the left end of the horizon,
+   over the top of the view, down to the right end. The sun takes the day half
+   of the phase and the moon the night half, so one is always setting as the
+   other rises. They are infinitely far away and have no parallax: the arc is
+   fixed on the screen, and only the horizon it sets behind moves with the
+   camera.
+
+   Drawn in blocks the size of a world cell, like everything else. */
+typedef struct EnvironmentOrb {
+    float x;
+    float y;
+    /* Height over the horizon, 0 at it and 1 at the top of the arc. */
+    float elevation;
+    bool visible;
+} EnvironmentOrb;
+
+static EnvironmentOrb EnvironmentOrbAt(float phase, Camera2D camera, int width,
+                                       int height)
+{
+    EnvironmentOrb orb = {0};
+    float horizon = EnvironmentHorizon(camera, height, 0.010f, 0.48f);
+    float angle;
+
+    phase -= floorf(phase);
+    if (phase >= 0.5f) {
+        return orb;
+    }
+    angle = phase / 0.5f * PI;
+    orb.elevation = sinf(angle);
+    orb.x = (float)width * 0.5f - cosf(angle) * (float)width * 0.44f;
+    orb.y = horizon + (float)height * 0.06f -
+            orb.elevation * (horizon + (float)height * 0.06f - (float)height * 0.12f);
+    orb.visible = true;
+    return orb;
+}
+
+static int EnvironmentBlock(int height)
+{
+    return EnvironmentMaxInt(1, height / 180);
+}
+
+/* A disc of blocks, `radius` blocks across its half, in `color`. */
+static void EnvironmentDisc(EnvironmentRenderer *renderer, float centreX,
+                            float centreY, int radius, int block, Color color,
+                            bool emissive)
+{
+    int row;
+
+    for (row = -radius; row <= radius; ++row) {
+        int half = (int)floorf(sqrtf((float)(radius * radius - row * row)) + 0.35f);
+
+        DrawRectangle((int)centreX - half * block - block / 2,
+                      (int)centreY + row * block - block / 2,
+                      (2 * half + 1) * block, block, color);
+        if (emissive) {
+            ++renderer->stats.emissiveDrawCalls;
+        } else {
+            ++renderer->stats.sceneDrawCalls;
+        }
+    }
+}
+
+/* The sun: a white-gold disc, deepening to orange and red as it sets, in a
+   halo that widens as it nears the horizon — the air it is seen through is
+   thicker there. */
+static void EnvironmentDrawSun(EnvironmentRenderer *renderer, Camera2D camera,
+                               int width, int height, float alpha, bool emissive)
+{
+    EnvironmentOrb orb = EnvironmentOrbAt(renderer->dayPhase, camera, width, height);
+    int block = EnvironmentBlock(height);
+    float low;
+    Color disc;
+    Color halo;
+    int ring;
+
+    if (!orb.visible || alpha <= 0.0f) {
+        return;
+    }
+    low = 1.0f - EnvironmentClamp(orb.elevation * 2.5f, 0.0f, 1.0f);
+    disc = (Color){255, (unsigned char)(246.0f - 120.0f * low),
+                   (unsigned char)(208.0f - 170.0f * low), 255};
+    halo = (Color){255, (unsigned char)(200.0f - 90.0f * low),
+                   (unsigned char)(120.0f - 90.0f * low), 255};
+    if (emissive) {
+        /* Blooms less as it sinks: the backdrop hills are not drawn in the
+           emissive plane and cannot hide a sun going down behind them. */
+        alpha *= EnvironmentClamp((orb.elevation - 0.04f) / 0.25f, 0.0f, 1.0f);
+        if (alpha <= 0.0f) {
+            return;
+        }
+    }
+    for (ring = 4; ring >= 1; --ring) {
+        EnvironmentDisc(renderer, orb.x, orb.y, 7 + ring * (3 + (int)(4.0f * low)),
+                        block,
+                        EnvironmentFade(halo, alpha * (0.05f + 0.06f * low) *
+                                                  (float)(5 - ring) / 4.0f),
+                        emissive);
+    }
+    EnvironmentDisc(renderer, orb.x, orb.y, 7, block,
+                    EnvironmentFade(disc, alpha), emissive);
+    /* A hotter core, a block in from the rim, so the disc reads as a light
+       and not as a plate. */
+    EnvironmentDisc(renderer, orb.x, orb.y, 5, block,
+                    EnvironmentFade((Color){255, 252, 236, 255}, alpha * 0.8f),
+                    emissive);
+}
+
+/* The moon: a pale disc with its seas and craters picked out by the same
+   hash the ridges use, and a faint cold halo. */
+static void EnvironmentDrawMoon(EnvironmentRenderer *renderer, Camera2D camera,
+                                int width, int height, float alpha, bool emissive)
+{
+    EnvironmentOrb orb = EnvironmentOrbAt(renderer->dayPhase - 0.5f, camera, width,
+                                          height);
+    int block = EnvironmentBlock(height);
+    const int radius = 5;
+    int row;
+
+    if (!orb.visible || alpha <= 0.0f) {
+        return;
+    }
+    if (emissive) {
+        alpha *= 0.35f * EnvironmentClamp((orb.elevation - 0.04f) / 0.25f, 0.0f, 1.0f);
+        if (alpha <= 0.0f) {
+            return;
+        }
+    }
+    EnvironmentDisc(renderer, orb.x, orb.y, radius + 4, block,
+                    EnvironmentFade((Color){170, 196, 230, 255}, alpha * 0.07f),
+                    emissive);
+    EnvironmentDisc(renderer, orb.x, orb.y, radius, block,
+                    EnvironmentFade((Color){222, 228, 236, 255}, alpha), emissive);
+    if (emissive) {
+        return;
+    }
+    for (row = -radius; row <= radius; ++row) {
+        int column;
+
+        for (column = -radius; column <= radius; ++column) {
+            float noise;
+
+            if (row * row + column * column > radius * radius) {
+                continue;
+            }
+            noise = BeamNoise(column + 40, row + 40, 0x6d00);
+            if (noise < 0.72f) {
+                continue;
+            }
+            DrawRectangle((int)orb.x + column * block - block / 2,
+                          (int)orb.y + row * block - block / 2, block, block,
+                          EnvironmentFade((Color){168, 176, 190, 255},
+                                          alpha * (noise > 0.9f ? 0.9f : 0.6f)));
+            ++renderer->stats.sceneDrawCalls;
+        }
     }
 }
 
@@ -875,6 +1043,10 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
        applied as a 2D transform: the full target remains covered and shake can
        never reveal empty corners. */
     EnvironmentDrawSky(renderer, palette, camera, width, height);
+    /* In the sky and behind every hill: a setting sun goes down behind the
+       far ridges, not in front of them. */
+    EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, false);
+    EnvironmentDrawSun(renderer, camera, width, height, 1.0f, false);
     EnvironmentDrawFarLayer(renderer, palette, camera, width, height);
     EnvironmentDrawStructures(renderer, palette, camera, width, height);
     EnvironmentDrawNearLayer(renderer, palette, camera, width, height);
@@ -897,6 +1069,11 @@ void EnvironmentRendererDrawScene(EnvironmentRenderer *renderer,
         DrawRectangleGradientV((int)bounds.x, (int)bounds.y, (int)bounds.width,
                                (int)bounds.height, top, bottom);
         ++renderer->stats.sceneDrawCalls;
+        /* The sun and the moon are not part of the horizon, and above the
+           air they are clearer than ever: laid back over the veil as it
+           thickens. */
+        EnvironmentDrawMoon(renderer, camera, width, height, amount, false);
+        EnvironmentDrawSun(renderer, camera, width, height, amount, false);
     }
 }
 
@@ -918,6 +1095,10 @@ void EnvironmentRendererDrawEmissive(EnvironmentRenderer *renderer,
     if (palette == NULL) {
         return;
     }
+    /* The sun and the moon glow. The world is drawn over them in this plane
+       as it is in the scene, so they bloom only where the sky shows. */
+    EnvironmentDrawMoon(renderer, camera, width, height, 1.0f, true);
+    EnvironmentDrawSun(renderer, camera, width, height, 1.0f, true);
     horizon = EnvironmentHorizon(camera, height, 0.045f, 0.79f);
     scale = EnvironmentViewScale(camera, width);
     profile = EnvironmentRendererResolvedProfile(renderer);

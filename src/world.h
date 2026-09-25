@@ -102,8 +102,16 @@ typedef struct Cell {
        a cell beside its source in the same row is visited before the source
        on one tick and after it on the next, so a one-tick flag was consumed
        twice in a row and the cell cooled in the gap. Lives in what was the
-       struct's padding byte, so it costs nothing. */
-    uint8_t heatHeld;
+       struct's padding byte, so it costs nothing. Two bits: it never holds
+       more than WORLD_HEAT_HOLD_TICKS. */
+    uint8_t heatHeld : 2;
+    /* The cell's own tone, 0..63, given when its material is written and
+       carried with it by every move, so a grain of sand keeps its colour as
+       it falls instead of flickering through the colours of the places it
+       passes. What the renderer's palette pattern reads (material_render.h);
+       the simulation never does. Lives in the six bits heatHeld does not
+       need, so the cell does not grow. */
+    uint8_t shade : 6;
 } Cell;
 
 _Static_assert(MATERIAL_COUNT <= UINT8_MAX, "Cell.material no longer fits in uint8_t");
@@ -504,6 +512,15 @@ int WorldChunkMaterialCount(const World *world, int chunkX, int chunkY,
 float WorldGetTemperature(const World *world, int x, int y);
 void WorldSetTemperature(World *world, int x, int y, float temperature);
 bool WorldMaterialIsSolid(CellMaterial material);
+/* The tone a cell of `material` written at (x, y) is given: a hash of the
+   two, so generation, a phase change and a weld all agree on what a cell
+   written there looks like. */
+uint8_t WorldShadeFor(int x, int y, CellMaterial material);
+/* A cell's own tone, for what carries it out of the world and back: the
+   extraction copies it into a body so a slab keeps its colours, and a weld
+   writes it back. Zero for an empty or out-of-world cell. */
+uint8_t WorldGetShade(const World *world, int x, int y);
+void WorldSetShade(World *world, int x, int y, uint8_t shade);
 void WorldSetCell(World *world, int x, int y, CellMaterial material);
 
 /* Notes that solid material was cut out of the given inclusive cell bounds.

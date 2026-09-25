@@ -7479,6 +7479,92 @@ static void test_a_moving_body_is_never_welded(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* A cell's tone is its own: a grain keeps it as it falls, and a slab keeps
+   its tones when it is torn out of the world and when it is welded back.
+   Coloured by position instead, a falling grain flickered through the
+   colours of every place it passed, and a slab changed colour the instant
+   it came loose. */
+static void test_a_cell_keeps_its_shade_through_moves_and_bodies(void)
+{
+    World world;
+    TerrainWeldSystem weld;
+    TerrainExtractResult extracted;
+    WorldComponentResult component;
+    uint8_t grain;
+    uint8_t before[4][4];
+    int x;
+    int y;
+    int step;
+    bool kept = true;
+
+    CHECK(sizeof(Cell) == 12, "Cell grew to %u bytes", (unsigned)sizeof(Cell));
+    CHECK(WorldInit(&world, 96, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+
+    /* A grain dropped from row 10 lands on the floor with its tone. */
+    FillRect(&world, 0, 90, 95, 95, MATERIAL_ROCK);
+    WorldSetCell(&world, 20, 10, MATERIAL_SAND);
+    grain = WorldGetShade(&world, 20, 10);
+    Tick(&world, 200);
+    CHECK(WorldGetCell(&world, 20, 89) == MATERIAL_SAND, "the grain did not land");
+    CHECK(WorldGetShade(&world, 20, 89) == grain,
+          "the grain landed with shade %u, it fell with %u",
+          (unsigned)WorldGetShade(&world, 20, 89), (unsigned)grain);
+
+    /* A 4x4 block in the air, given tones of its own, is extracted and
+       welded back where it was. */
+    FillRect(&world, 40, 40, 43, 43, MATERIAL_ROCK);
+    for (y = 0; y < 4; ++y) {
+        for (x = 0; x < 4; ++x) {
+            before[y][x] = (uint8_t)((x * 13 + y * 7) & 63);
+            WorldSetShade(&world, 40 + x, 40 + y, before[y][x]);
+        }
+    }
+    component = WorldFindComponent(&world, &componentWorkspace,
+                                   (Rectangle){30.0f, 30.0f, 24.0f, 24.0f}, 41, 41,
+                                   WORLD_COMPONENT_MAX_CELLS);
+    CHECK(component.status == WORLD_COMPONENT_DETACHED, "the block is not free");
+    extracted = TerrainExtractComponent(&world, &terrain, &componentWorkspace,
+                                        component);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "the block was not extracted");
+    for (y = 0; y < 4; ++y) {
+        for (x = 0; x < 4; ++x) {
+            if (DynamicTerrainShadeAt(&terrain, extracted.body, x, y) != before[y][x]) {
+                kept = false;
+            }
+        }
+    }
+    CHECK(kept, "the body did not keep the tones the block had");
+
+    DynamicTerrainGet(&terrain, extracted.body)->velocity = (Vector2){0.0f, 0.0f};
+    DynamicTerrainGet(&terrain, extracted.body)->angularVelocity = 0.0f;
+    for (step = 0; step < 240 && DynamicTerrainGet(&terrain, extracted.body)->awake;
+         ++step) {
+        DynamicTerrainSettleBody(&terrain, DynamicTerrainGet(&terrain, extracted.body),
+                                 1.0f / 60.0f);
+    }
+    TerrainWeldInit(&weld);
+    for (step = 0; step < 1200 &&
+                   DynamicTerrainGetConst(&terrain, extracted.body) != NULL;
+         ++step) {
+        (void)TerrainWeldProcess(&weld, &world, &terrain,
+                                 (Vector2){-4000.0f, -4000.0f}, 1.0f / 60.0f);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, extracted.body) == NULL,
+          "the block was never welded back");
+    kept = true;
+    for (y = 0; y < 4; ++y) {
+        for (x = 0; x < 4; ++x) {
+            if (WorldGetShade(&world, 40 + x, 40 + y) != before[y][x]) {
+                kept = false;
+            }
+        }
+    }
+    CHECK(kept, "the welded block came back in different tones");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_weld_never_overwrites_the_world_or_buries_the_player(void)
 {
     World world;
@@ -13221,6 +13307,7 @@ int main(void)
     RUN(test_a_forced_backdrop_outranks_the_ground);
     RUN(test_daylight_dies_a_short_way_into_solid_ground);
     RUN(test_the_light_solve_skips_the_empty_sky);
+    RUN(test_a_cell_keeps_its_shade_through_moves_and_bodies);
     RUN(test_a_carried_light_is_what_makes_the_dark_passable);
     RUN(test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it);
     RUN(test_the_same_seed_always_generates_the_same_world);

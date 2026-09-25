@@ -273,6 +273,10 @@ typedef struct DynamicTerrainSystem {
        sitting a fraction below a phase threshold to cross it purely by being
        torn off and put back. At this scale that trade is not worth making. */
     float *temperature;
+    /* Each cell's own tone, the world's Cell.shade carried out with it, so a
+       slab torn off a cliff keeps the colours it had in the cliff and gives
+       them back when it is welded. Indexed like the other two planes. */
+    uint8_t *shade;
     /* Surface cells, in local raster coordinates, laid out per body slot the
        same way the raster is: slot i owns [i * MAX_TERRAIN_BODY_CELLS, ...).
        int16_t is ample — a local coordinate never exceeds TERRAIN_BODY_MAX_SPAN. */
@@ -323,6 +327,14 @@ CellMaterial DynamicTerrainCellAt(const DynamicTerrainSystem *system,
                                   TerrainBodyHandle handle, int localX, int localY);
 float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,
                                   TerrainBodyHandle handle, int localX, int localY);
+/* A cell's tone, 0..63. A cell that becomes occupied is given one from its
+   local position; extraction and fracture then set the tone it had. Setting
+   a different tone is a raster edit for the renderer's cache, and nothing
+   else — it moves no mass. */
+uint8_t DynamicTerrainShadeAt(const DynamicTerrainSystem *system,
+                              TerrainBodyHandle handle, int localX, int localY);
+void DynamicTerrainSetShade(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                            int localX, int localY, uint8_t shade);
 
 /* Recomputes bounds, mass, centre of mass and inertia from the raster. Call it
    once a body has been populated or edited; until then those fields describe

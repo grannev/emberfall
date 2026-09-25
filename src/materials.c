@@ -18,6 +18,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
             },
     [MATERIAL_DIRT] = {
         .name = "DIRT", .color = {111, 73, 43, 255},
+        .dark = {78, 50, 30, 255}, .light = {142, 99, 62, 255},
+        .accent = {150, 140, 124, 255}, .accentShare = 4,
+        .pattern = MATERIAL_PATTERN_CLUMP,
         .variationR = 2, .variationG = 1,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -30,6 +33,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_ROCK] = {
         .name = "ROCK", .color = {72, 77, 86, 255},
+        .dark = {50, 54, 62, 255}, .light = {101, 106, 116, 255},
+        .accent = {128, 118, 104, 255}, .accentShare = 3,
+        .pattern = MATERIAL_PATTERN_STRATA,
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -42,6 +48,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_SAND] = {
         .name = "SAND", .color = {218, 184, 91, 255},
+        .dark = {186, 148, 68, 255}, .light = {240, 214, 136, 255},
+        .accent = {150, 112, 66, 255}, .accentShare = 5,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationR = 2, .variationG = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -53,6 +62,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_WATER] = {
         .name = "WATER", .color = {32, 111, 190, 225},
+        .dark = {16, 62, 132, 235}, .light = {92, 170, 228, 215},
+        .accent = {170, 214, 244, 215}, .accentShare = 2,
+        .pattern = MATERIAL_PATTERN_FLUID,
         .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -64,6 +76,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_LAVA] = {
         .name = "LAVA", .color = {245, 73, 18, 255},
+        .dark = {178, 32, 10, 255}, .light = {255, 150, 40, 255},
+        .accent = {255, 226, 120, 255}, .accentShare = 5,
+        .pattern = MATERIAL_PATTERN_FLUID,
         .variationG = 4,
         .initialTemperature = 900.0f,
         .selfHeatTarget = 900.0f, .selfHeatRate = 0.08f,
@@ -81,6 +96,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_STEAM] = {
         .name = "STEAM", .color = {204, 222, 229, 178},
+        .dark = {170, 188, 198, 160}, .light = {232, 242, 246, 190},
+        .accent = {250, 252, 255, 200}, .accentShare = 3,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationR = 2, .variationG = 2,
         .initialTemperature = 125.0f,
         .linearCoolRate = 0.42f,
@@ -92,6 +110,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_SMOKE] = {
         .name = "SMOKE", .color = {83, 88, 94, 205},
+        .dark = {58, 62, 68, 205}, .light = {112, 116, 122, 200},
+        .accent = {130, 124, 118, 200}, .accentShare = 2,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = 75.0f,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -100,6 +121,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_FIRE] = {
         .name = "FIRE", .color = {255, 132, 24, 245},
+        .dark = {226, 70, 14, 245}, .light = {255, 196, 64, 245},
+        .accent = {255, 244, 170, 250}, .accentShare = 8,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationG = 6,
         .initialTemperature = 650.0f,
         .selfHeatTarget = 650.0f, .selfHeatRate = 0.12f,
@@ -113,6 +137,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_ICE] = {
         .name = "ICE", .color = {152, 203, 231, 245},
+        .dark = {112, 168, 208, 245}, .light = {200, 234, 250, 245},
+        .accent = {244, 252, 255, 250}, .accentShare = 4,
+        .pattern = MATERIAL_PATTERN_CRYSTAL,
         .variationG = 2, .variationB = 2,
         .initialTemperature = -14.0f,
         /* Ice does not drift back to ambient. A slow drift cannot work here: a
@@ -133,6 +160,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     [MATERIAL_WOOD] = {
         .flora = true,
         .name = "WOOD", .color = {104, 72, 44, 255},
+        .dark = {72, 48, 28, 255}, .light = {136, 98, 62, 255},
+        .accent = {56, 36, 22, 255}, .accentShare = 2,
+        .pattern = MATERIAL_PATTERN_FIBRE,
         .variationR = 6, .variationG = 4, .variationB = 3,
         .initialTemperature = 18.0f,
         .selfHeatTarget = 18.0f, .selfHeatRate = 0.02f,
@@ -153,6 +183,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     [MATERIAL_LEAF] = {
         .flora = true,
         .name = "LEAF", .color = {74, 132, 66, 245},
+        .dark = {44, 94, 46, 245}, .light = {112, 170, 82, 245},
+        .accent = {168, 196, 92, 245}, .accentShare = 4,
+        .pattern = MATERIAL_PATTERN_CLUMP,
         .variationR = 5, .variationG = 9, .variationB = 4,
         .initialTemperature = 16.0f,
         .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
@@ -166,6 +199,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     [MATERIAL_GRASS] = {
         .flora = true,
         .name = "GRASS", .color = {96, 148, 68, 240},
+        .dark = {62, 112, 50, 240}, .light = {140, 188, 88, 240},
+        .accent = {214, 196, 92, 240}, .accentShare = 3,
+        .pattern = MATERIAL_PATTERN_FIBRE,
         .variationR = 6, .variationG = 10, .variationB = 5,
         .initialTemperature = 16.0f,
         .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
@@ -178,6 +214,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     [MATERIAL_CACTUS] = {
         .flora = true,
         .name = "CACTUS", .color = {68, 124, 82, 250},
+        .dark = {46, 94, 62, 250}, .light = {100, 156, 108, 250},
+        .accent = {226, 224, 186, 250}, .accentShare = 3,
+        .pattern = MATERIAL_PATTERN_FIBRE,
         .variationR = 4, .variationG = 8, .variationB = 5,
         .initialTemperature = 26.0f,
         .selfHeatTarget = 26.0f, .selfHeatRate = 0.02f,
@@ -191,6 +230,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_ASH] = {
         .name = "ASH", .color = {112, 108, 104, 255},
+        .dark = {84, 80, 78, 255}, .light = {142, 138, 132, 255},
+        .accent = {176, 96, 58, 255}, .accentShare = 2,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationR = 2, .variationG = 2, .variationB = 2,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,
@@ -200,6 +242,9 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
     },
     [MATERIAL_RUBBLE] = {
         .name = "RUBBLE", .color = {92, 82, 72, 255},
+        .dark = {64, 57, 50, 255}, .light = {122, 111, 98, 255},
+        .accent = {120, 124, 132, 255}, .accentShare = 10,
+        .pattern = MATERIAL_PATTERN_GRAIN,
         .variationR = 4, .variationG = 3, .variationB = 3,
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.006f,

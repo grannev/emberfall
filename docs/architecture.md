@@ -163,6 +163,13 @@ projected Gauss-Seidel с warm start — порознь куча обломко�
 `WorldPushLiquid`/`WorldPushLiquidFast`/`WorldSplashLiquid`. Владеет обоими
 `GameState`.
 
+### `material_render.c/.h`
+
+Одна дорога от клетки к пикселю для страниц мира и растров тел: палитра
+материала, его узор, оттенок клетки (`Cell.shade`), грани и глубина жидкости
+из `MaterialRenderContext`, который заполняет тот, кто обходит клетки.
+Солнце и луна — в `environment_renderer.c`, по `dayPhase`.
+
 ### `atmosphere.c/.h`
 
 Вход в атмосферу. Коридор между линией космоса и линией облаков

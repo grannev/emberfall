@@ -22,6 +22,8 @@
  * Drawn without the shader, air is all but transparent.
  */
 
+#include <stdbool.h>
+
 #include <raylib.h>
 
 #include "world.h"
@@ -37,11 +39,38 @@ typedef struct MaterialRenderSample {
     Color emissive;
 } MaterialRenderSample;
 
-/* The unlit pixel for one cell. `variationX`/`variationY` seed the dither, so
-   a cell keeps its grain whether it is drawn in the world or in a body. */
+/* What a pixel needs to know about the cell beyond its material: its own
+   tone, and what is around it. Filled by whoever is walking the cells — the
+   world's page builder or a body's raster — from the neighbours it already
+   has in hand. */
+typedef struct MaterialRenderContext {
+    /* Cell.shade, 0..63: the cell's own tone, which moves with it. */
+    unsigned char shade;
+    /* Nothing of the same kind of stuff above or below: a top face catches
+       the light, an underside falls into shadow. A liquid's surface is its
+       top face. */
+    bool openAbove;
+    bool openBelow;
+    /* Cells of the same liquid over this one, 0 at the surface, capped by
+       the caller: how far down the water has darkened. */
+    int liquidDepth;
+} MaterialRenderContext;
+
+/* Whether a cell of `material` with `neighbour` beside it has an open face
+   there: a solid against anything not solid, a liquid against anything not
+   liquid, anything else against anything other than itself. */
+bool MaterialRenderOpenFace(CellMaterial material, CellMaterial neighbour);
+
+/* How deep a liquid's darkening goes, in cells of the same liquid over it. */
+#define MATERIAL_RENDER_DEPTH_CAP 10
+
+/* The unlit pixel for one cell. `patternX`/`patternY` place the material's
+   pattern — the strata of rock, the grain of wood — and are the cell's
+   original world coordinates, so a slab carried away keeps its bands. */
 MaterialRenderSample MaterialRenderCell(CellMaterial material,
                                         float temperature,
-                                        int variationX, int variationY);
+                                        int patternX, int patternY,
+                                        MaterialRenderContext context);
 
 /* The unlit pixel for air at world row `y` of a world `height` tall: a depth
    gradient the shader tints and veils. */

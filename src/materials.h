@@ -23,9 +23,40 @@ typedef struct MaterialPhase {
     float threshold;
 } MaterialPhase;
 
+/* How a material's tones are laid out over its cells. Generic patterns, not
+   a switch per material: a new material picks one and gives its colours. */
+typedef enum MaterialPattern {
+    /* Every cell its own tone, carried by the cell as it moves: sand, ash,
+       rubble — a pile of grains, each a slightly different stone. */
+    MATERIAL_PATTERN_GRAIN = 0,
+    /* Tones in clumps a few cells across, with grain on top: soil, a canopy,
+       a turf. */
+    MATERIAL_PATTERN_CLUMP,
+    /* Bands that run roughly along the rows and wander: bedded rock. */
+    MATERIAL_PATTERN_STRATA,
+    /* Streaks along the columns: the grain of a trunk, the ribs of a cactus,
+       blades of grass. */
+    MATERIAL_PATTERN_FIBRE,
+    /* Long diagonal glints: ice. */
+    MATERIAL_PATTERN_CRYSTAL,
+    /* Soft broad swirls and a lit surface, darkening with depth: water,
+       lava. The depth and the surface come from the neighbours. */
+    MATERIAL_PATTERN_FLUID,
+} MaterialPattern;
+
 typedef struct MaterialInfo {
     const char *name;
     Color color;
+    /* The rest of the palette around `color`: a darker and a lighter tone the
+       pattern moves between, and an accent a small share of cells take — a
+       pebble in the soil, a vein in the rock, a knot in the wood, a spark in
+       the lava. `accentShare` is out of 64. A material with no palette
+       given (all zero) falls back to `color` and its variation. */
+    Color dark;
+    Color light;
+    Color accent;
+    unsigned char accentShare;
+    MaterialPattern pattern;
     /* Per-channel spread of the coordinate-hash variation, in halves, so a
        material can dither one channel harder than another. */
     signed char variationR;

@@ -103,6 +103,8 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
                               sizeof(*system->material));
     system->temperature = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
                                  sizeof(*system->temperature));
+    system->shade = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
+                           sizeof(*system->shade));
     system->surfaceX = calloc((size_t)MAX_TERRAIN_BODIES *
                                   (size_t)MAX_TERRAIN_BODY_CELLS,
                               sizeof(*system->surfaceX));
@@ -110,7 +112,7 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
                                   (size_t)MAX_TERRAIN_BODY_CELLS,
                               sizeof(*system->surfaceY));
     if (system->material == NULL || system->temperature == NULL ||
-        system->surfaceX == NULL || system->surfaceY == NULL) {
+        system->shade == NULL || system->surfaceX == NULL || system->surfaceY == NULL) {
         DynamicTerrainUnload(system);
         return false;
     }
@@ -124,6 +126,7 @@ void DynamicTerrainUnload(DynamicTerrainSystem *system)
     }
     free(system->material);
     free(system->temperature);
+    free(system->shade);
     free(system->surfaceX);
     free(system->surfaceY);
     memset(system, 0, sizeof(*system));
@@ -229,6 +232,8 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
            (size_t)(width * height) * sizeof(*system->material));
     memset(system->temperature + TerrainRasterBase((uint16_t)index), 0,
            (size_t)(width * height) * sizeof(*system->temperature));
+    memset(system->shade + TerrainRasterBase((uint16_t)index), 0,
+           (size_t)(width * height) * sizeof(*system->shade));
 
     ++system->stats.activeBodies;
     system->stats.allocatedDynamicCells += width * height;
@@ -346,6 +351,7 @@ void DynamicTerrainSetCell(DynamicTerrainSystem *system, TerrainBodyHandle handl
     system->material[index] = (uint8_t)material;
     system->temperature[index] = isOccupied ? temperature : 0.0f;
     if (isOccupied && !wasOccupied) {
+        system->shade[index] = WorldShadeFor(localX, localY, material);
         ++body->cellCount;
         ++system->stats.dynamicCellsUsed;
     } else if (!isOccupied && wasOccupied) {
@@ -367,6 +373,36 @@ CellMaterial DynamicTerrainCellAt(const DynamicTerrainSystem *system,
         return MATERIAL_EMPTY;
     }
     return (CellMaterial)system->material[index];
+}
+
+uint8_t DynamicTerrainShadeAt(const DynamicTerrainSystem *system,
+                              TerrainBodyHandle handle, int localX, int localY)
+{
+    size_t index;
+
+    if (!TerrainCellIndex(system, handle, localX, localY, &index)) {
+        return 0u;
+    }
+    return system->shade[index];
+}
+
+void DynamicTerrainSetShade(DynamicTerrainSystem *system, TerrainBodyHandle handle,
+                            int localX, int localY, uint8_t shade)
+{
+    TerrainBody *body;
+    size_t index;
+
+    if (!TerrainCellIndex(system, handle, localX, localY, &index) ||
+        system->material[index] == (uint8_t)MATERIAL_EMPTY ||
+        system->shade[index] == (uint8_t)(shade & 63u)) {
+        return;
+    }
+    system->shade[index] = (uint8_t)(shade & 63u);
+    body = &system->bodies[handle.index];
+    ++body->rasterRevision;
+    if (body->rasterRevision == 0u) {
+        ++body->rasterRevision;
+    }
 }
 
 float DynamicTerrainTemperatureAt(const DynamicTerrainSystem *system,

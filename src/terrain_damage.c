@@ -301,6 +301,9 @@ static bool TerrainDamageSpawnPiece(DynamicTerrainSystem *terrain,
                                   DynamicTerrainTemperatureAt(terrain,
                                                               parentHandle,
                                                               localX, localY));
+            DynamicTerrainSetShade(terrain, handle, localX, localY,
+                                   DynamicTerrainShadeAt(terrain, parentHandle,
+                                                         localX, localY));
         }
     }
     DynamicTerrainFinalizeBody(terrain, handle);

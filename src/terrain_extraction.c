@@ -142,6 +142,10 @@ TerrainExtractResult TerrainExtractComponent(World *world,
         DynamicTerrainSetCell(terrain, handle, worldX - component.minimumX,
                               worldY - component.minimumY, material,
                               WorldGetTemperature(world, worldX, worldY));
+        /* And its tone, so the slab keeps the colours it had in the cliff. */
+        DynamicTerrainSetShade(terrain, handle, worldX - component.minimumX,
+                               worldY - component.minimumY,
+                               WorldGetShade(world, worldX, worldY));
     }
 
     /* A component's cells are distinct by construction, so a short count means

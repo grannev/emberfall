@@ -104,6 +104,10 @@ typedef struct EnvironmentRenderer {
        picture with no cells in it, so nothing else can tell the player what
        time it is. */
     float daylight;
+    /* Where in the day it is, 0..1, as GameState keeps it: sunrise at 0,
+       noon at a quarter, sunset at a half, midnight at three quarters. What
+       puts the sun and the moon where they are. */
+    float dayPhase;
     /* How much of the backdrop is there to see, 0..1. One at ground level,
        zero once the camera has climbed out of the air. */
     float altitude;
@@ -121,6 +125,7 @@ void EnvironmentRendererSyncSeed(EnvironmentRenderer *renderer, uint64_t seed);
 bool EnvironmentRendererSetPalette(EnvironmentRenderer *renderer,
                                    EnvironmentPalette palette);
 void EnvironmentRendererUpdate(EnvironmentRenderer *renderer, float deltaTime);
+void EnvironmentRendererSetDayPhase(EnvironmentRenderer *renderer, float dayPhase);
 /* Starts a crossing to `palette`, or does nothing if that is already where the
    backdrop is heading. A crossing already under way is restarted from where it
    has got to, so crossing a boundary back and forth never snaps. */

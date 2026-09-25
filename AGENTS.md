@@ -206,6 +206,13 @@ coherent phase with an explanatory message.
   of ember in open air is below half a step of the 8-bit texture. Anything
   that starts to glow in the sky must reach the field through emission or
   the lamp, or the skip will not see it.
+- A cell's tone is `Cell.shade`, six bits beside the two `heatHeld` uses, so
+  `Cell` stays 12 bytes. It is given when a material is written and carried
+  by every move, by extraction into a body's raster and back by a weld —
+  colour by position made falling grains flicker and slabs change colour as
+  they came loose. Palettes and patterns are table columns in `materials.c`
+  (`dark`/`light`/`accent`/`pattern`); faces and liquid depth come from the
+  neighbours the page builder already walks.
 - Page pixels are unlit. `LightRenderer` uploads the world's coarse light
   field into a small texture and its shader lights pages and terrain bodies by
   world position, so a moving lamp or a turning day never rebuilds a chunk.
