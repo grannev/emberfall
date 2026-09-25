@@ -28,7 +28,7 @@ TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c src/input.c \
 	src/terrain_extraction.c src/terrain_physics.c src/terrain_body_collision.c src/terrain_contact.c src/terrain_detach.c src/terrain_weld.c \
 	src/terrain_impulse.c src/terrain_damage.c src/terrain_interaction.c src/fluid_interaction.c src/terrain_fluid.c src/terrain_stability.c src/atmosphere.c \
 	src/presentation_fx.c src/camera_feedback.c src/terrain_body_render_data.c \
-	src/environment_renderer.c src/beam_render.c src/sky_renderer.c
+	src/environment_renderer.c src/beam_render.c src/sky_renderer.c src/menu.c src/settings.c
 BENCH_APP := emberfall-bench
 # The traversal scenario drives the real GameUpdate, so the benchmark links the
 # whole headless gameplay stack rather than a hand-rolled imitation of it.

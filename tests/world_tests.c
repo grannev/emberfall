@@ -30,6 +30,8 @@
 #include "terrain_fluid.h"
 #include "terrain_stability.h"
 #include "atmosphere.h"
+#include "menu.h"
+#include "settings.h"
 #include "terrain_detach.h"
 #include "terrain_damage.h"
 #include "input.h"
@@ -7582,6 +7584,300 @@ static void test_a_cell_keeps_its_shade_through_moves_and_bodies(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* --- the wrapping world ---------------------------------------------------- */
+
+/* The right edge is joined to the left: a column past either end is the
+   column that far round the other way, and a write near the seam wakes the
+   chunk on the far side of it. */
+static void test_the_world_wraps_across(void)
+{
+    World world;
+
+    CHECK(WorldInit(&world, 128, 64), "world allocation failed");
+    WorldSetCell(&world, 130, 20, MATERIAL_ROCK);
+    CHECK(WorldGetCell(&world, 2, 20) == MATERIAL_ROCK,
+          "a cell written two past the right edge is not at column two");
+    CHECK(WorldGetCell(&world, -126, 20) == MATERIAL_ROCK,
+          "column two is not a whole width to the left either");
+    CHECK(WorldGetCell(&world, 5, -1) == MATERIAL_ROCK &&
+              WorldGetCell(&world, 5, 64) == MATERIAL_ROCK,
+          "above and below the world no longer read as its end");
+
+    /* Sand dropped on the first column of the map wakes the last chunk
+       column too: it is right beside it. */
+    WorldSetCell(&world, 0, 10, MATERIAL_SAND);
+    CHECK(world.activeChunks[0 * world.chunkColumns + world.chunkColumns - 1] != 0u,
+          "a change at column zero did not wake the chunk across the seam");
+
+    /* A grain rolling off the last column lands on the first. */
+    FillRect(&world, 0, 40, 127, 63, MATERIAL_ROCK);
+    WorldSetCell(&world, 0, 40, MATERIAL_EMPTY);
+    WorldSetCell(&world, 127, 39, MATERIAL_SAND);
+    WorldSetCell(&world, 126, 39, MATERIAL_ROCK);
+    Tick(&world, 30);
+    CHECK(WorldGetCell(&world, 0, 40) == MATERIAL_SAND,
+          "a grain at the right edge did not slide into the hole across the seam");
+    WorldUnload(&world);
+}
+
+/* The lamp's light crosses the seam as it crosses any column. */
+static void test_light_crosses_the_seam(void)
+{
+    World world;
+    int columns;
+
+    /* Wider than the solve window, which is the view plus a margin: a
+       window as wide as the world is the whole world, from column zero,
+       and does not wrap. */
+    CHECK(WorldInit(&world, 4096, 256), "world allocation failed");
+    FillRect(&world, 0, 100, 4095, 255, MATERIAL_ROCK);
+    FillRect(&world, 0, 150, 40, 170, MATERIAL_EMPTY);
+    FillRect(&world, 4056, 150, 4095, 170, MATERIAL_EMPTY);
+    WorldSetDaylight(&world, 0.0f);
+    WorldSetPointLight(&world, (Vector2){4.0f, 160.0f}, 60.0f, 1.0f);
+    WorldUpdateLighting(&world, (Rectangle){-160.0f, 60.0f, 320.0f, 180.0f});
+    columns = world.lightColumns;
+    CHECK(EmberLightAt(&world, 4090, 160) > 0.3f,
+          "the lamp at column four lit only %.2f just across the seam",
+          (double)EmberLightAt(&world, 4090, 160));
+    CHECK(EmberLightAt(&world, 4090, 160) > EmberLightAt(&world, 4064, 160),
+          "light across the seam does not fade with distance");
+    (void)columns;
+    WorldUnload(&world);
+}
+
+/* Crossing the seam brings the character back into the map a whole width
+   along, with the bodies around it: nothing near it moves relative to it,
+   and presentation is told how far everything went. */
+static void test_the_player_crosses_the_seam(void)
+{
+    GameState game;
+    GameConfig config = GameDefaultConfig();
+    GameEventBuffer events;
+    GameInput input = {0};
+    TerrainBodyHandle near;
+    float before;
+    float width;
+    int frame;
+
+    config.worldWidth = 512;
+    config.worldHeight = 256;
+    config.seed = 0x5eedu;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, 511, 255, MATERIAL_EMPTY);
+    width = (float)game.world.width;
+    game.player.position = (Vector2){width - 3.0f, 100.0f};
+    game.player.velocity = (Vector2){0.0f, 0.0f};
+    near = MakeKinematicBody(&game.dynamicTerrain, 4, 4,
+                             (Vector2){width - 30.0f, 100.0f});
+    before = DynamicTerrainGetConst(&game.dynamicTerrain, near)->position.x -
+             game.player.position.x;
+    input.move = (Vector2){1.0f, 0.0f};
+    for (frame = 0; frame < 30 && game.wraps == 0; ++frame) {
+        GameUpdate(&game, &input, config.fixedStep, &events);
+    }
+    CHECK(game.wraps == 1, "the character crossed the seam %d times", game.wraps);
+    CHECK(game.player.position.x >= 0.0f && game.player.position.x < 40.0f,
+          "the character came back in at %.1f", (double)game.player.position.x);
+    CHECK(game.wrapShift == -width || game.wraps == 1,
+          "presentation was not told how far everything moved");
+    CHECK(fabsf(DynamicTerrainGetConst(&game.dynamicTerrain, near)->position.x -
+                game.player.position.x) < 60.0f,
+          "a body beside the character was left a world away: %.1f from it (was %.1f)",
+          (double)(DynamicTerrainGetConst(&game.dynamicTerrain, near)->position.x -
+                   game.player.position.x),
+          (double)before);
+    GameUnload(&game);
+}
+
+/* The generated world has no seam: the surface either side of it is one
+   surface, whatever the seed. */
+static void test_generation_is_seamless_across_the_wrap(void)
+{
+    static const uint64_t seeds[] = {0x1A4E5u, 0xF10A5u, 0x51EEDu};
+    World world;
+    size_t index;
+
+    CHECK(WorldInit(&world, 8192, 448), "world allocation failed");
+    for (index = 0; index < sizeof(seeds) / sizeof(seeds[0]); ++index) {
+        int left;
+        int right;
+
+        WorldGenerate(&world, seeds[index]);
+        left = FirstSolidY(&world, world.width - 1);
+        right = FirstSolidY(&world, 0);
+        /* Flora and features can put a few cells either way on one column;
+           a noise that did not wrap put a cliff of dozens. */
+        CHECK(abs(left - right) <= 24,
+              "seed %llu: the surface steps %d cells at the seam",
+              (unsigned long long)seeds[index], left - right);
+    }
+    WorldUnload(&world);
+}
+
+/* The production world has the things the generator is meant to make: rock
+   under snow, the deep basalt, crystal and fungus in the caverns, ruins and
+   dungeons in brick, and islands in the sky well above any ground. And the
+   same seed makes the same world. */
+static void test_the_generated_world_has_its_landmarks(void)
+{
+    static World world;
+    int counts[MATERIAL_COUNT];
+    uint64_t digest;
+    int islandCells = 0;
+    int x;
+    int y;
+
+    memset(counts, 0, sizeof(counts));
+    CHECK(WorldInit(&world, 16384, 4096), "world allocation failed");
+    WorldGenerate(&world, 0x1234u);
+    for (y = WorldSkyRows(&world); y < world.height; y += 2) {
+        for (x = 0; x < world.width; x += 2) {
+            ++counts[WorldGetCell(&world, x, y)];
+        }
+    }
+    CHECK(counts[MATERIAL_BASALT] > 100000, "only %d basalt samples",
+          counts[MATERIAL_BASALT]);
+    CHECK(counts[MATERIAL_SNOW] > 200, "only %d snow samples", counts[MATERIAL_SNOW]);
+    CHECK(counts[MATERIAL_BRICK] > 200, "only %d brick samples", counts[MATERIAL_BRICK]);
+    CHECK(counts[MATERIAL_CRYSTAL] > 10, "only %d crystal samples",
+          counts[MATERIAL_CRYSTAL]);
+    CHECK(counts[MATERIAL_FUNGUS] > 10, "only %d fungus samples",
+          counts[MATERIAL_FUNGUS]);
+    /* Islands: solid ground with more than a hundred cells of open air
+       straight under it. */
+    for (x = 0; x < world.width; x += 16) {
+        int top = FirstSolidY(&world, x);
+        int gap = 0;
+
+        if (top < 0) continue;
+        for (y = top; y < world.height && WorldGetCell(&world, x, y) != MATERIAL_EMPTY; ++y) {
+        }
+        for (; y < world.height && WorldGetCell(&world, x, y) == MATERIAL_EMPTY; ++y) {
+            ++gap;
+        }
+        if (gap > 100) ++islandCells;
+    }
+    CHECK(islandCells > 10, "only %d columns stand over open sky", islandCells);
+
+    digest = WorldDigest(&world);
+    WorldGenerate(&world, 0x1234u);
+    CHECK(WorldDigest(&world) == digest, "the same seed made a different world");
+    WorldUnload(&world);
+}
+
+/* --- settings and the menu --------------------------------------------------- */
+
+static void test_settings_round_trip_and_clamp(void)
+{
+    char path[] = "build/test-settings.ini";
+    Settings written = SettingsDefaults();
+    Settings read = SettingsDefaults();
+    FILE *file;
+    int index;
+
+    written.masterVolume = 0.35f;
+    written.fullscreen = true;
+    written.frameLimit = SETTINGS_FRAME_LIMIT_144;
+    written.screenShake = 0.4f;
+    written.showControls = false;
+    CHECK(SettingsSave(&written, path), "the settings could not be written");
+    CHECK(SettingsLoad(&read, path), "the settings could not be read back");
+    CHECK(fabsf(read.masterVolume - 0.35f) < 0.001f && read.fullscreen &&
+              read.frameLimit == SETTINGS_FRAME_LIMIT_144 &&
+              fabsf(read.screenShake - 0.4f) < 0.001f && !read.showControls,
+          "the settings did not come back as they were written");
+
+    /* A hand-edited file: out of range, unknown keys, junk. */
+    file = fopen(path, "w");
+    CHECK(file != NULL, "the settings file could not be rewritten");
+    fprintf(file, "master_volume = 7\nno_such_setting = 3\nzoom_speed = banana\n"
+                  "frame_limit = UNLIMITED\n# a comment = 4\n");
+    fclose(file);
+    read = SettingsDefaults();
+    CHECK(SettingsLoad(&read, path), "the edited file could not be read");
+    CHECK(read.masterVolume == 1.0f, "volume 7 was not clamped: %.2f",
+          (double)read.masterVolume);
+    CHECK(read.zoomSpeed == SettingsDefaults().zoomSpeed,
+          "a value that does not parse changed the setting");
+    CHECK(read.frameLimit == SETTINGS_FRAME_LIMIT_NONE, "a choice by name did not load");
+    remove(path);
+
+    /* Every setting steps and formats. */
+    for (index = 0; index < SETTINGS_COUNT; ++index) {
+        Settings stepped = SettingsDefaults();
+        char value[48];
+
+        SettingsStep(&stepped, &SETTINGS_TABLE[index], 1);
+        SettingsSanitize(&stepped);
+        SettingsFormat(&stepped, &SETTINGS_TABLE[index], value, sizeof(value));
+        CHECK(value[0] != '\0', "setting %s formats to nothing", SETTINGS_TABLE[index].key);
+    }
+}
+
+static void test_the_menu_navigates_and_reports(void)
+{
+    Menu menu;
+    Settings settings = SettingsDefaults();
+    MenuInput input;
+    MenuAction action;
+    int index;
+
+    MenuInit(&menu);
+    memset(&input, 0, sizeof(input));
+    input.mouse = (Vector2){-100.0f, -100.0f};
+
+    /* Down twice to SETTINGS, in, change the first setting, back out. */
+    input.down = true;
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    input.down = false;
+    input.confirm = true;
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(menu.screen == MENU_SCREEN_SETTINGS, "confirm on SETTINGS did not open it");
+    input.confirm = false;
+    input.left = true;
+    action = MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(action.type == MENU_ACTION_SETTINGS_CHANGED &&
+              settings.masterVolume < SettingsDefaults().masterVolume,
+          "left on the volume did not lower it");
+    input.left = false;
+    input.back = true;
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(menu.screen == MENU_SCREEN_MAIN, "back did not return to the main screen");
+    /* Escape on the main screen does nothing until a world was entered. */
+    action = MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(action.type == MENU_ACTION_NONE, "escape left a menu no world was behind");
+    menu.worldEntered = true;
+    action = MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(action.type == MENU_ACTION_CONTINUE, "escape did not go back to the world");
+    input.back = false;
+
+    /* NEW WORLD with a typed seed. */
+    MenuOpen(&menu);
+    input.down = true;
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    input.down = false;
+    input.confirm = true;
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(menu.screen == MENU_SCREEN_NEW_WORLD, "NEW WORLD did not open");
+    input.confirm = false;
+    menu.selected = 0;
+    {
+        const char *typed = "0x1f";
+
+        for (index = 0; typed[index] != '\0'; ++index) {
+            input.characters[input.characterCount++] = typed[index];
+        }
+    }
+    (void)MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    input.characterCount = 0;
+    input.confirm = true;
+    action = MenuUpdate(&menu, &input, &settings, 1280, 720, 0.016f);
+    CHECK(action.type == MENU_ACTION_NEW_WORLD && action.seeded && action.seed == 0x1fu,
+          "the typed seed came out as %llu", (unsigned long long)action.seed);
+}
+
 static void test_a_weld_never_overwrites_the_world_or_buries_the_player(void)
 {
     World world;
@@ -13330,6 +13626,13 @@ int main(void)
     RUN(test_a_forced_backdrop_outranks_the_ground);
     RUN(test_daylight_dies_a_short_way_into_solid_ground);
     RUN(test_the_light_solve_skips_the_empty_sky);
+    RUN(test_the_world_wraps_across);
+    RUN(test_light_crosses_the_seam);
+    RUN(test_the_player_crosses_the_seam);
+    RUN(test_generation_is_seamless_across_the_wrap);
+    RUN(test_the_generated_world_has_its_landmarks);
+    RUN(test_settings_round_trip_and_clamp);
+    RUN(test_the_menu_navigates_and_reports);
     RUN(test_a_cell_keeps_its_shade_through_moves_and_bodies);
     RUN(test_a_carried_light_is_what_makes_the_dark_passable);
     RUN(test_air_is_a_window_to_the_sky_only_where_the_sky_reaches_it);
