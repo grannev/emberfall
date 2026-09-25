@@ -42,6 +42,9 @@ typedef enum MaterialPattern {
     /* Soft broad swirls and a lit surface, darkening with depth: water,
        lava. The depth and the surface come from the neighbours. */
     MATERIAL_PATTERN_FLUID,
+    /* Laid courses: bricks five cells long and two high, each its own tone,
+       in a running bond with dark mortar between. */
+    MATERIAL_PATTERN_BRICK,
 } MaterialPattern;
 
 typedef struct MaterialInfo {

@@ -161,6 +161,22 @@ static float MaterialPatternTone(MaterialPattern pattern, int x, int y,
         if (depth > 1.0f) depth = 1.0f;
         return 0.35f * swirl * (1.0f - depth) + 0.15f * grain - 0.9f * depth;
     }
+    case MATERIAL_PATTERN_BRICK: {
+        /* Courses two cells high over a row of mortar, bricks five long over
+           a column of it, every other course moved half a brick along. */
+        int course = (int)floorf((float)y / 3.0f);
+        int row = y - course * 3;
+        int shifted = x + ((course & 1) != 0 ? 3 : 0);
+        int brick = (int)floorf((float)shifted / 6.0f);
+        int column = shifted - brick * 6;
+        float face;
+
+        if (row == 2 || column == 5) {
+            return -1.0f;
+        }
+        face = MaterialLatticeValue(brick, course, 0x5bu) * 2.0f - 1.0f;
+        return 0.45f * face + 0.25f * grain + (row == 0 ? 0.15f : 0.0f);
+    }
     case MATERIAL_PATTERN_GRAIN:
     default:
         return grain;

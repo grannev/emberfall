@@ -355,7 +355,9 @@ coherent phase with an explanatory message.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
   `world_lighting.c`, `world_effects.c`, `world_render_data.c`,
-  `world_components.c` and `world_fluid.c`.
+  `world_components.c`, `world_fluid.c` and `world_structures.c` (ruins,
+  dungeons, mines, crypts and sky islands, built on what `world_biomes.c`
+  made through the `WorldGen*` helpers in `world_internal.h`).
   `world_internal.h`, `world_thermal.h`, `world_lighting.h` and `world_fluid.h`
   are private to those files. Hot accessors live in the internal headers as `static inline` on
   purpose: splitting responsibilities must not put a cross-module call in the

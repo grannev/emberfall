@@ -41,6 +41,17 @@ typedef enum CellMaterial {
        that spans more than its material can bear crumbles into this, and it
        falls and piles like sand. See terrain_stability.h. */
     MATERIAL_RUBBLE,
+    /* What the generator builds and the deep world is made of. Brick is laid
+       masonry: the ruins, the dungeons, the crypts. Basalt is the dark rock of
+       the deepest band, harder and hotter-melting than rock. Crystal grows in
+       the grottos down there and glows. Snow lies on the peaks and on the
+       frost, and falls and piles like sand. Fungus is the glowing cap of the
+       mushrooms that grow in the dark caverns. */
+    MATERIAL_BRICK,
+    MATERIAL_BASALT,
+    MATERIAL_CRYSTAL,
+    MATERIAL_SNOW,
+    MATERIAL_FUNGUS,
     MATERIAL_COUNT
 } CellMaterial;
 

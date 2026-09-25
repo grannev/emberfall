@@ -398,6 +398,7 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             break;
         case MATERIAL_ASH:
         case MATERIAL_RUBBLE:
+        case MATERIAL_SNOW:
             WorldUpdateSand(world, x, y, direction);
             break;
         default:

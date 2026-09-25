@@ -228,6 +228,24 @@ void WorldCountActiveState(World *world);
 /* world_biomes.c */
 void WorldGenerateBiomeTerrain(World *world);
 
+/* What world_biomes.c shares with world_structures.c, which builds on the
+   landscape it has made: the generated surface, the actual top of a column,
+   the seed hashes every placement is drawn from, and a tree. Private to the
+   generator. */
+int WorldGenSurfaceY(const World *world, int x);
+int WorldGenSolidY(const World *world, int x);
+uint64_t WorldGenHash(uint64_t seed, int x, int y, uint64_t channel);
+float WorldGenUnit(uint64_t seed, int x, int y, uint64_t channel);
+Rng WorldGenFeatureRng(uint64_t seed, int feature, uint64_t channel);
+bool WorldGenNearSpawn(const World *world, int x);
+void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng);
+/* The structures and the sky islands, in the order the landscape needs
+   them: underground before the surface is finished, the surface ruins before
+   the sea is poured, the islands last of all. */
+void WorldGenerateUnderground(World *world);
+void WorldGenerateRuins(World *world);
+void WorldGenerateIslands(World *world);
+
 /* world_simulation.c */
 void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY);
 

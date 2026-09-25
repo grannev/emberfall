@@ -8,6 +8,7 @@
 #include "world_internal.h"
 
 #include <raymath.h>
+#include <stdlib.h>
 
 #define BIOME_REGION_WIDTH 1536
 #define BIOME_BLEND_WIDTH 384
@@ -56,7 +57,15 @@ enum GenerationChannel {
     GENERATION_HYDROLOGY = 8,
     GENERATION_SURFACE_FEATURES = 9,
     GENERATION_BIOME_WARP = 10,
-    GENERATION_PONDS = 11
+    GENERATION_PONDS = 11,
+    GENERATION_RANGES = 12,
+    GENERATION_RIDGES = 13,
+    GENERATION_PEAKS = 14,
+    GENERATION_BASALT = 15,
+    GENERATION_LENSES = 16,
+    GENERATION_CAVERNS = 17,
+    GENERATION_TUNNELS = 18,
+    GENERATION_SNOW = 19
 };
 
 typedef struct BiomeSurfaceShape {
@@ -64,6 +73,12 @@ typedef struct BiomeSurfaceShape {
     float continentAmplitude;
     float hillAmplitude;
     float detailAmplitude;
+    /* How tall this biome's mountains stand where a range runs through it,
+       as a fraction of the ground band. */
+    float mountainAmplitude;
+    /* Height of one step of a terraced landscape, as a fraction of the ground
+       band; zero for none. The dunes rise in mesas: flat tops, steep sides. */
+    float terrace;
 } BiomeSurfaceShape;
 
 typedef struct BiomeSample {
@@ -83,18 +98,22 @@ typedef struct BiomeSample {
  * height on sky; shrinking the amplitudes keeps a hill the size it was, in
  * cells, so the character — who is now smaller — is what makes it read as
  * bigger. */
+/* The mountains are where the world is meant to be climbed and cut into: a
+   range is a stretch of ridges, not a single cone, and it takes the soil off
+   what it lifts — a peak is bare rock under snow, and the trees stop below
+   it. */
 static const BiomeSurfaceShape BIOME_SURFACES[WORLD_BIOME_COUNT] = {
-    [WORLD_BIOME_TEMPERATE] = {0.535f, 0.0252f, 0.0180f, 0.0048f},
-    [WORLD_BIOME_DUNES] = {0.555f, 0.0180f, 0.0264f, 0.0072f},
-    [WORLD_BIOME_FROST] = {0.495f, 0.0312f, 0.0216f, 0.0060f},
-    [WORLD_BIOME_VOLCANIC] = {0.465f, 0.0360f, 0.0360f, 0.0108f},
+    [WORLD_BIOME_TEMPERATE] = {0.535f, 0.0252f, 0.0180f, 0.0048f, 0.140f, 0.0f},
+    [WORLD_BIOME_DUNES] = {0.555f, 0.0180f, 0.0264f, 0.0072f, 0.070f, 0.021f},
+    [WORLD_BIOME_FROST] = {0.495f, 0.0312f, 0.0216f, 0.0060f, 0.220f, 0.0f},
+    [WORLD_BIOME_VOLCANIC] = {0.465f, 0.0360f, 0.0360f, 0.0108f, 0.160f, 0.0f},
     /* Well below WORLD_SEA_LEVEL, and with the gentlest relief of any biome: a
        sea floor is the one landscape the player looks at through a hundred
        cells of water, and every ridge on it is a ridge the light has to reach
        through them. The blend band either side does the coastline for free —
        the base height crosses the sea level somewhere inside it, and wherever
        it does is a shore. */
-    [WORLD_BIOME_OCEAN] = {0.700f, 0.0120f, 0.0090f, 0.0030f},
+    [WORLD_BIOME_OCEAN] = {0.700f, 0.0120f, 0.0090f, 0.0030f, 0.0f, 0.0f},
 };
 
 _Static_assert(sizeof(BIOME_SURFACES) / sizeof(BIOME_SURFACES[0]) ==
@@ -397,25 +416,74 @@ static BiomeSurfaceShape BlendedSurfaceShape(const BiomeSample *sample)
         .detailAmplitude =
             LerpFloat(first->detailAmplitude, second->detailAmplitude,
                       sample->mix),
+        .mountainAmplitude =
+            LerpFloat(first->mountainAmplitude, second->mountainAmplitude,
+                      sample->mix),
+        .terrace = LerpFloat(first->terrace, second->terrace, sample->mix),
     };
+}
+
+/* How much of a mountain range stands over column `x`, 0..1 of the biome's
+   mountain amplitude. Ranges come and go along the world on a long
+   wavelength; inside one, ridges and saddles alternate, and the sharpest
+   ridges are the rarest. */
+static float MountainRelief(const World *world, int x)
+{
+    float range = SmoothStep((ValueNoise1D(world->seed, x, 2600, world->width,
+                                           GENERATION_RANGES) +
+                              0.05f) /
+                             0.55f);
+    float ridge = 1.0f - fabsf(ValueNoise1D(world->seed, x, 420, world->width,
+                                            GENERATION_RIDGES));
+    float peaks = 0.65f + 0.35f * ValueNoise1D(world->seed, x, 140, world->width,
+                                               GENERATION_PEAKS);
+
+    return range * ridge * ridge * peaks;
+}
+
+/* The surface as a fraction of the ground band, before mountains: the plain a
+   range rises from, which is what the soil depth is measured against. */
+static float SurfaceBaseFraction(const World *world, int x,
+                                 const BiomeSurfaceShape *shape)
+{
+    return shape->baseHeight +
+           ValueNoise1D(world->seed, x, 1200, world->width, GENERATION_CONTINENT) *
+               shape->continentAmplitude +
+           ValueNoise1D(world->seed, x, 260, world->width, GENERATION_HILLS) *
+               shape->hillAmplitude +
+           ValueNoise1D(world->seed, x, 52, world->width, GENERATION_DETAIL) *
+               shape->detailAmplitude;
 }
 
 static float SurfaceHeightRaw(const World *world, int x)
 {
     BiomeSample sample = BiomeSampleAt(world, x);
     BiomeSurfaceShape shape = BlendedSurfaceShape(&sample);
+    float fraction = SurfaceBaseFraction(world, x, &shape) -
+                     MountainRelief(world, x) * shape.mountainAmplitude;
 
-    return WorldGroundY(
-        world, shape.baseHeight +
-                   ValueNoise1D(world->seed, x, 1200, world->width,
-                                GENERATION_CONTINENT) *
-                       shape.continentAmplitude +
-                   ValueNoise1D(world->seed, x, 260, world->width,
-                                GENERATION_HILLS) *
-                       shape.hillAmplitude +
-                   ValueNoise1D(world->seed, x, 52, world->width,
-                                GENERATION_DETAIL) *
-                       shape.detailAmplitude);
+    /* Mesas: the ground rises in flat steps with steep sides, the step's rise
+       squeezed into its last few cells. */
+    if (shape.terrace > 0.0f) {
+        float steps = fraction / shape.terrace;
+        float step = floorf(steps);
+        float rise = steps - step;
+
+        rise = rise * rise * rise * rise * rise * rise;
+        fraction = (step + rise) * shape.terrace;
+    }
+    return WorldGroundY(world, fraction);
+}
+
+/* Cells the column has been lifted above its plain by a mountain: what thins
+   its soil and caps it with snow. */
+static int SurfaceRelief(const World *world, int x)
+{
+    BiomeSample sample = BiomeSampleAt(world, x);
+    BiomeSurfaceShape shape = BlendedSurfaceShape(&sample);
+
+    return (int)(MountainRelief(world, x) * shape.mountainAmplitude *
+                 (float)WorldGroundRows(world));
 }
 
 static int SurfaceHeightAt(const World *world, int x)
@@ -443,10 +511,12 @@ static int SurfaceHeightAt(const World *world, int x)
 }
 
 static CellMaterial BiomeMaterialAt(const World *world, WorldBiome biome,
-                                    uint64_t strata, int depth)
+                                    uint64_t strata, int depth, float soil)
 {
-    /* Strata are fractions of the ground band, never of the sky above it. */
-    int height = WorldGroundRows(world);
+    /* Strata are fractions of the ground band, never of the sky above it.
+       `soil` thins every loose layer where a mountain has lifted the ground:
+       a peak is bare rock. */
+    int height = (int)((float)WorldGroundRows(world) * soil);
 
     switch (biome) {
         case WORLD_BIOME_TEMPERATE: {
@@ -489,9 +559,16 @@ static CellMaterial BiomeMaterialAt(const World *world, WorldBiome biome,
 static CellMaterial BaseMaterialAt(const World *world,
                                    const BiomeSample *sample,
                                    const BiomeBlendColumn *blend, int x, int y,
-                                   uint64_t strata, int depth)
+                                   uint64_t strata, int depth, float soil,
+                                   int basaltY)
 {
     WorldBiome biome = sample->first;
+
+    /* The deep band is basalt whatever the surface above it: the biomes are
+       a skin, and a long way down every one of them is the same dark rock. */
+    if (y >= basaltY) {
+        return MATERIAL_BASALT;
+    }
 
     if (sample->first != sample->second) {
         if (BiomeBlendAt(blend, world->seed, x, y - WorldSkyRows(world)) <
@@ -499,7 +576,7 @@ static CellMaterial BaseMaterialAt(const World *world,
             biome = sample->second;
         }
     }
-    return BiomeMaterialAt(world, biome, strata, depth);
+    return BiomeMaterialAt(world, biome, strata, depth, soil);
 }
 
 static void WorldFillEllipse(World *world, int centerX, int centerY,
@@ -578,6 +655,13 @@ static void GenerateBaseTerrain(World *world)
         uint64_t strata = GenerationHash(world->seed, x, 0,
                                          GENERATION_STRATA);
         int surfaceY = SurfaceHeightAt(world, x);
+        /* Soil thins over a mountain and is gone by the time it has risen a
+           hundred cells; a little always clings on. */
+        float soil = Clamp(1.0f - (float)SurfaceRelief(world, x) / 110.0f, 0.12f,
+                           1.0f);
+        int basaltY = (int)WorldGroundY(
+            world, 0.80f + 0.035f * ValueNoise1D(world->seed, x, 300, world->width,
+                                                 GENERATION_BASALT));
         BiomeBlendColumn blend;
         int y;
 
@@ -591,7 +675,8 @@ static void GenerateBaseTerrain(World *world)
         for (y = surfaceY; y < world->height; ++y) {
             WorldSetGeneratedCell(world, x, y,
                                   BaseMaterialAt(world, &sample, &blend, x, y,
-                                                 strata, y - surfaceY));
+                                                 strata, y - surfaceY, soil,
+                                                 basaltY));
         }
     }
 }
@@ -1012,7 +1097,11 @@ static int SurfaceSolidY(const World *world, int x)
 {
     int y;
 
-    for (y = 0; y < world->height; ++y) {
+    /* From the top of the ground band, not of the world: the generator puts
+       nothing in the sky above it but the islands, which are made last, and
+       reading three thousand rows of untouched sky per column was most of
+       the time it took to make a world. */
+    for (y = WorldSkyRows(world); y < world->height; ++y) {
         if (MaterialIsSolid(WorldMaterialAt(world, x, y))) return y;
     }
     return -1;
@@ -1517,7 +1606,10 @@ static void GenerateFlora(World *world)
                 }
                 break;
             case WORLD_BIOME_FROST:
-                if (ground != MATERIAL_ICE && ground != MATERIAL_DIRT) break;
+                if (ground != MATERIAL_ICE && ground != MATERIAL_DIRT &&
+                    ground != MATERIAL_SNOW) {
+                    break;
+                }
                 /* Pines: a narrow, tall canopy that reaches most of the way down
                    the trunk, which is what separates them from the broadleaf. */
                 if (RngRange(&rng, 0, 999) < 30) {
@@ -1549,17 +1641,494 @@ static void GenerateFlora(World *world)
     }
 }
 
+
+/* ---- the deep world ------------------------------------------------------
+ *
+ * Below the soil the world used to be one rock with holes in it. Now it has a
+ * geology the player can read as they dig: loose lenses of sand and gravel
+ * that pour out when opened, great caverns with something in each of them —
+ * a lake, a grove of glowing mushrooms, a grotto of crystal, a hall of lava —
+ * and tunnels that wind down from the surface to find them.
+ */
+
+/* Replaces the static solid cells of an ellipse — never air, never liquid,
+   never anything loose — with `fill`: a lens is a pocket inside the rock, not
+   a blob pasted over a cave. */
+static void WorldReplaceEllipse(World *world, int centerX, int centerY, int radiusX,
+                                int radiusY, CellMaterial fill)
+{
+    int y;
+
+    if (radiusX <= 0 || radiusY <= 0) return;
+    for (y = centerY - radiusY; y <= centerY + radiusY; ++y) {
+        int x;
+
+        if (!WorldInBounds(world, centerX, y)) continue;
+        for (x = centerX - radiusX; x <= centerX + radiusX; ++x) {
+            float dx = (float)(x - centerX) / (float)radiusX;
+            float dy = (float)(y - centerY) / (float)radiusY;
+            CellMaterial there;
+
+            if (dx * dx + dy * dy > 1.0f) continue;
+            there = WorldMaterialAt(world, x, y);
+            if (!MaterialIsSolid(there) || MaterialIsDynamic(there) ||
+                there == MATERIAL_BASALT) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, x, y, fill);
+        }
+    }
+}
+
+#define LENS_FEATURE_SPACING 150
+
+static void GenerateLenses(World *world)
+{
+    int featureCount = (world->width + LENS_FEATURE_SPACING - 1) / LENS_FEATURE_SPACING;
+    int feature;
+
+    if (world->height < 160 || world->width < 64) return;
+    for (feature = 0; feature < featureCount; ++feature) {
+        Rng rng = GenerationFeatureRng(world->seed, feature, GENERATION_LENSES);
+        int centerX = PositiveModulo(feature * LENS_FEATURE_SPACING +
+                                         RngRange(&rng, 0, LENS_FEATURE_SPACING - 1),
+                                     world->width);
+        int surfaceY = SurfaceHeightAt(world, centerX);
+        int deepest = (int)WorldGroundY(world, 0.80f);
+        WorldBiome biome = WorldBiomeAt(world, centerX);
+        CellMaterial fill;
+
+        if (surfaceY + 24 >= deepest) continue;
+        /* Sand where the land is sandy, gravel — rubble — everywhere else. */
+        fill = biome == WORLD_BIOME_DUNES || biome == WORLD_BIOME_OCEAN ||
+                       RngRange(&rng, 0, 99) < 30
+                   ? MATERIAL_SAND
+                   : MATERIAL_RUBBLE;
+        WorldReplaceEllipse(world, centerX, RngRange(&rng, surfaceY + 24, deepest),
+                            RngRange(&rng, 6, 18), RngRange(&rng, 3, 8), fill);
+    }
+}
+
+typedef enum CavernTheme {
+    CAVERN_PLAIN = 0,
+    CAVERN_LAKE,
+    CAVERN_GROVE,
+    CAVERN_CRYSTAL,
+    CAVERN_LAVA,
+} CavernTheme;
+
+#define CAVERN_FEATURE_SPACING 900
+
+/* A spike of `material` hanging from (x, y) when `direction` is 1, or rising
+   from it when -1: two cells wide at its root, tapering to one. */
+static void WorldPlaceSpike(World *world, int x, int y, int length, int direction,
+                            CellMaterial material)
+{
+    int step;
+
+    for (step = 0; step < length; ++step) {
+        int row = y + step * direction;
+        int half = (length - step) * 2 / length;
+        int column;
+
+        for (column = x - half; column <= x + half; ++column) {
+            if (!WorldInBounds(world, column, row)) continue;
+            if (WorldMaterialAt(world, column, row) != MATERIAL_EMPTY) continue;
+            WorldSetGeneratedCell(world, column, row, material);
+        }
+    }
+}
+
+/* A mushroom: a pale stalk and a glowing dome of cap. */
+static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int capRadius)
+{
+    int y;
+    int top = floorY - height;
+
+    for (y = floorY - 1; y > top; --y) {
+        if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) return;
+    }
+    for (y = floorY - 1; y > top; --y) {
+        WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
+        if (height > 10) {
+            WorldSetGeneratedCell(world, x + 1, y, MATERIAL_WOOD);
+        }
+    }
+    for (y = top - capRadius / 2; y <= top; ++y) {
+        int column;
+        float across = (float)(top - y) / (float)(capRadius / 2 + 1);
+        int half = (int)((float)capRadius * sqrtf(1.0f - across * across));
+
+        for (column = x - half; column <= x + half + (height > 10 ? 1 : 0); ++column) {
+            if (!WorldInBounds(world, column, y)) continue;
+            if (WorldMaterialAt(world, column, y) != MATERIAL_EMPTY) continue;
+            WorldSetGeneratedCell(world, column, y, MATERIAL_FUNGUS);
+        }
+    }
+}
+
+static void GenerateCaverns(World *world)
+{
+    int featureCount =
+        (world->width + CAVERN_FEATURE_SPACING - 1) / CAVERN_FEATURE_SPACING;
+    int feature;
+
+    if (world->height < 400 || world->width < 256) return;
+    for (feature = 0; feature < featureCount; ++feature) {
+        Rng rng = GenerationFeatureRng(world->seed, feature, GENERATION_CAVERNS);
+        int centerX = PositiveModulo(feature * CAVERN_FEATURE_SPACING +
+                                         CAVERN_FEATURE_SPACING / 2 +
+                                         RngRange(&rng, -200, 200),
+                                     world->width);
+        int radiusX = RngRange(&rng, 70, 150);
+        int radiusY = RngRange(&rng, 28, 58);
+        int top = SurfaceHeightAt(world, centerX) + radiusY + 60;
+        int bottom = (int)WorldGroundY(world, 0.95f) - radiusY;
+        int centerY;
+        bool deep;
+        CavernTheme theme;
+        CellMaterial host;
+        int floorLevel;
+        int dx;
+
+        if (IsNearSpawn(world, centerX) || top >= bottom) continue;
+        centerY = RngRange(&rng, top, bottom);
+        deep = centerY > (int)WorldGroundY(world, 0.80f);
+        host = deep ? MATERIAL_BASALT : MATERIAL_ROCK;
+        if (deep) {
+            theme = RngRange(&rng, 0, 99) < 55 ? CAVERN_CRYSTAL : CAVERN_LAVA;
+        } else {
+            int roll = RngRange(&rng, 0, 99);
+
+            theme = roll < 35 ? CAVERN_LAKE : (roll < 75 ? CAVERN_GROVE : CAVERN_PLAIN);
+        }
+
+        /* A lake or a lava hall is lined first, like a pocket, so what it
+           holds stays in it when a tunnel or a cave comes near. */
+        if (theme == CAVERN_LAKE || theme == CAVERN_LAVA) {
+            for (dx = -radiusX - 4; dx <= radiusX + 4; ++dx) {
+                float t = (float)dx / (float)(radiusX + 4);
+                int depthBelow = (int)((float)(radiusY / 2 + 6) * sqrtf(fmaxf(0.0f, 1.0f - t * t)));
+                int y;
+
+                for (y = centerY; y <= centerY + depthBelow; ++y) {
+                    if (WorldInBounds(world, centerX + dx, y)) {
+                        WorldSetGeneratedCell(world, centerX + dx, y, host);
+                    }
+                }
+            }
+        }
+
+        /* The hall: a dome over a flatter floor, its outline broken by noise
+           so it is a cave and not an ellipse. */
+        floorLevel = centerY + radiusY / 2;
+        for (dx = -radiusX; dx <= radiusX; ++dx) {
+            float t = (float)dx / (float)radiusX;
+            float shape = sqrtf(fmaxf(0.0f, 1.0f - t * t));
+            float rough = GenerationUnit(world->seed, centerX + dx / 6, feature,
+                                         GENERATION_CAVERNS);
+            int ceiling = centerY - (int)((float)radiusY * shape * (0.78f + 0.22f * rough));
+            int floorY = centerY + (int)((float)(radiusY / 2) * shape);
+            int y;
+
+            for (y = ceiling; y <= floorY; ++y) {
+                if (WorldInBounds(world, centerX + dx, y)) {
+                    WorldSetGeneratedCell(world, centerX + dx, y, MATERIAL_EMPTY);
+                }
+            }
+            if (dx % 9 == 0 && shape > 0.3f && RngRange(&rng, 0, 99) < 55) {
+                WorldPlaceSpike(world, centerX + dx, ceiling - 1,
+                                RngRange(&rng, 3, 4 + (int)(10.0f * shape)), 1,
+                                theme == CAVERN_CRYSTAL ? MATERIAL_CRYSTAL : host);
+            }
+        }
+
+        switch (theme) {
+        case CAVERN_LAKE:
+        case CAVERN_LAVA: {
+            /* Filled from the floor to a level line below the centre. */
+            int level = centerY + radiusY / 6;
+            CellMaterial liquid = theme == CAVERN_LAKE ? MATERIAL_WATER : MATERIAL_LAVA;
+
+            for (dx = -radiusX; dx <= radiusX; ++dx) {
+                int y;
+
+                for (y = level; y <= floorLevel + 2; ++y) {
+                    if (WorldInBounds(world, centerX + dx, y) &&
+                        WorldMaterialAt(world, centerX + dx, y) == MATERIAL_EMPTY) {
+                        WorldSetGeneratedCell(world, centerX + dx, y, liquid);
+                    }
+                }
+            }
+            break;
+        }
+        case CAVERN_GROVE:
+            for (dx = -radiusX + 8; dx <= radiusX - 8; dx += RngRange(&rng, 7, 16)) {
+                int x = centerX + dx;
+                int y = centerY;
+
+                while (y < centerY + radiusY &&
+                       WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
+                    ++y;
+                }
+                if (y >= centerY + radiusY) continue;
+                WorldPlaceMushroom(world, x, y + 1, RngRange(&rng, 5, 18),
+                                   RngRange(&rng, 3, 8));
+            }
+            break;
+        case CAVERN_CRYSTAL:
+            for (dx = -radiusX + 6; dx <= radiusX - 6; dx += RngRange(&rng, 5, 13)) {
+                int x = centerX + dx;
+                int y = centerY;
+
+                while (y < centerY + radiusY &&
+                       WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
+                    ++y;
+                }
+                if (y >= centerY + radiusY) continue;
+                WorldPlaceSpike(world, x, y, RngRange(&rng, 5, 22), -1,
+                                MATERIAL_CRYSTAL);
+            }
+            break;
+        case CAVERN_PLAIN:
+        default:
+            break;
+        }
+    }
+}
+
+#define TUNNEL_FEATURE_SPACING 1300
+
+/* Tunnels that wind down from a mouth on the surface: a walk that leans
+   downward and wanders, its bore swelling and narrowing as it goes. What
+   makes a cave system read as one is that the caves are joined, and this is
+   what joins the surface to them. */
+static void GenerateTunnels(World *world)
+{
+    int featureCount =
+        (world->width + TUNNEL_FEATURE_SPACING - 1) / TUNNEL_FEATURE_SPACING;
+    int feature;
+
+    if (world->height < 400 || world->width < 256) return;
+    for (feature = 0; feature < featureCount; ++feature) {
+        Rng rng = GenerationFeatureRng(world->seed, feature, GENERATION_TUNNELS);
+        float x = (float)PositiveModulo(feature * TUNNEL_FEATURE_SPACING +
+                                            RngRange(&rng, 0, TUNNEL_FEATURE_SPACING - 1),
+                                        world->width);
+        float y;
+        float angle = 1.2f + (float)RngRange(&rng, 0, 70) / 100.0f;
+        float deepest = WorldGroundY(world, 0.86f);
+        int steps = RngRange(&rng, 260, 620);
+        int step;
+
+        if (IsNearSpawn(world, (int)x) ||
+            WorldBiomeAt(world, (int)x) == WORLD_BIOME_OCEAN) {
+            continue;
+        }
+        y = (float)SurfaceHeightAt(world, (int)x) - 2.0f;
+        if (RngRange(&rng, 0, 1) == 0) {
+            angle = PI - angle;
+        }
+        for (step = 0; step < steps; ++step) {
+            float radius = 3.0f + 2.5f * (0.5f + 0.5f * sinf((float)step * 0.07f +
+                                                         (float)feature));
+            int cx = (int)x;
+            int cy = (int)y;
+            int r = (int)ceilf(radius);
+            int oy;
+
+            for (oy = -r; oy <= r; ++oy) {
+                int ox;
+
+                for (ox = -r; ox <= r; ++ox) {
+                    if ((float)(ox * ox + oy * oy) > radius * radius) continue;
+                    if (!WorldInBounds(world, cx + ox, cy + oy)) continue;
+                    if (MaterialIsLiquid(WorldMaterialAt(world, cx + ox, cy + oy))) continue;
+                    WorldSetGeneratedCell(world, cx + ox, cy + oy, MATERIAL_EMPTY);
+                }
+            }
+            /* Wanders, leans back toward going down, and levels out near the
+               deep band so it runs along it instead of into it. */
+            angle += (float)RngRange(&rng, -18, 18) / 100.0f;
+            if (y > deepest) {
+                angle += (angle < PI * 0.5f ? -0.08f : 0.08f);
+            } else {
+                angle += (PI * 0.5f - angle) * 0.02f;
+            }
+            x += cosf(angle) * 2.0f;
+            y += sinf(angle) * 2.0f;
+            if (y >= (float)world->height - 20.0f) break;
+        }
+    }
+}
+
+/* Every underground pool held on every side it could leak from.
+ *
+ * The caverns are lined when they are dug, but everything dug after them —
+ * the tunnels, the dungeons, the mine workings, the pockets — may pass a
+ * cell away from their water, and a lake that meets a tunnel drains into it
+ * on the first tick: what the player finds is a dry cavern and a flooded
+ * corridor. The sea seals its own bed the same way. Only the chunks that
+ * hold any liquid are looked at, which the per-chunk counts already know. */
+static void SealUndergroundLiquids(World *world)
+{
+    int surfaceBand = (int)WorldGroundY(world, 0.0f);
+    int *tops = malloc((size_t)world->width * sizeof(*tops));
+    int chunkY;
+    int column;
+
+    /* The top of every column once: asked per liquid cell, the search from
+       the top of the world costs more than the rest of generation. */
+    if (tops == NULL) return;
+    for (column = 0; column < world->width; ++column) {
+        tops[column] = SurfaceSolidY(world, column);
+    }
+
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunk = WorldChunkIndex(world, chunkX, chunkY);
+            int firstY = chunkY * WORLD_CHUNK_SIZE;
+            int y;
+
+            if (world->chunkWater[chunk] == 0u && world->chunkLava[chunk] == 0u) {
+                continue;
+            }
+            for (y = firstY; y < firstY + WORLD_CHUNK_SIZE && y < world->height; ++y) {
+                int x;
+
+                if (y < surfaceBand) continue;
+                for (x = chunkX * WORLD_CHUNK_SIZE;
+                     x < (chunkX + 1) * WORLD_CHUNK_SIZE && x < world->width; ++x) {
+                    CellMaterial liquid = WorldMaterialAt(world, x, y);
+                    CellMaterial host;
+
+                    if (!MaterialIsLiquid(liquid)) continue;
+                    /* A pool open to the sky is a surface pool, held by its
+                       own basin; the sealing is for the ones under a roof. */
+                    if (y < tops[x]) continue;
+                    host = y >= (int)WorldGroundY(world, 0.80f) ? MATERIAL_BASALT
+                                                                : MATERIAL_ROCK;
+                    if (WorldMaterialAt(world, x - 1, y) == MATERIAL_EMPTY) {
+                        WorldSetGeneratedCell(world, x - 1, y, host);
+                    }
+                    if (WorldMaterialAt(world, x + 1, y) == MATERIAL_EMPTY) {
+                        WorldSetGeneratedCell(world, x + 1, y, host);
+                    }
+                    if (WorldInBounds(world, x, y + 1) &&
+                        WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
+                        WorldSetGeneratedCell(world, x, y + 1, host);
+                    }
+                }
+            }
+        }
+    }
+    free(tops);
+}
+
+/* Snow on everything high enough, and on the whole of the frost: a few cells
+   deep, laid on top of the ground as it finally is — over the ice of a frost
+   lake, over the bare rock of a peak. The snowline is a height, not a biome:
+   a range in the temperate lands is white at the top. */
+static void GenerateSnow(World *world)
+{
+    int snowline = (int)WorldGroundY(world, 0.455f);
+    int x;
+
+    if (world->height < 160) return;
+    for (x = 0; x < world->width; ++x) {
+        int surface = SurfaceSolidY(world, x);
+        WorldBiome biome;
+        CellMaterial ground;
+        int depth;
+        int y;
+
+        if (surface <= 8) continue;
+        ground = WorldMaterialAt(world, x, surface);
+        if (!MaterialIsSolid(ground) || MaterialIsFlora(ground)) continue;
+        biome = WorldBiomeAt(world, x);
+        if (surface < snowline) {
+            depth = 2 + (snowline - surface) / 16;
+        } else if (biome == WORLD_BIOME_FROST) {
+            depth = 2 + (int)(GenerationUnit(world->seed, x / 5, 0, GENERATION_SNOW) * 3.0f);
+        } else {
+            continue;
+        }
+        if (depth > 8) depth = 8;
+        for (y = surface - 1; y >= surface - depth; --y) {
+            if (!WorldInBounds(world, x, y) || WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) {
+                break;
+            }
+            WorldSetGeneratedCell(world, x, y, MATERIAL_SNOW);
+        }
+    }
+}
+
+int WorldGenSurfaceY(const World *world, int x)
+{
+    return SurfaceHeightAt(world, x);
+}
+
+int WorldGenSolidY(const World *world, int x)
+{
+    return SurfaceSolidY(world, x);
+}
+
+uint64_t WorldGenHash(uint64_t seed, int x, int y, uint64_t channel)
+{
+    return GenerationHash(seed, x, y, channel);
+}
+
+float WorldGenUnit(uint64_t seed, int x, int y, uint64_t channel)
+{
+    return GenerationUnit(seed, x, y, channel);
+}
+
+Rng WorldGenFeatureRng(uint64_t seed, int feature, uint64_t channel)
+{
+    Rng rng;
+
+    RngSeed(&rng, GenerationHash(seed, feature, 0, channel));
+    return rng;
+}
+
+bool WorldGenNearSpawn(const World *world, int x)
+{
+    return IsNearSpawn(world, x);
+}
+
+void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng)
+{
+    FloraPlaceBroadleaf(world, x, groundY, rng, RngRange(rng, 12, 21),
+                        RngRange(rng, 4, 8), MATERIAL_LEAF);
+}
+
 void WorldGenerateBiomeTerrain(World *world)
 {
     GenerateBaseTerrain(world);
     GenerateCaves(world);
+    GenerateCaverns(world);
+    GenerateTunnels(world);
+    GenerateLenses(world);
     GenerateUndergroundFluids(world);
     GenerateSurfaceFeatures(world);
     GenerateSurfacePonds(world);
+    /* Ruins and dungeons after the ground has its final shape, and before
+       the sea is poured: a sunken temple fills with the sea around it. */
+    WorldGenerateUnderground(world);
+    WorldGenerateRuins(world);
     /* After every feature that could change the shape of the ground, so the
        coastline is the coastline the world actually ended up with. */
     GenerateSea(world);
+    SealUndergroundLiquids(world);
+    /* Before the plants, so a pine stands in the snow and the treeline is
+       where the snow begins. */
+    GenerateSnow(world);
     /* Last, so that every plant grows on the surface as it finally is rather
        than on one a later feature was going to bury. */
     GenerateFlora(world);
+    /* The islands in the sky last: they carry their own soil, grass and
+       trees, and nothing below should grow up into them. */
+    WorldGenerateIslands(world);
 }
