@@ -169,7 +169,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         /* Burns rather than melts, and at a temperature a laser reaches quickly
            and a lava flow reaches on contact. A forest beside a volcanic seam
            is supposed to be a hazard. */
-        .onHeat = {true, MATERIAL_FIRE, 240.0f},
+        .onHeat = {true, MATERIAL_CINDER, 240.0f}, .burnTicks = 720,
         .solid = true,
         .laserHeatRate = 900.0f,
         .chillRate = 120.0f,
@@ -190,7 +190,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .initialTemperature = 16.0f,
         .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
         /* Foliage goes first: it catches at well under what the trunk needs. */
-        .onHeat = {true, MATERIAL_FIRE, 150.0f},
+        .onHeat = {true, MATERIAL_CINDER, 150.0f}, .burnTicks = 110,
         .solid = true,
         .laserHeatRate = 1100.0f,
         .chillRate = 150.0f,
@@ -205,7 +205,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .variationR = 6, .variationG = 10, .variationB = 5,
         .initialTemperature = 16.0f,
         .selfHeatTarget = 16.0f, .selfHeatRate = 0.02f,
-        .onHeat = {true, MATERIAL_FIRE, 130.0f},
+        .onHeat = {true, MATERIAL_CINDER, 130.0f}, .burnTicks = 45,
         .solid = true,
         .laserHeatRate = 1200.0f,
         .chillRate = 160.0f,
@@ -411,7 +411,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .initialTemperature = AMBIENT_TEMPERATURE,
         .selfHeatTarget = AMBIENT_TEMPERATURE, .selfHeatRate = 0.01f,
         /* Dry timber: it catches like the trees do. */
-        .onHeat = {true, MATERIAL_FIRE, 240.0f},
+        .onHeat = {true, MATERIAL_CINDER, 240.0f}, .burnTicks = 600,
         .solid = true,
         .backdrop = true,
         .laserHeatRate = 1200.0f,
@@ -428,7 +428,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .initialTemperature = 22.0f,
         .selfHeatTarget = 22.0f, .selfHeatRate = 0.02f,
         /* Tinder. */
-        .onHeat = {true, MATERIAL_FIRE, 110.0f},
+        .onHeat = {true, MATERIAL_CINDER, 110.0f}, .burnTicks = 80,
         .solid = true,
         .laserHeatRate = 1400.0f,
         .chillRate = 150.0f,
@@ -465,6 +465,24 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .chillRate = 150.0f,
         .density = 0.2f,
     },
+    [MATERIAL_CINDER] = {
+        .name = "CINDER", .color = {196, 72, 24, 255},
+        .dark = {92, 26, 12, 255}, .light = {255, 150, 48, 255},
+        .accent = {255, 214, 120, 255}, .accentShare = 10,
+        .pattern = MATERIAL_PATTERN_GRAIN,
+        .variationR = 8, .variationG = 6, .variationB = 2,
+        .initialTemperature = 700.0f,
+        .selfHeatTarget = 700.0f, .selfHeatRate = 0.2f,
+        /* Doused or frozen, it is out: what is left is ash. */
+        .onCool = {true, MATERIAL_ASH, 90.0f},
+        .solid = true,
+        /* Where the plant stood, and like the plant: walked through. */
+        .backdrop = true,
+        .emission = 0.72f,
+        .chillRate = 900.0f,
+        .density = 0.45f,
+        .span = 12,
+    },
     [MATERIAL_SNOW] = {
         .name = "SNOW", .color = {226, 234, 244, 255},
         .dark = {184, 198, 220, 255}, .light = {248, 252, 255, 255},
@@ -488,7 +506,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .pattern = MATERIAL_PATTERN_CLUMP,
         .initialTemperature = 14.0f,
         .selfHeatTarget = 14.0f, .selfHeatRate = 0.02f,
-        .onHeat = {true, MATERIAL_FIRE, 160.0f},
+        .onHeat = {true, MATERIAL_CINDER, 160.0f}, .burnTicks = 240,
         .solid = true,
         .emission = 0.38f,
         .laserHeatRate = 1100.0f,

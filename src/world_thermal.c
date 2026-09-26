@@ -70,7 +70,17 @@ bool WorldTryThermalTransition(World *world, int x, int y)
     }
 
     wasSolid = MaterialIsSolid(cell->material);
-    WorldSetCellRaw(world, x, y, next);
+    {
+        /* Fuel that catches keeps burning for as long as it lasts, a little
+           more or less cell by cell so a trunk does not go out in one row. */
+        int burn = info->burnTicks;
+
+        WorldSetCellRaw(world, x, y, next);
+        if (next == MATERIAL_CINDER && burn > 0) {
+            WorldCell(world, x, y)->lifetime =
+                (uint16_t)(burn * 3 / 4 + (int)(CoordinateHash(x, y) % (uint32_t)(burn / 2 + 1)));
+        }
+    }
     WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
     /* Melting through a slab severs it exactly as cutting through it does, and
        until this was here the game could not tell the difference: the laser

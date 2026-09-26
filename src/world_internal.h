@@ -17,6 +17,12 @@
 #include "world.h"
 
 #define FIRE_NEIGHBOR_HEAT_PER_TICK 0.65f
+/* A burning cell's heat for fuel beside it, per tick: a leaf beside a
+   burning twig catches in about half a second, a trunk in a second. */
+#define WORLD_CINDER_FUEL_HEAT 3.2f
+/* And the most it warms anything that does not burn: under what sets dirt
+   smouldering, so a burning tree does not light the ground. */
+#define WORLD_CINDER_WARMTH_CAP 150.0f
 /* Lava heats whatever it touches, but a rock cell must never reach its melt
    threshold from lava alone: otherwise one pocket turns the entire map to lava,
    the way an unbudgeted fire would burn every connected dirt cell. Rock relaxes

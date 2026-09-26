@@ -114,6 +114,9 @@ typedef struct MaterialInfo {
        the bodies pass it — but it is drawn, it gives light, and a roof
        resting on it is held up by it. */
     bool decor;
+    /* Ticks this fuel burns for once it has caught (it becomes
+       MATERIAL_CINDER); zero for anything that does not burn that way. */
+    int burnTicks;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
        top of this, so a laser-blasted rock face lights its own crater. */
     float emission;

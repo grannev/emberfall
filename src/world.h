@@ -78,6 +78,13 @@ typedef enum CellMaterial {
     MATERIAL_DRYBRUSH,
     MATERIAL_KELP,
     MATERIAL_EMBERBLOOM,
+    /* Fuel that is burning: what wood, leaves, grass and brush become when
+       they catch. It stays where the fuel was and burns for as long as the
+       fuel lasts (Cell.lifetime, from MaterialInfo.burnTicks), throwing
+       flames and smoke off its open sides, heating what is next to it until
+       that catches too, and then falls in as ash. Behind the character, as
+       the plant it was. */
+    MATERIAL_CINDER,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -413,6 +420,10 @@ typedef struct World {
     uint8_t *decor;
     WorldHabitat habitats[WORLD_MAX_HABITATS];
     int habitatCount;
+    /* How hard it is raining (or snowing) over the character, 0..1, set
+       by the game each tick from the weather: what puts out fires out under
+       the sky. */
+    float rainfall;
     /* The wind in the part of the world being played, cells per second,
        set by the game each tick from the weather. Smoke, steam and flame in
        open air drift with it. */

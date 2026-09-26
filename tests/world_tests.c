@@ -14036,6 +14036,49 @@ static void test_water_runs_through_decor(void)
     WorldUnload(&world);
 }
 
+/* A tree set alight at its foot burns: the fire climbs the trunk into the
+   crown, every cell of it burns where it stands for as long as its fuel
+   lasts and ends as ash or smoke, and the soil it stands in is not set
+   alight by it. */
+static void test_a_tree_burns_from_its_foot(void)
+{
+    World world;
+    int dirtBefore;
+    int step;
+    int x;
+    int y;
+    int burning = 0;
+
+    CHECK(WorldInit(&world, 128, 128), "world allocation failed");
+    FillRect(&world, 0, 110, 127, 127, MATERIAL_DIRT);
+    for (y = 60; y < 110; ++y) {
+        for (x = 62; x < 66; ++x) WorldSetCell(&world, x, y, MATERIAL_WOOD);
+    }
+    for (y = 40; y < 62; ++y) {
+        for (x = 50; x < 78; ++x) {
+            if ((x - 64) * (x - 64) + (y - 52) * (y - 52) * 2 < 150 &&
+                WorldGetCell(&world, x, y) == MATERIAL_EMPTY) {
+                WorldSetCell(&world, x, y, MATERIAL_LEAF);
+            }
+        }
+    }
+    dirtBefore = CountMaterial(&world, MATERIAL_DIRT);
+    WorldSetTemperature(&world, 63, 108, 400.0f);
+    for (step = 0; step < 240; ++step) WorldUpdate(&world);
+    burning = CountMaterial(&world, MATERIAL_CINDER);
+    CHECK(burning > 8, "four seconds after it was lit only %d cells of the tree burn", burning);
+    for (step = 0; step < 60 * 90; ++step) WorldUpdate(&world);
+    CHECK(CountMaterial(&world, MATERIAL_WOOD) == 0,
+          "%d cells of the trunk never burned", CountMaterial(&world, MATERIAL_WOOD));
+    CHECK(CountMaterial(&world, MATERIAL_LEAF) < 20,
+          "%d leaves of the crown never caught", CountMaterial(&world, MATERIAL_LEAF));
+    CHECK(CountMaterial(&world, MATERIAL_CINDER) == 0, "the fire never went out");
+    CHECK(CountMaterial(&world, MATERIAL_DIRT) >= dirtBefore - 4,
+          "the burning tree set the soil alight: %d of %d cells of dirt left",
+          CountMaterial(&world, MATERIAL_DIRT), dirtBefore);
+    WorldUnload(&world);
+}
+
 /* A step no higher than PLAYER_STEP_HEIGHT is walked up; a wall is not. */
 static void test_the_walker_climbs_a_step_and_stops_at_a_wall(void)
 {
@@ -14995,6 +15038,7 @@ int main(void)
     RUN(test_the_walker_climbs_a_step_and_stops_at_a_wall);
     RUN(test_falling_grains_pass_through_the_character);
     RUN(test_water_runs_through_decor);
+    RUN(test_a_tree_burns_from_its_foot);
     RUN(test_a_sandstorm_takes_the_tumbleweeds);
     RUN(test_jumping_double_jump_flight_and_landing);
     RUN(test_trees_stand_behind_the_character_and_lose_leaves_to_him);

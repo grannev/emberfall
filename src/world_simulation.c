@@ -367,6 +367,88 @@ static void WorldUpdateFire(World *world, int x, int y, int direction)
     }
 }
 
+/* A burning cell. Heat for its neighbours — much more for anything that
+   burns, so fire runs along a branch and up a trunk, and only a fire's
+   ordinary warmth for anything else, so a burning tree does not set the
+   soil it stands in alight — a flame or a puff of smoke off an open side,
+   carried by the wind, and at the end of its fuel, ash that falls, with the
+   loss logged so what the trunk held up comes down. Water next to it puts
+   it out in a burst of steam. */
+static void WorldUpdateCinder(World *world, int x, int y)
+{
+    static const int offsets[8][2] = {
+        {0, 1}, {1, 0}, {0, -1}, {-1, 0}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}
+    };
+    Cell *cell = WorldCell(world, x, y);
+    uint32_t roll = CoordinateHash(x, y) ^ (world->tick * 0x9e3779b1u);
+    int downwind = world->wind > 4.0f ? 1 : (world->wind < -4.0f ? -1 : 0);
+    int i;
+
+    for (i = 0; i < 8; ++i) {
+        int targetX = x + offsets[i][0];
+        int targetY = y + offsets[i][1];
+        CellMaterial there;
+        Cell *target;
+
+        if (!WorldInBounds(world, targetX, targetY)) continue;
+        there = WorldMaterialAt(world, targetX, targetY);
+        if (there == MATERIAL_EMPTY) continue;
+        if (there == MATERIAL_WATER && i < 4) {
+            /* Doused. */
+            WorldSetCellRaw(world, targetX, targetY, MATERIAL_STEAM);
+            WorldSetCellRaw(world, x, y, MATERIAL_ASH);
+            WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+            WorldRecordDestruction(world, x, y, x, y);
+            return;
+        }
+        target = WorldCell(world, targetX, targetY);
+        if (MaterialAt(there)->burnTicks > 0) {
+            /* Upward and downwind catch fastest. */
+            float heat = WORLD_CINDER_FUEL_HEAT;
+
+            if (offsets[i][1] < 0) heat *= 1.8f;
+            if (downwind != 0 && offsets[i][0] == downwind) heat *= 1.6f;
+            target->temperature += heat;
+            WorldWakeCellAndNeighbors(world, targetX, targetY);
+        } else if (target->temperature < WORLD_CINDER_WARMTH_CAP) {
+            target->temperature += FIRE_NEIGHBOR_HEAT_PER_TICK;
+        }
+    }
+    /* Rain on it, out under the sky, puts it out a cell at a time. */
+    if (world->rainfall > 0.0f && WorldMaterialAt(world, x, y - 1) == MATERIAL_EMPTY &&
+        WorldBackWallAt(world, x, y - 1) == MATERIAL_EMPTY &&
+        (float)(roll & 1023u) < world->rainfall * 12.0f) {
+        WorldSetCellRaw(world, x, y, MATERIAL_ASH);
+        WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+        if (WorldMaterialAt(world, x, y - 1) == MATERIAL_EMPTY) {
+            WorldSetCellRaw(world, x, y - 1, MATERIAL_STEAM);
+        }
+        WorldRecordDestruction(world, x, y, x, y);
+        return;
+    }
+    /* Flames off the open side above, leaning with the wind. */
+    if ((roll & 7u) == 0u) {
+        int flameX = x + (downwind != 0 && (roll & 8u) != 0u ? downwind : 0);
+
+        if (WorldMaterialAt(world, flameX, y - 1) == MATERIAL_EMPTY) {
+            WorldSetCellRaw(world, flameX, y - 1,
+                            (roll & 48u) == 0u ? MATERIAL_SMOKE : MATERIAL_FIRE);
+            WorldCell(world, flameX, y - 1)->updatedTick = WorldTickStamp(world);
+        }
+    }
+    if (cell->lifetime > 0u) {
+        --cell->lifetime;
+        WorldWakeCellAndNeighbors(world, x, y);
+        return;
+    }
+    /* Burned out: ash where it stood — or nothing, most of it having gone
+       up as smoke — and the log told, because a trunk that burns through no
+       longer holds up its crown. */
+    WorldSetCellRaw(world, x, y, (roll & 3u) == 0u ? MATERIAL_ASH : MATERIAL_SMOKE);
+    WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+    WorldRecordDestruction(world, x, y, x, y);
+}
+
 static void WorldUpdateCellAt(World *world, int x, int y)
 {
     Cell *cell = WorldCell(world, x, y);
@@ -419,6 +501,9 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             break;
         case MATERIAL_FIRE:
             WorldUpdateFire(world, x, y, direction);
+            break;
+        case MATERIAL_CINDER:
+            WorldUpdateCinder(world, x, y);
             break;
         case MATERIAL_ASH:
         case MATERIAL_RUBBLE:

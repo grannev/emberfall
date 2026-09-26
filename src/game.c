@@ -371,6 +371,18 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         game->world.wind = WeatherWindAt(&game->weather, &game->world,
                                          game->player.position.x,
                                          game->player.position.y - 40.0f);
+        {
+            WeatherSample here = WeatherAt(&game->weather, &game->world,
+                                           game->player.position.x);
+            float wet = 0.0f;
+
+            if (here.kind == WEATHER_RAIN || here.kind == WEATHER_STORM) {
+                wet = here.intensity;
+            } else if (here.kind == WEATHER_SNOW || here.kind == WEATHER_BLIZZARD) {
+                wet = here.intensity * 0.5f;
+            }
+            game->world.rainfall = wet;
+        }
         ParticlesSetWind(&game->particles,
                          WeatherAt(&game->weather, &game->world, game->player.position.x).wind *
                              WorldGravityScaleAt(&game->world, game->player.position.y));
