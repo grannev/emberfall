@@ -16,6 +16,8 @@
    height throws water thirty cells up and the ring reaches the shore. */
 #define TERRAIN_FLUID_SPLASH_MAX_STRENGTH 30
 #define TERRAIN_FLUID_SPLASH_MAX_RADIUS 64.0f
+/* Per second, on vertical and angular motion of a body riding the surface. */
+#define TERRAIN_FLUID_HEAVE_DAMPING 4.0f
 
 TerrainFluidConfig TerrainFluidDefaultConfig(void)
 {
@@ -50,27 +52,48 @@ static float TerrainFluidSubmerged(const DynamicTerrainSystem *terrain, int slot
     int counts[MATERIAL_COUNT] = {0};
     int best = MATERIAL_EMPTY;
     int sampled = 0;
-    int inLiquid = 0;
+    float inLiquid = 0.0f;
     int index;
 
     for (index = 0; index < body->surfaceCount; index += stride) {
         Vector2 at = TerrainBodyLocalToWorld(
             body, (float)terrain->surfaceX[surfaceBase + (size_t)index] + 0.5f,
             (float)terrain->surfaceY[surfaceBase + (size_t)index] + 0.5f);
-        CellMaterial material = WorldGetCell(world, (int)floorf(at.x),
-                                             (int)floorf(at.y));
+        int x = (int)floorf(at.x);
+        int y = (int)floorf(at.y);
+        CellMaterial material = WorldGetCell(world, x, y);
+        CellMaterial below = WorldGetCell(world, x, y + 1);
+        CellMaterial wet = MATERIAL_EMPTY;
+        float waterline = 0.0f;
+        float covered = 0.0f;
 
         ++sampled;
+        /* How much of a cell-sized square round the sample is under the
+           waterline, not whether its centre is: counted by centres, a small
+           body's lift jumped between nothing and several times its weight
+           as its bottom row crossed the surface, it had no position to float
+           at, and it bobbed for ever. */
         if (MaterialIsLiquid(material)) {
-            ++inLiquid;
-            ++counts[material];
-            if (counts[material] > counts[best]) {
-                best = (int)material;
+            wet = material;
+            waterline = MaterialIsLiquid(WorldGetCell(world, x, y - 1)) ? -1.0e9f : (float)y;
+        } else if (MaterialIsLiquid(below)) {
+            wet = below;
+            waterline = (float)(y + 1);
+        }
+        if (wet != MATERIAL_EMPTY) {
+            covered = at.y + 0.5f - waterline;
+            covered = covered < 0.0f ? 0.0f : (covered > 1.0f ? 1.0f : covered);
+        }
+        if (covered > 0.0f) {
+            inLiquid += covered;
+            ++counts[wet];
+            if (counts[wet] > counts[best]) {
+                best = (int)wet;
             }
         }
     }
     *liquid = (CellMaterial)best;
-    return sampled > 0 ? (float)inLiquid / (float)sampled : 0.0f;
+    return sampled > 0 ? inLiquid / (float)sampled : 0.0f;
 }
 
 /* The splash a body makes is the water's to make: a crown thrown clear of
@@ -250,6 +273,18 @@ void TerrainFluidUpdate(TerrainFluidSystem *system, DynamicTerrainSystem *terrai
                             WorldGravityScaleAt(world, body->position.y);
 
             body->velocity.y -= gravity * (displaced / body->mass) * deltaTime;
+        }
+        /* Heave damping at the waterline. The fraction under is read from a
+           handful of surface cells, so for a small body it moves in steps,
+           and the lift with it: a chip rode up out of the water on one step,
+           fell back through the next and bobbed for ever. A floating body
+           in real water loses its bobbing to the waves it makes; this is
+           that loss, and it is what lets it lie still and sleep. */
+        if (fraction < 0.98f) {
+            float heave = expf(-TERRAIN_FLUID_HEAVE_DAMPING * deltaTime);
+
+            body->velocity.y *= heave;
+            body->angularVelocity *= heave;
         }
     }
 }

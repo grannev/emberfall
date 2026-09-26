@@ -6781,6 +6781,56 @@ static void test_ice_floats_and_rock_sinks(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* Small light bodies dropped on water ride it and come to rest: none of
+   them bobs out of the water and back for ever. */
+static void test_small_floating_bodies_stop_bobbing(void)
+{
+    World world;
+    GameEventBuffer events;
+    TerrainBodyHandle bodies[4];
+    const CellMaterial materials[4] = {MATERIAL_WOOD, MATERIAL_LEAF, MATERIAL_KELP,
+                                       MATERIAL_DRYBRUSH};
+    const float surfaceY = 80.0f;
+    int index;
+    int step;
+    float highest[4] = {1e9f, 1e9f, 1e9f, 1e9f};
+    float lowest[4] = {-1e9f, -1e9f, -1e9f, -1e9f};
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    FillRect(&world, 0, 110, 159, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 60, 3, 109, MATERIAL_ROCK);
+    FillRect(&world, 156, 60, 159, 109, MATERIAL_ROCK);
+    FillRect(&world, 4, (int)surfaceY, 155, 109, MATERIAL_WATER);
+    Tick(&world, 60);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainFluidInit(&bodyFluid);
+    for (index = 0; index < 4; ++index) {
+        bodies[index] = MakeMaterialBody(&terrain, 3 + index % 2, 2 + index % 3,
+                                         materials[index],
+                                         (Vector2){24.0f + 32.0f * (float)index, 60.0f});
+    }
+    for (step = 0; step < 900; ++step) {
+        FluidTick(&terrain, &world, &events, 1);
+        if (step < 600) continue;
+        for (index = 0; index < 4; ++index) {
+            const TerrainBody *body = DynamicTerrainGetConst(&terrain, bodies[index]);
+
+            if (body == NULL) continue;
+            highest[index] = fminf(highest[index], body->position.y);
+            lowest[index] = fmaxf(lowest[index], body->position.y);
+        }
+    }
+    for (index = 0; index < 4; ++index) {
+        CHECK(lowest[index] - highest[index] < 1.5f,
+              "a small %s body still heaved %.1f cells after ten seconds",
+              MaterialAt(materials[index])->name, (double)(lowest[index] - highest[index]));
+    }
+    CHECK(terrain.awakeCount == 0, "%d small bodies were still bobbing after fifteen seconds",
+          terrain.awakeCount);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_body_hitting_water_splashes_and_slows(void)
 {
     World world;
@@ -14599,6 +14649,7 @@ int main(void)
     RUN(test_supported_ground_never_crumbles);
     RUN(test_the_span_is_measured_between_supports);
     RUN(test_ice_floats_and_rock_sinks);
+    RUN(test_small_floating_bodies_stop_bobbing);
     RUN(test_a_body_hitting_water_splashes_and_slows);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
