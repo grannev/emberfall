@@ -2005,7 +2005,9 @@ static bool GroundIsBuilt(const World *world, int x, int y)
 
     for (depth = 0; depth < 16; ++depth) {
         CellMaterial material = WorldMaterialAt(world, x, y + depth);
+        CellMaterial decor = WorldDecorAt(world, x, y + depth);
 
+        if (decor != MATERIAL_EMPTY && !MaterialIsFlora(decor)) return true;
         if (material == MATERIAL_SNOW) continue;
         return material == MATERIAL_METAL || material == MATERIAL_RELIC ||
                material == MATERIAL_BRICK || material == MATERIAL_BASALT ||

@@ -234,6 +234,17 @@ WorldComponentResult WorldFindComponent(const World *world,
             }
 
             material = WorldMaterialAt(world, neighbourX, neighbourY);
+            /* A column or a girder in the decor holds up what rests on it,
+               as it did when it was a cell: a lintel on its columns stays up
+               until a blast breaks them. A plant rests on nothing that way. */
+            if (!WorldMaterialIsSolid(material)) {
+                CellMaterial decor = WorldDecorAt(world, neighbourX, neighbourY);
+
+                if (decor != MATERIAL_EMPTY && !MaterialIsFlora(decor) &&
+                    !MaterialIsFlora(WorldMaterialAt(world, x, y))) {
+                    return ComponentFailure(WORLD_COMPONENT_ANCHORED, result.cellCount);
+                }
+            }
             if (!WorldMaterialIsSolid(material) ||
                 !ComponentPlantLinks(world, x, y, neighbourX, neighbourY)) {
                 continue;

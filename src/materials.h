@@ -108,6 +108,12 @@ typedef struct MaterialInfo {
        everything else — the drill, the fire, a blast, what holds a roof up.
        Every plant is backdrop too, without saying so. */
     bool backdrop;
+    /* Lives in the decor plane (`World.decor`), never in a cell: a column, a
+       girder, a plank, a lamp, a strand of kelp. The simulation does not see
+       it at all — water fills the cell in front of it, the character and
+       the bodies pass it — but it is drawn, it gives light, and a roof
+       resting on it is held up by it. */
+    bool decor;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
        top of this, so a laser-blasted rock face lights its own crater. */
     float emission;
@@ -145,6 +151,12 @@ static inline bool MaterialIsFlora(CellMaterial material)
 
 /* Whether the material stands behind the character: every plant, and what
    the builders put up to be walked past rather than into. */
+static inline bool MaterialIsDecor(CellMaterial material)
+{
+    if (material < 0 || material >= MATERIAL_COUNT) return false;
+    return MATERIALS[material].decor;
+}
+
 static inline bool MaterialIsBackdrop(CellMaterial material)
 {
     if (material < 0 || material >= MATERIAL_COUNT) return false;

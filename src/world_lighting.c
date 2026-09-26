@@ -99,6 +99,15 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
                     if (cell->material != MATERIAL_EMPTY && heatGlow > emission) {
                         emission = Clamp(heatGlow, 0.0f, 1.0f);
                     }
+                    /* A lamp in the decor still lights the hall. */
+                    if (world->decor != NULL) {
+                        CellMaterial decor = (CellMaterial)
+                            world->decor[WorldIndex(world, firstX + x, y)];
+
+                        if (decor != MATERIAL_EMPTY && MaterialAt(decor)->emission > emission) {
+                            emission = MaterialAt(decor)->emission;
+                        }
+                    }
                 }
             }
 

@@ -284,6 +284,17 @@ coherent phase with an explanatory message.
   the ground under it, then welded — the sea keeps its water). This is not
   destruction: every cell is given back. Distance is from the character,
   never from the camera. Plants under a welding body are crushed by it.
+- Columns, girders, planks, lamps and kelp are decor (`MaterialInfo.decor`):
+  they live in `World.decor`, one byte per cell, never in a cell. The
+  simulation, liquids, the character and the bodies do not see them — water
+  runs through a colonnade and fills the cells in front of it — but the page
+  builder draws them behind the cell (kelp sways on the plants' layer, tinted
+  by the water in front of it), the light takes their emission, a component
+  touching structural decor is anchored (a lintel stays on its columns), and
+  blasts break them (`WorldBreakDecor`). Writing a decor material through
+  any setter goes to the plane. Everything passable — decor and plants — is
+  drawn a shade darker (`WORLD_PASSABLE_SHADE`) than the same material as
+  solid ground, so the player can tell a wall behind him from a wall.
 - Loose chips smaller than `minimumBodyCells` crumble (`TerrainDetachSystem.crumbs`):
   a plant's cells flutter away as particles, anything else falls and settles
   as the material it was. Nothing proven loose is left hanging in the air.

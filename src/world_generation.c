@@ -39,6 +39,16 @@ void WorldGenerate(World *world, uint64_t seed)
             memset(world->cells, 0, cellCount * sizeof(*world->cells));
         }
     }
+    {
+        uint8_t *fresh = calloc(cellCount, sizeof(*fresh));
+
+        if (fresh != NULL) {
+            free(world->decor);
+            world->decor = fresh;
+        } else if (world->decor != NULL) {
+            memset(world->decor, 0, cellCount * sizeof(*world->decor));
+        }
+    }
     memset(world->backWalls, 0,
            (size_t)world->backWallColumns * (size_t)world->backWallRows);
     memset(world->chunkWater, 0, chunkCount * sizeof(*world->chunkWater));

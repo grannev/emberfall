@@ -118,6 +118,21 @@ void WorldSetGeneratedCell(World *world, int x, int y,
         return;
     }
 
+    /* Decor goes to its own plane, and the cell in front of it is opened —
+       a column stood where the hall's rock was — unless it holds a liquid,
+       which is what a strand of kelp stands in. Anything else written here
+       replaces the decor, except a liquid, which fills in front of it. */
+    if (MaterialIsDecor(material)) {
+        if (world->decor != NULL) {
+            world->decor[WorldIndex(world, x, y)] = (uint8_t)material;
+        }
+        if (MaterialIsLiquid(WorldMaterialAt(world, x, y))) {
+            return;
+        }
+        material = MATERIAL_EMPTY;
+    } else if (!MaterialIsLiquid(material) && world->decor != NULL) {
+        world->decor[WorldIndex(world, x, y)] = (uint8_t)MATERIAL_EMPTY;
+    }
     cell = WorldCell(world, x, y);
     WorldCountMaterialChange(world, x, y, (CellMaterial)cell->material, material);
     cell->material = (uint8_t)material;
@@ -168,6 +183,18 @@ void WorldSetShade(World *world, int x, int y, uint8_t shade)
     }
 }
 
+/* A decor cell changed: its page is redrawn and its light re-solved (a lamp
+   is decor). Nothing is simulated. */
+static void WorldMarkCellDirty(World *world, int x, int y)
+{
+    size_t index;
+
+    if (world->dirtyChunks == NULL || y < 0 || y >= world->height) return;
+    index = WorldChunkIndex(world, WorldWrapX(world, x) / WORLD_CHUNK_SIZE, y / WORLD_CHUNK_SIZE);
+    world->dirtyChunks[index] = 1u;
+    if (world->lightDirtyChunks != NULL) world->lightDirtyChunks[index] = 1u;
+}
+
 void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
 {
     Cell *cell;
@@ -176,6 +203,15 @@ void WorldSetCellRaw(World *world, int x, int y, CellMaterial material)
         return;
     }
 
+    if (MaterialIsDecor(material)) {
+        /* Decor never becomes a cell; it is drawn, so its page must be
+           rebuilt. */
+        if (world->decor != NULL) {
+            world->decor[WorldIndex(world, x, y)] = (uint8_t)material;
+            WorldMarkCellDirty(world, x, y);
+        }
+        return;
+    }
     cell = WorldCell(world, x, y);
     WorldCountMaterialChange(world, x, y, (CellMaterial)cell->material, material);
     cell->material = (uint8_t)material;
@@ -238,6 +274,7 @@ bool WorldInit(World *world, int width, int height)
     world->backWallRows = (height + WORLD_BACK_WALL_SCALE - 1) / WORLD_BACK_WALL_SCALE;
     world->backWalls = calloc((size_t)world->backWallColumns * (size_t)world->backWallRows,
                               sizeof(*world->backWalls));
+    world->decor = calloc(cellCount, sizeof(*world->decor));
     world->backWallVisit = calloc((size_t)WORLD_BACK_WALL_WINDOW * WORLD_BACK_WALL_WINDOW,
                                   sizeof(*world->backWallVisit));
     world->backWallQueue = calloc((size_t)WORLD_BACK_WALL_WINDOW * WORLD_BACK_WALL_WINDOW,
@@ -264,6 +301,7 @@ bool WorldInit(World *world, int width, int height)
         world->nextRowCount == NULL || world->chunkWater == NULL ||
         world->chunkLava == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL || world->backWalls == NULL ||
+        world->decor == NULL ||
         world->backWallVisit == NULL || world->backWallQueue == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
         world->lightEmission == NULL || world->lightOpacity == NULL ||
@@ -293,6 +331,7 @@ void WorldUnload(World *world)
     free(world->dirtyChunks);
     free(world->lightDirtyChunks);
     free(world->backWalls);
+    free(world->decor);
     free(world->backWallVisit);
     free(world->backWallQueue);
     free(world->lightSky);
@@ -648,4 +687,39 @@ bool WorldCellBlocksBodies(const World *world, int x, int y)
         return WorldCellHolds(world, x, y + 2);
     }
     return true;
+}
+
+CellMaterial WorldGetDecor(const World *world, int x, int y)
+{
+    if (world == NULL || world->cells == NULL) {
+        return MATERIAL_EMPTY;
+    }
+    return WorldDecorAt(world, x, y);
+}
+
+void WorldBreakDecor(World *world, int centerX, int centerY, int radius)
+{
+    int y;
+
+    if (world == NULL || world->decor == NULL || radius <= 0) {
+        return;
+    }
+    for (y = centerY - radius; y <= centerY + radius; ++y) {
+        int x;
+
+        if (y < 0 || y >= world->height) continue;
+        for (x = centerX - radius; x <= centerX + radius; ++x) {
+            size_t index;
+
+            if ((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY) >
+                radius * radius) {
+                continue;
+            }
+            index = WorldIndex(world, x, y);
+            if (world->decor[index] != 0u) {
+                world->decor[index] = 0u;
+                WorldMarkCellDirty(world, x, y);
+            }
+        }
+    }
 }

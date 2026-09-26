@@ -76,6 +76,8 @@ void WorldDestroyCircle(World *world, int centerX, int centerY, int radius,
         WorldRecordDestruction(world, cutMinimumX, cutMinimumY, cutMaximumX,
                                cutMaximumY);
     }
+    /* The decor the blast reaches is broken with the rock. */
+    WorldBreakDecor(world, centerX, centerY, radius);
 }
 
 /* What a blow can dent: material that holds a shape. Sand and the other loose
@@ -253,6 +255,7 @@ void WorldApplyPunch(World *world, Vector2 at, Vector2 direction, int radius,
     if (cut) {
         WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);
     }
+    WorldBreakDecor(world, centreX, centreY, radius);
 }
 
 int WorldDrillCircle(World *world, int centerX, int centerY, int radius)
@@ -617,6 +620,7 @@ void WorldApplyBlast(World *world, Vector2 at, int coreRadius,
     /* The water the crater did not take is shoved outward from it, and the
        shove travels: a blast in a lake throws a wave. */
     (void)WorldPushLiquidRadial(world, at, reach + 6.0f, coreRadius + 4);
+    WorldBreakDecor(world, centreX, centreY, coreRadius + coreRadius / 3);
 }
 
 void WorldApplyShockwave(World *world, int centerX, int centerY, int innerRadius,

@@ -54,6 +54,46 @@ void WorldMarkRegionDirty(World *world, Rectangle region)
     }
 }
 
+/* Everything the character walks through — decor and plants — is drawn a
+   shade darker than the same material as solid ground, so a column reads as
+   standing behind him and a brick wall as a wall. */
+#define WORLD_PASSABLE_SHADE 0.88f
+
+static Color WorldPassableShade(Color color)
+{
+    color.r = (unsigned char)((float)color.r * WORLD_PASSABLE_SHADE);
+    color.g = (unsigned char)((float)color.g * WORLD_PASSABLE_SHADE);
+    color.b = (unsigned char)((float)color.b * WORLD_PASSABLE_SHADE);
+    return color;
+}
+
+/* What stands behind the cell at (x, y): the decor there, seen against the
+   back wall if it is see-through; else the back wall; else the air. Kelp is
+   not drawn here: it sways on the plants' layer. */
+static MaterialRenderSample WorldBehind(const World *world, int x, int y,
+                                        MaterialRenderSample air)
+{
+    CellMaterial decor = WorldDecorAt(world, x, y);
+    CellMaterial wall = WorldBackWallAt(world, x, y);
+    MaterialRenderSample sample;
+
+    if (decor != MATERIAL_EMPTY && !MaterialIsFlora(decor)) {
+        MaterialRenderContext around;
+
+        around.shade = WorldShadeFor(x, y, decor);
+        around.openAbove = WorldDecorAt(world, x, y - 1) != decor;
+        around.openBelow = WorldDecorAt(world, x, y + 1) != decor;
+        around.liquidDepth = 0;
+        sample = MaterialRenderCell(decor, MaterialInitialTemperature(decor), x, y, around);
+        sample.scene = WorldPassableShade(sample.scene);
+        if (sample.scene.a < 255 && wall != MATERIAL_EMPTY) {
+            sample = MaterialRenderOverWall(sample, MaterialRenderBackWall(wall, x, y));
+        }
+        return sample;
+    }
+    return wall != MATERIAL_EMPTY ? MaterialRenderBackWall(wall, x, y) : air;
+}
+
 void WorldPrepareVisible(World *world, Rectangle visible,
                          WorldRenderChunkVisitor visitor, void *context)
 {
@@ -163,11 +203,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     MaterialRenderSample sample;
 
                     if (material == MATERIAL_EMPTY) {
-                        CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
-
-                        sample = wall != MATERIAL_EMPTY
-                                     ? MaterialRenderBackWall(wall, minimumX + x, y)
-                                     : air;
+                        sample = WorldBehind(world, minimumX + x, y, air);
                         liquidRun[x] = 0;
                     } else {
                         MaterialRenderContext around;
@@ -188,11 +224,11 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                         /* See-through stuff in front of a wall is seen
                            against the wall, not against the backdrop. */
                         if (sample.scene.a < 255) {
-                            CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
+                            MaterialRenderSample behind =
+                                WorldBehind(world, minimumX + x, y, air);
 
-                            if (wall != MATERIAL_EMPTY) {
-                                sample = MaterialRenderOverWall(
-                                    sample, MaterialRenderBackWall(wall, minimumX + x, y));
+                            if (behind.scene.a == 255) {
+                                sample = MaterialRenderOverWall(sample, behind);
                             }
                         }
                         if (MaterialIsLiquid(material)) {
@@ -208,16 +244,35 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     if (MaterialIsFlora(material)) {
                         /* The plant goes to its own layer, and what stands
                            behind it takes its place here. */
-                        CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
                         float sway = MaterialRenderSway(material,
                                                         (unsigned char)cell->shade);
 
-                        flora[x] = sample.scene;
+                        flora[x] = WorldPassableShade(sample.scene);
                         flora[x].a = (unsigned char)(MATERIAL_RENDER_FLORA_ALPHA +
                                                      (unsigned char)(sway * 127.0f));
-                        sample = wall != MATERIAL_EMPTY
-                                     ? MaterialRenderBackWall(wall, minimumX + x, y)
-                                     : air;
+                        sample = WorldBehind(world, minimumX + x, y, air);
+                    } else {
+                        CellMaterial decor = WorldDecorAt(world, minimumX + x, y);
+
+                        /* Kelp is decor, and sways on the plants' layer; in
+                           water it is seen through the water, so it takes
+                           the water's colour over its own. */
+                        if (MaterialIsFlora(decor) &&
+                            (material == MATERIAL_EMPTY || MaterialIsLiquid(material))) {
+                            MaterialRenderContext around = {0};
+                            Color plant;
+
+                            around.shade = WorldShadeFor(minimumX + x, y, decor);
+                            plant = MaterialRenderCell(decor, 20.0f, minimumX + x, y, around).scene;
+                            if (MaterialIsLiquid(material)) {
+                                plant.r = (unsigned char)(((int)plant.r * 3 + (int)sample.scene.r * 2) / 5);
+                                plant.g = (unsigned char)(((int)plant.g * 3 + (int)sample.scene.g * 2) / 5);
+                                plant.b = (unsigned char)(((int)plant.b * 3 + (int)sample.scene.b * 2) / 5);
+                            }
+                            flora[x] = WorldPassableShade(plant);
+                            flora[x].a = (unsigned char)(MATERIAL_RENDER_FLORA_ALPHA +
+                                                         (unsigned char)(MaterialRenderSway(decor, around.shade) * 127.0f));
+                        }
                     }
                     scene[x] = sample.scene;
                     emissive[x] = sample.emissive;

@@ -121,6 +121,14 @@ static inline CellMaterial WorldBackWallAt(const World *world, int x, int y)
                                           (size_t)column];
 }
 
+static inline CellMaterial WorldDecorAt(const World *world, int x, int y)
+{
+    if (y < 0 || y >= world->height || world->decor == NULL) {
+        return MATERIAL_EMPTY;
+    }
+    return (CellMaterial)world->decor[WorldIndex(world, x, y)];
+}
+
 static inline CellMaterial WorldMaterialAt(const World *world, int x, int y)
 {
     if (!WorldInBounds(world, x, y)) {

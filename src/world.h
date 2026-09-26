@@ -406,6 +406,11 @@ typedef struct World {
     uint16_t generationPlant;
     WorldTumbleweed tumbleweeds[WORLD_MAX_TUMBLEWEEDS];
     int tumbleweedCount;
+    /* The decor plane: one material per cell, drawn behind the cell in
+       front of it and invisible to the simulation (MaterialInfo.decor).
+       Allocated zeroed and written only where something stands, so like
+       the sky its untouched pages cost nothing. */
+    uint8_t *decor;
     WorldHabitat habitats[WORLD_MAX_HABITATS];
     int habitatCount;
     /* The wind in the part of the world being played, cells per second,
@@ -756,6 +761,11 @@ bool WorldCellBlocksBodies(const World *world, int x, int y);
 /* The plant a flora cell belongs to; zero for anything that is not a plant,
    and for a plant cell that was not generated as part of one. */
 uint16_t WorldGetPlant(const World *world, int x, int y);
+/* The decor in front of the back layer at (x, y): MATERIAL_EMPTY where there
+   is none. Columns wrap. */
+CellMaterial WorldGetDecor(const World *world, int x, int y);
+/* Clears the decor in a disc: what a blast breaks. */
+void WorldBreakDecor(World *world, int centerX, int centerY, int radius);
 /* After something was cut out of the box: every part of the back layer near
    it that no longer touches a static solid cell anywhere comes away. It is
    removed from the layer and handed back as pieces of up to 4x4 blocks, at

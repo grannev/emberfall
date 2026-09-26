@@ -322,6 +322,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .span = 80,
     },
     [MATERIAL_LUMEN] = {
+        .decor = true,
         .name = "LUMEN", .color = {110, 226, 232, 255},
         .dark = {54, 150, 170, 255}, .light = {196, 252, 255, 255},
         .accent = {255, 244, 196, 255}, .accentShare = 4,
@@ -370,6 +371,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .span = 44,
     },
     [MATERIAL_GIRDER] = {
+        .decor = true,
         .name = "GIRDER", .color = {76, 84, 96, 255},
         .dark = {40, 44, 54, 255}, .light = {122, 132, 146, 255},
         .accent = {140, 80, 50, 255}, .accentShare = 4,
@@ -385,6 +387,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .span = 80,
     },
     [MATERIAL_PILLAR] = {
+        .decor = true,
         .name = "PILLAR", .color = {150, 140, 122, 255},
         .dark = {90, 82, 72, 255}, .light = {190, 182, 160, 255},
         .accent = {92, 150, 146, 255}, .accentShare = 2,
@@ -400,6 +403,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .span = 60,
     },
     [MATERIAL_PLANK] = {
+        .decor = true,
         .name = "PLANK", .color = {128, 92, 58, 255},
         .dark = {82, 56, 36, 255}, .light = {170, 128, 84, 255},
         .accent = {60, 40, 26, 255}, .accentShare = 4,
@@ -431,6 +435,7 @@ const MaterialInfo MATERIALS[MATERIAL_COUNT] = {
         .density = 0.12f,
     },
     [MATERIAL_KELP] = {
+        .decor = true,
         .flora = true,
         .name = "KELP", .color = {70, 104, 62, 255},
         .dark = {40, 66, 44, 255}, .light = {110, 140, 76, 255},

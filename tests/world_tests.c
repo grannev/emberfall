@@ -7895,7 +7895,21 @@ static void test_the_generated_world_has_its_landmarks(void)
        left burning. */
     CHECK(counts[MATERIAL_RELIC] > 200, "only %d relic samples", counts[MATERIAL_RELIC]);
     CHECK(counts[MATERIAL_METAL] > 200, "only %d metal samples", counts[MATERIAL_METAL]);
-    CHECK(counts[MATERIAL_LUMEN] > 10, "only %d lumen samples", counts[MATERIAL_LUMEN]);
+    /* Lamps, columns and kelp are decor, behind the cells. */
+    {
+        int decor[MATERIAL_COUNT] = {0};
+
+        for (y = WorldSkyRows(&world); y < world.height; y += 2) {
+            for (x = 0; x < world.width; x += 2) {
+                ++decor[WorldGetDecor(&world, x, y)];
+            }
+        }
+        CHECK(decor[MATERIAL_LUMEN] > 10, "only %d lumen samples", decor[MATERIAL_LUMEN]);
+        CHECK(decor[MATERIAL_KELP] > 10, "only %d kelp samples", decor[MATERIAL_KELP]);
+        CHECK(counts[MATERIAL_LUMEN] == 0 && counts[MATERIAL_KELP] == 0 &&
+                  counts[MATERIAL_PILLAR] == 0 && counts[MATERIAL_GIRDER] == 0,
+              "decor was left in the cells");
+    }
     CHECK(counts[MATERIAL_CRYSTAL] > 10, "only %d crystal samples",
           counts[MATERIAL_CRYSTAL]);
     CHECK(counts[MATERIAL_FUNGUS] > 10, "only %d fungus samples",
@@ -13909,6 +13923,41 @@ done:
     WorldUnload(&world);
 }
 
+/* Columns, girders and kelp are decor: water runs through a colonnade and
+   fills the cells in front of it, the character walks through it, and a
+   blast breaks it. */
+static void test_water_runs_through_decor(void)
+{
+    World world;
+    int x;
+    int y;
+    int waterBehind = 0;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    FillRect(&world, 0, 80, 127, 95, MATERIAL_ROCK);
+    /* A column wall across the floor, water on one side of it. */
+    for (y = 40; y < 80; ++y) {
+        for (x = 60; x < 64; ++x) {
+            WorldSetCell(&world, x, y, MATERIAL_PILLAR);
+        }
+    }
+    CHECK(WorldGetCell(&world, 61, 70) == MATERIAL_EMPTY &&
+              WorldGetDecor(&world, 61, 70) == MATERIAL_PILLAR,
+          "a column became a cell");
+    FillRect(&world, 10, 60, 50, 79, MATERIAL_WATER);
+    Tick(&world, 900);
+    for (y = 60; y < 80; ++y) {
+        for (x = 64; x < 120; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WATER) ++waterBehind;
+        }
+    }
+    CHECK(waterBehind > 100, "only %d cells of water got past the columns", waterBehind);
+    CHECK(WorldGetDecor(&world, 61, 70) == MATERIAL_PILLAR, "the water washed the column away");
+    WorldDestroyCircle(&world, 61, 50, 6, 0.0f);
+    CHECK(WorldGetDecor(&world, 61, 50) == MATERIAL_EMPTY, "a blast left the column standing");
+    WorldUnload(&world);
+}
+
 /* A step no higher than PLAYER_STEP_HEIGHT is walked up; a wall is not. */
 static void test_the_walker_climbs_a_step_and_stops_at_a_wall(void)
 {
@@ -14866,6 +14915,7 @@ int main(void)
     RUN(test_the_walker_walks_and_runs_on_the_ground);
     RUN(test_the_walker_climbs_a_step_and_stops_at_a_wall);
     RUN(test_falling_grains_pass_through_the_character);
+    RUN(test_water_runs_through_decor);
     RUN(test_a_sandstorm_takes_the_tumbleweeds);
     RUN(test_jumping_double_jump_flight_and_landing);
     RUN(test_trees_stand_behind_the_character_and_lose_leaves_to_him);
