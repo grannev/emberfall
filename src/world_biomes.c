@@ -925,7 +925,13 @@ static void WorldPlaceSurfaceBasin(World *world, int centerX, int radiusX,
     if (!BasinBedIsSolid(world, firstX, lastX, waterLine, depth)) return;
 
     for (x = firstX; x <= lastX; ++x) {
-        float dx = (float)(x - centerX) / (float)radiusX;
+        /* The bowl spans the shore the walk found, not the radius asked
+           for: shaped by the radius, a lake whose shore came early was at
+           its deepest right against a one-column rim, and stood in a
+           sheer wall of water there. */
+        float middle = (float)(firstX + lastX) * 0.5f;
+        float half = (float)(lastX - firstX) * 0.5f + 1.0f;
+        float dx = ((float)x - middle) / half;
         float bowl = 1.0f - dx * dx;
         int naturalSurface = SurfaceHeightAt(world, x);
         int bottomY = naturalSurface + (int)(bowl * (float)depth);
