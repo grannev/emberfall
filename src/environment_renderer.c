@@ -746,6 +746,17 @@ static EnvironmentOrb EnvironmentOrbAt(float phase, Camera2D camera, int width,
     return orb;
 }
 
+/* How much of an orb is shown for its height: it rises out of the haze at
+   the horizon and sinks back into it over a stretch of its arc. Shown whole
+   from the first moment, a sun whose rising point the far ranges happened
+   not to cover appeared out of nowhere. */
+static float EnvironmentOrbFade(EnvironmentOrb orb)
+{
+    float t = EnvironmentClamp(orb.elevation / 0.22f, 0.0f, 1.0f);
+
+    return t * t * (3.0f - 2.0f * t);
+}
+
 static int EnvironmentBlock(int height)
 {
     return EnvironmentMaxInt(1, height / 240);
@@ -810,6 +821,7 @@ static void EnvironmentDrawSun(EnvironmentRenderer *renderer, Camera2D camera,
     Color rim;
     Color core;
 
+    alpha *= EnvironmentOrbFade(orb);
     if (!orb.visible || alpha <= 0.0f) {
         return;
     }
@@ -889,6 +901,7 @@ static void EnvironmentDrawMoon(EnvironmentRenderer *renderer, Camera2D camera,
     float lightZ = -cosf(lightAngle);
     int row;
 
+    alpha *= EnvironmentOrbFade(orb);
     if (!orb.visible || alpha <= 0.0f) {
         return;
     }
