@@ -224,6 +224,9 @@ static float MaterialPatternTone(MaterialPattern pattern, int x, int y,
         face = MaterialLatticeValue(block, course, 0x77u) * 2.0f - 1.0f;
         return 0.3f * face + 0.2f * grain + (row == 0 ? 0.25f : 0.0f);
     }
+    case MATERIAL_PATTERN_BLADE:
+        return (float)shade / 31.5f - 1.0f +
+               0.2f * (MaterialValueNoise(x, y, 3, 0x2eu) * 2.0f - 1.0f);
     case MATERIAL_PATTERN_GRAIN:
     default:
         return grain;

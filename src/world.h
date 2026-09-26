@@ -60,6 +60,11 @@ typedef enum CellMaterial {
     MATERIAL_METAL,
     MATERIAL_LUMEN,
     MATERIAL_RELIC,
+    /* The pale rock the dunes lie on. Generated sand is a blanket over it,
+       and wherever a grain would have nothing under it the grain is laid as
+       limestone instead: sand that is generated already falling costs the
+       whole desert a simulation the moment it is streamed into play. */
+    MATERIAL_LIMESTONE,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -252,6 +257,21 @@ typedef struct WorldTickStats {
 
 /* Cells per side of one back-wall block. */
 #define WORLD_BACK_WALL_SCALE 4
+/* Blocks per side of the window the back layer's hold is checked in. A part
+   of the layer that reaches the window's edge is taken to be held: like the
+   terrain's own detach check, this never asks about the whole world. */
+#define WORLD_BACK_WALL_WINDOW 128
+/* Blocks per side of one falling piece of back wall. */
+#define WORLD_BACK_WALL_PIECE 4
+
+typedef struct WorldBackWallPiece {
+    /* Top-left cell. */
+    int x;
+    int y;
+    /* Bit (by * WORLD_BACK_WALL_PIECE + bx) for each block it carries. */
+    uint16_t mask;
+    uint8_t material;
+} WorldBackWallPiece;
 
 typedef struct World {
     int width;
@@ -329,6 +349,10 @@ typedef struct World {
     uint8_t *backWalls;
     int backWallColumns;
     int backWallRows;
+    /* Workspace for the back layer's hold check, a window of
+       WORLD_BACK_WALL_WINDOW blocks square: visit marks and a queue. */
+    uint8_t *backWallVisit;
+    int *backWallQueue;
     /* Coarse light field. `emission` and `opacity` are derived from the cells and
        refreshed only where chunks are dirty; `light` is solved from them when
        something that can change it has, and the renderer uploads the solved
@@ -658,5 +682,15 @@ LaserResult WorldApplyLaser(World *world, Vector2 start, Vector2 end, float radi
 LaserResult WorldApplyChill(World *world, Vector2 start, Vector2 end, float radius,
                             float deltaTime);
 const char *WorldMaterialName(CellMaterial material);
+/* What stands behind cell (x, y) in the back layer; MATERIAL_EMPTY for the
+   open sky. Columns wrap. */
+CellMaterial WorldGetBackWall(const World *world, int x, int y);
+/* After something was cut out of the box: every part of the back layer near
+   it that no longer touches a static solid cell anywhere comes away. It is
+   removed from the layer and handed back as pieces of up to 4x4 blocks, at
+   most `capacity` of them (the rest simply go). Bounded by
+   WORLD_BACK_WALL_WINDOW; returns the pieces written. */
+int WorldBreakBackWalls(World *world, int minimumX, int minimumY, int maximumX,
+                        int maximumY, WorldBackWallPiece *pieces, int capacity);
 
 #endif

@@ -1201,6 +1201,36 @@ int PlayerBrushFlora(Player *player, World *world)
         }
     }
     if (removed > 0) {
+        /* The pass takes leaves at random, and a leaf whose neighbours all
+           went is a speck hanging in the air with nothing to be part of:
+           it goes with them. */
+        for (y = minimumY - 1; y <= maximumY + 1; ++y) {
+            int x;
+
+            for (x = minimumX - 1; x <= maximumX + 1; ++x) {
+                int offsetY;
+                bool joined = false;
+
+                if (WorldGetCell(world, x, y) != MATERIAL_LEAF) {
+                    continue;
+                }
+                for (offsetY = -1; offsetY <= 1 && !joined; ++offsetY) {
+                    int offsetX;
+
+                    for (offsetX = -1; offsetX <= 1; ++offsetX) {
+                        if ((offsetX != 0 || offsetY != 0) &&
+                            MaterialIsFlora(WorldGetCell(world, x + offsetX, y + offsetY))) {
+                            joined = true;
+                            break;
+                        }
+                    }
+                }
+                if (!joined) {
+                    WorldSetCell(world, x, y, MATERIAL_EMPTY);
+                    ++removed;
+                }
+            }
+        }
         /* A clump the path cut loose from its branch comes down as a body,
            the ordinary way. */
         WorldRecordDestruction(world, minimumX, minimumY, maximumX, maximumY);

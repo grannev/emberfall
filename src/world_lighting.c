@@ -67,6 +67,7 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
             float emission = 0.0f;
             int solid = 0;
             int samples = 0;
+            bool enclosed;
             int x;
             int y;
 
@@ -83,7 +84,10 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
                                      WORLD_LIGHT_HEAT_SPAN;
 
                     ++samples;
-                    if (info->solid) {
+                    /* Plants stand behind the world, and cast nothing on
+                       it: a tree that shaded the air under its crown down
+                       to the ground read as a black pillar in the sky. */
+                    if (info->solid && !info->flora) {
                         ++solid;
                     }
                     /* The brightest cell in the block wins rather than the mean:
@@ -102,6 +106,18 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
                 int index = WorldLightIndex(world, lightX, lightY);
                 float opacity = samples > 0 ? (float)solid / (float)samples
                                             : 0.0f;
+
+                /* Air with the back layer behind it is inside the ground,
+                   and air without it is out under the sky. Carried as a
+                   trace of opacity far under anything that blocks, so the
+                   sky seed can tell open air that lost the sun to an
+                   overhang from a cave. */
+                enclosed = WorldBackWallAt(world, firstX + WORLD_LIGHT_SCALE / 2,
+                                           firstY + WORLD_LIGHT_SCALE / 2) !=
+                           MATERIAL_EMPTY;
+                if (opacity == 0.0f && enclosed) {
+                    opacity = WORLD_LIGHT_ENCLOSED;
+                }
 
                 /* Exact comparisons: both values are computed the same way
                    from the same cells, so an unchanged block reproduces them
@@ -146,7 +162,17 @@ static void WorldSeedSky(const WorldLightView *view)
         float *row = sky + (size_t)lightY * (size_t)columns;
 
         for (lightX = view->first; lightX <= view->last; ++lightX) {
-            row[lightX] = blocks[lightX] > 0.35f ? 0.0f : above[lightX];
+            if (blocks[lightX] > 0.35f) {
+                row[lightX] = 0.0f;
+            } else if (blocks[lightX] == 0.0f) {
+                /* Open air under an overhang still has the rest of the sky
+                   round it: the shade fades out below whatever cast it,
+                   over some hundred cells, instead of running down to the
+                   ground from an island in orbit. */
+                row[lightX] = fminf(1.0f, above[lightX] + WORLD_SKY_RECOVERY);
+            } else {
+                row[lightX] = above[lightX];
+            }
         }
     }
 }

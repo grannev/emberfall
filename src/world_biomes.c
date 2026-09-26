@@ -9,6 +9,7 @@
 
 #include <raymath.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define BIOME_REGION_WIDTH 1536
 #define BIOME_BLEND_WIDTH 384
@@ -615,6 +616,9 @@ static void WorldFillEllipse(World *world, int centerX, int centerY,
     }
 }
 
+static void WorldReplaceEllipse(World *world, int centerX, int centerY, int radiusX,
+                                int radiusY, CellMaterial fill);
+
 static void WorldPlacePocket(World *world, int centerX, int centerY,
                              int radiusX, int radiusY, CellMaterial fill)
 {
@@ -622,8 +626,10 @@ static void WorldPlacePocket(World *world, int centerX, int centerY,
     int lastY = centerY + radiusY;
     int x;
 
-    WorldFillEllipse(world, centerX, centerY, radiusX + 4, radiusY + 4,
-                     MATERIAL_ROCK);
+    /* The rim is rock where there is ground to make it of; a cave that
+       already runs past is left open, never walled off. */
+    WorldReplaceEllipse(world, centerX, centerY, radiusX + 4, radiusY + 4,
+                        MATERIAL_ROCK);
     WorldFillEllipse(world, centerX, centerY, radiusX, radiusY,
                      MATERIAL_EMPTY);
     /* Filled to a level line rather than as a smaller ellipse inside the
@@ -1057,51 +1063,72 @@ static void GenerateSurfacePonds(World *world)
 static void GenerateSea(World *world)
 {
     int seaLevel = (int)WorldSeaLevelY(world);
+    int *queue;
+    size_t capacity = 1u << 20;
+    size_t head = 0;
+    size_t tail = 0;
     int x;
 
     if (world->height < 96) return;
+    queue = malloc(capacity * sizeof(*queue));
+    if (queue == NULL) return;
+    /* Poured from the open sea down into everything under the sea level
+       that it can reach — the hollow of a wreck, the gap under a gateway's
+       key-stone, a cave that opens in the sea floor — so that nothing the
+       water touches is left to fill when the chunk is first streamed in.
+       Nothing is walled off to keep it out. */
     for (x = 0; x < world->width; ++x) {
         int y;
+        bool open = true;
 
-        for (y = seaLevel; y < world->height; ++y) {
-            if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) break;
-            WorldSetGeneratedCell(world, x, y, MATERIAL_WATER);
-        }
-    }
-
-    /* Then the bed it stands in.
-     *
-     * Caves are dug long before the sea is poured and they reach close under
-     * the shelf, so a cave mouth in the sea floor is a hole in the bottom of
-     * the ocean: the whole sea drains into the cave system on the first tick,
-     * which on a map this size means most of the water in the world going
-     * somewhere the player will never look. Every empty cell touching the sea
-     * from below or from the side becomes rock, exactly the way an underground
-     * pocket is lined. Nothing above the water line is touched, so the surface
-     * is still open sky.
-     *
-     * A second pass rather than part of the fill: the column to the right has
-     * not been poured yet while the first pass is walking left to right, and
-     * sealing it would wall off the sea from its own next column. */
-    for (x = 0; x < world->width; ++x) {
-        int y;
-
-        for (y = seaLevel; y < world->height; ++y) {
-            if (WorldMaterialAt(world, x, y) != MATERIAL_WATER) break;
-            if (WorldInBounds(world, x - 1, y) &&
-                WorldMaterialAt(world, x - 1, y) == MATERIAL_EMPTY) {
-                WorldSetGeneratedCell(world, x - 1, y, MATERIAL_ROCK);
-            }
-            if (WorldInBounds(world, x + 1, y) &&
-                WorldMaterialAt(world, x + 1, y) == MATERIAL_EMPTY) {
-                WorldSetGeneratedCell(world, x + 1, y, MATERIAL_ROCK);
-            }
-            if (WorldInBounds(world, x, y + 1) &&
-                WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
-                WorldSetGeneratedCell(world, x, y + 1, MATERIAL_ROCK);
+        for (y = WorldSkyRows(world); y < seaLevel; ++y) {
+            if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) {
+                open = false;
+                break;
             }
         }
+        if (!open || WorldMaterialAt(world, x, seaLevel) != MATERIAL_EMPTY) continue;
+        WorldSetGeneratedCell(world, x, seaLevel, MATERIAL_WATER);
+        queue[tail++] = seaLevel * world->width + x;
     }
+    while (head < tail) {
+        int cell = queue[head++];
+        int cellX = cell % world->width;
+        int cellY = cell / world->width;
+        static const int stepX[3] = {1, -1, 0};
+        static const int stepY[3] = {0, 0, 1};
+        int direction;
+
+        for (direction = 0; direction < 3; ++direction) {
+            int nextX = WorldWrapColumn(cellX + stepX[direction], world->width);
+            int nextY = cellY + stepY[direction];
+
+            if (nextY >= world->height ||
+                WorldMaterialAt(world, nextX, nextY) != MATERIAL_EMPTY) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, nextX, nextY, MATERIAL_WATER);
+            if (tail == capacity) {
+                /* Compact what has been read, then grow if that was not
+                   enough. */
+                memmove(queue, queue + head, (tail - head) * sizeof(*queue));
+                tail -= head;
+                head = 0;
+                if (tail == capacity) {
+                    int *grown = realloc(queue, capacity * 2u * sizeof(*queue));
+
+                    if (grown == NULL) {
+                        free(queue);
+                        return;
+                    }
+                    queue = grown;
+                    capacity *= 2u;
+                }
+            }
+            queue[tail++] = nextY * world->width + nextX;
+        }
+    }
+    free(queue);
 }
 
 /* ---- flora ---------------------------------------------------------------
@@ -1128,7 +1155,11 @@ static int SurfaceSolidY(const World *world, int x)
        reading three thousand rows of untouched sky per column was most of
        the time it took to make a world. */
     for (y = WorldSkyRows(world); y < world->height; ++y) {
-        if (MaterialIsSolid(WorldMaterialAt(world, x, y))) return y;
+        CellMaterial material = WorldMaterialAt(world, x, y);
+
+        /* A plant is never the ground: a blade leaning over from the next
+           column is not where this column's soil is. */
+        if (MaterialIsSolid(material) && !MaterialIsFlora(material)) return y;
     }
     return -1;
 }
@@ -1253,28 +1284,34 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
     for (step = 0; step < steps; ++step) {
         int cellX = (int)floorf(x);
         int cellY = (int)floorf(y);
-        int side;
+        CellMaterial ahead;
+        /* Thicker near the base, tapering along the limb as well as between
+           levels: a trunk one thickness from root to fork is a post with a
+           shape on top. */
+        float here = (float)thickness -
+                     ((float)thickness * 0.45f) * (float)step / (float)steps;
+        float half = here * 0.5f;
+        float across;
 
         if (!WorldInBounds(world, cellX, cellY)) return;
-        /* A limb stops where it meets anything: it does not bore through a
-           cliff, and it does not overwrite another tree. */
-        if (WorldMaterialAt(world, cellX, cellY) != MATERIAL_EMPTY) {
-            if (step > 1) break;
-        } else {
-            WorldSetGeneratedCell(world, cellX, cellY, MATERIAL_WOOD);
+        ahead = WorldMaterialAt(world, cellX, cellY);
+        /* A limb stops where it meets anything but the tree: it does not
+           bore through a cliff. The tree itself is no obstacle — a thick limb
+           that leans lays the cells of its next step while drawing this one,
+           and a branch grows on through the leaves of the one before it;
+           stopping at either cut every tree off at its first fork. */
+        if (ahead != MATERIAL_EMPTY && !MaterialIsFlora(ahead) && step > 1) {
+            break;
         }
-        /* Thicker near the base, and the extra cells go on the side the limb is
-           leaning away from, which is where a real one carries its weight. The
-           taper runs along the limb as well as between levels: a trunk that is
-           one thickness from root to fork is a post with a shape on top. */
-        int here = thickness - (thickness - 1) * step / steps;
+        /* The cross-section, square to the limb and centred on it, so a
+           trunk is round rather than a stair of cells hung off one side. */
+        for (across = -half; across <= half + 0.001f; across += 0.5f) {
+            int sideX = (int)floorf(x - sinf(angle) * across);
+            int sideY = (int)floorf(y + cosf(angle) * across);
 
-        for (side = 1; side < here; ++side) {
-            int offsetX = cellX + (angle > -1.5708f ? -side : side);
-
-            if (WorldInBounds(world, offsetX, cellY) &&
-                WorldMaterialAt(world, offsetX, cellY) == MATERIAL_EMPTY) {
-                WorldSetGeneratedCell(world, offsetX, cellY, MATERIAL_WOOD);
+            if (WorldInBounds(world, sideX, sideY) &&
+                WorldMaterialAt(world, sideX, sideY) == MATERIAL_EMPTY) {
+                WorldSetGeneratedCell(world, sideX, sideY, MATERIAL_WOOD);
             }
         }
         x += cosf(angle);
@@ -1289,14 +1326,14 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
                  (-1.5708f - angle) * 0.045f;
     }
 
-    /* Foliage on the last three levels rather than only on the tips. Hung on
+    /* Foliage on the last four levels rather than only on the tips. Hung on
        the tips alone it forms a shell at one distance from the root and the
        tree reads as an umbrella; hung on every level down to the fork it fills
        the crown with clumps at three sizes, which is what gives it depth
        instead of an outline. Each level inward carries a smaller clump, so the
        crown still thins outward. */
-    if (depth <= 2 && canopy != MATERIAL_EMPTY && canopyRadius > 0) {
-        static const float shrink[3] = {1.0f, 0.70f, 0.45f};
+    if (depth <= 3 && canopy != MATERIAL_EMPTY && canopyRadius > 0) {
+        static const float shrink[4] = {1.0f, 0.78f, 0.58f, 0.42f};
         int radius = (int)((float)canopyRadius * shrink[depth]);
 
         if (radius > 0) {
@@ -1321,9 +1358,11 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
             float turn = spread * (0.9f + (float)RngRange(rng, 0, 40) * 0.01f);
             float shorter = length * (0.52f + (float)RngRange(rng, 0, 22) * 0.01f);
 
+            /* A branch carries a little over half its parent's girth. */
+            int girth = (int)((float)thickness * 0.6f + 0.5f);
+
             FloraGrowLimb(world, x, y, angle + turn, shorter, depth - 1,
-                          thickness > 1 ? thickness - 1 : 1, rng, canopy,
-                          canopyRadius);
+                          girth > 1 ? girth : 1, rng, canopy, canopyRadius);
         }
     }
 }
@@ -1344,7 +1383,7 @@ static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
        thicket of twigs nobody can read, and a dead tree is a silhouette. */
     /* Three levels or four, decided per tree: a stand where every trunk
        divides the same number of times is a stand of one tree repeated. */
-    int depth = canopy == MATERIAL_EMPTY ? 3 : RngRange(rng, 3, 4);
+    int depth = canopy == MATERIAL_EMPTY ? 4 : RngRange(rng, 4, 5);
 
     if (!FloraSpaceIsClear(world, x, groundY - 1, 1, trunkHeight / 2)) {
         return;
@@ -1354,7 +1393,7 @@ static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
        at the top; the crown is supposed to start where the trunk first
        divides, and the rest of the height comes from the divisions. */
     FloraGrowLimb(world, (float)x + 0.5f, (float)groundY - 0.5f,
-                  -1.5708f + lean, (float)trunkHeight * 0.62f, depth, 16, rng,
+                  -1.5708f + lean, (float)trunkHeight * 0.62f, depth, 11, rng,
                   canopy, canopyRadius);
 }
 
@@ -1569,6 +1608,55 @@ static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
     }
 }
 
+/* A blade of grass, or none, from the soil at (x, groundY).
+ *
+ * A row of identical columns reads as a strip of plastic laid on the
+ * ground. A meadow is patches — thick and tall in one place, short and thin
+ * in the next, bare soil between — and every blade is its own height and
+ * leans its own way, dark at the foot and bright at the tip, and now and
+ * then carries a flower. The patches are noise along the ground, so they
+ * are the same wherever the column is generated from; the blade's own
+ * height, lean and flower come from the column's stream. The soil itself
+ * stays soil: the blade stands on it. */
+static void FloraGrowGrass(World *world, int x, int groundY, Rng *rng)
+{
+    float meadow = ValueNoise1D(world->seed, x, 46, world->width, GENERATION_DETAIL) * 0.5f +
+                   0.5f;
+    float lushness = meadow * (0.4f + 0.6f * meadow);
+    int height;
+    float lean;
+    float drift = 0.0f;
+    bool flower;
+    int row;
+
+    if (RngRange(rng, 0, 999) > (int)(420.0f + 580.0f * meadow)) {
+        return;
+    }
+    height = 3 + (int)((float)RngRange(rng, 25, 100) * 0.01f * (5.0f + 17.0f * lushness));
+    lean = (float)RngRange(rng, -45, 45) * 0.01f;
+    flower = height > 6 && RngRange(rng, 0, 99) < 5;
+    for (row = 1; row <= height; ++row) {
+        int cellX = x + (int)floorf(drift + 0.5f);
+        int cellY = groundY - row;
+        float along = (float)row / (float)height;
+        uint8_t shade;
+
+        if (!WorldInBounds(world, cellX, cellY) ||
+            WorldMaterialAt(world, cellX, cellY) != MATERIAL_EMPTY) {
+            break;
+        }
+        WorldSetGeneratedCell(world, cellX, cellY, MATERIAL_GRASS);
+        shade = (uint8_t)(6.0f + 54.0f * along * along + (float)RngRange(rng, 0, 4));
+        if (flower && row == height) {
+            shade = (uint8_t)RngRange(rng, 0, 1);
+        }
+        WorldSetShade(world, cellX, cellY, shade);
+        /* The lean grows toward the tip: a blade bends, it is not planted
+           at an angle. */
+        drift += lean * along;
+    }
+}
+
 static void GenerateFlora(World *world)
 {
     int x;
@@ -1596,31 +1684,14 @@ static void GenerateFlora(World *world)
                    trunk would stand on, and asking for the trunk afterwards
                    found that cell occupied — which is how raising the tree
                    chance made the forest thinner. */
-                if (RngRange(&rng, 0, 999) < 9) {
+                if (RngRange(&rng, 0, 999) < 16) {
                     FloraPlaceBroadleaf(world, x, surface, &rng,
                                         RngRange(&rng, 96, 150),
-                                        RngRange(&rng, 22, 36), MATERIAL_LEAF);
+                                        RngRange(&rng, 12, 18), MATERIAL_LEAF);
                 }
                 /* Grass on almost every exposed cell of soil: it is the
                    cheapest thing that makes ground read as living. */
-                if (RngRange(&rng, 0, 99) < 86 &&
-                    WorldMaterialAt(world, x, surface - 1) == MATERIAL_EMPTY) {
-                    int tuft = RngRange(&rng, 5, 12);
-                    int blade;
-
-                    /* One cell alone is a tint on the ground; a tuft is
-                       something the eye reads as growing. */
-                    for (blade = 0; blade < tuft; ++blade) {
-                        if (!WorldInBounds(world, x, surface - blade)) break;
-                        if (blade > 0 &&
-                            WorldMaterialAt(world, x, surface - blade) !=
-                                MATERIAL_EMPTY) {
-                            break;
-                        }
-                        WorldSetGeneratedCell(world, x, surface - blade,
-                                              MATERIAL_GRASS);
-                    }
-                }
+                FloraGrowGrass(world, x, surface, &rng);
                 break;
             case WORLD_BIOME_DUNES:
                 if (ground != MATERIAL_SAND) break;
@@ -1843,7 +1914,12 @@ static void GenerateCaverns(World *world)
                 int y;
 
                 for (y = centerY; y <= centerY + depthBelow; ++y) {
-                    if (WorldInBounds(world, centerX + dx, y)) {
+                    CellMaterial here = WorldMaterialAt(world, centerX + dx, y);
+
+                    /* Ground becomes the basin's rock; a hollow that was
+                       already there stays one. */
+                    if (WorldInBounds(world, centerX + dx, y) && MaterialIsSolid(here) &&
+                        !MaterialIsDynamic(here)) {
                         WorldSetGeneratedCell(world, centerX + dx, y, host);
                     }
                 }
@@ -1995,69 +2071,102 @@ static void GenerateTunnels(World *world)
     }
 }
 
-/* Every underground pool held on every side it could leak from.
+/* Every generated pool left the way the water would leave it.
  *
- * The caverns are lined when they are dug, but everything dug after them —
- * the tunnels, the dungeons, the mine workings, the pockets — may pass a
- * cell away from their water, and a lake that meets a tunnel drains into it
- * on the first tick: what the player finds is a dry cavern and a flooded
- * corridor. The sea seals its own bed the same way. Only the chunks that
- * hold any liquid are looked at, which the per-chunk counts already know. */
-static void SealUndergroundLiquids(World *world)
+ * Features are laid one after another and each may open the one before it:
+ * a tunnel dug past a lake, a cave under a pond's bed, a vault into a lava
+ * pocket. Walling each of them off made rims of rock nobody built. Instead
+ * the liquid is let go the way it would go on its first tick, and removed
+ * rather than moved: a cell with nothing under it or beside it goes, then
+ * whatever that leaves standing on nothing goes, until every pool is held
+ * by what is around it — a lake cut by a tunnel stands at the height of the
+ * cut, one with a hole in its bed is gone. A chunk streamed into play then
+ * has nothing in it to flow. Only the chunks the per-chunk counts say hold
+ * liquid are looked at. */
+static bool LiquidHeld(const World *world, int x, int y)
 {
-    int surfaceBand = (int)WorldGroundY(world, 0.0f);
-    int *tops = malloc((size_t)world->width * sizeof(*tops));
+    return (y + 1 >= world->height || WorldMaterialAt(world, x, y + 1) != MATERIAL_EMPTY) &&
+           WorldMaterialAt(world, x - 1, y) != MATERIAL_EMPTY &&
+           WorldMaterialAt(world, x + 1, y) != MATERIAL_EMPTY;
+}
+
+static void SettleLiquids(World *world)
+{
+    size_t capacity = 1u << 16;
+    int *queue = malloc(capacity * sizeof(*queue));
+    size_t count = 0;
     int chunkY;
-    int column;
 
-    /* The top of every column once: asked per liquid cell, the search from
-       the top of the world costs more than the rest of generation. */
-    if (tops == NULL) return;
-    for (column = 0; column < world->width; ++column) {
-        tops[column] = SurfaceSolidY(world, column);
-    }
-
+    if (queue == NULL) return;
     for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
         int chunkX;
 
         for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
             size_t chunk = WorldChunkIndex(world, chunkX, chunkY);
-            int firstY = chunkY * WORLD_CHUNK_SIZE;
             int y;
 
             if (world->chunkWater[chunk] == 0u && world->chunkLava[chunk] == 0u) {
                 continue;
             }
-            for (y = firstY; y < firstY + WORLD_CHUNK_SIZE && y < world->height; ++y) {
+            for (y = chunkY * WORLD_CHUNK_SIZE;
+                 y < (chunkY + 1) * WORLD_CHUNK_SIZE && y < world->height; ++y) {
                 int x;
 
-                if (y < surfaceBand) continue;
                 for (x = chunkX * WORLD_CHUNK_SIZE;
                      x < (chunkX + 1) * WORLD_CHUNK_SIZE && x < world->width; ++x) {
-                    CellMaterial liquid = WorldMaterialAt(world, x, y);
-                    CellMaterial host;
+                    if (!MaterialIsLiquid(WorldMaterialAt(world, x, y)) ||
+                        LiquidHeld(world, x, y)) {
+                        continue;
+                    }
+                    if (count == capacity) {
+                        int *grown = realloc(queue, capacity * 2u * sizeof(*queue));
 
-                    if (!MaterialIsLiquid(liquid)) continue;
-                    /* A pool open to the sky is a surface pool, held by its
-                       own basin; the sealing is for the ones under a roof. */
-                    if (y < tops[x]) continue;
-                    host = y >= (int)WorldGroundY(world, 0.80f) ? MATERIAL_BASALT
-                                                                : MATERIAL_ROCK;
-                    if (WorldMaterialAt(world, x - 1, y) == MATERIAL_EMPTY) {
-                        WorldSetGeneratedCell(world, x - 1, y, host);
+                        if (grown == NULL) {
+                            free(queue);
+                            return;
+                        }
+                        queue = grown;
+                        capacity *= 2u;
                     }
-                    if (WorldMaterialAt(world, x + 1, y) == MATERIAL_EMPTY) {
-                        WorldSetGeneratedCell(world, x + 1, y, host);
-                    }
-                    if (WorldInBounds(world, x, y + 1) &&
-                        WorldMaterialAt(world, x, y + 1) == MATERIAL_EMPTY) {
-                        WorldSetGeneratedCell(world, x, y + 1, host);
-                    }
+                    queue[count++] = y * world->width + x;
                 }
             }
         }
     }
-    free(tops);
+    /* A stack: the order does not change where it ends. */
+    while (count > 0) {
+        int cell = queue[--count];
+        int x = cell % world->width;
+        int y = cell / world->width;
+        static const int stepX[3] = {1, -1, 0};
+        static const int stepY[3] = {0, 0, -1};
+        int direction;
+
+        if (!MaterialIsLiquid(WorldMaterialAt(world, x, y)) || LiquidHeld(world, x, y)) {
+            continue;
+        }
+        WorldSetGeneratedCell(world, x, y, MATERIAL_EMPTY);
+        for (direction = 0; direction < 3; ++direction) {
+            int nextX = WorldWrapColumn(x + stepX[direction], world->width);
+            int nextY = y + stepY[direction];
+
+            if (nextY < 0 || !MaterialIsLiquid(WorldMaterialAt(world, nextX, nextY))) {
+                continue;
+            }
+            if (count == capacity) {
+                int *grown = realloc(queue, capacity * 2u * sizeof(*queue));
+
+                if (grown == NULL) {
+                    free(queue);
+                    return;
+                }
+                queue = grown;
+                capacity *= 2u;
+            }
+            queue[count++] = nextY * world->width + nextX;
+        }
+    }
+    free(queue);
 }
 
 /* Snow on everything high enough, and on the whole of the frost: a few cells
@@ -2131,10 +2240,59 @@ bool WorldGenNearSpawn(const World *world, int x)
     return IsNearSpawn(world, x);
 }
 
+void WorldGenGrowGrass(World *world, int x, int groundY, Rng *rng)
+{
+    FloraGrowGrass(world, x, groundY, rng);
+}
+
 void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng)
 {
     FloraPlaceBroadleaf(world, x, groundY, rng, RngRange(rng, 80, 130),
-                        RngRange(rng, 20, 32), MATERIAL_LEAF);
+                        RngRange(rng, 11, 16), MATERIAL_LEAF);
+}
+
+/* Sand as a blanket on limestone.
+ *
+ * Sand is a falling material, and the world is generated asleep: a grain
+ * laid over a cave, on the lip of a mesa or against the wall of a pit sits
+ * where it was put only until its chunk is first streamed into play, and
+ * then the whole slope slides at once — a desert that costs the simulation
+ * everything the moment the player arrives. So below a blanket of
+ * SAND_BLANKET_ROWS the dune is limestone, and anywhere a grain would move
+ * on its first tick — nothing solid under it, or open on either side below —
+ * it is laid as limestone too. A rule applied from the top of the column
+ * down never makes a grain it has already passed unstable: what it changes
+ * becomes solid, and solid holds up everything above it. */
+#define SAND_BLANKET_ROWS 14
+
+static bool SandHeldAt(const World *world, int x, int y)
+{
+    CellMaterial material = WorldMaterialAt(world, x, y);
+
+    return MaterialIsSolid(material) && !MaterialIsFlora(material);
+}
+
+static void SettleSand(World *world)
+{
+    int x;
+
+    for (x = 0; x < world->width; ++x) {
+        int run = 0;
+        int y;
+
+        for (y = WorldSkyRows(world); y < world->height; ++y) {
+            if (WorldMaterialAt(world, x, y) != MATERIAL_SAND) {
+                run = 0;
+                continue;
+            }
+            ++run;
+            if (run > SAND_BLANKET_ROWS || y + 1 >= world->height ||
+                !SandHeldAt(world, x, y + 1) || !SandHeldAt(world, x - 1, y + 1) ||
+                !SandHeldAt(world, x + 1, y + 1)) {
+                WorldSetGeneratedCell(world, x, y, MATERIAL_LIMESTONE);
+            }
+        }
+    }
 }
 
 void WorldGenerateBiomeTerrain(World *world)
@@ -2157,10 +2315,14 @@ void WorldGenerateBiomeTerrain(World *world)
     /* After every feature that could change the shape of the ground, so the
        coastline is the coastline the world actually ended up with. */
     GenerateSea(world);
-    SealUndergroundLiquids(world);
     /* Before the plants, so a pine stands in the snow and the treeline is
        where the snow begins. */
     GenerateSnow(world);
+    /* After everything that cuts or piles the ground, before the plants:
+       no generated grain of sand is left with nothing under it. */
+    SettleSand(world);
+    /* And then the water, on ground that will no longer move. */
+    SettleLiquids(world);
     /* Last, so that every plant grows on the surface as it finally is rather
        than on one a later feature was going to bury. */
     GenerateFlora(world);
@@ -2255,7 +2417,7 @@ void WorldGenerateBackWalls(World *world)
             if (y >= deep) {
                 wall = MATERIAL_BASALT;
             } else if (depth < 70) {
-                wall = biome == WORLD_BIOME_DUNES    ? MATERIAL_SAND
+                wall = biome == WORLD_BIOME_DUNES    ? MATERIAL_LIMESTONE
                        : biome == WORLD_BIOME_FROST  ? MATERIAL_ICE
                        : biome == WORLD_BIOME_VOLCANIC ? MATERIAL_ROCK
                        : biome == WORLD_BIOME_OCEAN  ? MATERIAL_SAND

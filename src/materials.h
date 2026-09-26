@@ -53,6 +53,10 @@ typedef enum MaterialPattern {
        joints, and every fourth course a band with a stepped key carved
        along it: precursor masonry. */
     MATERIAL_PATTERN_ASHLAR,
+    /* Blades: the tone is the cell's shade read straight, dark to light, so
+       whatever lays a blade gives it a dark foot and a bright tip; the
+       lowest shades are the accent — a flower on the tip. */
+    MATERIAL_PATTERN_BLADE,
 } MaterialPattern;
 
 typedef struct MaterialInfo {

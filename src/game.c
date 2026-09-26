@@ -100,6 +100,10 @@ bool GameInit(GameState *game, GameConfig config)
 
 /* Independent streams derived from the world seed, so that adding a draw to
    one system cannot shift what another produces. */
+/* Falling pieces of back wall one cut may hand to presentation; the rest
+   of what came away simply goes. */
+#define GAME_BACK_WALL_PIECES 48
+
 #define GAME_RNG_STREAM_POWERS 11u
 #define GAME_RNG_STREAM_PARTICLES 12u
 
@@ -301,8 +305,36 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            This is also the only place automatic detachment runs. It does no
            scanning of its own — it drains the damage the destructive powers
            recorded, and a tick with no destruction in it does nothing at all. */
-        TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
-                             events);
+        {
+            /* The back layer is asked after the terrain: what came loose
+               here has left the world by now, and a wall that stood only
+               because that did stands on nothing. The log is copied first,
+               because the detach check drains it. */
+            WorldDestructionRegion cut[MAX_WORLD_DESTRUCTION_REGIONS];
+            int cuts = game->world.destructionCount;
+            int index;
+
+            memcpy(cut, game->world.destruction, (size_t)cuts * sizeof(cut[0]));
+            TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
+                                 events);
+            for (index = 0; index < cuts; ++index) {
+                WorldBackWallPiece pieces[GAME_BACK_WALL_PIECES];
+                int count = WorldBreakBackWalls(&game->world, cut[index].minimumX,
+                                                cut[index].minimumY, cut[index].maximumX,
+                                                cut[index].maximumY, pieces,
+                                                GAME_BACK_WALL_PIECES);
+                int piece;
+
+                for (piece = 0; piece < count; ++piece) {
+                    (void)GameEventsPush(events, (GameEvent){
+                        .type = GAME_EVENT_BACK_WALL_FALL,
+                        .position = {(float)pieces[piece].x, (float)pieces[piece].y},
+                        .material = (CellMaterial)pieces[piece].material,
+                        .count = (int)pieces[piece].mask,
+                    });
+                }
+            }
+        }
         /* After the detach check has drained the log: what crumbles here is
            logged for the next tick's check, so a slab undermined by a
            cave-in comes loose the way a slab cut by a blast does. */

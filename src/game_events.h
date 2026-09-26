@@ -41,6 +41,11 @@ typedef enum GameEventType {
        of body (zero for the character). Repeated while the burn lasts, at
        most every `eventInterval`. */
     GAME_EVENT_REENTRY,
+    /* A piece of the back layer lost its hold and came away. `position` is
+       the top-left cell of the piece, `count` a mask of which of its 4x4
+       blocks it carries (bit by * 4 + bx), `material` what it is made of.
+       The world has already removed it; presentation lets it fall and fade. */
+    GAME_EVENT_BACK_WALL_FALL,
     GAME_EVENT_HEAVY_LANDING,
     GAME_EVENT_FOOTSTEP,
     GAME_EVENT_TAKEOFF,

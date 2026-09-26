@@ -98,9 +98,10 @@ make run RUN_ARGS="--seed 0x1234"   # replay a reported world
   is how a mechanic stays in the engine — reachable by tests and by world
   reactions — without being something the player can fire. Explosion is exactly
   that, and must not regain a binding.
-- Beams start at `PlayerBeamOrigin`, used by the gameplay ray and the drawn beam
-  alike. A beam cast from the chest and drawn from the head reads as a bug the
-  moment the player aims down.
+- Laser and nuclear aiming start at `PlayerBeamOrigin`; the cryo ray uses
+  `PlayerHandOrigin`, and force originates at `PlayerForceOrigin`. Gameplay and
+  presentation share each emission point. A beam cast from one body part and
+  drawn from another reads as a bug the moment the player aims down.
 - Nothing slows the player in a liquid, and nothing may start to: no flat
   multiplier, no drag however physical — both were tried and both were
   removed at the player's request. Flying through the world is the point of
@@ -236,13 +237,27 @@ coherent phase with an explanatory message.
   scrolling one for one with the ground, they read as specks in front of the
   player.
 - The back layer (`World.backWalls`, one material per 4×4 block) is made with
-  the world and never changed by play; the page builder draws it wherever a
-  cell is empty, so underground air is a hollow in rock rather than a window
-  to the backdrop. It is presentation: nothing simulates or lights from it.
-- Plants stand behind the character: player collision and player-body
-  contacts skip flora, and passing through a canopy strips leaves out of the
-  world instead (`PlayerBrushFlora`). Everything else — drill, fire, laser,
-  blasts, detachment — still treats a tree as solid.
+  the world; the page builder draws it wherever a cell is empty, so
+  underground air is a hollow in rock rather than a window to the backdrop.
+  Nothing simulates it. Play changes it in one way only: after a destruction
+  (the same log the detach check drains, copied before it is drained),
+  `WorldBreakBackWalls` asks inside a fixed window whether the layer near the
+  cut still touches a static solid cell, and a part that does not is removed
+  and published as `GAME_EVENT_BACK_WALL_FALL` pieces, which the renderer's
+  `BackWallDebris` pool lets fall and fade behind the world. The light reads
+  the layer to tell air inside the ground from air under the sky.
+- Plants stand behind the character: player collision, player-body contacts
+  and body-world collision skip flora, the light treats it as transparent, and
+  passing through a canopy strips leaves out of the world instead
+  (`PlayerBrushFlora`, which also sweeps the leaves it leaves orphaned).
+  Everything else — drill, fire, laser, blasts, detachment — still treats a
+  tree as solid.
+- Generated dynamics are generated at rest, never walled in. Sand is a
+  blanket over `LIMESTONE`, and any grain that would move on its first tick is
+  laid as limestone (`SettleSand`). The sea is poured by a flood fill into
+  everything under the sea level it reaches, and every other pool is let go
+  the way it would go and removed rather than moved (`SettleLiquids`): a lake a
+  tunnel cut stands at the cut. Never reintroduce rock seals round liquids.
 - World features are sized against the landscape, not the character: trees,
   caves, halls and gateways are many times his sixteen cells. Do not shrink
   them to keep a count in a test.
@@ -399,7 +414,8 @@ coherent phase with an explanatory message.
 - The world module is `world.h` plus `materials.c`, `world_storage.c`,
   `world_simulation.c`, `world_thermal.c`, `world_generation.c`, `world_biomes.c`,
   `world_lighting.c`, `world_effects.c`, `world_render_data.c`,
-  `world_components.c`, `world_fluid.c` and `world_structures.c` (precursor
+  `world_components.c`, `world_fluid.c`, `world_back_walls.c` (the back
+  layer coming away where nothing holds it) and `world_structures.c` (precursor
   gateways, terraces, obelisks, vaults and reliquaries; wrecked ships,
   outposts and mines; sky islands — built on what `world_biomes.c`
   made through the `WorldGen*` helpers in `world_internal.h`).

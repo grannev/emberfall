@@ -237,6 +237,10 @@ bool WorldInit(World *world, int width, int height)
     world->backWallRows = (height + WORLD_BACK_WALL_SCALE - 1) / WORLD_BACK_WALL_SCALE;
     world->backWalls = calloc((size_t)world->backWallColumns * (size_t)world->backWallRows,
                               sizeof(*world->backWalls));
+    world->backWallVisit = calloc((size_t)WORLD_BACK_WALL_WINDOW * WORLD_BACK_WALL_WINDOW,
+                                  sizeof(*world->backWallVisit));
+    world->backWallQueue = calloc((size_t)WORLD_BACK_WALL_WINDOW * WORLD_BACK_WALL_WINDOW,
+                                  sizeof(*world->backWallQueue));
     world->dirtyChunks = malloc(chunkCount * sizeof(*world->dirtyChunks));
     world->lightDirtyChunks = malloc(chunkCount * sizeof(*world->lightDirtyChunks));
     if (world->dirtyChunks != NULL) {
@@ -259,6 +263,7 @@ bool WorldInit(World *world, int width, int height)
         world->nextRowCount == NULL || world->chunkWater == NULL ||
         world->chunkLava == NULL || world->dirtyChunks == NULL ||
         world->lightDirtyChunks == NULL || world->backWalls == NULL ||
+        world->backWallVisit == NULL || world->backWallQueue == NULL ||
         world->lightSky == NULL || world->lightEmber == NULL ||
         world->lightEmission == NULL || world->lightOpacity == NULL ||
         world->lightScratch == NULL) {
@@ -287,6 +292,8 @@ void WorldUnload(World *world)
     free(world->dirtyChunks);
     free(world->lightDirtyChunks);
     free(world->backWalls);
+    free(world->backWallVisit);
+    free(world->backWallQueue);
     free(world->lightSky);
     free(world->lightEmber);
     free(world->lightEmission);
@@ -580,4 +587,12 @@ void WorldClearDestruction(World *world)
         return;
     }
     world->destructionCount = 0;
+}
+
+CellMaterial WorldGetBackWall(const World *world, int x, int y)
+{
+    if (world == NULL || world->cells == NULL) {
+        return MATERIAL_EMPTY;
+    }
+    return WorldBackWallAt(world, x, y);
 }

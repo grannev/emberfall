@@ -9,6 +9,7 @@
 #include "environment_renderer.h"
 #include "sky_renderer.h"
 #include "space_renderer.h"
+#include "backwall_debris.h"
 #include "game.h"
 #include "light_renderer.h"
 #include "presentation_fx.h"
@@ -54,6 +55,7 @@ typedef struct Renderer {
     LightRenderer light;
     EnvironmentRenderer environment;
     SpaceRenderer space;
+    BackWallDebris backWallDebris;
     SkyRenderer sky;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;

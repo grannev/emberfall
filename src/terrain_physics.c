@@ -78,8 +78,13 @@ static bool TerrainBodyIsLost(const TerrainBody *body, const World *world,
 static bool TerrainWorldCellIsSolid(const World *world, int x, int y)
 {
     /* Outside the map reads as rock, exactly as it does for the player and for
-       every beam: the border is a wall, and a body must not sail through it. */
-    return WorldMaterialIsSolid(WorldGetCell(world, x, y));
+       every beam: the border is a wall, and a body must not sail through it.
+       Plants are the back of the picture for bodies as for the character: a
+       felled crown drops past the trees behind it instead of catching on a
+       stray leaf. */
+    CellMaterial material = WorldGetCell(world, x, y);
+
+    return WorldMaterialIsSolid(material) && !MaterialIsFlora(material);
 }
 
 /* Chooses which way to push a sample out of the solid cell it landed in.

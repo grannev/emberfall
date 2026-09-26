@@ -335,6 +335,7 @@ bool RendererInit(Renderer *renderer, const GameState *game,
     /* A backdrop without its textures simply draws nothing: space is not a
        reason to refuse to start. */
     (void)SpaceRendererInit(&renderer->space, game->worldSeed);
+    (void)BackWallDebrisInit(&renderer->backWallDebris);
     if (!SkyRendererLoad(&renderer->sky)) {
         TraceLog(LOG_WARNING, "RENDER: Cloud textures unavailable; the sky has no clouds");
     }
@@ -384,6 +385,8 @@ void RendererUpdatePresentation(Renderer *renderer,
     EnvironmentRendererUpdate(&renderer->environment, deltaTime);
     PresentationFxUpdate(&renderer->effects, deltaTime);
     (void)PresentationFxConsumeEvents(&renderer->effects, events);
+    BackWallDebrisUpdate(&renderer->backWallDebris, deltaTime);
+    BackWallDebrisConsumeEvents(&renderer->backWallDebris, events);
 }
 
 void RendererClearPresentation(Renderer *renderer)
@@ -392,6 +395,7 @@ void RendererClearPresentation(Renderer *renderer)
         return;
     }
     PresentationFxClear(&renderer->effects);
+    BackWallDebrisClear(&renderer->backWallDebris);
 }
 
 void RendererShiftPresentation(Renderer *renderer, float dx)
@@ -400,6 +404,7 @@ void RendererShiftPresentation(Renderer *renderer, float dx)
         return;
     }
     PresentationFxShift(&renderer->effects, dx);
+    BackWallDebrisShift(&renderer->backWallDebris, dx);
     renderer->travel -= dx;
 }
 
@@ -527,6 +532,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         /* The world and whatever was torn out of it, lit by the same field:
            a slab is as dark as the cave it is carried into. */
         LightRendererBegin(&renderer->light, &game->world, LIGHT_PASS_SCENE);
+            /* Behind the world: what falls away from the back layer falls
+               behind everything still standing. */
+            BackWallDebrisDraw(&renderer->backWallDebris);
             WorldRendererDrawScene(&renderer->world, &game->world, visible);
             TerrainBodyRendererDrawScene(&renderer->terrainBodies,
                                          &game->dynamicTerrain, visible);
@@ -700,5 +708,6 @@ void RendererUnload(Renderer *renderer)
     WorldRendererUnload(&renderer->world);
     SkyRendererUnload(&renderer->sky);
     SpaceRendererUnload(&renderer->space);
+    BackWallDebrisUnload(&renderer->backWallDebris);
     *renderer = (Renderer){0};
 }

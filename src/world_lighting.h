@@ -59,6 +59,13 @@
 #define WORLD_LIGHT_STEPS 512.0f
 /* Temperature at which material starts to glow on its own, and the span over
    which that glow reaches full strength. */
+/* How much sky open air under an overhang regains per light cell further
+   down from it: a shadow fades out over about a hundred cells. */
+#define WORLD_SKY_RECOVERY 0.07f
+/* The trace of opacity that marks empty air inside the ground (the back
+   layer is behind it), so the sky seed does not let daylight recover
+   there. Far below anything that attenuates. */
+#define WORLD_LIGHT_ENCLOSED 0.0005f
 #define WORLD_LIGHT_HEAT_FLOOR 180.0f
 #define WORLD_LIGHT_HEAT_SPAN 520.0f
 

@@ -1172,7 +1172,7 @@ static void PlaceIsland(World *world, Rng *rng, int centerX, int baseY, int half
         if (top > 0 && top < baseY + 12 &&
             WorldMaterialAt(world, centerX + x, top) == MATERIAL_DIRT &&
             WorldMaterialAt(world, centerX + x, top - 1) == MATERIAL_EMPTY) {
-            StructureSet(world, centerX + x, top - 1, MATERIAL_GRASS);
+            WorldGenGrowGrass(world, centerX + x, top, rng);
         }
     }
     /* On some, what the precursors left up here: an obelisk lamp on a

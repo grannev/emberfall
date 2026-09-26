@@ -1479,8 +1479,9 @@ static void test_the_world_holds_a_sea_and_ponds_on_the_land(void)
     CHECK(deepColumns > 400,
           "only %d columns hold water twenty cells deep", deepColumns);
     /* And ponds, spread over the land rather than gathered at the coast. */
-    /* Fewer and larger than they were: a pond is a place now. */
-    CHECK(landSurfaceWater > 180,
+    /* Fewer and larger than they were: a pond is a place now, and one whose
+       bed a cave opened is generated already drained. */
+    CHECK(landSurfaceWater > 150,
           "only %d columns away from the ocean hold standing water",
           landSurfaceWater);
 
@@ -10642,22 +10643,6 @@ static void test_movement_survives_an_absurd_velocity(void)
    in or coming out fast breaks the surface and tells presentation; a fast
    pass just above the water lifts it. Dry flight is untouched by any of it. */
 
-/* Flies `steps` frames through the fluid model and the player together,
-   without pinning the position: these tests are about what the liquid does
-   to a character who is actually somewhere. */
-static void SwimPlayer(FluidInteractionState *fluid, Player *player, World *world,
-                       GameEventBuffer *events, Vector2 input, bool boost,
-                       int steps)
-{
-    int step;
-
-    for (step = 0; step < steps; ++step) {
-        GameEventsClear(events);
-        FluidInteractionUpdatePlayer(fluid, player, world, events, MOVEMENT_STEP);
-        PlayerUpdate(player, world, input, boost, MOVEMENT_STEP);
-    }
-}
-
 static void test_dry_flight_is_untouched_by_the_fluid_model(void)
 {
     World world;
@@ -10788,7 +10773,6 @@ static void test_diving_in_fast_throws_a_crown(void)
     GameEventBuffer events;
     int waterBefore;
     int splashes = 0;
-    float speedBefore;
     float speedAtEntry = -1.0f;
     int step;
 
@@ -10799,7 +10783,6 @@ static void test_diving_in_fast_throws_a_crown(void)
     waterBefore = CountMaterial(&world, MATERIAL_WATER);
     PlayerInit(&player, (Vector2){128.0f, 100.0f});
     player.velocity = (Vector2){0.0f, 240.0f};
-    speedBefore = PlayerSpeed(&player);
     FluidInteractionInit(&fluid);
     for (step = 0; step < 20; ++step) {
         GameEventsClear(&events);
@@ -13622,6 +13605,385 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
     WorldUnload(&world);
 }
 
+
+/* --- on foot, trees behind, back walls, leaving the air -------------------- */
+
+/* A walker on a floor at `floorY`, feet on it. */
+static void StandOnFloor(Player *player, World *world, float x, int floorY)
+{
+    PlayerInit(player, (Vector2){x, 0.0f});
+    player->mode = PLAYER_MODE_WALK;
+    player->position.y = (float)floorY - PlayerExtent(player) - 0.25f;
+    (void)world;
+}
+
+static void WalkSteps(Player *player, World *world, Vector2 input, bool run, bool jump,
+                      bool jumpHeld, int steps)
+{
+    int step;
+
+    for (step = 0; step < steps; ++step) {
+        player->jumpPressed = jump && step == 0;
+        player->jumpHeld = jumpHeld;
+        player->runHeld = run;
+        PlayerUpdate(player, world, input, run, MOVEMENT_STEP);
+    }
+}
+
+/* On foot the character stands, walks at the walking pace, runs faster with
+   the run held, and never sinks into the floor or leaves it. */
+static void test_the_walker_walks_and_runs_on_the_ground(void)
+{
+    World world;
+    Player player;
+    float walked;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    FillRect(&world, 0, 200, 1023, 255, MATERIAL_ROCK);
+    StandOnFloor(&player, &world, 100.0f, 200);
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 30);
+    CHECK(player.grounded, "the walker is not standing on the floor");
+    CHECK(fabsf(player.position.y + PlayerExtent(&player) - 200.0f) < 1.0f,
+          "the walker's feet are at %.2f, the floor at 200",
+          (double)(player.position.y + PlayerExtent(&player)));
+    WalkSteps(&player, &world, (Vector2){1.0f, 0.0f}, false, false, false, 60);
+    CHECK(fabsf(player.velocity.x - PLAYER_WALK_SPEED) < 1.0f,
+          "the walk settled at %.1f", (double)player.velocity.x);
+    walked = player.position.x;
+    WalkSteps(&player, &world, (Vector2){1.0f, 0.0f}, true, false, false, 60);
+    CHECK(fabsf(player.velocity.x - PLAYER_RUN_SPEED) < 1.0f,
+          "the run settled at %.1f", (double)player.velocity.x);
+    CHECK(player.position.x - walked > PLAYER_WALK_SPEED * 1.1f,
+          "a second of running covered only %.1f cells",
+          (double)(player.position.x - walked));
+    CHECK(player.grounded && player.mode == PLAYER_MODE_WALK,
+          "the run left the ground or the walk");
+    WorldUnload(&world);
+}
+
+/* A step no higher than PLAYER_STEP_HEIGHT is walked up; a wall is not. */
+static void test_the_walker_climbs_a_step_and_stops_at_a_wall(void)
+{
+    World world;
+    Player player;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    FillRect(&world, 0, 200, 1023, 255, MATERIAL_ROCK);
+    FillRect(&world, 140, 200 - PLAYER_STEP_HEIGHT, 1023, 199, MATERIAL_ROCK);
+    FillRect(&world, 260, 140, 1023, 199, MATERIAL_ROCK);
+    StandOnFloor(&player, &world, 110.0f, 200);
+    WalkSteps(&player, &world, (Vector2){1.0f, 0.0f}, false, false, false, 90);
+    CHECK(player.position.x > 150.0f && player.grounded,
+          "the walker did not climb a %d-cell step: x %.1f",
+          PLAYER_STEP_HEIGHT, (double)player.position.x);
+    WalkSteps(&player, &world, (Vector2){1.0f, 0.0f}, false, false, false, 180);
+    CHECK(player.position.x + player.radius <= 260.5f,
+          "the walker walked into a wall to x %.1f", (double)player.position.x);
+    CHECK(!PlayerCollidesAt(&player, &world, player.position),
+          "the walker ended inside the wall");
+    WorldUnload(&world);
+}
+
+/* A held jump rises more than the character's own height, a tap much less;
+   the second jump in the air takes off; a double tap in flight lands; and
+   where nothing pulls there is no walking at all. */
+static void test_jumping_double_jump_flight_and_landing(void)
+{
+    World world;
+    Player player;
+    float feet;
+    float highest;
+    int step;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    FillRect(&world, 0, 200, 1023, 255, MATERIAL_ROCK);
+
+    StandOnFloor(&player, &world, 100.0f, 200);
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 10);
+    feet = player.position.y;
+    highest = feet;
+    for (step = 0; step < 90; ++step) {
+        player.jumpPressed = step == 0;
+        player.jumpHeld = true;
+        PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+        if (player.position.y < highest) highest = player.position.y;
+    }
+    CHECK(feet - highest > PlayerExtent(&player) * 2.0f,
+          "a held jump rose only %.1f cells", (double)(feet - highest));
+    CHECK(player.grounded && player.mode == PLAYER_MODE_WALK,
+          "the jump did not land on foot");
+    {
+        float held = feet - highest;
+
+        highest = player.position.y;
+        feet = player.position.y;
+        for (step = 0; step < 90; ++step) {
+            player.jumpPressed = step == 0;
+            player.jumpHeld = step < 3;
+            PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+            if (player.position.y < highest) highest = player.position.y;
+        }
+        CHECK(feet - highest < held * 0.6f,
+              "a tap rose %.1f cells against a held jump's %.1f",
+              (double)(feet - highest), (double)held);
+    }
+
+    /* Up, then the second press in the air. */
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, true, true, 12);
+    CHECK(!player.grounded, "the first jump never left the ground");
+    player.jumpPressed = true;
+    PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+    CHECK(player.mode == PLAYER_MODE_FLY, "the second jump did not take off");
+    feet = player.position.y;
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 60);
+    CHECK(player.position.y <= feet + 1.0f, "the flight fell %.1f cells",
+          (double)(player.position.y - feet));
+
+    /* A double tap lands. */
+    player.jumpPressed = true;
+    PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 5);
+    player.jumpPressed = true;
+    PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+    CHECK(player.mode == PLAYER_MODE_WALK, "a double tap in flight did not land");
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 120);
+    CHECK(player.grounded, "the landing never reached the floor");
+
+    /* Above the space line there is nothing to walk on. */
+    player.position.y = WorldSpaceLineY(&world) - 20.0f;
+    player.mode = PLAYER_MODE_WALK;
+    PlayerUpdate(&player, &world, (Vector2){0.0f, 0.0f}, false, MOVEMENT_STEP);
+    CHECK(player.mode == PLAYER_MODE_FLY, "the character walked in weightlessness");
+    WorldUnload(&world);
+}
+
+/* A tree is behind the character: he stands in it untouched, and a pass
+   through its crown strips leaves out of the world — more the faster, none at
+   a stroll, the same ones on a replay. */
+static void test_trees_stand_behind_the_character_and_lose_leaves_to_him(void)
+{
+    World world;
+    World replay;
+    Player player;
+    int fast;
+    int again;
+    int slow;
+
+    CHECK(WorldInit(&world, 512, 256), "world allocation failed");
+    CHECK(WorldInit(&replay, 512, 256), "world allocation failed");
+    FillRect(&world, 100, 60, 180, 120, MATERIAL_LEAF);
+    FillRect(&world, 138, 121, 142, 200, MATERIAL_WOOD);
+    FillRect(&replay, 100, 60, 180, 120, MATERIAL_LEAF);
+    FillRect(&replay, 138, 121, 142, 200, MATERIAL_WOOD);
+
+    PlayerInit(&player, (Vector2){140.0f, 90.0f});
+    CHECK(!PlayerCollidesAt(&player, &world, player.position),
+          "the character collides with a canopy");
+    CHECK(!PlayerCollidesAt(&player, &world, (Vector2){140.0f, 160.0f}),
+          "the character collides with a trunk");
+
+    player.velocity = (Vector2){20.0f, 0.0f};
+    slow = PlayerBrushFlora(&player, &world);
+    CHECK(slow == 0, "a stroll through the crown took %d leaves", slow);
+
+    player.velocity = (Vector2){300.0f, 0.0f};
+    fast = PlayerBrushFlora(&player, &world);
+    CHECK(fast > 20 && player.brushedLeaves == fast,
+          "a fast pass took only %d leaves", fast);
+    CHECK(world.destructionCount > 0, "the stripped crown was not recorded as cut");
+    {
+        Player twin;
+
+        PlayerInit(&twin, (Vector2){140.0f, 90.0f});
+        twin.velocity = (Vector2){300.0f, 0.0f};
+        again = PlayerBrushFlora(&twin, &replay);
+    }
+    CHECK(again == fast, "the replay stripped %d leaves, not %d", again, fast);
+    CHECK(WorldDigest(&world) == WorldDigest(&replay),
+          "the replay stripped different leaves");
+    WorldUnload(&world);
+    WorldUnload(&replay);
+}
+
+/* The back layer: rock behind the ground, nothing behind the open sky, and
+   the builders' own wall behind their rooms. */
+static void test_the_ground_has_a_wall_behind_it_and_the_sky_does_not(void)
+{
+    static World world;
+    int behindGround = 0;
+    int behindSky = 0;
+    int relic = 0;
+    int metal = 0;
+    int x;
+
+    CHECK(WorldInit(&world, 16384, 4096), "world allocation failed");
+    WorldGenerate(&world, 0x1234u);
+    for (x = 0; x < world.width; x += 64) {
+        int top = FirstSolidY(&world, x);
+
+        if (top >= world.height - 200) continue;
+        if (WorldGetBackWall(&world, x, top + 120) != MATERIAL_EMPTY) ++behindGround;
+        if (WorldGetBackWall(&world, x, top - 150) != MATERIAL_EMPTY) ++behindSky;
+    }
+    CHECK(behindGround > (world.width / 64) * 8 / 10,
+          "only %d of %d columns have a wall behind their ground", behindGround,
+          world.width / 64);
+    CHECK(behindSky < (world.width / 64) / 20,
+          "%d columns have a wall behind the open sky", behindSky);
+    {
+        int blockY;
+
+        for (blockY = 0; blockY < world.backWallRows; ++blockY) {
+            int blockX;
+
+            for (blockX = 0; blockX < world.backWallColumns; ++blockX) {
+                uint8_t wall = world.backWalls[(size_t)blockY *
+                                                   (size_t)world.backWallColumns +
+                                               (size_t)blockX];
+
+                if (wall == MATERIAL_RELIC) ++relic;
+                if (wall == MATERIAL_METAL) ++metal;
+            }
+        }
+    }
+    CHECK(relic > 100 && metal > 100,
+          "the builders left %d relic and %d metal wall blocks", relic, metal);
+    /* And an empty cell with a wall behind it is drawn as that wall, opaque,
+       not as air the backdrop shows through. */
+    {
+        MaterialRenderSample wall = MaterialRenderBackWall(MATERIAL_ROCK, 10, 10);
+        MaterialRenderSample rock = MaterialRenderCell(
+            MATERIAL_ROCK, AMBIENT_TEMPERATURE, 10, 10, (MaterialRenderContext){0});
+
+        CHECK(wall.scene.a == 255 && wall.emissive.a == 255,
+              "the back wall is not opaque in both planes");
+        CHECK(wall.scene.r + wall.scene.g + wall.scene.b <
+                  rock.scene.r + rock.scene.g + rock.scene.b,
+              "the back wall is as bright as the rock in front of it");
+    }
+    WorldUnload(&world);
+}
+
+/* The new builders' materials are what they claim to be. */
+static void test_metal_lumen_and_relic_behave(void)
+{
+    CHECK(MaterialIsSolid(MATERIAL_METAL) && MaterialIsSolid(MATERIAL_LUMEN) &&
+              MaterialIsSolid(MATERIAL_RELIC),
+          "a building material is not solid");
+    CHECK(MaterialAt(MATERIAL_LUMEN)->emission > 0.5f,
+          "lumen does not glow");
+    CHECK(MaterialAt(MATERIAL_METAL)->emission == 0.0f &&
+              MaterialAt(MATERIAL_RELIC)->emission == 0.0f,
+          "plate or stone glows");
+    CHECK(MaterialAt(MATERIAL_METAL)->density > MaterialAt(MATERIAL_RELIC)->density &&
+              MaterialAt(MATERIAL_RELIC)->density > 1.0f,
+          "metal is not the heaviest of them");
+    CHECK(MaterialAt(MATERIAL_METAL)->onHeat.enabled &&
+              MaterialAt(MATERIAL_METAL)->onHeat.target == MATERIAL_RUBBLE &&
+              MaterialAt(MATERIAL_LUMEN)->onHeat.threshold <
+                  MaterialAt(MATERIAL_METAL)->onHeat.threshold,
+          "heat does not tear plate into scrap before it shatters a panel");
+}
+
+/* Leaving the air is a front coming down the sky, not a fade: on the ground
+   no row is dark, halfway up the top is dark and the bottom is not, in space
+   almost all of it is. */
+static void test_the_sky_goes_dark_from_the_top_as_the_view_climbs(void)
+{
+    EnvironmentRenderer environment;
+    float fullY;
+    float clearY;
+    const int height = 720;
+
+    EnvironmentRendererInit(&environment, 0xE6BEu, ENVIRONMENT_PALETTE_AUTO);
+    EnvironmentRendererSetAltitude(&environment, 1.0f);
+    EnvironmentRendererSpaceMask(&environment, height, &fullY, &clearY);
+    CHECK(clearY <= 0.0f, "space shows down to row %.0f on the ground",
+          (double)clearY);
+    EnvironmentRendererSetAltitude(&environment, 0.5f);
+    EnvironmentRendererSpaceMask(&environment, height, &fullY, &clearY);
+    CHECK(fullY > 0.0f && clearY < (float)height && fullY < clearY,
+          "halfway up the dark runs from %.0f to %.0f", (double)fullY,
+          (double)clearY);
+    EnvironmentRendererSetAltitude(&environment, 0.0f);
+    EnvironmentRendererSpaceMask(&environment, height, &fullY, &clearY);
+    CHECK(fullY > (float)height * 0.8f,
+          "in space the sky is dark only down to row %.0f", (double)fullY);
+}
+
+
+/* Every generated grain of sand is held where it lies: solid ground under
+   it and under both of its lower neighbours, so a desert streamed into play
+   does not start sliding. Below the blanket the dune is limestone. */
+static void test_generated_sand_lies_still_on_limestone(void)
+{
+    static World world;
+    int sand = 0;
+    int loose = 0;
+    int limestone = 0;
+    int x;
+
+    CHECK(WorldInit(&world, 16384, 4096), "world allocation failed");
+    WorldGenerate(&world, 0x1234u);
+    for (x = 0; x < world.width; ++x) {
+        int y;
+
+        for (y = WorldSkyRows(&world); y < world.height - 1; ++y) {
+            CellMaterial material = WorldGetCell(&world, x, y);
+            int offset;
+
+            if (material == MATERIAL_LIMESTONE) ++limestone;
+            if (material != MATERIAL_SAND) continue;
+            ++sand;
+            for (offset = -1; offset <= 1; ++offset) {
+                CellMaterial below =
+                    WorldGetCell(&world, (x + offset + world.width) % world.width, y + 1);
+
+                /* A tuft of grass under a grain holds it as well as the
+                   soil it grew from: the simulation moves sand only into
+                   what is not solid. */
+                if (!WorldMaterialIsSolid(below)) {
+                    if (loose == 0) {
+                        fprintf(stderr, "      loose grain at %d,%d over %s (offset %d)\n", x, y,
+                                WorldMaterialName(below), offset);
+                    }
+                    ++loose;
+                    break;
+                }
+            }
+        }
+    }
+    CHECK(sand > 10000, "only %d cells of sand were generated", sand);
+    CHECK(limestone > sand, "only %d cells of limestone under %d of sand", limestone,
+          sand);
+    CHECK(loose == 0, "%d generated grains of sand have nothing under them", loose);
+    /* And every generated pool is held: nothing empty under a liquid cell or
+       beside it, so no chunk streamed in has water to pour. No walls were
+       built for it — what could not be held is simply not there. */
+    {
+        int spilling = 0;
+        int liquid = 0;
+
+        for (x = 0; x < world.width; ++x) {
+            int y;
+
+            for (y = WorldSkyRows(&world); y < world.height - 1; ++y) {
+                if (!MaterialIsLiquid(WorldGetCell(&world, x, y))) continue;
+                ++liquid;
+                if (WorldGetCell(&world, x, y + 1) == MATERIAL_EMPTY ||
+                    WorldGetCell(&world, (x + 1) % world.width, y) == MATERIAL_EMPTY ||
+                    WorldGetCell(&world, (x + world.width - 1) % world.width, y) ==
+                        MATERIAL_EMPTY) {
+                    ++spilling;
+                }
+            }
+        }
+        CHECK(liquid > 100000, "only %d cells of liquid were generated", liquid);
+        CHECK(spilling == 0, "%d generated liquid cells have somewhere to pour", spilling);
+    }
+    WorldUnload(&world);
+}
+
 static void test_nuclear_charge_is_harmless_bounded_and_releases_once(void)
 {
     World world;
@@ -13842,8 +14204,81 @@ static void test_sonic_break_needs_air_and_rearms_below_speed(void)
     GameUnload(&game);
 }
 
+
+/* A part of the back layer that nothing stands in front of any more comes
+   away in pieces; one that still touches rock stays. */
+static void test_a_back_wall_with_nothing_in_front_comes_away(void)
+{
+    World world;
+    WorldBackWallPiece pieces[64];
+    int count;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 512, 512), "world allocation failed");
+    /* A plated cabin with its own wall behind the room. */
+    FillRect(&world, 100, 100, 180, 160, MATERIAL_METAL);
+    FillRect(&world, 106, 106, 174, 154, MATERIAL_EMPTY);
+    for (y = 106; y <= 154; y += 4) {
+        for (x = 106; x <= 174; x += 4) {
+            world.backWalls[(size_t)(y / WORLD_BACK_WALL_SCALE) *
+                                (size_t)world.backWallColumns +
+                            (size_t)(x / WORLD_BACK_WALL_SCALE)] = MATERIAL_METAL;
+        }
+    }
+    count = WorldBreakBackWalls(&world, 106, 106, 174, 154, pieces, 64);
+    CHECK(count == 0, "a wall inside standing plate came away in %d pieces", count);
+    CHECK(WorldGetBackWall(&world, 140, 130) == MATERIAL_METAL,
+          "the wall behind the standing room is gone");
+
+    /* The cabin is blown away. */
+    FillRect(&world, 100, 100, 180, 160, MATERIAL_EMPTY);
+    count = WorldBreakBackWalls(&world, 100, 100, 180, 160, pieces, 64);
+    CHECK(count > 4, "the wall with nothing left in front came away in %d pieces", count);
+    CHECK(WorldGetBackWall(&world, 140, 130) == MATERIAL_EMPTY,
+          "the wall is still hanging in the air");
+    CHECK(pieces[0].material == MATERIAL_METAL && pieces[0].mask != 0u,
+          "a falling piece does not carry the wall it came from");
+    WorldUnload(&world);
+}
+
+/* A slab floating high in the open casts a shadow that fades out below it,
+   not a pillar of dark to the ground; a plant casts none at all. */
+static void test_shadows_fade_in_the_open_and_plants_cast_none(void)
+{
+    World world;
+    int y;
+    float under;
+    float far;
+
+    /* An island six hundred cells wide: light reaching in from its sides
+       under it cannot fill the middle, which is where the shadow is. */
+    CHECK(WorldInit(&world, 1024, 1024), "world allocation failed");
+    FillRect(&world, 0, 900, 1023, 1023, MATERIAL_ROCK);
+    FillRect(&world, 212, 300, 812, 330, MATERIAL_ROCK);
+    FillRect(&world, 60, 700, 100, 760, MATERIAL_LEAF);
+    WorldSetPointLight(&world, (Vector2){0.0f, 0.0f}, 0.0f, 0.0f);
+    WorldUpdateLighting(&world, (Rectangle){0.0f, 0.0f, 1024.0f, 1024.0f});
+    under = SkyLightAt(&world, 512, 340);
+    far = SkyLightAt(&world, 512, 860);
+    CHECK(under < 0.8f, "right under the island the sky is %.2f", (double)under);
+    CHECK(far > 0.95f, "five hundred cells under the island the sky is still %.2f",
+          (double)far);
+    for (y = 770; y < 890; y += 16) {
+        CHECK(SkyLightAt(&world, 80, y) > 0.95f, "the canopy shades the air at row %d: %.2f",
+              y, (double)SkyLightAt(&world, 80, y));
+    }
+    WorldUnload(&world);
+}
+
 int main(void)
 {
+    RUN(test_sonic_break_needs_air_and_rearms_below_speed);
+    RUN(test_powers_use_their_own_emission_points);
+    RUN(test_cryo_emits_from_eyes_in_game);
+    RUN(test_nuclear_charge_is_harmless_bounded_and_releases_once);
+    RUN(test_heavy_landing_breaks_ground_once_and_leaves_player_clear);
+    RUN(test_face_and_hands_follow_aim_and_landing_anchor);
     RUN(test_world_render_preparation_is_headless_and_incremental);
     RUN(test_empty_world_render_data_marks_air_for_the_shader);
     RUN(test_the_light_shader_declares_what_the_renderer_sets);
@@ -14178,6 +14613,16 @@ int main(void)
     RUN(test_drill_debris_settles_as_ash_without_overwriting_terrain);
     RUN(test_passing_particles_ignore_terrain);
     RUN(test_player_never_ends_a_frame_inside_solid_terrain);
+    RUN(test_the_walker_walks_and_runs_on_the_ground);
+    RUN(test_the_walker_climbs_a_step_and_stops_at_a_wall);
+    RUN(test_jumping_double_jump_flight_and_landing);
+    RUN(test_trees_stand_behind_the_character_and_lose_leaves_to_him);
+    RUN(test_the_ground_has_a_wall_behind_it_and_the_sky_does_not);
+    RUN(test_metal_lumen_and_relic_behave);
+    RUN(test_the_sky_goes_dark_from_the_top_as_the_view_climbs);
+    RUN(test_generated_sand_lies_still_on_limestone);
+    RUN(test_a_back_wall_with_nothing_in_front_comes_away);
+    RUN(test_shadows_fade_in_the_open_and_plants_cast_none);
 
     printf("\n%d tests, %d failed\n", testsRun, testsFailed);
     return testsFailed == 0 ? 0 : 1;

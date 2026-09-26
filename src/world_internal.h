@@ -254,6 +254,8 @@ float WorldGenUnit(uint64_t seed, int x, int y, uint64_t channel);
 Rng WorldGenFeatureRng(uint64_t seed, int feature, uint64_t channel);
 bool WorldGenNearSpawn(const World *world, int x);
 void WorldGenPlaceTree(World *world, int x, int groundY, Rng *rng);
+/* A blade of meadow grass (or none) standing on the soil at (x, groundY). */
+void WorldGenGrowGrass(World *world, int x, int groundY, Rng *rng);
 /* Sets the back layer over a box of cells (inclusive, columns wrapped) to
    `material`, block by block. */
 void WorldGenSetBackWall(World *world, int firstX, int firstY, int lastX, int lastY,
