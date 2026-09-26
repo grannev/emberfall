@@ -40,6 +40,7 @@ GameConfig GameDefaultConfig(void)
         .activeRadiusX = DEFAULT_ACTIVE_RADIUS_X,
         .activeRadiusY = DEFAULT_ACTIVE_RADIUS_Y,
         .forcedWeather = -1,
+        .startHour = -1.0f,
     };
 }
 
@@ -138,6 +139,11 @@ void GameReset(GameState *game, uint64_t seed)
     TerrainFluidInit(&game->bodyFluid);
     TerrainStabilityInit(&game->stability);
     AtmosphereInit(&game->atmosphere);
+    if (game->config.startHour >= 0.0f) {
+        /* The HUD reads phase zero as six in the morning. */
+        game->dayPhase = (game->config.startHour - 6.0f) / 24.0f;
+        game->dayPhase -= floorf(game->dayPhase);
+    }
     FaunaInit(&game->fauna);
     WeatherInit(&game->weather, RngStreamSeed(seed, GAME_RNG_STREAM_WEATHER),
                 game->config.forcedWeather);

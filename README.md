@@ -48,6 +48,13 @@ make run RUN_ARGS="--seed 0x1234 --palette ember"
 # также: --palette abyss, --palette storm или --palette auto
 ```
 
+Чтобы посмотреть погоду или время суток, не дожидаясь их:
+
+```sh
+make run RUN_ARGS="--weather storm --hour 1"
+# погода: clear, cloudy, rain, storm, snow, blizzard, sandstorm, ashfall
+```
+
 Debug-сборка с `-g -O0`:
 
 ```sh

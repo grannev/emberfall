@@ -258,6 +258,24 @@ coherent phase with an explanatory message.
   something that holds it, so falling sand, dust, drill debris and grains the
   wind carries pass through the character and the bodies without a shove; a
   resting pile is ground as before.
+- Weather (`weather.c`) is a schedule, a function of seed and time: each
+  biome runs its own episodes, and `WeatherAt` blends every biome within
+  `WEATHER_BLEND_REACH` so weather changes across a border band, never at a
+  column. Wind blows only where there is sky (no back wall, gravity above
+  zero). It lifts sand and snow as settling grains (bounded per tick), drifts
+  gases and particles, wakes, rolls and hops light bodies, and snaps
+  tumbleweeds loose near the character by logging a cut for the ordinary
+  detach check — never by extracting anything itself. Rain and snow are only
+  drawn. `--weather KIND` and `--hour H` exist for looking, not for play.
+- `WeatherRenderer` owns the drops and the ambience (leaves, embers, cave
+  drips, spray, motes, glints, fireflies, breath, footstep dust). Every
+  ambient effect starts at a source cell found by sampling the view; none is
+  a layer over it. No weather or biome may tint the whole screen persistently
+  — the player asked for those washes to go; the lightning flash is the only
+  full-screen draw.
+- Fauna is groundwork only: the generator marks `World.habitats` and
+  `fauna.c` names what would live there. Nothing is alive, updated or drawn
+  until the player asks for animals.
 - There are no floating islands. The sky above the ground band is generated
   empty, and the backdrop has no islands either: the player asked for them
   to be taken out of the game entirely.

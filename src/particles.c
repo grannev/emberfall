@@ -39,10 +39,21 @@ static Particle *ParticlesSpawnOne(ParticleSystem *system, Vector2 position,
     return particle;
 }
 
+/* Plants and the other backdrop are the back of the picture for particles
+   as for the character: a grain blown through a shrub comes down on the
+   ground under it, not on a twig. */
 static bool ParticleCellBlocks(const World *world, float x, float y)
 {
-    return WorldMaterialIsSolid(WorldGetCell(world, (int)floorf(x), (int)floorf(y)));
+    CellMaterial material = WorldGetCell(world, (int)floorf(x), (int)floorf(y));
+
+    return WorldMaterialIsSolid(material) && !MaterialIsBackdrop(material);
 }
+
+/* Seconds after its birth a particle may still be inside material on its
+   way out of it: drill debris is born at the cut face. After that, a
+   particle inside material has been buried — by sand sliding over it — and
+   must not go on falling through the ground. */
+#define PARTICLE_ESCAPE_SECONDS 0.3f
 
 /* Debris that stops moving becomes grit on the tunnel floor. Only empty cells
    are written, so settling can never overwrite terrain or bury the player, and
@@ -51,9 +62,16 @@ static void ParticleSettle(Particle *particle, World *world)
 {
     int x = (int)floorf(particle->position.x);
     int y = (int)floorf(particle->position.y);
+    int rise;
 
-    if (WorldGetCell(world, x, y) == MATERIAL_EMPTY) {
-        WorldSetCell(world, x, y, particle->settleMaterial);
+    /* In the first free cell at or over where it stopped: it may have
+       stopped inside a plant or been buried, and a grain of sand is not
+       destroyed by landing in a bush. */
+    for (rise = 0; rise < 8; ++rise) {
+        if (WorldGetCell(world, x, y - rise) == MATERIAL_EMPTY) {
+            WorldSetCell(world, x, y - rise, particle->settleMaterial);
+            break;
+        }
     }
     particle->active = false;
 }
@@ -110,9 +128,13 @@ static void ParticleStepVisual(Particle *particle, const World *world, float win
     }
 
     /* A particle spawned inside material must be allowed to escape before
-       terrain can stop it. */
+       terrain can stop it — but only just after it was spawned. */
     embedded = ParticleCellBlocks(world, particle->position.x,
                                   particle->position.y);
+    if (embedded && particle->maxLife - particle->life > PARTICLE_ESCAPE_SECONDS) {
+        particle->active = false;
+        return;
+    }
 
     /* Axis-separated like the player collider, so a shard that meets a wall
        keeps sliding along it instead of stopping dead. */
@@ -150,6 +172,10 @@ static void ParticleStepDebris(Particle *particle, World *world, float wind,
     /* Drill debris is born at the cut face, inside material. */
     embedded = ParticleCellBlocks(world, particle->position.x,
                                   particle->position.y);
+    if (embedded && particle->maxLife - particle->life > PARTICLE_ESCAPE_SECONDS) {
+        ParticleSettle(particle, world);
+        return;
+    }
 
     if (!embedded && ParticleCellBlocks(world, nextX, particle->position.y)) {
         ParticleSettle(particle, world);

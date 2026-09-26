@@ -48,6 +48,9 @@ typedef struct GameConfig {
     /* A weather held everywhere, or -1 for the ordinary schedule. For
        looking at a kind of weather without waiting for it. */
     int forcedWeather;
+    /* The hour the first day starts at, 0..24, or negative for dawn. For
+       looking at a place by day or by night without waiting (--hour). */
+    float startHour;
 } GameConfig;
 
 typedef struct GameState {

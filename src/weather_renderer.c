@@ -112,6 +112,7 @@ static void WeatherSpawn(WeatherRenderer *renderer, const World *world, Rectangl
     drop->kind = (uint8_t)kind;
     drop->position = (Vector2){x, y};
     drop->phase = WeatherRandom(renderer) * 6.28f;
+    drop->color = (Color){0, 0, 0, 0};
     switch (kind) {
     case WEATHER_DROP_RAIN:
         drop->velocity = (Vector2){wind * 1.2f, 300.0f + WeatherRandom(renderer) * 80.0f};
@@ -182,10 +183,252 @@ static void WeatherFeed(WeatherRenderer *renderer, const World *world, Rectangle
     }
 }
 
-void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weather,
-                           const World *world, Rectangle visible, float deltaTime)
+/* ---- the ambience ----------------------------------------------------------
+ *
+ * Small life of each place, found by sampling random cells of the view for
+ * its source — a leaf with air under it, lava open to the air, a cave
+ * ceiling, a wave top, snow in the sun, grass at night — so every effect
+ * starts at the thing that makes it and nothing is laid over the view. */
+
+static WeatherDrop *WeatherPut(WeatherRenderer *renderer, const World *world, WeatherDropKind kind,
+                               Vector2 position, Vector2 velocity, float life, Color color)
 {
-    int inView[5] = {0};
+    WeatherDrop *drop = WeatherTakeDrop(renderer);
+
+    /* What does not glow is lit like the place it starts in: dim at night,
+       dimmer under the ground. The drops are drawn over the lit world, not
+       through its light, so this is their share of it. */
+    /* A splash takes the colour of its drip, already lit. */
+    if (kind != WEATHER_DROP_EMBER && kind != WEATHER_DROP_FIREFLY &&
+        kind != WEATHER_DROP_GLINT && kind != WEATHER_DROP_SPLASH) {
+        float lit = WorldGetBackWall(world, (int)floorf(position.x), (int)floorf(position.y)) !=
+                            MATERIAL_EMPTY
+                        ? 0.4f
+                        : 0.28f + 0.72f * world->daylight;
+
+        color.r = (unsigned char)((float)color.r * lit);
+        color.g = (unsigned char)((float)color.g * lit);
+        color.b = (unsigned char)((float)color.b * lit);
+    }
+
+    drop->active = true;
+    drop->kind = (uint8_t)kind;
+    drop->position = position;
+    drop->velocity = velocity;
+    drop->life = life;
+    drop->phase = WeatherRandom(renderer) * 6.28f;
+    drop->color = color;
+    return drop;
+}
+
+static float WeatherBetween(WeatherRenderer *renderer, float low, float high)
+{
+    return low + (high - low) * WeatherRandom(renderer);
+}
+
+/* How many samples to take this frame for a rate given per sixtieth of a
+   second: whole ones, and the fraction by chance. */
+static int WeatherSamples(WeatherRenderer *renderer, float perTick, float deltaTime)
+{
+    float wanted = perTick * deltaTime * 60.0f;
+    int count = (int)wanted;
+
+    if (WeatherRandom(renderer) < wanted - (float)count) ++count;
+    return count;
+}
+
+static Color WeatherShadeOf(WeatherRenderer *renderer, CellMaterial material, unsigned char alpha)
+{
+    Color base = MaterialAt(material)->color;
+    float shade = WeatherBetween(renderer, 0.8f, 1.15f);
+
+    return (Color){(unsigned char)fminf(255.0f, (float)base.r * shade),
+                   (unsigned char)fminf(255.0f, (float)base.g * shade),
+                   (unsigned char)fminf(255.0f, (float)base.b * shade), alpha};
+}
+
+static void WeatherAmbience(WeatherRenderer *renderer, const World *world, WeatherHero hero,
+                            Rectangle visible, float deltaTime)
+{
+    float wind = renderer->sample.wind;
+    float windFactor = fminf(1.0f, fmaxf(0.0f, (fabsf(wind) - 6.0f) / 40.0f));
+    float daylight = world->daylight;
+    float scale = visible.width / 426.0f;
+    int samples;
+    int sample;
+
+    /* Leaves: one now and then in calm air, streams of them in a gale. */
+    samples = WeatherSamples(renderer, (30.0f + 400.0f * windFactor) * scale, deltaTime);
+    for (sample = 0; sample < samples; ++sample) {
+        int x = (int)(visible.x + WeatherRandom(renderer) * visible.width);
+        int y = (int)(visible.y + WeatherRandom(renderer) * visible.height);
+
+        if (WorldGetCell(world, x, y) != MATERIAL_LEAF ||
+            WorldGetCell(world, x, y + 1) != MATERIAL_EMPTY ||
+            WorldGetBackWall(world, x, y) != MATERIAL_EMPTY) {
+            continue;
+        }
+        (void)WeatherPut(renderer, world, WEATHER_DROP_LEAF, (Vector2){(float)x + 0.5f, (float)y + 1.0f},
+                         (Vector2){wind * 0.5f, WeatherBetween(renderer, 6.0f, 14.0f)},
+                         WeatherBetween(renderer, 6.0f, 10.0f),
+                         WeatherShadeOf(renderer, MATERIAL_LEAF, 235));
+    }
+    /* Embers off open lava, fire and the ember blooms. */
+    samples = WeatherSamples(renderer, 160.0f * scale, deltaTime);
+    for (sample = 0; sample < samples; ++sample) {
+        int x = (int)(visible.x + WeatherRandom(renderer) * visible.width);
+        int y = (int)(visible.y + WeatherRandom(renderer) * visible.height);
+        CellMaterial here = WorldGetCell(world, x, y);
+        float chance = here == MATERIAL_LAVA ? 0.5f
+                       : here == MATERIAL_FIRE ? 0.35f
+                       : here == MATERIAL_EMBERBLOOM ? 0.6f
+                                                      : 0.0f;
+
+        if (chance <= 0.0f || WorldGetCell(world, x, y - 1) != MATERIAL_EMPTY ||
+            WeatherRandom(renderer) > chance) {
+            continue;
+        }
+        (void)WeatherPut(renderer, world, WEATHER_DROP_EMBER, (Vector2){(float)x + 0.5f, (float)y - 0.5f},
+                         (Vector2){wind * 0.3f + WeatherBetween(renderer, -6.0f, 6.0f),
+                                   -WeatherBetween(renderer, 16.0f, 42.0f)},
+                         WeatherBetween(renderer, 1.2f, 2.8f),
+                         (Color){255, (unsigned char)WeatherBetween(renderer, 110.0f, 190.0f), 60, 255});
+    }
+    /* Drips from cave ceilings: water, or meltwater under ice. */
+    samples = WeatherSamples(renderer, 120.0f * scale, deltaTime);
+    for (sample = 0; sample < samples; ++sample) {
+        int x = (int)(visible.x + WeatherRandom(renderer) * visible.width);
+        int y = (int)(visible.y + WeatherRandom(renderer) * visible.height);
+        CellMaterial above;
+
+        if (WorldGetCell(world, x, y) != MATERIAL_EMPTY ||
+            WorldGetBackWall(world, x, y) == MATERIAL_EMPTY) {
+            continue;
+        }
+        above = WorldGetCell(world, x, y - 1);
+        if (!MaterialIsSolid(above) || MaterialIsDynamic(above) || MaterialIsFlora(above) ||
+            (above != MATERIAL_ROCK && above != MATERIAL_LIMESTONE && above != MATERIAL_ICE &&
+             above != MATERIAL_DIRT) ||
+            WeatherRandom(renderer) > 0.06f) {
+            continue;
+        }
+        {
+            WeatherDrop *drip = WeatherPut(
+                renderer, world, WEATHER_DROP_DRIP, (Vector2){(float)x + 0.5f, (float)y + 0.2f},
+                (Vector2){0.0f, 0.0f}, 5.0f,
+                above == MATERIAL_ICE ? (Color){200, 226, 246, 210} : (Color){116, 152, 196, 210});
+
+            /* It gathers before it falls. */
+            drip->phase = WeatherBetween(renderer, 0.3f, 1.2f);
+        }
+    }
+    /* Spray torn off the wave tops in a strong wind. */
+    if (windFactor > 0.25f) {
+        samples = WeatherSamples(renderer, 120.0f * windFactor * scale, deltaTime);
+        for (sample = 0; sample < samples; ++sample) {
+            int x = (int)(visible.x + WeatherRandom(renderer) * visible.width);
+            int y = (int)(visible.y + WeatherRandom(renderer) * visible.height);
+
+            if (WorldGetCell(world, x, y) != MATERIAL_WATER ||
+                WorldGetCell(world, x, y - 1) != MATERIAL_EMPTY ||
+                WorldGetBackWall(world, x, y - 1) != MATERIAL_EMPTY) {
+                continue;
+            }
+            (void)WeatherPut(renderer, world, WEATHER_DROP_SPRAY, (Vector2){(float)x + 0.5f, (float)y - 0.5f},
+                             (Vector2){wind * WeatherBetween(renderer, 0.8f, 1.4f),
+                                       -WeatherBetween(renderer, 20.0f, 60.0f)},
+                             1.2f, (Color){206, 224, 242, 170});
+        }
+    }
+    /* The dunes' dust motes in the sun, snow glinting on the frost, and
+       fireflies over the grass at night: each found at its own ground. */
+    samples = WeatherSamples(renderer, 120.0f * scale, deltaTime);
+    for (sample = 0; sample < samples; ++sample) {
+        int x = (int)(visible.x + WeatherRandom(renderer) * visible.width);
+        int y = (int)(visible.y + WeatherRandom(renderer) * visible.height);
+        CellMaterial here = WorldGetCell(world, x, y);
+
+        if (WorldGetCell(world, x, y - 1) != MATERIAL_EMPTY ||
+            WorldGetBackWall(world, x, y - 1) != MATERIAL_EMPTY) {
+            continue;
+        }
+        if (here == MATERIAL_SAND && daylight > 0.3f && WeatherRandom(renderer) < 0.15f) {
+            (void)WeatherPut(renderer, world, WEATHER_DROP_MOTE,
+                             (Vector2){(float)x + 0.5f, (float)y - WeatherBetween(renderer, 2.0f, 30.0f)},
+                             (Vector2){wind * 0.3f, WeatherBetween(renderer, -2.0f, 2.0f)},
+                             WeatherBetween(renderer, 3.0f, 6.0f), (Color){238, 214, 158, 120});
+        } else if ((here == MATERIAL_SNOW || here == MATERIAL_ICE) && daylight > 0.2f &&
+                   WeatherRandom(renderer) < 0.5f) {
+            (void)WeatherPut(renderer, world, WEATHER_DROP_GLINT, (Vector2){(float)x, (float)y},
+                             (Vector2){0.0f, 0.0f}, WeatherBetween(renderer, 0.25f, 0.5f),
+                             (Color){255, 255, 255, 255});
+        } else if (here == MATERIAL_GRASS && daylight < 0.35f && WeatherRandom(renderer) < 0.25f) {
+            (void)WeatherPut(renderer, world, WEATHER_DROP_FIREFLY,
+                             (Vector2){(float)x + 0.5f, (float)y - WeatherBetween(renderer, 3.0f, 22.0f)},
+                             (Vector2){0.0f, 0.0f}, WeatherBetween(renderer, 4.0f, 8.0f),
+                             (Color){214, 244, 120, 255});
+        }
+    }
+
+    /* The character's breath in the cold: on the frost or wherever it is
+       snowing, out in the open air. */
+    renderer->breathTimer -= deltaTime;
+    if (renderer->breathTimer <= 0.0f) {
+        WorldBiome biome = WorldBiomeAt(world, (int)floorf(hero.mouth.x));
+        bool cold = biome == WORLD_BIOME_FROST ||
+                    ((renderer->sample.kind == WEATHER_SNOW ||
+                      renderer->sample.kind == WEATHER_BLIZZARD) &&
+                     renderer->sample.intensity > 0.3f);
+        int puff;
+
+        renderer->breathTimer = WeatherBetween(renderer, 2.2f, 3.4f);
+        if (cold && WorldGetCell(world, (int)floorf(hero.mouth.x), (int)floorf(hero.mouth.y)) ==
+                        MATERIAL_EMPTY &&
+            WorldGravityScaleAt(world, hero.mouth.y) > 0.0f) {
+            for (puff = 0; puff < 6; ++puff) {
+                (void)WeatherPut(renderer, world, WEATHER_DROP_BREATH, hero.mouth,
+                                 (Vector2){hero.velocity.x * 0.4f + wind * 0.2f +
+                                               WeatherBetween(renderer, -5.0f, 5.0f),
+                                           WeatherBetween(renderer, -7.0f, -1.0f)},
+                                 WeatherBetween(renderer, 0.8f, 1.3f),
+                                 (Color){226, 234, 244, 120});
+            }
+        }
+    }
+    /* Dust, sand and snow kicked up by his feet. */
+    if (hero.grounded && fabsf(hero.velocity.x) > 20.0f) {
+        renderer->stepTimer -= deltaTime * fabsf(hero.velocity.x) / 60.0f;
+        if (renderer->stepTimer <= 0.0f) {
+            CellMaterial under = WorldGetCell(world, (int)floorf(hero.feet.x),
+                                              (int)floorf(hero.feet.y) + 1);
+            int grain;
+
+            renderer->stepTimer = 0.22f;
+            if (under == MATERIAL_SAND || under == MATERIAL_SNOW || under == MATERIAL_ASH ||
+                under == MATERIAL_DIRT || under == MATERIAL_GRASS) {
+                for (grain = 0; grain < 3; ++grain) {
+                    (void)WeatherPut(renderer, world, WEATHER_DROP_DUST,
+                                     (Vector2){hero.feet.x, hero.feet.y - 0.5f},
+                                     (Vector2){(hero.velocity.x > 0.0f ? -1.0f : 1.0f) *
+                                                   WeatherBetween(renderer, 8.0f, 30.0f),
+                                               -WeatherBetween(renderer, 8.0f, 28.0f)},
+                                     WeatherBetween(renderer, 0.35f, 0.6f),
+                                     WeatherShadeOf(renderer,
+                                                    under == MATERIAL_GRASS ? MATERIAL_DIRT : under,
+                                                    200));
+                }
+            }
+        }
+    } else {
+        renderer->stepTimer = 0.0f;
+    }
+}
+
+void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weather,
+                           const World *world, WeatherHero hero, Rectangle visible,
+                           float deltaTime)
+{
+    int inView[WEATHER_DROP_KIND_COUNT] = {0};
     float centreX = visible.x + visible.width * 0.5f;
     float centreY = visible.y + visible.height * 0.5f;
     int index;
@@ -244,12 +487,89 @@ void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weath
                                  drop->velocity.x) *
                                 fminf(1.0f, 1.5f * deltaTime);
         }
-        if (drop->kind == WEATHER_DROP_SPLASH) {
+        if (drop->position.y < visible.y - 240.0f) {
+            drop->active = false;
+            continue;
+        }
+        switch (drop->kind) {
+        case WEATHER_DROP_SPLASH:
+        case WEATHER_DROP_SPRAY:
             drop->velocity.y += 260.0f * deltaTime;
+            break;
+        case WEATHER_DROP_LEAF:
+            /* A leaf tumbles: it swings from side to side as it sinks. */
+            drop->phase += deltaTime * 3.4f;
+            drop->velocity.x += (renderer->sample.wind * 0.75f + sinf(drop->phase) * 14.0f -
+                                 drop->velocity.x) *
+                                fminf(1.0f, 2.0f * deltaTime);
+            drop->velocity.y += (10.0f + cosf(drop->phase * 1.3f) * 9.0f - drop->velocity.y) *
+                                fminf(1.0f, 2.0f * deltaTime);
+            break;
+        case WEATHER_DROP_EMBER:
+            drop->phase += deltaTime * 4.0f;
+            drop->velocity.y += 9.0f * deltaTime;
+            drop->velocity.x += (renderer->sample.wind * 0.6f + sinf(drop->phase) * 6.0f -
+                                 drop->velocity.x) *
+                                fminf(1.0f, 1.2f * deltaTime);
+            break;
+        case WEATHER_DROP_DRIP:
+            if (drop->phase > 0.0f) {
+                drop->phase -= deltaTime;
+                drop->velocity = (Vector2){0.0f, 0.0f};
+            } else {
+                drop->velocity.y += 300.0f * deltaTime;
+            }
+            break;
+        case WEATHER_DROP_MOTE:
+        case WEATHER_DROP_FIREFLY:
+            drop->phase += deltaTime * (drop->kind == WEATHER_DROP_MOTE ? 0.9f : 1.6f);
+            drop->velocity.x = (drop->kind == WEATHER_DROP_MOTE ? renderer->sample.wind * 0.3f : 0.0f) +
+                               sinf(drop->phase * 0.7f) * (drop->kind == WEATHER_DROP_MOTE ? 3.0f : 9.0f);
+            drop->velocity.y = cosf(drop->phase * 0.9f) * (drop->kind == WEATHER_DROP_MOTE ? 2.0f : 6.0f);
+            break;
+        case WEATHER_DROP_BREATH:
+            drop->velocity.x *= fmaxf(0.0f, 1.0f - 1.5f * deltaTime);
+            drop->velocity.y *= fmaxf(0.0f, 1.0f - 1.5f * deltaTime);
+            break;
+        case WEATHER_DROP_DUST:
+            drop->velocity.y += 90.0f * deltaTime;
+            drop->velocity.x *= fmaxf(0.0f, 1.0f - 3.0f * deltaTime);
+            break;
+        default:
+            break;
         }
         next = (Vector2){drop->position.x + drop->velocity.x * deltaTime,
                          drop->position.y + drop->velocity.y * deltaTime};
         hit = WorldGetCell(world, (int)floorf(next.x), (int)floorf(next.y));
+        /* Leaves and embers pass through the crowns they come out of; what
+           floats in the air or sits on a surface is not stopped at all. */
+        if (drop->kind != WEATHER_DROP_RAIN && drop->kind != WEATHER_DROP_SNOW &&
+            drop->kind != WEATHER_DROP_ASH && drop->kind != WEATHER_DROP_SAND &&
+            MaterialIsFlora(hit)) {
+            hit = MATERIAL_EMPTY;
+        }
+        /* A glint sits on its snow, and a drip hangs from its ceiling until
+           it lets go. Everything else that drifts into the ground is gone. */
+        if (drop->kind == WEATHER_DROP_GLINT ||
+            (drop->kind == WEATHER_DROP_DRIP && drop->phase > 0.0f)) {
+            hit = MATERIAL_EMPTY;
+        }
+        if (hit != MATERIAL_EMPTY && drop->kind == WEATHER_DROP_DRIP) {
+            int splash;
+
+            /* A drip lands with a tiny splash of its own colour. */
+            for (splash = 0; splash < 2; ++splash) {
+                WeatherDrop *droplet = WeatherPut(
+                    renderer, world, WEATHER_DROP_SPLASH,
+                    (Vector2){drop->position.x, drop->position.y - 0.5f},
+                    (Vector2){WeatherBetween(renderer, -25.0f, 25.0f), -WeatherBetween(renderer, 18.0f, 40.0f)},
+                    0.18f, drop->color);
+
+                droplet->phase = 0.0f;
+            }
+            drop->active = false;
+            continue;
+        }
         if (hit != MATERIAL_EMPTY && drop->kind != WEATHER_DROP_SPLASH) {
             /* Rain breaks into a few droplets on whatever it meets; a flake
                or a grain simply stops being drawn. */
@@ -268,6 +588,7 @@ void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weath
                                                   -30.0f - WeatherRandom(renderer) * 40.0f};
                     droplet->life = 0.14f;
                     droplet->phase = 0.0f;
+                    droplet->color = (Color){150, 176, 206, 110};
                 }
             }
             drop->active = false;
@@ -280,6 +601,8 @@ void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weath
             ++inView[drop->kind];
         }
     }
+
+    WeatherAmbience(renderer, world, hero, visible, deltaTime);
 
     /* The weather here, and across a border the weather it is giving way
        to, each at its own strength. */
@@ -321,8 +644,55 @@ void WeatherRendererDraw(const WeatherRenderer *renderer, Rectangle visible)
                        0.8f, (Color){170, 196, 226, 150});
             break;
         case WEATHER_DROP_SPLASH:
-            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){150, 176, 206, 110});
+        case WEATHER_DROP_SPRAY:
+        case WEATHER_DROP_DUST:
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, drop->color);
             break;
+        case WEATHER_DROP_LEAF:
+            /* Edge on, then flat: a turning leaf. */
+            DrawRectangleV(drop->position,
+                           sinf(drop->phase) > 0.0f ? (Vector2){2.0f, 1.0f} : (Vector2){1.0f, 1.0f},
+                           drop->color);
+            break;
+        case WEATHER_DROP_EMBER: {
+            Color color = drop->color;
+
+            color.a = (unsigned char)(255.0f * fminf(1.0f, drop->life * 1.5f));
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, color);
+            break;
+        }
+        case WEATHER_DROP_DRIP:
+            DrawRectangleV(drop->position,
+                           (Vector2){1.0f, drop->phase > 0.0f ? 1.0f : 2.0f}, drop->color);
+            break;
+        case WEATHER_DROP_MOTE:
+        case WEATHER_DROP_BREATH: {
+            /* In and out gently rather than popping. */
+            Color color = drop->color;
+            float fade = fminf(1.0f, drop->life * 1.2f);
+
+            if (drop->kind == WEATHER_DROP_MOTE) {
+                fade *= fminf(1.0f, (6.0f - drop->life) * 1.0f + 0.2f);
+            }
+            color.a = (unsigned char)((float)color.a * fmaxf(0.0f, fade));
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, color);
+            break;
+        }
+        case WEATHER_DROP_GLINT: {
+            Color color = drop->color;
+
+            color.a = (unsigned char)(230.0f * fminf(1.0f, drop->life * 5.0f));
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, color);
+            break;
+        }
+        case WEATHER_DROP_FIREFLY: {
+            Color color = drop->color;
+            float blink = 0.5f + 0.5f * sinf(drop->phase * 5.0f);
+
+            color.a = (unsigned char)(255.0f * blink * fminf(1.0f, drop->life));
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, color);
+            break;
+        }
         case WEATHER_DROP_SNOW:
             DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){238, 244, 255, 220});
             break;
@@ -340,27 +710,44 @@ void WeatherRendererDraw(const WeatherRenderer *renderer, Rectangle visible)
     }
 }
 
+void WeatherRendererDrawEmissive(const WeatherRenderer *renderer, Rectangle visible)
+{
+    int index;
+
+    if (renderer == NULL) {
+        return;
+    }
+    for (index = 0; index < WEATHER_DROP_CAPACITY; ++index) {
+        const WeatherDrop *drop = &renderer->drops[index];
+        Color color;
+
+        if (!drop->active ||
+            (drop->kind != WEATHER_DROP_EMBER && drop->kind != WEATHER_DROP_FIREFLY) ||
+            drop->position.x < visible.x - 8.0f ||
+            drop->position.x > visible.x + visible.width + 8.0f ||
+            drop->position.y < visible.y - 8.0f ||
+            drop->position.y > visible.y + visible.height + 8.0f) {
+            continue;
+        }
+        color = drop->color;
+        if (drop->kind == WEATHER_DROP_EMBER) {
+            color.a = (unsigned char)(255.0f * fminf(1.0f, drop->life * 1.5f));
+        } else {
+            color.a = (unsigned char)(255.0f * (0.5f + 0.5f * sinf(drop->phase * 5.0f)) *
+                                      fminf(1.0f, drop->life));
+        }
+        DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, color);
+    }
+}
+
 void WeatherRendererDrawOverlay(const WeatherRenderer *renderer, int width, int height)
 {
-    float amount;
-    Color haze = {0, 0, 0, 0};
-
     if (renderer == NULL || width <= 0 || height <= 0) {
         return;
     }
-    amount = renderer->sample.intensity * renderer->outdoor;
-    switch (renderer->sample.kind) {
-    /* No wash over the whole screen for snow or sand: their weather is the
-       flakes and the grains themselves. */
-    case WEATHER_STORM: haze = (Color){20, 26, 44, (unsigned char)(70.0f * amount)}; break;
-    case WEATHER_RAIN: haze = (Color){60, 74, 96, (unsigned char)(28.0f * amount)}; break;
-    case WEATHER_ASHFALL: haze = (Color){70, 60, 56, (unsigned char)(36.0f * amount)}; break;
-    default: break;
-    }
-    if (haze.a > 0) {
-        DrawRectangleGradientV(0, 0, width, height, (Color){haze.r, haze.g, haze.b, (unsigned char)(haze.a / 2)},
-                               haze);
-    }
+    /* No wash over the whole screen for any weather: rain, snow, sand and
+       ash are the drops themselves, and a storm is its sky. Only the
+       lightning, which is a moment and not a tint. */
     if (renderer->flash > 0.0f) {
         DrawRectangle(0, 0, width, height,
                       (Color){230, 236, 255,

@@ -493,7 +493,18 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
 
         if (step < 0.0f || step > 0.25f) step = 0.0f;
         renderer->weatherTime = renderer->presentationTime;
-        WeatherRendererUpdate(&renderer->weather, &game->weather, &game->world, visible, step);
+        {
+            WeatherHero hero = {
+                .feet = {game->player.position.x,
+                         game->player.position.y + PlayerExtent(&game->player)},
+                .mouth = PlayerVisorOrigin(&game->player, aimPosition),
+                .velocity = game->player.velocity,
+                .grounded = game->player.grounded,
+            };
+
+            WeatherRendererUpdate(&renderer->weather, &game->weather, &game->world, hero,
+                                  visible, step);
+        }
         SkyRendererSetWeather(&renderer->sky, renderer->weather.sample.cloudCover,
                               renderer->weather.sample.kind == WEATHER_STORM ||
                                       renderer->weather.sample.kind == WEATHER_BLIZZARD ||
@@ -721,6 +732,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                             &game->player,
                                             renderer->presentationTime);
             PresentationFxRendererDrawEmissive(&renderer->effects);
+            WeatherRendererDrawEmissive(&renderer->weather, visible);
         EndMode2D();
         EndTextureMode();
 

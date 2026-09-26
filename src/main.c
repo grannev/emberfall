@@ -503,6 +503,9 @@ int main(int argc, char **argv)
             /* Holds one kind of weather everywhere: rain, storm, snow,
                blizzard, sandstorm, ashfall, cloudy, clear. */
             config.forcedWeather = WeatherKindParse(argv[++argument]);
+        } else if (strcmp(argv[argument], "--hour") == 0 && argument + 1 < argc) {
+            /* Starts the day at this hour, 0..24. */
+            config.startHour = strtof(argv[++argument], NULL);
         } else if (strcmp(argv[argument], "--seed") == 0 && argument + 1 < argc) {
             /* Replays a reported world exactly. strtoull takes 0x forms, which
                is how the debug HUD prints the seed. */
@@ -520,7 +523,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "usage: %s [--smoke-test] [--seed VALUE] "
-                    "[--palette auto|ember|abyss|storm]\n",
+                    "[--palette auto|ember|abyss|storm] [--weather KIND] [--hour H]\n",
                     argv[0]);
             return 1;
         }
