@@ -1101,15 +1101,20 @@ static void GenerateSea(World *world)
         int cell = queue[head++];
         int cellX = cell % world->width;
         int cellY = cell / world->width;
-        static const int stepX[3] = {1, -1, 0};
-        static const int stepY[3] = {0, 0, 1};
+        static const int stepX[4] = {1, -1, 0, 0};
+        static const int stepY[4] = {0, 0, 1, -1};
         int direction;
 
-        for (direction = 0; direction < 3; ++direction) {
+        /* Up as well, as long as it stays under the sea level: a cave that
+           goes down from the sea floor and rises again is filled to the
+           sea's level on its far side too. Poured only downward, its rising
+           branch stayed dry, and when the chunk woke the sea's pressure
+           pushed the ocean into it — the sea drained into the ground. */
+        for (direction = 0; direction < 4; ++direction) {
             int nextX = WorldWrapColumn(cellX + stepX[direction], world->width);
             int nextY = cellY + stepY[direction];
 
-            if (nextY >= world->height ||
+            if (nextY >= world->height || nextY < seaLevel ||
                 WorldMaterialAt(world, nextX, nextY) != MATERIAL_EMPTY) {
                 continue;
             }
@@ -2494,6 +2499,109 @@ static bool LiquidHeld(const World *world, int x, int y)
            WorldMaterialAt(world, x + 1, y) != MATERIAL_EMPTY;
 }
 
+/* Communicating vessels. Two pools joined under the ground by a flooded
+   cave were each filled to their own rim, and when the chunks woke the
+   higher one ran through the cave into the lower until both stood level —
+   a lake emptying into the dunes, the sea drawn down into a hall. Every
+   connected body of one liquid is brought to its lowest open surface
+   here instead: whatever of it stands above that level is removed, the way
+   SettleLiquids removes what would run away. A body with no open surface
+   (a sealed pocket) is left as it is. */
+static void EqualizeLiquidBodies(World *world)
+{
+    size_t cellCount = (size_t)world->width * (size_t)world->height;
+    uint32_t *visited = calloc((cellCount + 31u) / 32u, sizeof(*visited));
+    size_t capacity = 1u << 16;
+    int *body = malloc(capacity * sizeof(*body));
+    int chunkY;
+
+    if (visited == NULL || body == NULL) {
+        free(visited);
+        free(body);
+        return;
+    }
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunk = WorldChunkIndex(world, chunkX, chunkY);
+            int y;
+
+            if (world->chunkWater[chunk] == 0u && world->chunkLava[chunk] == 0u) {
+                continue;
+            }
+            for (y = chunkY * WORLD_CHUNK_SIZE;
+                 y < (chunkY + 1) * WORLD_CHUNK_SIZE && y < world->height; ++y) {
+                int x;
+
+                for (x = chunkX * WORLD_CHUNK_SIZE;
+                     x < (chunkX + 1) * WORLD_CHUNK_SIZE && x < world->width; ++x) {
+                    size_t seed = (size_t)y * (size_t)world->width + (size_t)x;
+                    CellMaterial liquid = WorldMaterialAt(world, x, y);
+                    size_t count = 0;
+                    size_t head;
+                    int level = -1;
+
+                    if (!MaterialIsLiquid(liquid) ||
+                        (visited[seed >> 5] & (1u << (seed & 31u))) != 0u) {
+                        continue;
+                    }
+                    visited[seed >> 5] |= 1u << (seed & 31u);
+                    body[count++] = (int)seed;
+                    for (head = 0; head < count; ++head) {
+                        static const int stepX[4] = {1, -1, 0, 0};
+                        static const int stepY[4] = {0, 0, 1, -1};
+                        int cellX = body[head] % world->width;
+                        int cellY = body[head] / world->width;
+                        int direction;
+
+                        /* The lowest open surface: the largest row whose
+                           cell has air over it. */
+                        if (WorldMaterialAt(world, cellX, cellY - 1) == MATERIAL_EMPTY &&
+                            cellY > level) {
+                            level = cellY;
+                        }
+                        for (direction = 0; direction < 4; ++direction) {
+                            int nextX = WorldWrapColumn(cellX + stepX[direction], world->width);
+                            int nextY = cellY + stepY[direction];
+                            size_t next;
+
+                            if (nextY < 0 || nextY >= world->height ||
+                                WorldMaterialAt(world, nextX, nextY) != liquid) {
+                                continue;
+                            }
+                            next = (size_t)nextY * (size_t)world->width + (size_t)nextX;
+                            if ((visited[next >> 5] & (1u << (next & 31u))) != 0u) continue;
+                            visited[next >> 5] |= 1u << (next & 31u);
+                            if (count == capacity) {
+                                int *grown = realloc(body, capacity * 2u * sizeof(*body));
+
+                                if (grown == NULL) {
+                                    free(visited);
+                                    free(body);
+                                    return;
+                                }
+                                body = grown;
+                                capacity *= 2u;
+                            }
+                            body[count++] = (int)next;
+                        }
+                    }
+                    if (level < 0) continue;
+                    for (head = 0; head < count; ++head) {
+                        if (body[head] / world->width < level) {
+                            WorldSetGeneratedCell(world, body[head] % world->width,
+                                                  body[head] / world->width, MATERIAL_EMPTY);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    free(visited);
+    free(body);
+}
+
 /* Where generated water meets generated lava, the lava has already met it:
    the face between them is cooled rock, the crust a lava lake grows wherever
    the sea finds it. Left touching, the pair would be generated asleep and
@@ -2619,6 +2727,7 @@ static void SettleLiquids(World *world)
     }
     free(queue);
     SettleLavaAgainstWater(world);
+    EqualizeLiquidBodies(world);
 }
 
 /* Snow on everything high enough, and on the whole of the frost: a few cells
