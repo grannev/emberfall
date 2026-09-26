@@ -10176,7 +10176,20 @@ static void test_the_laser_burns_only_the_first_thing_it_reaches(void)
                         &events, (Vector2){20.0f, 60.0f},
                         (Vector2){120.0f, 60.0f}, KINEMATIC_STEP, requested);
     }
-    CHECK(damage.stats.cellsCarved > 0, "the beam did not cut the body");
+    /* The beam heats the body as it would heat rock in the world: twelve
+       frames warm it without cutting it through. */
+    {
+        float hottest = 0.0f;
+        int x;
+        int y;
+
+        for (y = 0; y < 16; ++y) {
+            for (x = 0; x < 16; ++x) {
+                hottest = fmaxf(hottest, DynamicTerrainTemperatureAt(&terrain, handle, x, y));
+            }
+        }
+        CHECK(hottest > 60.0f, "the beam did not heat the body: %.1f", (double)hottest);
+    }
     CHECK(WorldDigest(&world) == before,
           "the wall behind the body was burned anyway");
 
@@ -10195,6 +10208,59 @@ static void test_the_laser_burns_only_the_first_thing_it_reaches(void)
           damage.stats.cellsCarved);
     CHECK(DynamicTerrainGetConst(&terrain, handle)->cellCount == 36,
           "the shielded body lost cells");
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
+/* Rock is rock: held on a slab, the laser burns through it in as many
+   frames as it takes to burn the same rock in the world, and the rock it
+   melts is left in the world as lava. */
+static void test_the_laser_cuts_a_body_as_it_cuts_the_world(void)
+{
+    World world;
+    TerrainBodyHandle handle;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events;
+    bool requested[ABILITY_COUNT];
+    int index;
+    int worldFrames = -1;
+    int bodyFrames = -1;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainDamageInit(&damage);
+    AbilitiesInit(&abilities, 0x51u);
+    ParticlesInit(&particles, 0x52u);
+    GameEventsClear(&events);
+    for (index = 0; index < ABILITY_COUNT; ++index) requested[index] = false;
+    requested[ABILITY_LASER] = true;
+
+    FillRect(&world, 60, 50, 70, 70, MATERIAL_ROCK);
+    for (index = 0; index < 1200 && worldFrames < 0; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles, &events,
+                        (Vector2){20.0f, 60.0f}, (Vector2){120.0f, 60.0f}, KINEMATIC_STEP,
+                        requested);
+        GameEventsClear(&events);
+        if (WorldGetCell(&world, 60, 60) != MATERIAL_ROCK) worldFrames = index;
+    }
+    FillRect(&world, 0, 0, 127, 95, MATERIAL_EMPTY);
+    AbilitiesInit(&abilities, 0x51u);
+    handle = MakeRockBlock(&terrain, 12, 20, (Vector2){66.0f, 60.0f});
+    for (index = 0; index < 1200 && bodyFrames < 0; ++index) {
+        AbilitiesUpdate(&abilities, &world, &terrain, &damage, NULL, &particles, &events,
+                        (Vector2){20.0f, 60.0f}, (Vector2){120.0f, 60.0f}, KINEMATIC_STEP,
+                        requested);
+        GameEventsClear(&events);
+        if (damage.stats.cellsCarved > 0) bodyFrames = index;
+    }
+    (void)handle;
+    CHECK(worldFrames > 10 && bodyFrames > 10,
+          "the rock went in %d frames in the world and %d in a body", worldFrames, bodyFrames);
+    CHECK(abs(worldFrames - bodyFrames) <= worldFrames / 5 + 2,
+          "rock took %d frames to burn in the world but %d in a body", worldFrames,
+          bodyFrames);
+    CHECK(CountMaterial(&world, MATERIAL_LAVA) > 0, "the rock the beam melted out of the body vanished");
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -14824,6 +14890,7 @@ int main(void)
     RUN(test_an_explosion_carves_and_splits_a_moving_body);
     RUN(test_a_fast_player_cannot_cross_a_thin_body);
     RUN(test_the_laser_burns_only_the_first_thing_it_reaches);
+    RUN(test_the_laser_cuts_a_body_as_it_cuts_the_world);
     RUN(test_the_body_raycast_finds_a_thin_rotated_body);
     RUN(test_the_raycast_never_steps_over_material);
     RUN(test_a_grab_never_lands_on_empty_raster);

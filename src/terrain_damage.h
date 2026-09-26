@@ -35,12 +35,6 @@ typedef struct TerrainDamageConfig {
        edge, and each of those would otherwise take a body slot, a raster and a
        texture for something the player reads as dust. */
     int minimumFractureCells;
-    /* Seconds between successive laser bites into a body. The beam is held, so
-       without a rate it would carve on every frame and evaporate a slab in
-       well under a second. */
-    float beamCutInterval;
-    /* Radius of one laser bite, in cells. */
-    float beamCutRadius;
     /* ---- impact fracture ------------------------------------------------
      *
      * A body stopped hard enough cracks. What "hard enough" means is the
@@ -80,9 +74,6 @@ typedef struct TerrainDamageStats {
 typedef struct TerrainDamageSystem {
     TerrainDamageConfig config;
     TerrainDamageStats stats;
-    /* Time until the beam may bite again. Rate state, so it lives beside the
-       rate that defines it. */
-    float beamCooldown;
     /* Scratch for one connectivity pass over one body's raster. Owned here
        rather than on a stack because it is 24 KiB, and rather than as a global
        because this module has one owner like every other subsystem. */
@@ -151,8 +142,26 @@ void TerrainDamageHeatAround(TerrainDamageSystem *system,
                              TerrainBodyHandle handle, Vector2 worldCentre,
                              float radius, float strength);
 
-/* Advances the beam's cut rate and reports whether it may bite now. */
-bool TerrainDamageBeamReady(TerrainDamageSystem *system, float deltaTime);
+/* A cell a beam burned out of a body: where it was in the world and what it
+   became — lava for rock, fire for wood — for the caller to put there. */
+typedef struct TerrainBurnedCell {
+    Vector2 position;
+    CellMaterial product;
+    float temperature;
+} TerrainBurnedCell;
+
+#define TERRAIN_BEAM_MAX_BURNED 64
+
+/* Heats the cells a beam covers exactly as the laser heats the static world:
+   each by its material's own `laserHeatRate` for `deltaTime`, and a cell
+   past its `onHeat` threshold leaves the body as its product, listed in
+   `burned` (up to `capacity`). The body is refinalised and split if the
+   burn went through. Returns the number of cells burned out. A slab of rock
+   is exactly as hard to cut as the rock it came from. */
+int TerrainDamageBeamBurn(TerrainDamageSystem *system, DynamicTerrainSystem *terrain,
+                          TerrainBodyHandle handle, Vector2 worldCentre, float radius,
+                          float deltaTime, TerrainBurnedCell *burned, int capacity);
+
 
 /* Carves a crack one cell wide from `worldPoint` along `direction` for
    `length` cells, in the body's own frame, wandering a cell either side as

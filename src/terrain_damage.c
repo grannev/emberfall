@@ -31,12 +31,6 @@ TerrainDamageConfig TerrainDamageDefaultConfig(void)
     /* Six cells is about where a piece stops reading as a chip and starts
        reading as a chunk worth tumbling on its own. */
     config.minimumFractureCells = 6;
-    /* Faster bites and a wider one than the first pass shipped with: the beam
-       was cutting so slowly that a player could not tell it was working on
-       rock at all. Still rate-limited, because a bite every frame evaporates a
-       slab in well under a second. */
-    config.beamCutInterval = 0.035f;
-    config.beamCutRadius = 1.9f;
     /* A hundred and forty cells a second taken away in one contact: a slab
        dropped from a house's height, or thrown by a blast into a wall. A
        slab merely dropped from a hand lands well under it. */
@@ -52,7 +46,6 @@ void TerrainDamageInit(TerrainDamageSystem *system)
         return;
     }
     system->config = TerrainDamageDefaultConfig();
-    system->beamCooldown = 0.0f;
     TerrainDamageResetStats(system);
 }
 
@@ -66,19 +59,6 @@ void TerrainDamageResetStats(TerrainDamageSystem *system)
 
         system->stats = empty;
     }
-}
-
-bool TerrainDamageBeamReady(TerrainDamageSystem *system, float deltaTime)
-{
-    if (system == NULL || !(deltaTime >= 0.0f)) {
-        return false;
-    }
-    system->beamCooldown -= deltaTime;
-    if (system->beamCooldown > 0.0f) {
-        return false;
-    }
-    system->beamCooldown = system->config.beamCutInterval;
-    return true;
 }
 
 /* Re-derives the body from its raster and moves it so nothing appears to have
@@ -678,4 +658,77 @@ int TerrainDamageImpactFractures(TerrainDamageSystem *system,
         }
     }
     return cracked;
+}
+
+int TerrainDamageBeamBurn(TerrainDamageSystem *system, DynamicTerrainSystem *terrain,
+                          TerrainBodyHandle handle, Vector2 worldCentre, float radius,
+                          float deltaTime, TerrainBurnedCell *burned, int capacity)
+{
+    TerrainBody *body = DynamicTerrainGet(terrain, handle);
+    Vector2 previousCentre;
+    float previousAngle;
+    Vector2 local;
+    int firstX;
+    int firstY;
+    int lastX;
+    int lastY;
+    int localY;
+    int removed = 0;
+
+    if (system == NULL || body == NULL || !(radius > 0.0f) || !(deltaTime > 0.0f) ||
+        !TerrainFiniteSample(worldCentre)) {
+        return 0;
+    }
+    previousCentre = body->centerOfMass;
+    previousAngle = body->angle;
+    local = TerrainBodyWorldToLocal(body, worldCentre.x, worldCentre.y);
+    firstX = (int)floorf(local.x - radius);
+    firstY = (int)floorf(local.y - radius);
+    lastX = (int)ceilf(local.x + radius);
+    lastY = (int)ceilf(local.y + radius);
+    if (firstX < 0) firstX = 0;
+    if (firstY < 0) firstY = 0;
+    if (lastX > body->width - 1) lastX = body->width - 1;
+    if (lastY > body->height - 1) lastY = body->height - 1;
+
+    for (localY = firstY; localY <= lastY; ++localY) {
+        int localX;
+
+        for (localX = firstX; localX <= lastX; ++localX) {
+            CellMaterial material = DynamicTerrainCellAt(terrain, handle, localX, localY);
+            const MaterialInfo *info = MaterialAt(material);
+            float dx = (float)localX + 0.5f - local.x;
+            float dy = (float)localY + 0.5f - local.y;
+            float temperature;
+
+            if (material == MATERIAL_EMPTY || dx * dx + dy * dy > radius * radius ||
+                !(info->laserHeatRate > 0.0f)) {
+                continue;
+            }
+            temperature = DynamicTerrainTemperatureAt(terrain, handle, localX, localY) +
+                          info->laserHeatRate * deltaTime;
+            if (info->onHeat.enabled && temperature >= info->onHeat.threshold) {
+                if (removed < capacity && burned != NULL) {
+                    burned[removed] = (TerrainBurnedCell){
+                        TerrainBodyLocalToWorld(body, (float)localX + 0.5f,
+                                                (float)localY + 0.5f),
+                        info->onHeat.target, temperature};
+                }
+                DynamicTerrainSetCell(terrain, handle, localX, localY, MATERIAL_EMPTY, 0.0f);
+                ++removed;
+                continue;
+            }
+            DynamicTerrainSetCell(terrain, handle, localX, localY, material, temperature);
+        }
+    }
+    if (removed == 0) {
+        return 0;
+    }
+    system->stats.cellsCarved += removed;
+    if (!TerrainDamageRefinalize(terrain, handle, previousCentre, previousAngle)) {
+        ++system->stats.bodiesEmptied;
+        return removed;
+    }
+    (void)TerrainDamageFracture(system, terrain, handle);
+    return removed;
 }

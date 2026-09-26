@@ -88,13 +88,40 @@ static void AbilityApplyLaser(const AbilityContext *context, AbilityState *state
         /* Rate-limited: the beam is held, and a bite on every frame would
            evaporate a slab in well under a second. The world is left alone
            entirely — the beam stopped here. */
-        if (TerrainDamageBeamReady(context->damage, context->deltaTime)) {
-            (void)TerrainDamageApplyCircle(context->damage, context->terrain,
-                                           cutBody, cutAt,
-                                           context->damage->config.beamCutRadius);
+        /* Heated exactly as the world is: a slab of rock is as hard to cut
+           as the cliff it came from, and what it melts to — lava out of rock,
+           fire out of wood — is left in the world where it was. */
+        {
+            TerrainBurnedCell burned[TERRAIN_BEAM_MAX_BURNED];
+            const TerrainBody *hitBody = DynamicTerrainGetConst(context->terrain, cutBody);
+            CellMaterial hitMaterial = MATERIAL_ROCK;
+            int count;
+            int index;
+
+            if (hitBody != NULL) {
+                Vector2 local = TerrainBodyWorldToLocal(hitBody, cutAt.x, cutAt.y);
+
+                hitMaterial = DynamicTerrainCellAt(context->terrain, cutBody,
+                                                   (int)floorf(local.x), (int)floorf(local.y));
+                if (hitMaterial == MATERIAL_EMPTY) hitMaterial = MATERIAL_ROCK;
+            }
+            count = TerrainDamageBeamBurn(context->damage, context->terrain, cutBody, cutAt,
+                                          ABILITY_LASER_RADIUS, context->deltaTime, burned,
+                                          TERRAIN_BEAM_MAX_BURNED);
+            if (count > TERRAIN_BEAM_MAX_BURNED) count = TERRAIN_BEAM_MAX_BURNED;
+            for (index = 0; index < count; ++index) {
+                int x = (int)floorf(burned[index].position.x);
+                int y = (int)floorf(burned[index].position.y);
+
+                if (WorldGetCell(context->world, x, y) == MATERIAL_EMPTY &&
+                    burned[index].product != MATERIAL_EMPTY) {
+                    WorldSetCell(context->world, x, y, burned[index].product);
+                    WorldSetTemperature(context->world, x, y, burned[index].temperature);
+                }
+            }
+            result.material = hitMaterial;
         }
         result.position = cutAt;
-        result.material = MATERIAL_ROCK;
         result.hit = true;
     } else {
         /* The wall is what the beam reached, so it is the only thing that takes
