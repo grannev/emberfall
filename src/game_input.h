@@ -18,6 +18,8 @@ typedef struct GameInput {
        the ability's own definition, so a new power adds a binding rather than
        another named field here and another argument downstream. */
     bool ability[ABILITY_COUNT];
+    /* Opening a selection/menu cancels a charge rather than releasing it. */
+    bool cancelCharge;
     /* Held, not pressed: taking hold of a piece of terrain lasts as long as the
        button does. Kept out of the ability array on purpose — it is not a power,
        it has no cooldown, and it does nothing to the world on its own. */

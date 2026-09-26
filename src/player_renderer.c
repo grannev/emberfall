@@ -10,9 +10,9 @@
  * The figure is built in a body frame rather than as a fixed sprite: `up` runs
  * from the hips to the head and `side` across the shoulders, and the whole frame
  * rotates from vertical toward the direction of travel as `leanAmount` rises.
- * Hovering, the character stands in the air with their knees drawn back; at
- * speed the same joints lay out flat with the arms thrown forward, because the
- * frame turned rather than because a different sprite was chosen.
+ * Hovering, the character stands in the air with his knees drawn back; at speed
+ * the same joints lay out flat with the arms thrown forward, because the frame
+ * turned rather than because a different sprite was chosen.
  *
  * There is no outline. A dark rim around every limb flattens the figure into a
  * silhouette — a brick with a cape — and hides the shading that makes it read as
@@ -100,8 +100,12 @@ static Vector2 BodyPoint(const BodyFrame *frame, float alongUp, float alongSide)
 
 static void DrawBodyCell(Vector2 point, int size, Color color)
 {
-    DrawRectangle((int)floorf(point.x) - (size - 1) / 2,
-                  (int)floorf(point.y) - (size - 1) / 2, size, size, color);
+    /* Half-cell character pixels allow adult facial/limb proportions without
+       enlarging the hero relative to the world or changing the collider. */
+    float width = (float)size * 0.5f;
+    DrawRectangleV((Vector2){floorf((point.x - width * 0.5f) * 2.0f) * 0.5f,
+                             floorf((point.y - width * 0.5f) * 2.0f) * 0.5f},
+                   (Vector2){width, width}, color);
 }
 
 /* Fills a rectangle of the body frame one cell at a time, sampled at half a cell
@@ -112,11 +116,11 @@ static void FillBodyRect(const BodyFrame *frame, float fromUp, float toUp,
 {
     float alongUp;
 
-    for (alongUp = fromUp; alongUp <= toUp + 0.001f; alongUp += 0.5f) {
+    for (alongUp = fromUp; alongUp <= toUp + 0.001f; alongUp += 0.25f) {
         float alongSide;
 
         for (alongSide = -halfWidth; alongSide <= halfWidth + 0.001f;
-             alongSide += 0.5f) {
+             alongSide += 0.25f) {
             Color tone = alongSide > 0.4f ? lit : (alongSide < -0.4f ? shadow : mid);
 
             DrawBodyCell(BodyPoint(frame, alongUp, alongSide), 1, tone);
@@ -133,7 +137,7 @@ static void DrawLimb(Vector2 from, Vector2 to, int thickness, Color color)
     float dy = to.y - from.y;
     float span = fmaxf(fabsf(dx), fabsf(dy));
     /* Two samples per cell, so a limb at any angle stays a solid run. */
-    int steps = (int)ceilf(span * 2.0f);
+    int steps = (int)ceilf(span * 4.0f);
     int step;
 
     if (steps < 1) {
@@ -194,33 +198,36 @@ static Vector2 PlayerKnee(Vector2 hip, Vector2 foot)
 static void PlayerDrawLeg(const BodyFrame *frame, Vector2 hip, Vector2 knee,
                           Vector2 foot, Color thigh, Color shin, Color boot)
 {
-    DrawLimb(hip, knee, 2, thigh);
+    DrawLimb(hip, knee, 3, thigh);
     DrawLimb(knee, foot, 2, shin);
-    DrawBodyCell(knee, 1, boot);
     DrawBodyCell(foot, 2, boot);
-    DrawBodyCell((Vector2){foot.x + frame->side.x * 1.4f,
-                           foot.y + frame->side.y * 1.4f},
-                 2, boot);
+    DrawBodyCell((Vector2){foot.x + frame->side.x * 0.7f,
+                           foot.y + frame->side.y * 0.7f}, 2, boot);
 }
 
 /* Where the feet go on foot, in body-frame units (x forward, y up from the
    hips). On the ground the two feet run half a cycle apart: each is planted
    and swept back under the body for half the cycle and lifted and carried
    forward for the other, the sweep a quarter stride either way so a planted
-   foot keeps pace with the ground. In the air the legs gather — a knee up on
+   foot reads as planted. At sprint speed the reach is capped to preserve
+   anatomy, and cadence takes over. In the air the legs gather — a knee up on
    the way up, reaching for the ground on the way down. */
 static void PlayerWalkFeet(const Player *player, float facing, float ground,
                            Vector2 *lead, Vector2 *trail)
 {
     float moving = Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f);
-    float reach = PlayerStride(player) * 0.25f / PLAYER_BODY_SCALE;
+    /* A literal quarter of the distance travelled in a cycle made a sprint
+       an implausible split-legged lunge at this sprite scale. Keep the feet
+       under the hips and let cadence carry the extra ground speed. */
+    float run = Clamp((fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
+                       (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED), 0.0f, 1.0f);
+    float reach = fminf(PlayerStride(player) * 0.25f / PLAYER_BODY_SCALE,
+                        2.55f + 0.7f * run);
     /* Running backward — facing the cursor, moving away from it — plays the
        cycle in reverse, so the planted foot still sweeps with the ground. */
     float direction = player->velocity.x * facing >= 0.0f ? 1.0f : -1.0f;
     float phase = player->walkPhase * 2.0f * PI;
-    float lift = 1.2f + 1.4f * Clamp((fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
-                                         (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED),
-                                     0.0f, 1.0f);
+    float lift = 1.05f + 1.0f * run;
     int leg;
 
     if (!player->grounded) {
@@ -238,7 +245,7 @@ static void PlayerWalkFeet(const Player *player, float facing, float ground,
         /* Forward when the swing carries it forward: the lifted half. */
         float swing = sinf(at) * reach * direction;
         float raised = fmaxf(0.0f, cosf(at)) * lift;
-        Vector2 stand = {leg == 0 ? 0.7f : -0.5f, ground};
+        Vector2 stand = {leg == 0 ? 1.0f : -0.85f, ground};
         Vector2 step = {swing, ground + raised};
         Vector2 foot = {stand.x + (step.x - stand.x) * moving,
                         stand.y + (step.y - stand.y) * moving};
@@ -262,8 +269,8 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
     /* Hanging at rest — the hands sit below the shoulders — and thrown out past
        the head at speed, along the body axis, which at full lean is the
        direction of travel. */
-    Vector2 restLead = {2.2f - 1.2f * lean, 0.4f + 8.2f * lean};
-    Vector2 restTrail = {-2.2f + 1.2f * lean, 0.0f + 7.2f * lean};
+    Vector2 restLead = {2.1f - 1.0f * lean, 0.1f + 8.5f * lean};
+    Vector2 restTrail = {-2.0f + 0.5f * lean, -0.3f + 2.4f * lean};
     float reach;
 
     restLead.y += wave * 0.35f;
@@ -271,11 +278,10 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
 
     switch (player->pose) {
     case PLAYER_POSE_LASER:
-        /* One arm snaps straight at the cursor; the other stays braced. */
-        reach = 5.4f;
-        lead->x = aimLocal.x * reach;
-        lead->y = SHOULDER_UP + aimLocal.y * reach;
-        *trail = (Vector2){-1.6f, SHOULDER_UP - 2.2f};
+    case PLAYER_POSE_CRYO:
+        /* Heat vision: clenched hands brace the chest; the eyes do the work. */
+        *lead = (Vector2){2.1f, 1.3f + 4.5f * lean};
+        *trail = (Vector2){-1.8f, 0.8f + 3.8f * lean};
         return;
     case PLAYER_POSE_CHILL:
         /* Both palms out: a wide, two-handed gesture, so the cryo beam does not
@@ -303,14 +309,15 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
         return;
     }
     case PLAYER_POSE_BLAST: {
-        /* A punch: both arms drive out along the aim and recover. */
-        float punch = Clamp(player->poseTimer / 0.28f, 0.0f, 1.0f);
-        float thrust = 3.2f + 5.2f * sinf(punch * PI);
+        /* Impact is immediate in gameplay. Start fully extended, hold briefly,
+           then recover with the other fist guarding the ribs. */
+        float elapsed = 1.0f - Clamp(player->poseTimer / 0.28f, 0.0f, 1.0f);
+        float recover = Clamp((elapsed - 0.18f) / 0.82f, 0.0f, 1.0f);
+        float thrust = 7.4f - 5.2f * recover * recover * (3.0f - 2.0f * recover);
 
         lead->x = aimLocal.x * thrust + 1.0f;
         lead->y = SHOULDER_UP + aimLocal.y * thrust - 0.4f;
-        trail->x = aimLocal.x * thrust - 1.0f;
-        trail->y = SHOULDER_UP + aimLocal.y * thrust - 1.8f;
+        *trail = (Vector2){-1.4f, 1.7f};
         return;
     }
     default:
@@ -324,22 +331,34 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
                            ? Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f)
                            : 0.0f;
         float swing = sinf(player->walkPhase * 2.0f * PI) * moving *
-                      (1.4f + 1.2f * Clamp((fabsf(player->velocity.x) -
+                      (0.8f + 0.9f * Clamp((fabsf(player->velocity.x) -
                                             PLAYER_WALK_SPEED) /
                                                (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED),
                                            0.0f, 1.0f));
 
+        float run = Clamp((fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
+                           (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED), 0.0f, 1.0f);
+        if (player->grounded && player->landingTimer > 0.0f) {
+            float recovery = player->landingTimer / PLAYER_LANDING_RECOVERY;
+            *lead = (Vector2){2.65f, -3.1f * recovery};
+            *trail = (Vector2){-1.8f, 0.8f};
+            return;
+        }
+        if (!player->grounded && player->velocity.y > PLAYER_HEAVY_LANDING_SPEED) {
+            *lead = (Vector2){2.0f, 0.6f};
+            *trail = (Vector2){-1.9f, 0.2f};
+            return;
+        }
         if (!player->grounded) {
             float rise = player->velocity.y < 0.0f ? 1.0f : 0.4f;
 
             restLead = (Vector2){2.6f, SHOULDER_UP + 0.6f + 1.4f * rise};
             restTrail = (Vector2){-2.4f, SHOULDER_UP - 0.4f + 1.0f * rise};
         } else {
-            restLead = (Vector2){0.9f - swing, 0.5f + fabsf(swing) * 0.3f};
-            restTrail = (Vector2){-0.7f + swing, 0.7f + fabsf(swing) * 0.3f};
+            restLead = (Vector2){1.95f - swing, -1.15f + run * 1.95f + fabsf(swing) * 0.15f};
+            restTrail = (Vector2){-1.8f + swing, -1.0f + run * 1.8f + fabsf(swing) * 0.15f};
         }
-        lead->x = restLead.x + aimLocal.x * 1.2f;
-        lead->y = restLead.y + aimLocal.y * 1.2f;
+        *lead = restLead;
         *trail = restTrail;
         return;
     }
@@ -347,9 +366,23 @@ static void PlayerHandTargets(const Player *player, Vector2 aimLocal,
     /* Free flight: the leading arm still tracks the cursor, so aim stays
        readable, but only part of the way — the whole arm swinging to the cursor
        while hovering looks like pointing, not like flying. */
-    lead->x = restLead.x + aimLocal.x * 2.0f * (1.0f - lean);
-    lead->y = restLead.y + aimLocal.y * 2.0f * (1.0f - lean);
-    *trail = restTrail;
+    {
+        float speed = Vector2Length(player->velocity);
+        float opposing = speed > 60.0f
+                             ? -(player->thrust.x * player->velocity.x +
+                                 player->thrust.y * player->velocity.y) / speed
+                             : 0.0f;
+        float brake = Clamp((opposing - 0.35f) / 0.65f, 0.0f, 1.0f);
+
+        /* Pushing against his own velocity is a deliberate air-brake: both
+           hands open in front and the trailing leg becomes a counterweight. */
+        lead->x = Lerp(restLead.x + aimLocal.x * 0.3f * (1.0f - lean),
+                       2.5f, brake);
+        lead->y = Lerp(restLead.y + aimLocal.y * 0.3f * (1.0f - lean),
+                       6.9f, brake);
+        trail->x = Lerp(restTrail.x, -1.7f, brake);
+        trail->y = Lerp(restTrail.y, 5.9f, brake);
+    }
 }
 
 /* Every tone the figure is painted in. One struct rather than a dozen locals
@@ -371,40 +404,71 @@ typedef struct PlayerPalette {
     Color glowLaser;
     Color glowChill;
     Color glowBlast;
+    Color hair;
+    Color silver;
+    Color skinShadow;
+    Color stubble;
 } PlayerPalette;
 
-static PlayerPalette PlayerPaletteFor(const Player *player)
+static Color PlayerTint(Color from, Color toward, float amount)
 {
-    /* Limbs get their own darker tone and the boots and gloves a bright one.
-       Without that separation every part is the same blue and the figure reads
-       as one shape however carefully the joints are placed. */
+    float t = Clamp(amount, 0.0f, 1.0f);
+
+    return (Color){(unsigned char)Lerp((float)from.r, (float)toward.r, t),
+                   (unsigned char)Lerp((float)from.g, (float)toward.g, t),
+                   (unsigned char)Lerp((float)from.b, (float)toward.b, t),
+                   from.a};
+}
+
+static PlayerPalette PlayerPaletteFor(const Player *player,
+                                      PlayerVisualEnvironment environment)
+{
+    /* Dark-red suit, pale trim and weathered grey cape. The face and the
+       broken-up planes of the chest keep the small figure legible. */
     PlayerPalette palette = {
-        .dark = {40, 52, 86, 255},
-        .mid = {84, 108, 162, 255},
-        .lit = {152, 184, 236, 255},
-        .capeCore = {228, 88, 38, 255},
-        .capeEdge = {255, 156, 72, 255},
-        .capeShade = {140, 44, 28, 255},
-        .skin = {236, 190, 146, 255},
+        .dark = {76, 31, 40, 255},
+        .mid = {145, 46, 49, 255},
+        .lit = {194, 76, 65, 255},
+        .capeCore = {115, 131, 134, 255},
+        .capeEdge = {173, 187, 179, 255},
+        .capeShade = {98, 105, 109, 255},
+        .skin = {230, 180, 137, 255},
         /* The far-side limbs sit in a much darker tone than the torso. That
            separation, not an outline, is what puts them behind the body. Dark
            enough to sit behind the body, light enough to still be a limb: at
            the value of the background the far leg disappears and only its
            boot remains, reading as a square floating beside the character. */
-        .limbDark = {50, 64, 104, 255},
-        .limbMid = {70, 92, 142, 255},
-        .trim = {206, 146, 58, 255},
-        .accent = {104, 232, 236, 255},
+        .limbDark = {68, 32, 41, 255},
+        .limbMid = {129, 43, 48, 255},
+        .trim = {166, 181, 176, 255},
+        .accent = {226, 77, 53, 255},
+        .hair = {36, 34, 37, 255},
+        .silver = {111, 110, 103, 255},
+        .skinShadow = {133, 104, 92, 255},
+        .stubble = {82, 47, 39, 255},
         .glowLaser = {255, 224, 168, 235},
         .glowChill = {206, 244, 255, 235},
         .glowBlast = {196, 222, 255, 235},
     };
 
+    if (environment.water > 0.0f) {
+        float wet = Clamp(environment.water, 0.0f, 1.0f);
+
+        palette.dark = PlayerTint(palette.dark, (Color){46, 56, 71, 255}, wet * 0.38f);
+        palette.mid = PlayerTint(palette.mid, (Color){84, 91, 113, 255}, wet * 0.42f);
+        palette.lit = PlayerTint(palette.lit, (Color){131, 151, 163, 255}, wet * 0.38f);
+        palette.capeCore = PlayerTint(palette.capeCore, (Color){54, 99, 123, 255}, wet * 0.55f);
+        palette.capeEdge = PlayerTint(palette.capeEdge, (Color){111, 164, 182, 255}, wet * 0.45f);
+    }
+    if (environment.heat > 0.0f) {
+        float hot = Clamp(environment.heat, 0.0f, 1.0f);
+
+        palette.lit = PlayerTint(palette.lit, (Color){252, 151, 90, 255}, hot * 0.6f);
+        palette.trim = PlayerTint(palette.trim, (Color){255, 189, 118, 255}, hot * 0.75f);
+        palette.capeEdge = PlayerTint(palette.capeEdge, (Color){211, 123, 93, 255}, hot * 0.4f);
+    }
     if (player->impactTimer > 0.0f) {
-        /* Flash the fills, not a rim: the model has no outline to recolour, and
-           brightening the whole body is what sells the hit. Pale gold rather
-           than orange: an orange flash is the colour of the cape, and the two
-           merge into one blob at the moment of the hit. */
+        /* Flash the fills, not a rim: brightening the body sells the hit. */
         palette.dark = (Color){186, 154, 96, 255};
         palette.mid = (Color){245, 226, 168, 255};
         palette.lit = (Color){255, 252, 232, 255};
@@ -435,6 +499,10 @@ static PlayerPalette PlayerPaletteSilhouette(void)
     palette.glowLaser = black;
     palette.glowChill = black;
     palette.glowBlast = black;
+    palette.hair = black;
+    palette.silver = black;
+    palette.skinShadow = black;
+    palette.stubble = black;
     return palette;
 }
 
@@ -443,6 +511,7 @@ static PlayerPalette PlayerPaletteSilhouette(void)
    are light rather than matter and must not occlude anything. */
 static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
                                      const PlayerPalette *palette,
+                                     PlayerVisualEnvironment environment,
                                      bool silhouette)
 {
     const Color capeCore = palette->capeCore;
@@ -468,7 +537,6 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     Vector2 hipTrail;
     Vector2 kneeLead;
     Vector2 kneeTrail;
-    Vector2 head;
     float aimX;
     float aimY;
     float aimLength;
@@ -550,33 +618,8 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     }
 
     wave = sinf(player->animationTime * (player->boosting ? 15.0f : 5.0f));
-    if (player->mode == PLAYER_MODE_WALK) {
-        /* The hips dip as each foot takes the weight, twice a cycle; standing,
-           a breath. */
-        float moving = player->grounded
-                           ? Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f)
-                           : 0.0f;
-
-        bob = -fabsf(sinf(player->walkPhase * 2.0f * PI)) * 0.45f * moving +
-              sinf(player->animationTime * 1.8f) * 0.12f * (1.0f - moving);
-    } else {
-        bob = (1.0f - lean) * sinf(player->animationTime * 2.4f) * 0.7f;
-    }
-    frame.origin = (Vector2){player->position.x + frame.up.x * bob,
-                             player->position.y + frame.up.y * bob};
-
-    /* A compact sharp exhaust anchors the longer particle/FX trail to the
-       character, while the separate emissive pass supplies the soft halo
-       without blurring this core. */
-    if (player->boosting && !silhouette) {
-        Vector2 nozzle = Vector2Add(player->position,
-                                    Vector2Scale(travel, BODY(-3.5f)));
-        Vector2 tail = Vector2Add(nozzle, Vector2Scale(travel, BODY(-14.0f)));
-        Color exhaust = (Color){104, 222, 255, 215};
-
-        DrawLineEx(nozzle, tail, BODY(1.93f), Fade(exhaust, 0.48f));
-        DrawLineEx(nozzle, tail, BODY(0.55f), exhaust);
-    }
+    frame.origin = PlayerBodyOrigin(player);
+    bob = Vector2DotProduct(Vector2Subtract(frame.origin, player->position), frame.up);
 
     /* ---- acceleration burst, behind the body ---- */
     if (player->boostBurstTimer > 0.0f && !silhouette) {
@@ -603,23 +646,19 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     /* ---- cape ---- */
     {
         /* The cape streams opposite the travel and sags when hovering, so it
-           says which way the character is moving before the body does. */
-        /* Anchored clear of the torso, or the cape reads as orange noise on the
-           chest instead of as cloth behind the shoulders. */
-        /* On the shoulder, not floating beside it: a cape that starts clear of
-           the body reads as a separate ribbon following the character around. */
-        Vector2 anchor = BodyPoint(&frame, 3.2f, -1.0f);
-        /* Hanging behind and below at rest, streaming straight back at speed. */
-        /* Nearly vertical at rest, straight back at speed. Hanging at an angle
-           puts most of the cloth behind the torso, which covers it and leaves
-           only a ragged diagonal edge showing. */
+           says which way the character is moving before the body does.
+           Attached at the far shoulder, not floating beside the figure. */
+        Vector2 anchor = BodyPoint(&frame, 3.6f, -0.9f);
+        float impact = player->landingTimer > 0.0f
+                           ? player->landingTimer / PLAYER_LANDING_RECOVERY
+                           : 0.0f;
         Vector2 flow = {back.x * (0.3f + 0.7f * lean) -
-                            frame.up.x * (1.0f - lean) * 0.95f,
+                            frame.up.x * (1.0f - lean) * (0.95f - impact * 0.35f),
                         back.y * (0.3f + 0.7f * lean) -
-                            frame.up.y * (1.0f - lean) * 0.95f};
+                            frame.up.y * (1.0f - lean) * (0.95f - impact * 0.35f)};
         float flowLength = sqrtf(flow.x * flow.x + flow.y * flow.y);
-        float length = BODY(8.0f + 4.0f * lean + (player->boosting ? 4.0f : 0.0f));
-        int steps = 24;
+        float length = BODY(7.2f + 2.5f * lean);
+        int steps = 64;
 
         if (flowLength > 0.001f) {
             flow.x /= flowLength;
@@ -630,21 +669,23 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
             float along = length * amount;
             /* Barely a stir while hovering — cloth hangs — and a real wave at
                speed. */
-            float ripple = sinf(player->animationTime * 9.0f - amount * 4.2f) *
-                           BODY(0.3f + 1.9f * amount) *
-                           (0.18f + 0.82f * lean);
+            float airflow = Clamp(speed / player->maxSpeed, 0.0f, 1.0f);
+            float ripple = (sinf(player->animationTime * (4.0f + airflow * 7.0f) -
+                                  amount * 5.4f) +
+                            0.25f * sinf(player->animationTime * 13.0f - amount * 11.0f)) *
+                           BODY(amount * amount * (0.25f + airflow * 1.3f + impact * 0.8f));
             Vector2 spine = {anchor.x + flow.x * along - flow.y * ripple,
                              anchor.y + flow.y * along + flow.x * ripple};
-            /* Narrow enough to stay cloth behind the shoulders rather than a
-               slab covering the character. */
-            float width = BODY(1.4f - 1.1f * amount);
+            float width = BODY((1.05f + 1.15f * amount) * (1.0f - 0.35f * lean));
             float across;
 
-            /* Sampled finer than half a cell: at this width half-cell steps
-               leave the cloth as a dotted line rather than a sheet. */
             for (across = -width; across <= width + 0.001f;
-                 across += BODY(0.34f)) {
-                Color tone = across < -width * 0.45f
+                 across += BODY(0.2f)) {
+                /* Two weighted points at the hem, with a shallow cleft. */
+                if (amount > 0.83f && fabsf(across) <
+                    BODY((amount - 0.83f) * 2.3f)) continue;
+                Color tone = across < -width * 0.45f ||
+                                     sinf(across / BODY(1.15f) + amount * 2.0f) < -0.72f
                                  ? capeShade
                                  : (across > width * 0.45f ? capeEdge : capeCore);
 
@@ -659,7 +700,7 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     if (player->mode == PLAYER_MODE_WALK) {
         /* The soles on the bottom of the collider, wherever the bob has put
            the hips. */
-        float ground = -PlayerExtent(player) / PLAYER_BODY_SCALE - bob + 0.4f;
+        float ground = (-PlayerExtent(player) - bob) / PLAYER_BODY_SCALE + 0.2f;
         Vector2 footLead;
         Vector2 footTrail;
         Vector2 hips[2] = {{0.6f, -0.6f}, {-0.6f, -0.6f}};
@@ -669,27 +710,32 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
                        &footLead, &footTrail);
         knees[0] = PlayerKnee(hips[0], footLead);
         knees[1] = PlayerKnee(hips[1], footTrail);
+        if (player->grounded && player->landingTimer <= 0.0f) {
+            float moving = Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f);
+            Vector2 straightLead = Vector2Lerp(hips[0], footLead, 0.5f);
+            Vector2 straightTrail = Vector2Lerp(hips[1], footTrail, 0.5f);
+            straightLead.x += 0.12f;
+            straightTrail.x += 0.12f;
+            knees[0] = Vector2Lerp(straightLead, knees[0], moving);
+            knees[1] = Vector2Lerp(straightTrail, knees[1], moving);
+        }
         hipLead = BodyPoint(&frame, hips[0].y, hips[0].x);
         hipTrail = BodyPoint(&frame, hips[1].y, hips[1].x);
         kneeLead = BodyPoint(&frame, knees[0].y, knees[0].x);
         kneeTrail = BodyPoint(&frame, knees[1].y, knees[1].x);
         PlayerDrawLeg(&frame, hipTrail, kneeTrail,
                       BodyPoint(&frame, footTrail.y, footTrail.x), limbDark,
-                      limbDark, limbDark);
+                      dark, dark);
         PlayerDrawLeg(&frame, hipLead, kneeLead,
                       BodyPoint(&frame, footLead.y, footLead.x), limbMid,
-                      limbMid, trim);
+                      mid, trim);
     } else {
-        /* Knees stay drawn back while hovering, the way someone hangs in the
-           air in every superhero film, and straighten out as the body lays
-           down. */
+        /* Knees stay drawn back while hovering and straighten out as the body
+           lays down. */
         Vector2 footLead;
         Vector2 footTrail;
 
         kneeDrop = 3.4f - 0.9f * lean;
-        /* Tucked back, not thrown out sideways: too much and the far foot
-           leaves the silhouette entirely and reads as a loose block beside
-           the body. */
         footBack = (1.3f - 1.0f * lean) + wave * 0.35f * (1.0f - lean);
         /* A wide enough stance that the two legs stay two legs. */
         hipLead = BodyPoint(&frame, -0.6f, 0.6f);
@@ -703,19 +749,23 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
             kneeTrail.x - frame.up.x * BODY(2.6f) + back.x * BODY(footBack),
             kneeTrail.y - frame.up.y * BODY(2.6f) + back.y * BODY(footBack)};
         PlayerDrawLeg(&frame, hipTrail, kneeTrail, footTrail, limbDark,
-                           limbDark, limbDark);
+                      dark, dark);
         PlayerDrawLeg(&frame, hipLead, kneeLead, footLead, limbMid,
-                           limbMid, trim);
+                      mid, trim);
     }
 
     /* ---- arms ---- */
-    shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.4f);
-    shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.4f);
+    shoulderLead = BodyPoint(&frame, SHOULDER_UP, 1.8f);
+    shoulderTrail = BodyPoint(&frame, SHOULDER_UP, -1.8f);
     PlayerHandTargets(player, aimLocal, pushLocal, lean, wave, &leadHand,
                       &trailHand);
     {
         Vector2 leadPoint = BodyPoint(&frame, leadHand.y, leadHand.x);
         Vector2 trailPoint = BodyPoint(&frame, trailHand.y, trailHand.x);
+        if (player->pose == PLAYER_POSE_CHILL) {
+            leadPoint = PlayerHandOrigin(player, aimPosition, false);
+            trailPoint = PlayerHandOrigin(player, aimPosition, true);
+        }
         Vector2 leadElbow = {(shoulderLead.x + leadPoint.x) * 0.5f +
                                  frame.side.x * BODY(0.6f),
                              (shoulderLead.y + leadPoint.y) * 0.5f +
@@ -725,131 +775,81 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
                               (shoulderTrail.y + trailPoint.y) * 0.5f -
                                   frame.side.y * BODY(0.6f)};
 
-        DrawLimb(shoulderTrail, trailElbow, 2, limbDark);
+        if (player->pose == PLAYER_POSE_BLAST) {
+            Vector2 acrossAim = {-aimY, aimX};
+
+            leadElbow.x -= acrossAim.x * BODY(1.1f);
+            leadElbow.y -= acrossAim.y * BODY(1.1f);
+        }
+        DrawLimb(shoulderTrail, trailElbow, 3, dark);
         DrawLimb(trailElbow, trailPoint, 2, limbDark);
-        DrawBodyCell(trailPoint, 2, limbDark);
+        DrawBodyCell(trailPoint, 3, limbDark);
 
-        DrawLimb(shoulderLead, leadElbow, 2, limbMid);
-        DrawLimb(leadElbow, leadPoint, 2, lit);
-        DrawBodyCell(leadPoint, 2, trim);
-        DrawBodyCell((Vector2){leadPoint.x + aimX * BODY(0.9f),
-                               leadPoint.y + aimY * BODY(0.9f)},
-                     1, skin);
+        DrawLimb(shoulderLead, leadElbow, 3, lit);
+        DrawLimb(leadElbow, leadPoint, 2, limbMid);
+        DrawBodyCell(leadElbow, 2, mid);
+        DrawBodyCell(leadPoint, 3, trim);
 
-        if (player->pose == PLAYER_POSE_LASER ||
-            player->pose == PLAYER_POSE_CHILL ||
-            player->pose == PLAYER_POSE_BLAST) {
-            Color glow = player->pose == PLAYER_POSE_CHILL
-                             ? palette->glowChill
-                             : (player->pose == PLAYER_POSE_BLAST
-                                    ? palette->glowBlast
-                                    : palette->glowLaser);
-
-            DrawBodyCell(leadPoint, 2, glow);
-            if (player->pose != PLAYER_POSE_LASER) {
-                DrawBodyCell(trailPoint, 2, glow);
-            }
+        if (player->pose == PLAYER_POSE_CHILL) {
+            DrawBodyCell(leadPoint, 2, palette->glowChill);
+            DrawBodyCell(trailPoint, 2, palette->glowChill);
         }
     }
 
     /* ---- torso, neck, head ---- */
-    FillBodyRect(&frame, -0.5f, 3.4f, 1.2f, dark, mid, lit);
+    FillBodyRect(&frame, -0.5f, 0.75f, 0.92f, dark, mid, lit);
+    FillBodyRect(&frame, 0.8f, 1.55f, 1.13f, dark, mid, lit);
+    FillBodyRect(&frame, 1.6f, 3.1f, 1.50f, dark, mid, lit);
     /* Shoulder plates, a shade proud of the chest: the suit has a
        structure, and the arms have somewhere to hang from. */
-    FillBodyRect(&frame, 2.9f, 3.6f, 1.5f, dark, trim, trim);
-    /* A belt breaks the torso into a chest and a waist; without it the body is
-       one undifferentiated block whatever tones it carries. */
-    FillBodyRect(&frame, -0.4f, 0.1f, 1.2f, capeShade, capeCore, capeEdge);
-    DrawBodyCell(BodyPoint(&frame, -0.15f, 0.5f), 1, trim);
-    /* One cyan mark on the chest. Any more and the eye has nowhere to settle:
-       the visor stops being the face and becomes another light. */
-    DrawBodyCell(BodyPoint(&frame, 2.0f, 0.5f), 1, accent);
-    DrawBodyCell(BodyPoint(&frame, 1.4f, -0.5f), 1, dark);
+    FillBodyRect(&frame, 3.0f, 3.48f, 1.75f, dark, mid, lit);
+    /* A belt breaks the torso into a chest and a waist. */
+    FillBodyRect(&frame, -0.38f, -0.12f, 1.05f, capeShade, capeCore, capeShade);
+    /* Offset seams form Emberfall's own small mark rather than a borrowed
+       superhero crest. */
+    DrawLimb(BodyPoint(&frame, 3.15f, -0.72f), BodyPoint(&frame, 1.72f, 0.18f),
+             1, trim);
+    DrawLimb(BodyPoint(&frame, 1.66f, 0.2f), BodyPoint(&frame, 2.15f, 0.55f),
+             1, accent);
+    DrawLimb(BodyPoint(&frame, 0.35f, -0.55f), BodyPoint(&frame, 1.34f, -0.68f),
+             1, dark);
 
-    /* One cell of neck. Without the gap the head merges into the shoulders and
-       the whole figure reads as a single block. */
-    DrawBodyCell(BodyPoint(&frame, 4.1f, 0.0f), 1, dark);
+    /* Neck stays visible between the face and shoulder line. */
+    FillBodyRect(&frame, 3.55f, 3.95f, 0.77f, capeShade, dark, mid);
+    FillBodyRect(&frame, 4.0f, 4.68f, 0.46f, palette->skinShadow, skin, skin);
 
-    head = BodyPoint(&frame, 6.0f, 0.25f * aimLocal.x);
-    /* A helmet: a dome a little wider than the neck, a crest along the top
-       and the visor across the front of the face. */
-    FillBodyRect(&frame, 4.8f, 7.0f, 1.2f, dark, mid, lit);
-    FillBodyRect(&frame, 7.0f, 7.3f, 0.6f, dark, lit, lit);
-    DrawBodyCell(BodyPoint(&frame, 7.5f, -0.7f), 1, trim);
+    /* Bare face, short swept hair, weathered temple and shaded stubble. */
+    FillBodyRect(&frame, 4.72f, 4.95f, 0.63f, palette->skinShadow, skin, skin);
+    FillBodyRect(&frame, 4.97f, 6.40f, 0.82f, palette->skinShadow, skin, skin);
+    FillBodyRect(&frame, 6.43f, 6.86f, 0.85f,
+                 palette->hair, palette->hair, palette->hair);
+    DrawBodyCell(BodyPoint(&frame, 6.16f, -0.80f), 1, palette->silver);
+    DrawBodyCell(BodyPoint(&frame, 6.54f, -0.71f), 1, palette->silver);
+    DrawLimb(BodyPoint(&frame, 4.88f, -0.35f), BodyPoint(&frame, 5.13f, 0.54f),
+             1, palette->stubble);
+    DrawBodyCell(BodyPoint(&frame, 5.66f, 1.03f), 1, skin);
+    DrawLimb(BodyPoint(&frame, 6.18f, 0.38f), BodyPoint(&frame, 6.18f, 1.0f),
+             1, palette->hair);
     {
-        /* The visor looks where the cursor is, independently of the body. */
-        Vector2 visor = {head.x + frame.side.x * BODY(0.9f) +
-                             aimX * BODY(0.5f),
-                         head.y + frame.side.y * BODY(0.9f) +
-                             aimY * BODY(0.5f)};
-
-        DrawBodyCell(visor, 1, accent);
-        DrawBodyCell((Vector2){visor.x - frame.side.x * BODY(0.8f),
-                               visor.y - frame.side.y * BODY(0.8f)},
-                     1, accent);
-        DrawBodyCell((Vector2){visor.x + frame.up.x * BODY(0.6f),
-                               visor.y + frame.up.y * BODY(0.6f)},
-                     1, accent);
-        DrawBodyCell(BodyPoint(&frame, 5.2f, -0.9f), 1, skin);
+        Vector2 eye = PlayerVisorOrigin(player, aimPosition);
+        Color eyeColor = player->pose == PLAYER_POSE_LASER ? palette->glowLaser :
+                         (player->pose == PLAYER_POSE_CRYO ||
+                          player->pose == PLAYER_POSE_CHILL ? palette->glowChill :
+                          palette->hair);
+        DrawBodyCell(eye, 1, eyeColor);
     }
 
     if (silhouette) {
         return;
     }
 
-    /* ---- speed streaks ---- */
-    if (speed > player->maxSpeed * 0.8f) {
-        float intensity = Clamp((speed - player->maxSpeed * 0.8f) /
-                                    (player->boostSpeed - player->maxSpeed * 0.8f),
-                                0.0f, 1.0f);
-        Vector2 across = {-travel.y, travel.x};
-        int streakCount = 8;
-        int streak;
+    if (environment.water > 0.1f) {
+        unsigned char alpha = (unsigned char)(145.0f * Clamp(environment.water, 0.0f, 1.0f));
+        Color sheen = {176, 215, 221, alpha};
 
-        if (player->boosting) {
-            intensity = fmaxf(intensity, 0.54f);
-        }
-
-        for (streak = 0; streak < streakCount; ++streak) {
-            float streakBack = BODY(8.0f + (float)streak * 4.0f);
-            float offset = sinf(player->animationTime * 11.0f +
-                                (float)streak) * BODY(3.4f);
-            int length = 5 - streak / 2;
-            int cell;
-
-            if (length < 1) length = 1;
-
-            for (cell = 0; cell < length; ++cell) {
-                Vector2 point = {
-                    player->position.x - travel.x * (streakBack + (float)cell) +
-                        across.x * offset,
-                    player->position.y - travel.y * (streakBack + (float)cell) +
-                        across.y * offset
-                };
-
-                DrawBodyCell(point, 1,
-                             Fade(streak == 0 ? accent : (Color){186, 226, 255, 255},
-                                  intensity * (0.88f - 0.065f * (float)streak)));
-            }
-        }
-
-        if (player->boosting && speed >= player->sonicSpeed) {
-            float pulse = BODY(10.0f +
-                               sinf(player->animationTime * 18.0f) * 1.8f);
-            Vector2 coneStart = {player->position.x - travel.x * BODY(3.5f),
-                                 player->position.y - travel.y * BODY(3.5f)};
-            Vector2 coneBack = {player->position.x - travel.x * BODY(28.0f),
-                                player->position.y - travel.y * BODY(28.0f)};
-
-            DrawLineEx(coneStart,
-                       (Vector2){coneBack.x + across.x * pulse,
-                                 coneBack.y + across.y * pulse},
-                       0.7f, (Color){203, 235, 255, 150});
-            DrawLineEx(coneStart,
-                       (Vector2){coneBack.x - across.x * pulse,
-                                 coneBack.y - across.y * pulse},
-                       0.7f, (Color){203, 235, 255, 150});
-        }
+        DrawBodyCell(BodyPoint(&frame, 3.25f, 1.7f), 1, sheen);
+        DrawBodyCell(BodyPoint(&frame, 1.85f, 1.42f), 1, sheen);
+        DrawBodyCell(BodyPoint(&frame, -1.25f, 1.0f), 1, sheen);
     }
 
     /* ---- drill contact ---- */
@@ -868,15 +868,16 @@ static void PlayerRendererDrawFigure(const Player *player, Vector2 aimPosition,
     }
 }
 
-void PlayerRendererDraw(const Player *player, Vector2 aimPosition)
+void PlayerRendererDraw(const Player *player, Vector2 aimPosition,
+                        PlayerVisualEnvironment environment)
 {
     PlayerPalette palette;
 
     if (player == NULL) {
         return;
     }
-    palette = PlayerPaletteFor(player);
-    PlayerRendererDrawFigure(player, aimPosition, &palette, false);
+    palette = PlayerPaletteFor(player, environment);
+    PlayerRendererDrawFigure(player, aimPosition, &palette, environment, false);
 }
 
 void PlayerRendererDrawSilhouette(const Player *player, Vector2 aimPosition)
@@ -887,42 +888,19 @@ void PlayerRendererDrawSilhouette(const Player *player, Vector2 aimPosition)
         return;
     }
     palette = PlayerPaletteSilhouette();
-    PlayerRendererDrawFigure(player, aimPosition, &palette, true);
+    PlayerRendererDrawFigure(player, aimPosition, &palette,
+                             (PlayerVisualEnvironment){0}, true);
 }
 
 void PlayerRendererDrawEmissive(const Player *player)
 {
-    float speed;
-    Vector2 direction;
-
     if (player == NULL) {
         return;
     }
-    speed = sqrtf(player->velocity.x * player->velocity.x +
-                  player->velocity.y * player->velocity.y);
-    if (speed < 0.001f) {
-        direction = (Vector2){player->facingRight ? 1.0f : -1.0f, 0.0f};
-    } else {
-        direction = (Vector2){player->velocity.x / speed,
-                              player->velocity.y / speed};
-    }
-
     if (player->boosting) {
-        Vector2 normal = {-direction.y, direction.x};
-        Vector2 trail = {player->position.x - direction.x * BODY(12.0f),
-                         player->position.y - direction.y * BODY(12.0f)};
-        Color color = (Color){93, 216, 255, 185};
-
-        DrawLineEx(player->position, trail, BODY(2.1f), color);
-        PlayerFxBlob(player->position, BODY(2.2f), 1.0f, color);
-        DrawLineEx(Vector2Add(player->position,
-                              Vector2Scale(normal, BODY(1.8f))),
-                   Vector2Add(trail, Vector2Scale(normal, BODY(3.2f))),
-                   BODY(0.65f), Fade(color, 0.66f));
-        DrawLineEx(Vector2Add(player->position,
-                              Vector2Scale(normal, BODY(-1.8f))),
-                   Vector2Add(trail, Vector2Scale(normal, BODY(-3.2f))),
-                   BODY(0.65f), Fade(color, 0.66f));
+        Vector2 direction = Vector2Normalize(player->velocity);
+        Vector2 glow = Vector2Add(player->position, Vector2Scale(direction, BODY(-4.0f)));
+        PlayerFxBlob(glow, BODY(1.6f), 1.0f, (Color){104, 166, 183, 65});
     }
     if (player->boostBurstTimer > 0.0f) {
         float progress = 1.0f - player->boostBurstTimer / PLAYER_BOOST_BURST_TIME;

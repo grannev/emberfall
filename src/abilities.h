@@ -34,6 +34,7 @@ typedef enum AbilityId {
     ABILITY_EXPLOSION,
     ABILITY_FORCE,
     ABILITY_CRYO,
+    ABILITY_NUCLEAR,
     ABILITY_COUNT
 } AbilityId;
 
@@ -42,17 +43,16 @@ typedef enum AbilityId {
    force gust reads as weak however large its numbers are. */
 typedef enum AbilityTrigger {
     ABILITY_TRIGGER_HELD = 0,
-    ABILITY_TRIGGER_PRESSED
+    ABILITY_TRIGGER_PRESSED,
+    ABILITY_TRIGGER_RELEASE
 } AbilityTrigger;
 
 /* Cells per effect unit.
  *
- * The same job PLAYER_BODY_SCALE does for the figure, and deliberately the same
- * number. Every beam, ring and spark in the game was drawn against a character
- * thirteen cells tall; he is now eight, and a laser as thick as his chest reads
- * as a power holding onto him rather than one he is aiming. It is one shared
- * constant rather than a factor folded into each number so that resizing the
- * hero again moves his powers with him — which is the failure this is fixing.
+ * The same kind of shared width control as PLAYER_BODY_SCALE, but deliberately
+ * smaller: the figure is about sixteen cells tall and an eye beam cannot be
+ * as wide as the chest. One constant keeps local beam and contact details in
+ * a consistent pixel scale without changing gameplay reach.
  *
  * It scales widths, not reaches. How far a beam carries is a decision about the
  * world; how thick it is, is a decision about the body it comes out of. */
@@ -107,6 +107,12 @@ typedef enum AbilityTrigger {
 /* How far in front of the player the blow lands when it meets nothing solid. */
 #define ABILITY_FORCE_PUNCH_REACH 26.0f
 #define ABILITY_EXPLOSION_CORE_RADIUS 17
+/* A charged strike remains bounded, including its world scan and fractures. */
+#define ABILITY_NUCLEAR_CHARGE_TIME 3.0f
+#define ABILITY_NUCLEAR_RANGE 360.0f
+#define ABILITY_NUCLEAR_MIN_RADIUS 12.0f
+#define ABILITY_NUCLEAR_MAX_RADIUS 52.0f
+#define ABILITY_NUCLEAR_MAX_SHOCK 116.0f
 /* Fractures thrown out of the crater, and how far each may run. Twelve rays
    with one fork each reach much further than the crater itself, which is what
    makes a blast feel like it broke the ground rather than removed part of it. */
@@ -152,6 +158,7 @@ typedef struct AbilityState {
        `dwell` as a 0..1 charge toward the detonation. */
     Vector2 dwellPoint;
     float dwellTime;
+    float chargeTime;
 } AbilityState;
 
 /* Everything an ability's simulation may touch. Passing a context rather than
@@ -190,6 +197,8 @@ typedef struct AbilityDefinition {
        presentation what happened and pushes events to tell audio and the
        camera; it never draws and never touches the player directly. */
     void (*apply)(const AbilityContext *context, AbilityState *state);
+    /* RELEASE powers aim with apply while held and mutate only on release. */
+    void (*release)(const AbilityContext *context, AbilityState *state);
 } AbilityDefinition;
 
 typedef struct AbilitySystem {
@@ -203,6 +212,7 @@ const AbilityState *AbilityStateAt(const AbilitySystem *abilities, AbilityId id)
 const char *AbilitiesCurrentName(const AbilitySystem *abilities);
 
 void AbilitiesInit(AbilitySystem *abilities, uint64_t seed);
+void AbilitiesCancelCharge(AbilitySystem *abilities);
 /* `requested` is one flag per ability, in AbilityId order: held for HELD
    abilities, the press edge for PRESSED ones. */
 void AbilitiesUpdate(AbilitySystem *abilities, World *world,
@@ -210,6 +220,18 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
                      TerrainImpulseSystem *impulses, ParticleSystem *particles,
                      GameEventBuffer *events, Vector2 origin, Vector2 aim,
                      float deltaTime, const bool *requested);
+/* The game supplies the actual eye and knuckle points. This is still
+   presentation-independent: the ability registry receives positions, never
+   a Player, and each state records the point its ray or pressure wave used. */
+void AbilitiesUpdateFromOrigins(AbilitySystem *abilities, World *world,
+                                DynamicTerrainSystem *terrain,
+                                TerrainDamageSystem *damage,
+                                TerrainImpulseSystem *impulses,
+                                ParticleSystem *particles,
+                                GameEventBuffer *events,
+                                const Vector2 origins[ABILITY_COUNT],
+                                Vector2 aim, float deltaTime,
+                                const bool *requested);
 
 /* Rejects a table with a missing name or apply function, the same way
    MaterialsValidate rejects a malformed material. */

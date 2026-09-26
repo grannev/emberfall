@@ -116,44 +116,32 @@ static void DrawForceArc(const AbilityState *state, float duration)
                       RAD2DEG;
     int ring;
 
-    /* Crisp cone edges make the pressure direction legible even when dust and
-       bloom overlap the centre of the blow. */
-    {
-        float left = (angle - halfAngle) * DEG2RAD;
-        float right = (angle + halfAngle) * DEG2RAD;
-        float edgeLength = ABILITY_FORCE_LENGTH * (0.72f + progress * 0.28f);
-        Color edge = Fade((Color){187, 224, 245, 255},
-                          (1.0f - progress) * 0.42f);
-
-        /* In blocks like every other beam. These two were the last smooth
-           lines left in the abilities, and a hairline vector edge beside a
-           blocky cone reads as two effects from two different games. */
-        BeamStrand(state->origin,
-                   Vector2Add(state->origin,
-                              (Vector2){cosf(left) * edgeLength,
-                                        sinf(left) * edgeLength}),
-                   0.6f, 0.6f, (int)(progress * 32.0f), edge, edge, 1.0f, 41);
-        BeamStrand(state->origin,
-                   Vector2Add(state->origin,
-                              (Vector2){cosf(right) * edgeLength,
-                                        sinf(right) * edgeLength}),
-                   0.6f, 0.6f, (int)(progress * 32.0f), edge, edge, 1.0f, 43);
-    }
-
-    for (ring = 0; ring < 4; ++ring) {
-        float radius = 10.0f + (ABILITY_FORCE_LENGTH - 10.0f) * progress -
-                       (float)ring * 6.0f;
+    /* The arm supplies the direction. The shock is a stack of pressure fronts,
+       not two ruler-straight lines stretching to the end of the gameplay cone. */
+    AbilityContactBlocks(state->origin, FX(2.4f + progress * 1.2f), 1.0f,
+                         Fade((Color){220, 238, 246, 255},
+                              (1.0f - progress) * 0.65f));
+    for (ring = 0; ring < 5; ++ring) {
+        float radius = 7.0f + (ABILITY_FORCE_LENGTH - 7.0f) * progress -
+                       (float)ring * 7.0f;
         unsigned char alpha;
 
         if (radius <= 0.0f) {
             continue;
         }
-        alpha = (unsigned char)Clamp((1.0f - progress) * 210.0f -
-                                         (float)ring * 40.0f,
+        alpha = (unsigned char)Clamp((1.0f - progress) * 230.0f -
+                                         (float)ring * 32.0f,
                                      0.0f, 255.0f);
         AbilityArcBlocks(state->origin, radius, (angle - halfAngle) * DEG2RAD,
-                         (angle + halfAngle) * DEG2RAD, 1.6f,
+                         (angle + halfAngle) * DEG2RAD, 1.0f,
                          (Color){182, 216, 255, alpha}, ring);
+        if (radius > 2.0f) {
+            AbilityArcBlocks(state->origin, radius - 1.6f,
+                             (angle - halfAngle) * DEG2RAD,
+                             (angle + halfAngle) * DEG2RAD, 1.0f,
+                             (Color){218, 239, 246, (unsigned char)(alpha / 3u)},
+                             ring + 17);
+        }
     }
 }
 
@@ -186,6 +174,34 @@ static void DrawCryoEdge(const AbilityState *state, Vector2 start)
     }
 }
 
+static void DrawNuclearAim(const AbilityState *state, const Player *player,
+                            float time, bool emissive)
+{
+    float charge = Clamp(state->chargeTime / ABILITY_NUCLEAR_CHARGE_TIME, 0.0f, 1.0f);
+    float radius = Lerp(ABILITY_NUCLEAR_MIN_RADIUS, ABILITY_NUCLEAR_MAX_RADIUS, charge);
+    Vector2 start = BeamStart(state, player);
+    Color red = {244, 65, 45, emissive ? 140 : 210};
+    Color gold = {255, 208, 116, 230};
+    int frame = (int)(time * 16.0f);
+    int mark;
+
+    BeamStrand(start, state->endpoint, 0.15f, 0.15f, frame,
+               red, red, 0.5f, 29);
+    AbilityContactBlocks(start, FX(0.7f + charge), 1.0f, gold);
+    AbilityContactBlocks(state->endpoint, FX(1.0f + charge * 2.0f), 1.0f, gold);
+    if (emissive) return;
+    for (mark = 0; mark < 4; ++mark) {
+        float startAngle = time * 0.18f + (float)mark * (PI * 0.5f);
+
+        AbilityArcBlocks(state->endpoint, radius, startAngle,
+                         startAngle + PI * 0.37f, 1.15f,
+                         Fade(gold, 0.20f + 0.28f * charge), 79 + mark);
+    }
+    AbilityArcBlocks(state->endpoint, 4.5f + 2.0f * charge,
+                     -PI * 0.5f, -PI * 0.5f + charge * 2.0f * PI,
+                     1.0f, gold, 91);
+}
+
 void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
                          float time)
 {
@@ -202,16 +218,18 @@ void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
     laser = AbilityStateAt(abilities, ABILITY_LASER);
     cryo = AbilityStateAt(abilities, ABILITY_CRYO);
     force = AbilityStateAt(abilities, ABILITY_FORCE);
+    if (AbilityStateAt(abilities, ABILITY_NUCLEAR)->active) {
+        DrawNuclearAim(AbilityStateAt(abilities, ABILITY_NUCLEAR), player, time, false);
+    }
 
     if (laser->active) {
         Vector2 start = BeamStart(laser, player);
 
-        /* Narrow and hot, tapering to a point where it bites. The eye end is
-           the wide end so the beam reads as leaving the face rather than as
-           being aimed at it. */
-        BeamStrand(start, laser->endpoint, FX(1.9f), FX(1.0f), frame,
+        /* Restore the warm core and bright broken rim of the original beam,
+           at roughly half its former thickness. */
+        BeamStrand(start, laser->endpoint, FX(1.05f), FX(0.62f), frame,
                    (Color){255, 96, 34, 210}, (Color){255, 238, 186, 240},
-                   1.0f, 3);
+                   0.5f, 3);
         if (laser->hit) {
             AbilityContactBlocks(laser->endpoint, FX(4.2f), 1.0f,
                                  (Color){255, 74, 24, 62});
@@ -234,8 +252,7 @@ void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
     if (cryo->active) {
         Vector2 start = BeamStart(cryo, player);
 
-        /* Wider and softer than the laser, and it does not taper: a freezing
-           cone spreads where a cutting beam narrows. */
+        /* Restore the wider, softer original frost stream, now from the eye. */
         BeamStrand(start, cryo->endpoint, FX(1.5f), FX(2.1f), frame,
                    (Color){104, 194, 240, 190}, (Color){228, 249, 255, 235},
                    1.0f, 11);
@@ -258,14 +275,14 @@ void AbilityRendererDraw(const AbilitySystem *abilities, const Player *player,
 void AbilityRendererDrawReticle(const AbilitySystem *abilities,
                                 Vector2 aimPosition)
 {
-    const AbilityState *explosion;
+    const AbilityState *current;
     Color crosshair;
 
     if (abilities == NULL) {
         return;
     }
-    explosion = AbilityStateAt(abilities, ABILITY_EXPLOSION);
-    crosshair = explosion->cooldown <= 0.0f ? (Color){255, 232, 118, 230}
+    current = AbilityStateAt(abilities, abilities->lastUsed);
+    crosshair = current->cooldown <= 0.0f ? (Color){255, 232, 118, 230}
                                             : (Color){180, 188, 199, 190};
 
     /* Four corner ticks rather than a drawn circle: the crosshair is the one
@@ -305,15 +322,18 @@ void AbilityRendererDrawEmissive(const AbilitySystem *abilities,
     laser = AbilityStateAt(abilities, ABILITY_LASER);
     cryo = AbilityStateAt(abilities, ABILITY_CRYO);
 
+    if (AbilityStateAt(abilities, ABILITY_NUCLEAR)->active) {
+        DrawNuclearAim(AbilityStateAt(abilities, ABILITY_NUCLEAR), player, time, true);
+    }
     /* Dimmer than the scene pass and drawn with coarser blocks: this is what
        the bloom spreads into the glow around a beam, and a fine one costs many
        times the fill for a result the blur erases anyway. */
     if (laser->active) {
         Vector2 start = BeamStart(laser, player);
 
-        BeamStrand(start, laser->endpoint, FX(2.0f), FX(1.1f), frame,
+        BeamStrand(start, laser->endpoint, FX(1.05f), FX(0.6f), frame,
                    (Color){168, 54, 18, 255}, (Color){255, 214, 150, 255},
-                   2.0f, 3);
+                   1.0f, 3);
         AbilityContactBlocks(laser->endpoint, FX(laser->hit ? 3.0f : 1.0f),
                              1.0f,
                              (Color){255, 126, 34, laser->hit ? 230 : 150});

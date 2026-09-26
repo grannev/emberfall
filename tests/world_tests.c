@@ -366,7 +366,7 @@ static void test_particle_emission_is_explicit_per_effect(void)
     ParticlesInit(&particles, 0xE6BEu);
     ParticlesSpawnLaserSparks(&particles, (Vector2){10.0f, 10.0f},
                               (Vector2){1.0f, 0.0f});
-    ParticlesSpawnBoostTrail(&particles, (Vector2){12.0f, 10.0f},
+    ParticlesSpawnBoostBurst(&particles, (Vector2){12.0f, 10.0f},
                              (Vector2){120.0f, 0.0f});
     for (i = 0; i < MAX_PARTICLES; ++i) {
         const Particle *particle = &particles.particles[i];
@@ -627,7 +627,8 @@ static void test_presentation_fx_maps_every_combat_event_with_bounded_rates(void
 
     PresentationFxInit(&fx);
     firstSpawn = PresentationFxConsumeEvents(&fx, &events);
-    CHECK(firstSpawn >= 25u && fx.stats.active == firstSpawn,
+    /* The force blow no longer spends five pool slots on long straight rays. */
+    CHECK(firstSpawn >= 20u && fx.stats.active == firstSpawn,
           "combat event set spawned only %u FX", (unsigned int)firstSpawn);
     repeatedSpawn = PresentationFxConsumeEvents(&fx, &events);
     CHECK(repeatedSpawn < firstSpawn,
@@ -2875,7 +2876,7 @@ static void test_visual_particles_never_change_the_world(void)
                               (Vector2){0.0f, 1.0f});
     ParticlesSpawnImpact(&particles, (Vector2){64.0f, 58.0f},
                          (Vector2){0.0f, -1.0f}, 120.0f);
-    ParticlesSpawnBoostTrail(&particles, (Vector2){64.0f, 30.0f},
+    ParticlesSpawnBoostBurst(&particles, (Vector2){64.0f, 30.0f},
                              (Vector2){200.0f, 0.0f});
     ParticlesSpawnBoostBurst(&particles, (Vector2){64.0f, 30.0f},
                              (Vector2){200.0f, 0.0f});
@@ -11538,11 +11539,14 @@ static void test_the_controls_are_bound_as_designed(void)
               strcmp(InputAbilityBinding(ABILITY_FORCE), "LMB") == 0,
           "the punch is not on the left button");
     CHECK(InputAbilityBinding(ABILITY_CRYO) != NULL &&
-              strcmp(InputAbilityBinding(ABILITY_CRYO), "Q") == 0,
-          "cryo is not on Q");
+              strcmp(InputAbilityBinding(ABILITY_CRYO), "LMB") == 0,
+          "selected cryo is not on LMB");
     CHECK(InputAbilityBinding(ABILITY_LASER) != NULL &&
-              strcmp(InputAbilityBinding(ABILITY_LASER), "E") == 0,
-          "the laser is not on E");
+              strcmp(InputAbilityBinding(ABILITY_LASER), "LMB") == 0,
+          "selected laser is not on LMB");
+    CHECK(InputAbilityBinding(ABILITY_NUCLEAR) != NULL &&
+              strcmp(InputAbilityBinding(ABILITY_NUCLEAR), "LMB") == 0,
+          "selected nuclear strike is not on LMB");
     /* The right button is the grab, which is not a power and so has no row in
        the ability table at all. */
     CHECK(InputAbilityBinding(ABILITY_EXPLOSION) == NULL,
@@ -13616,6 +13620,226 @@ static void test_player_never_ends_a_frame_inside_solid_terrain(void)
               player.position.x, player.position.y, step);
     }
     WorldUnload(&world);
+}
+
+static void test_nuclear_charge_is_harmless_bounded_and_releases_once(void)
+{
+    World world;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    TerrainImpulseSystem nuclearImpulses;
+    GameEventBuffer events = {0};
+    bool requested[ABILITY_COUNT] = {false};
+    int removed[2];
+    int trial;
+
+    for (trial = 0; trial < 2; ++trial) {
+        int step;
+        int before;
+        CHECK(WorldInit(&world, 256, 192), "world allocation failed");
+        FillRect(&world, 100, 0, 255, 191, MATERIAL_ROCK);
+        before = CountMaterial(&world, MATERIAL_ROCK);
+        AbilitiesInit(&abilities, 123);
+        ParticlesInit(&particles, 456);
+        TerrainImpulseInit(&nuclearImpulses);
+        requested[ABILITY_NUCLEAR] = true;
+        for (step = 0; step < (trial == 0 ? 1 : 240); ++step) {
+            GameEventsClear(&events);
+            AbilitiesUpdate(&abilities, &world, NULL, NULL, &nuclearImpulses, &particles,
+                            &events, (Vector2){30, 90}, (Vector2){180, 90},
+                            1.0f / 60.0f, requested);
+            CHECK(!HasGameEvent(&events, GAME_EVENT_EXPLOSION), "charge exploded while held");
+        }
+        CHECK(CountMaterial(&world, MATERIAL_ROCK) == before, "aiming damaged terrain");
+        CHECK(abilities.states[ABILITY_NUCLEAR].endpoint.x < 101.0f,
+              "aim passed through the nearest wall");
+        CHECK(abilities.states[ABILITY_NUCLEAR].chargeTime <= ABILITY_NUCLEAR_CHARGE_TIME,
+              "charge grew past its cap");
+        requested[ABILITY_NUCLEAR] = false;
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, &nuclearImpulses, &particles,
+                        &events, (Vector2){30, 90}, (Vector2){180, 90},
+                        1.0f / 60.0f, requested);
+        CHECK(CountEvents(&events, GAME_EVENT_EXPLOSION) == 1, "release did not explode once");
+        CHECK(nuclearImpulses.blastCount == 1, "release did not queue terrain impulse");
+        removed[trial] = before - CountMaterial(&world, MATERIAL_ROCK);
+        GameEventsClear(&events);
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, &nuclearImpulses, &particles,
+                        &events, (Vector2){30, 90}, (Vector2){180, 90},
+                        1.0f / 60.0f, requested);
+        CHECK(!HasGameEvent(&events, GAME_EVENT_EXPLOSION), "released twice");
+        AbilitiesInit(&abilities, 123);
+        requested[ABILITY_NUCLEAR] = true;
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, &nuclearImpulses, &particles,
+                        &events, (Vector2){30, 90}, (Vector2){180, 90},
+                        0.1f, requested);
+        AbilitiesCancelCharge(&abilities);
+        requested[ABILITY_NUCLEAR] = false;
+        AbilitiesUpdate(&abilities, &world, NULL, NULL, &nuclearImpulses, &particles,
+                        &events, (Vector2){30, 90}, (Vector2){180, 90},
+                        0.1f, requested);
+        CHECK(!HasGameEvent(&events, GAME_EVENT_EXPLOSION), "cancel detonated the charge");
+        WorldUnload(&world);
+    }
+    CHECK(removed[1] > removed[0] * 3, "full charge did not increase real destruction: %d / %d",
+          removed[1], removed[0]);
+}
+
+static void test_heavy_landing_breaks_ground_once_and_leaves_player_clear(void)
+{
+    GameConfig config = GameDefaultConfig();
+    static GameState game;
+    GameEventBuffer events;
+    GameInput input = {.aimWorld = {140, 100}};
+    int frame;
+    int landings = 0;
+    config.worldWidth = 256;
+    config.worldHeight = 192;
+    config.seed = 127;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, 255, 191, MATERIAL_EMPTY);
+    FillRect(&game.world, 0, 128, 255, 191, MATERIAL_ROCK);
+    PlayerInit(&game.player, (Vector2){128, 55});
+    game.player.mode = PLAYER_MODE_WALK;
+    game.player.velocity.y = 400;
+    game.player.airTime = 1;
+    for (frame = 0; frame < 45; ++frame) {
+        GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+        landings += CountEvents(&events, GAME_EVENT_HEAVY_LANDING);
+        CHECK(!PlayerCollidesAt(&game.player, &game.world, game.player.position),
+              "landing left the player embedded at frame %d", frame);
+    }
+    CHECK(landings == 1, "one fall created %d impacts", landings);
+    CHECK(WorldGetCell(&game.world, 128, 130) != MATERIAL_ROCK,
+          "landing did not dent the floor");
+    CHECK(game.player.velocity.y <= PLAYER_FALL_SPEED_LIMIT, "fall speed escaped the budget");
+    GameUnload(&game);
+}
+
+static void test_face_and_hands_follow_aim_and_landing_anchor(void)
+{
+    Player player;
+    Vector2 left = {0, 100};
+    Vector2 right = {200, 100};
+    PlayerInit(&player, (Vector2){100, 100});
+    CHECK(PlayerVisorOrigin(&player, left).x < player.position.x &&
+          PlayerVisorOrigin(&player, right).x > player.position.x,
+          "eye did not turn with the face");
+    CHECK(PlayerHandOrigin(&player, left, false).x < player.position.x &&
+          PlayerHandOrigin(&player, right, false).x > player.position.x,
+          "hands did not mirror");
+    CHECK(PlayerForceOrigin(&player, left).x < player.position.x &&
+          PlayerForceOrigin(&player, right).x > player.position.x,
+          "force fist did not mirror");
+    player.mode = PLAYER_MODE_WALK;
+    player.grounded = true;
+    {
+        Vector2 standing = PlayerVisorOrigin(&player, right);
+        player.landingTimer = PLAYER_LANDING_RECOVERY;
+        CHECK(PlayerVisorOrigin(&player, right).y > standing.y + 2.0f,
+              "eye remained above the crouching head");
+    }
+}
+
+static void test_powers_use_their_own_emission_points(void)
+{
+    World world;
+    AbilitySystem abilities;
+    ParticleSystem particles;
+    GameEventBuffer events = {0};
+    bool requested[ABILITY_COUNT] = {false};
+    Vector2 origins[ABILITY_COUNT] = {
+        [ABILITY_LASER] = {12, 30},
+        [ABILITY_EXPLOSION] = {12, 30},
+        [ABILITY_FORCE] = {20, 35},
+        [ABILITY_CRYO] = {17, 34},
+        [ABILITY_NUCLEAR] = {12, 30},
+    };
+    const AbilityId powers[] = {ABILITY_LASER, ABILITY_CRYO,
+                                ABILITY_FORCE, ABILITY_NUCLEAR};
+    int index;
+
+    CHECK(WorldInit(&world, 128, 96), "world allocation failed");
+    AbilitiesInit(&abilities, 67);
+    ParticlesInit(&particles, 68);
+    for (index = 0; index < 4; ++index) {
+        AbilityId power = powers[index];
+
+        requested[power] = true;
+        AbilitiesUpdateFromOrigins(&abilities, &world, NULL, NULL, NULL,
+                                   &particles, &events, origins, (Vector2){90, 35},
+                                   1.0f / 60.0f, requested);
+        CHECK(Vector2Distance(abilities.states[power].origin, origins[power]) < 0.01f,
+              "power %d emitted from another origin", power);
+        requested[power] = false;
+    }
+    WorldUnload(&world);
+}
+
+static void test_cryo_emits_from_eyes_in_game(void)
+{
+    GameConfig config = GameDefaultConfig();
+    static GameState game;
+    GameEventBuffer events;
+    GameInput input = {.aimWorld = {110.0f, 44.0f}};
+    Vector2 eye;
+    Vector2 hand;
+
+    config.worldWidth = 128;
+    config.worldHeight = 96;
+    config.seed = 713;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, 127, 95, MATERIAL_EMPTY);
+    PlayerInit(&game.player, (Vector2){42.0f, 44.0f});
+    input.ability[ABILITY_CRYO] = true;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+
+    eye = PlayerBeamOrigin(&game.player, input.aimWorld);
+    hand = PlayerHandOrigin(&game.player, input.aimWorld, false);
+    CHECK(game.abilities.states[ABILITY_CRYO].active,
+          "cryo did not activate");
+    CHECK(Vector2Distance(game.abilities.states[ABILITY_CRYO].origin, eye) < 0.1f,
+          "cryo gameplay ray did not start at the eye");
+    CHECK(Vector2Distance(game.abilities.states[ABILITY_CRYO].origin, hand) > 1.0f,
+          "cryo still starts at the hand");
+    GameUnload(&game);
+}
+
+static void test_sonic_break_needs_air_and_rearms_below_speed(void)
+{
+    GameConfig config = GameDefaultConfig();
+    static GameState game;
+    GameEventBuffer events;
+    GameInput input = {.move = {1, 0}, .boostHeld = true,
+                       .aimWorld = {220, 90}};
+
+    config.worldWidth = 256;
+    config.worldHeight = 192;
+    config.seed = 229;
+    CHECK(GameInit(&game, config), "game allocation failed");
+    FillRect(&game.world, 0, 0, 255, 191, MATERIAL_EMPTY);
+    PlayerInit(&game.player, (Vector2){100, 100});
+    game.player.mode = PLAYER_MODE_FLY;
+    game.player.velocity.x = 515.0f;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    CHECK(CountEvents(&events, GAME_EVENT_SONIC_BREAK) == 1,
+          "crossing sonic speed in air had no pressure break");
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    CHECK(!HasGameEvent(&events, GAME_EVENT_SONIC_BREAK),
+          "sonic break repeated above threshold");
+    game.player.velocity.x = 380.0f;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    game.player.velocity.x = 515.0f;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    CHECK(HasGameEvent(&events, GAME_EVENT_SONIC_BREAK),
+          "sonic break did not rearm after slowing");
+    game.player.position.y = WorldSpaceLineY(&game.world) - 10.0f;
+    game.player.velocity.x = 380.0f;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    game.player.velocity.x = 515.0f;
+    GameUpdate(&game, &input, 1.0f / 60.0f, &events);
+    CHECK(!HasGameEvent(&events, GAME_EVENT_SONIC_BREAK),
+          "space made an air-pressure break");
+    GameUnload(&game);
 }
 
 int main(void)

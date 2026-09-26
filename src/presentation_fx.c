@@ -189,8 +189,30 @@ static void PresentationFxSpawnExplosion(PresentationFxSystem *system,
                                          const GameEvent *event,
                                          uint16_t *spawned)
 {
-    float radius = PresentationFxClamp(event->radius, 18.0f, 96.0f);
+    float radius = PresentationFxClamp(event->radius, 18.0f, 116.0f);
     int index;
+
+    /* Large charged detonations grow a broken column and crown after the
+       shock front. Nine bounded puffs, entirely in the presentation pool. */
+    if (event->radius > 70.0f) {
+        for (index = 0; index < 9; ++index) {
+            bool crown = index >= 4;
+            float x = crown ? (float)(index - 6) * radius * 0.12f : 0.0f;
+            float y = crown ? -radius * 0.55f : -(float)index * radius * 0.12f;
+            (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+                .type = PRESENTATION_FX_PUFF,
+                .priority = PRESENTATION_FX_PRIORITY_NORMAL,
+                .start = {event->position.x + x, event->position.y + y},
+                .color = crown ? (Color){152, 130, 104, 220} : (Color){221, 147, 69, 200},
+                .startRadius = 2.0f,
+                .endRadius = radius * (crown ? 0.17f : 0.09f),
+                .intensity = crown ? 0.45f : 0.55f,
+                .lifetime = 1.25f,
+                .delay = 0.10f + (float)index * 0.035f,
+                .emissive = !crown,
+            }, spawned);
+        }
+    }
 
     (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
         .type = PRESENTATION_FX_FLASH,
@@ -297,6 +319,42 @@ static void PresentationFxSpawnExplosion(PresentationFxSystem *system,
             .intensity = PresentationFxRandomRange(system, 0.28f, 0.48f),
             .lifetime = PresentationFxRandomRange(system, 0.65f, 1.05f),
             .delay = PresentationFxRandomRange(system, 0.08f, 0.22f),
+        }, spawned);
+    }
+}
+
+static void PresentationFxSpawnLanding(PresentationFxSystem *system,
+                                        const GameEvent *event, uint16_t *spawned)
+{
+    int index;
+    float power = PresentationFxClamp(event->strength, 0.0f, 1.0f);
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_RING, .priority = PRESENTATION_FX_PRIORITY_HIGH,
+        .start = event->position, .color = {226, 214, 182, 255},
+        .startRadius = 2.0f, .endRadius = event->radius,
+        .width = 1.0f, .intensity = 0.7f, .lifetime = 0.32f,
+    }, spawned);
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_FLASH, .priority = PRESENTATION_FX_PRIORITY_HIGH,
+        .start = event->position, .color = {253, 219, 160, 255},
+        .startRadius = 1.0f, .endRadius = 3.0f + power * 6.0f,
+        .intensity = 0.65f, .lifetime = 0.08f, .emissive = true,
+    }, spawned);
+    for (index = -3; index <= 3; ++index) {
+        float spread = (float)index * event->radius * 0.15f;
+        Vector2 start = {event->position.x + spread, event->position.y - 1.0f};
+        Vector2 end = {start.x + spread * 0.65f,
+                       start.y - (5.0f + power * 12.0f) + fabsf((float)index)};
+        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+            .type = PRESENTATION_FX_TRAIL, .priority = PRESENTATION_FX_PRIORITY_NORMAL,
+            .start = start, .end = end, .color = {183, 168, 144, 235},
+            .width = 1.0f + power, .intensity = 0.5f, .lifetime = 0.24f,
+        }, spawned);
+        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+            .type = PRESENTATION_FX_PUFF, .priority = PRESENTATION_FX_PRIORITY_LOW,
+            .start = end, .color = {143, 130, 113, 210},
+            .startRadius = 1.0f, .endRadius = 3.0f + power * 5.0f,
+            .intensity = 0.45f, .lifetime = 0.55f, .delay = 0.05f,
         }, spawned);
     }
 }
@@ -434,31 +492,10 @@ static void PresentationFxSpawnForce(PresentationFxSystem *system,
         .lifetime = 0.24f,
     }, spawned);
     for (index = -2; index <= 2; ++index) {
-        float across = (float)index * radius * 0.07f;
-        int distanceFromCenter = index < 0 ? -index : index;
-        float reach = radius *
-                      (0.66f + 0.07f * (float)(2 - distanceFromCenter));
-        Vector2 start = Vector2Add(event->position,
-                                   Vector2Scale(normal, across * 0.18f));
-        Vector2 end = Vector2Add(
-            Vector2Add(event->position, Vector2Scale(direction, reach)),
-            Vector2Scale(normal, across));
-
-        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
-            .type = PRESENTATION_FX_TRAIL,
-            .priority = PRESENTATION_FX_PRIORITY_NORMAL,
-            .start = start,
-            .end = end,
-            .color = {172, 216, 242, 255},
-            .width = index == 0 ? 1.15f : 0.65f,
-            .intensity = index == 0 ? 0.55f : 0.34f,
-            .lifetime = 0.25f,
-        }, spawned);
-    }
-    for (index = -2; index <= 2; ++index) {
-        float distance = radius * (0.38f + 0.09f * (float)(index + 2));
+        float distance = fminf(radius * 0.1f, 13.0f) *
+                         (0.35f + 0.15f * (float)(index + 2));
         Vector2 center = Vector2Add(
-            Vector2Add(event->position, Vector2Scale(direction, distance)),
+            Vector2Add(event->position, Vector2Scale(direction, -distance)),
             Vector2Scale(normal, PresentationFxRandomRange(system, -7.0f, 7.0f)));
 
         (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
@@ -480,12 +517,7 @@ static void PresentationFxSpawnBoost(PresentationFxSystem *system,
                                      uint16_t *spawned)
 {
     int stage = event->count < 1 ? 1 : (event->count > 3 ? 3 : event->count);
-    Vector2 direction = PresentationFxDirection(event->direction,
-                                                (Vector2){1.0f, 0.0f});
-    Vector2 normal = {-direction.y, direction.x};
-    Color color = stage == 3 ? (Color){255, 236, 183, 255}
-                             : (Color){116, 224, 255, 255};
-    int index;
+    Color color = {211, 228, 225, 255};
 
     (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
         .type = PRESENTATION_FX_RING,
@@ -499,27 +531,6 @@ static void PresentationFxSpawnBoost(PresentationFxSystem *system,
         .lifetime = stage == 3 ? 0.46f : 0.28f,
         .emissive = true,
     }, spawned);
-    for (index = -stage; index <= stage; ++index) {
-        float side = (float)index * 2.2f;
-        Vector2 start = Vector2Add(event->position, Vector2Scale(normal, side));
-        Vector2 end = Vector2Add(
-            Vector2Add(start, Vector2Scale(
-                direction, -(12.0f + (float)stage * 6.0f))),
-            Vector2Scale(normal, PresentationFxRandomRange(system, -2.0f, 2.0f)));
-
-        (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
-            .type = PRESENTATION_FX_TRAIL,
-            .priority = stage == 3 ? PRESENTATION_FX_PRIORITY_HIGH
-                                   : PRESENTATION_FX_PRIORITY_NORMAL,
-            .start = start,
-            .end = end,
-            .color = color,
-            .width = index == 0 ? 1.25f : 0.65f,
-            .intensity = 0.46f + (float)stage * 0.12f,
-            .lifetime = 0.18f + (float)stage * 0.07f,
-            .emissive = true,
-        }, spawned);
-    }
     if (stage == 3) {
         (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
             .type = PRESENTATION_FX_RING,
@@ -534,6 +545,42 @@ static void PresentationFxSpawnBoost(PresentationFxSystem *system,
             .delay = 0.055f,
         }, spawned);
     }
+}
+
+static void PresentationFxSpawnSonic(PresentationFxSystem *system,
+                                     const GameEvent *event,
+                                     uint16_t *spawned)
+{
+    Vector2 back = Vector2Scale(PresentationFxDirection(event->direction,
+                                                        (Vector2){1.0f, 0.0f}), -5.0f);
+    Vector2 centre = Vector2Add(event->position, back);
+
+    /* A one-time compression shell at Mach, behind the continuous bow at the
+       nose. The shock does not draw speed lines and does not exist in vacuum. */
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_RING,
+        .priority = PRESENTATION_FX_PRIORITY_HIGH,
+        .start = centre,
+        .color = {191, 222, 225, 255},
+        .startRadius = 8.0f,
+        .endRadius = 42.0f,
+        .width = 1.2f,
+        .intensity = 0.55f * event->strength,
+        .lifetime = 0.24f,
+        .emissive = true,
+    }, spawned);
+    (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+        .type = PRESENTATION_FX_RING,
+        .priority = PRESENTATION_FX_PRIORITY_NORMAL,
+        .start = centre,
+        .color = {118, 154, 169, 255},
+        .startRadius = 10.0f,
+        .endRadius = 55.0f,
+        .width = 0.85f,
+        .intensity = 0.3f * event->strength,
+        .lifetime = 0.34f,
+        .delay = 0.035f,
+    }, spawned);
 }
 
 static void PresentationFxSpawnDrill(PresentationFxSystem *system,
@@ -670,36 +717,35 @@ static void PresentationFxSpawnRipple(PresentationFxSystem *system,
     }, spawned);
 }
 
-/* Re-entry: the sparks streaming off behind. The cap in front — the bow of
-   glowing air — is reentry_renderer.c's, drawn every frame from the heat,
-   so here there is only the tail. Drawn from the event alone — how hot, how
-   big, which way — so it serves the character and a slab out of orbit with
-   the same code. */
+/* Re-entry: short turbulent hot-air clumps off the shoulders. The cap in front
+   belongs to reentry_renderer.c; world-space trail primitives spawned every
+   few frames connected into ruler-straight orange stripes at flight speed. */
 static void PresentationFxSpawnReentry(PresentationFxSystem *system,
                                        const GameEvent *event, uint16_t *spawned)
 {
     float heat = PresentationFxClamp(event->strength, 0.0f, 1.0f);
     float size = event->radius > 0.5f ? event->radius : 0.5f;
+    Vector2 direction = PresentationFxDirection(event->direction,
+                                                (Vector2){0.0f, 1.0f});
+    Vector2 normal = {-direction.y, direction.x};
     int index;
 
-    /* Three streaks behind, fanned by the presentation RNG so the tail
-       flickers rather than pulsing in step with the event interval. */
     for (index = 0; index < 3; ++index) {
-        float spread = (PresentationFxRandomUnit(system) - 0.5f) * 0.5f;
-        Vector2 back = {-event->direction.x, -event->direction.y};
-        Vector2 fan = {back.x - back.y * spread, back.y + back.x * spread};
-        float reach = size * (1.4f + 2.6f * heat) *
-                      (0.6f + 0.6f * PresentationFxRandomUnit(system));
+        float across = PresentationFxRandomRange(system, -1.25f, 1.25f) * size;
+        float behind = PresentationFxRandomRange(system, 0.5f, 1.7f) * size;
+        Vector2 at = Vector2Add(
+            Vector2Subtract(event->position, Vector2Scale(direction, behind)),
+            Vector2Scale(normal, across));
 
         (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
-            .type = PRESENTATION_FX_TRAIL,
+            .type = PRESENTATION_FX_PUFF,
             .priority = PRESENTATION_FX_PRIORITY_LOW,
-            .start = event->position,
-            .end = Vector2Add(event->position, Vector2Scale(fan, reach)),
+            .start = at,
             .color = {255, (unsigned char)(150.0f + 60.0f * (1.0f - heat)), 70, 255},
-            .width = size * 0.35f,
-            .intensity = 0.3f + 0.4f * heat,
-            .lifetime = 0.2f + 0.2f * heat,
+            .startRadius = size * 0.12f,
+            .endRadius = size * 0.45f,
+            .intensity = 0.22f + 0.28f * heat,
+            .lifetime = 0.14f + 0.11f * heat,
             .emissive = true,
         }, spawned);
     }
@@ -720,6 +766,24 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
         const GameEvent *event = &events->events[index];
 
         switch (event->type) {
+        case GAME_EVENT_HEAVY_LANDING:
+            PresentationFxSpawnLanding(system, event, &spawned);
+            break;
+        case GAME_EVENT_FOOTSTEP:
+        case GAME_EVENT_TAKEOFF: {
+            bool takeoff = event->type == GAME_EVENT_TAKEOFF;
+            (void)PresentationFxSpawnCounted(system, (PresentationFxDescription){
+                .type = takeoff ? PRESENTATION_FX_RING : PRESENTATION_FX_PUFF,
+                .priority = PRESENTATION_FX_PRIORITY_LOW,
+                .start = event->position, .color = {175, 170, 154, 190},
+                .startRadius = 0.5f,
+                .endRadius = takeoff ? 5.0f + event->strength * 6.0f :
+                                       1.0f + event->strength * 2.0f,
+                .intensity = takeoff ? 0.38f : 0.24f,
+                .width = 0.6f, .lifetime = takeoff ? 0.22f : 0.18f,
+            }, &spawned);
+            break;
+        }
         case GAME_EVENT_EXPLOSION:
             PresentationFxSpawnExplosion(system, event, &spawned);
             break;
@@ -766,6 +830,9 @@ uint16_t PresentationFxConsumeEvents(PresentationFxSystem *system,
             break;
         case GAME_EVENT_BOOST_ENGAGED:
             PresentationFxSpawnBoost(system, event, &spawned);
+            break;
+        case GAME_EVENT_SONIC_BREAK:
+            PresentationFxSpawnSonic(system, event, &spawned);
             break;
         case GAME_EVENT_PLAYER_DRILL:
             if (system->drillSpawnCooldown <= 0.0f) {

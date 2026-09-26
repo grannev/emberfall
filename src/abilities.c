@@ -300,6 +300,63 @@ static void AbilityApplyExplosion(const AbilityContext *context,
     });
 }
 
+static void AbilityAimNuclear(const AbilityContext *context, AbilityState *state)
+{
+    float distance = fminf(BeamDistance(context->origin, context->aim),
+                           ABILITY_NUCLEAR_RANGE);
+    Vector2 reach = BeamEndAtWorldEdge(context->world, context->origin,
+                                       context->direction, distance);
+    LaserResult contact = WorldBeamHit(context->world, context->origin, reach);
+    TerrainBodyHandle body;
+    Vector2 at;
+
+    if (context->terrain != NULL &&
+        DynamicTerrainRaycast(context->terrain, context->origin, reach, &body, &at) &&
+        (!contact.hit || BeamDistance(context->origin, at) <
+                         BeamDistance(context->origin, contact.position))) {
+        contact.position = at;
+        contact.hit = true;
+        contact.material = MATERIAL_ROCK;
+    }
+    state->origin = context->origin;
+    state->endpoint = contact.hit ? contact.position : reach;
+    state->direction = context->direction;
+    state->hit = contact.hit;
+    state->hitMaterial = contact.material;
+}
+
+static void AbilityReleaseNuclear(const AbilityContext *context, AbilityState *state)
+{
+    float charge = Clamp(state->chargeTime / ABILITY_NUCLEAR_CHARGE_TIME, 0.0f, 1.0f);
+    int radius = (int)roundf(Lerp(ABILITY_NUCLEAR_MIN_RADIUS,
+                                 ABILITY_NUCLEAR_MAX_RADIUS, charge));
+    float shock = Lerp(30.0f, ABILITY_NUCLEAR_MAX_SHOCK, charge);
+    Vector2 at = state->endpoint;
+
+    /* Detonate at the last displayed target. The aiming beam never heats or
+       cuts, and cannot select something behind the nearest world/body blocker. */
+    WorldApplyBlast(context->world, at, radius, 0.25f + charge * 0.35f,
+                    6 + (int)(charge * 12.0f), 14 + (int)(charge * 42.0f));
+    WorldApplyShockwave(context->world, (int)floorf(at.x), (int)floorf(at.y),
+                        radius, (int)shock);
+    (void)TerrainImpulseQueueBlast(context->impulses, (TerrainBlast){
+        .shape = TERRAIN_BLAST_RADIAL,
+        .origin = at,
+        .radius = shock,
+        .momentum = Lerp(18000.0f, 150000.0f, charge),
+        .carveRadius = (float)radius * 0.6f,
+    });
+    ParticlesSpawnExplosion(context->particles, at);
+    (void)GameEventsPush(context->events, (GameEvent){
+        .type = GAME_EVENT_EXPLOSION,
+        .position = at,
+        .direction = state->direction,
+        .radius = shock,
+        .strength = Lerp(145.0f, 520.0f, charge),
+        .material = state->hitMaterial,
+    });
+}
+
 static const AbilityDefinition ABILITIES[ABILITY_COUNT] = {
     [ABILITY_LASER] = {
         .name = "LASER",
@@ -327,9 +384,19 @@ static const AbilityDefinition ABILITIES[ABILITY_COUNT] = {
     [ABILITY_CRYO] = {
         .name = "CRYO",
         .trigger = ABILITY_TRIGGER_HELD,
-        .pose = PLAYER_POSE_CHILL,
+        .pose = PLAYER_POSE_CRYO,
         .poseHold = 0.06f,
         .apply = AbilityApplyCryo,
+    },
+    [ABILITY_NUCLEAR] = {
+        .name = "NUCLEAR",
+        .trigger = ABILITY_TRIGGER_RELEASE,
+        .cooldown = 0.9f,
+        .effectTime = 0.7f,
+        .pose = PLAYER_POSE_LASER,
+        .poseHold = 0.06f,
+        .apply = AbilityAimNuclear,
+        .release = AbilityReleaseNuclear,
     },
 };
 
@@ -376,6 +443,10 @@ bool AbilitiesValidate(void)
             definition->cooldown <= 0.0f) {
             return false;
         }
+        if (definition->trigger == ABILITY_TRIGGER_RELEASE &&
+            (definition->release == NULL || definition->cooldown <= 0.0f)) {
+            return false;
+        }
     }
     return true;
 }
@@ -395,27 +466,33 @@ void AbilitiesInit(AbilitySystem *abilities, uint64_t seed)
     }
 }
 
-void AbilitiesUpdate(AbilitySystem *abilities, World *world,
-                     DynamicTerrainSystem *terrain, TerrainDamageSystem *damage,
-                     TerrainImpulseSystem *impulses, ParticleSystem *particles,
-                     GameEventBuffer *events, Vector2 origin, Vector2 aim,
-                     float deltaTime, const bool *requested)
+void AbilitiesCancelCharge(AbilitySystem *abilities)
+{
+    int id;
+    if (abilities == NULL) return;
+    for (id = 0; id < ABILITY_COUNT; ++id) {
+        if (ABILITIES[id].trigger == ABILITY_TRIGGER_RELEASE) {
+            abilities->states[id].active = false;
+            abilities->states[id].chargeTime = 0.0f;
+        }
+    }
+}
+
+void AbilitiesUpdateFromOrigins(AbilitySystem *abilities, World *world,
+                                DynamicTerrainSystem *terrain,
+                                TerrainDamageSystem *damage,
+                                TerrainImpulseSystem *impulses,
+                                ParticleSystem *particles,
+                                GameEventBuffer *events,
+                                const Vector2 origins[ABILITY_COUNT],
+                                Vector2 aim, float deltaTime,
+                                const bool *requested)
 {
     AbilityContext context;
-    Vector2 direction = {aim.x - origin.x, aim.y - origin.y};
-    float length = sqrtf(direction.x * direction.x + direction.y * direction.y);
     int id;
 
-    if (abilities == NULL || world == NULL || requested == NULL) {
+    if (abilities == NULL || world == NULL || requested == NULL || origins == NULL) {
         return;
-    }
-
-    if (length > 0.001f) {
-        direction.x /= length;
-        direction.y /= length;
-    } else {
-        /* Aiming exactly at your own feet still has to point somewhere. */
-        direction = (Vector2){1.0f, 0.0f};
     }
 
     context.world = world;
@@ -425,9 +502,7 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
     context.particles = particles;
     context.events = events;
     context.rng = &abilities->rng;
-    context.origin = origin;
     context.aim = aim;
-    context.direction = direction;
     context.deltaTime = deltaTime;
 
     for (id = 0; id < ABILITY_COUNT; ++id) {
@@ -435,12 +510,41 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
         AbilityState *state = &abilities->states[id];
         bool wanted = requested[id];
         bool wasActive = state->active;
+        Vector2 direction;
+        float length;
+
+        context.origin = origins[id];
+        /* A close target can be behind the already-extended fist; the force
+           still travels in the direction the player aimed from the face. */
+        direction = Vector2Subtract(aim, origins[id == ABILITY_FORCE
+                                                   ? ABILITY_LASER : id]);
+        length = Vector2Length(direction);
+        context.direction = length > 0.001f
+                                ? Vector2Scale(direction, 1.0f / length)
+                                : (Vector2){1.0f, 0.0f};
 
         state->active = false;
         state->triggered = false;
-        state->hit = false;
         state->cooldown = fmaxf(0.0f, state->cooldown - deltaTime);
         state->effectTime = fmaxf(0.0f, state->effectTime - deltaTime);
+
+        if (definition->trigger == ABILITY_TRIGGER_RELEASE) {
+            if (wanted && state->cooldown <= 0.0f) {
+                abilities->lastUsed = (AbilityId)id;
+                state->active = true;
+                state->chargeTime = fminf(ABILITY_NUCLEAR_CHARGE_TIME,
+                                          state->chargeTime + deltaTime);
+                definition->apply(&context, state);
+            } else if (!wanted && wasActive && state->chargeTime > 0.0f) {
+                state->triggered = true;
+                state->cooldown = definition->cooldown;
+                state->effectTime = definition->effectTime;
+                definition->release(&context, state);
+                state->chargeTime = 0.0f;
+            }
+            continue;
+        }
+        state->hit = false;
 
         if (!wanted) {
             continue;
@@ -461,4 +565,19 @@ void AbilitiesUpdate(AbilitySystem *abilities, World *world,
         state->effectTime = definition->effectTime;
         definition->apply(&context, state);
     }
+}
+
+void AbilitiesUpdate(AbilitySystem *abilities, World *world,
+                     DynamicTerrainSystem *terrain, TerrainDamageSystem *damage,
+                     TerrainImpulseSystem *impulses, ParticleSystem *particles,
+                     GameEventBuffer *events, Vector2 origin, Vector2 aim,
+                     float deltaTime, const bool *requested)
+{
+    Vector2 origins[ABILITY_COUNT];
+    int id;
+
+    for (id = 0; id < ABILITY_COUNT; ++id) origins[id] = origin;
+    AbilitiesUpdateFromOrigins(abilities, world, terrain, damage, impulses,
+                               particles, events, origins, aim, deltaTime,
+                               requested);
 }

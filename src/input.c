@@ -22,8 +22,9 @@ typedef struct AbilityBinding {
    being something the player can fire. Explosion is exactly that. */
 static const AbilityBinding ABILITY_BINDINGS[] = {
     {ABILITY_FORCE, "LMB", 0, MOUSE_BUTTON_LEFT},
-    {ABILITY_CRYO, "Q", KEY_Q, -1},
-    {ABILITY_LASER, "E", KEY_E, -1},
+    {ABILITY_LASER, "LMB", 0, MOUSE_BUTTON_LEFT},
+    {ABILITY_CRYO, "LMB", 0, MOUSE_BUTTON_LEFT},
+    {ABILITY_NUCLEAR, "LMB", 0, MOUSE_BUTTON_LEFT},
 };
 
 #define ABILITY_BINDING_COUNT \
@@ -84,11 +85,49 @@ const char *InputAbilityBinding(AbilityId id)
     return NULL;
 }
 
-AppInput InputPoll(const World *world, Camera2D camera)
+int InputAbilityCount(void)
+{
+    return ABILITY_BINDING_COUNT;
+}
+
+AbilityId InputAbilityAt(int index)
+{
+    return ABILITY_BINDINGS[index >= 0 && index < ABILITY_BINDING_COUNT ? index : 0].id;
+}
+
+AppInput InputPoll(const World *world, Camera2D camera, AbilitySelection *selection)
 {
     AppInput input = {0};
     Vector2 point = GetScreenToWorld2D(GetMousePosition(), camera);
-    int index;
+    bool wasOpen = selection->open;
+
+    selection->open = IsKeyDown(KEY_TAB) && !IsKeyPressed(KEY_ESCAPE) && IsWindowFocused();
+    if (!IsWindowFocused()) selection->blockPrimary = true;
+    if (selection->open && !wasOpen) {
+        selection->center = (Vector2){(float)GetScreenWidth() * 0.5f,
+                                      (float)GetScreenHeight() * 0.5f};
+        selection->hovered = -1;
+    }
+    if (selection->open) {
+        Vector2 offset = Vector2Subtract(GetMousePosition(), selection->center);
+        float scale = fminf((float)GetScreenWidth() / 1280.0f,
+                            (float)GetScreenHeight() / 720.0f);
+        float angle = atan2f(offset.y, offset.x) + PI * 0.5f +
+                      PI / (float)ABILITY_BINDING_COUNT;
+
+        if (angle < 0.0f) angle += 2.0f * PI;
+        selection->hovered = Vector2Length(offset) < 40.0f * scale ? -1 :
+            (int)(angle / (2.0f * PI) * (float)ABILITY_BINDING_COUNT) %
+                ABILITY_BINDING_COUNT;
+        selection->blockPrimary = true;
+    } else if (wasOpen && !IsKeyPressed(KEY_ESCAPE)) {
+        if (selection->hovered >= 0) {
+            selection->selected = InputAbilityAt(selection->hovered);
+        }
+    }
+    if (!selection->open && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        selection->blockPrimary = false;
+    }
 
     /* Rows are clamped to the world; columns are left where the camera put
        them, unwrapped like the character they are aimed from. */
@@ -98,6 +137,8 @@ AppInput InputPoll(const World *world, Camera2D camera)
     }
     input.cursorCell = point;
     input.game.aimWorld = (Vector2){point.x + 0.5f, point.y + 0.5f};
+    input.game.cancelCharge = selection->open || IsKeyPressed(KEY_ESCAPE) ||
+                              !IsWindowFocused();
 
     if (IsKeyDown(KEY_A)) input.game.move.x -= 1.0f;
     if (IsKeyDown(KEY_D)) input.game.move.x += 1.0f;
@@ -105,10 +146,16 @@ AppInput InputPoll(const World *world, Camera2D camera)
     if (IsKeyDown(KEY_S)) input.game.move.y += 1.0f;
     input.game.boostHeld = IsKeyDown(KEY_LEFT_SHIFT) ||
                            IsKeyDown(KEY_RIGHT_SHIFT);
-    for (index = 0; index < ABILITY_BINDING_COUNT; ++index) {
-        const AbilityBinding *binding = &ABILITY_BINDINGS[index];
+    if (!input.game.cancelCharge && !wasOpen && !selection->blockPrimary) {
+        int index;
 
-        input.game.ability[binding->id] = AbilityRequested(binding);
+        for (index = 0; index < ABILITY_BINDING_COUNT; ++index) {
+            const AbilityBinding *binding = &ABILITY_BINDINGS[index];
+
+            if (binding->id == selection->selected) {
+                input.game.ability[binding->id] = AbilityRequested(binding);
+            }
+        }
     }
     /* The right hand's other button. Grab is held rather than pressed, and it
        is not a power: no cooldown, no world effect of its own, nothing to put
@@ -120,6 +167,7 @@ AppInput InputPoll(const World *world, Camera2D camera)
     input.game.regeneratePressed = IsKeyPressed(KEY_R);
     input.toggleDebugPressed = IsKeyPressed(KEY_F1);
     input.zoomSteps = GetMouseWheelMove();
+    if (selection->open) input.zoomSteps = 0.0f;
     input.menuPressed = IsKeyPressed(KEY_ESCAPE);
     return input;
 }

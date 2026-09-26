@@ -44,11 +44,7 @@ static void RunSmokePlayerProbe(World *world, ParticleSystem *particles,
     for (step = 0; step < 10; ++step) {
         PlayerUpdate(&probe, world, (Vector2){1.0f, 0.0f}, true, 0.05f);
         drilledCells += probe.drilledCells;
-        /* Drive the same feedback the frame loop does, so the boost trail and
-           drill debris paths stay covered without steering the live player. */
-        if (probe.boostTrailEmitted) {
-            ParticlesSpawnBoostTrail(particles, probe.position, probe.velocity);
-        }
+        /* Exercise drill debris without steering the live player. */
         if (probe.drilledCells > 0) {
             ParticlesSpawnDrillDebris(particles, probe.drillPosition,
                                       probe.velocity, probe.drilledCells);

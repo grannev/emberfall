@@ -21,6 +21,7 @@ typedef enum SynthKind {
     SYNTH_CHILL,
     SYNTH_CHILL_IMPACT,
     SYNTH_BOOST,
+    SYNTH_SONIC,
     SYNTH_SPLASH,
     SYNTH_REENTRY
 } SynthKind;
@@ -147,6 +148,16 @@ static float SynthSample(SynthKind kind, float time, float duration,
         return (thump * 0.72f + rush * 1.8f + crack * 0.28f) * decay * release;
     }
 
+    if (kind == SYNTH_SONIC) {
+        float snap = SynthNoise(noiseState) * expf(-43.0f * time);
+        float body = sinf(time * 2.0f * PI *
+                          (168.0f - 103.0f * time / duration)) * expf(-11.0f * time);
+        float rush = SynthLowPass(SynthNoise(noiseState), filterState, 0.14f) *
+                     expf(-6.0f * time);
+
+        return (snap * 0.8f + body * 0.74f + rush * 1.5f) * release * 0.7f;
+    }
+
     if (kind == SYNTH_REENTRY) {
         /* Not a bang: a wall of air. Broad noise under a low tone that
            wavers, held flat rather than struck, so a burn that lasts seconds
@@ -235,6 +246,7 @@ bool GameAudioInit(GameAudio *audio)
     audio->chill = SynthCreateSound(SYNTH_CHILL, 0.2f);
     audio->chillImpact = SynthCreateSound(SYNTH_CHILL_IMPACT, 0.12f);
     audio->boost = SynthCreateSound(SYNTH_BOOST, 0.52f);
+    audio->sonic = SynthCreateSound(SYNTH_SONIC, 0.36f);
     audio->splash = SynthCreateSound(SYNTH_SPLASH, 0.46f);
     audio->reentry = SynthCreateSound(SYNTH_REENTRY, 0.60f);
     SetMasterVolume(0.72f);
@@ -251,6 +263,7 @@ bool GameAudioInit(GameAudio *audio)
     if (IsSoundValid(audio->chill)) SetSoundVolume(audio->chill, 0.24f);
     if (IsSoundValid(audio->chillImpact)) SetSoundVolume(audio->chillImpact, 0.26f);
     if (IsSoundValid(audio->boost)) SetSoundVolume(audio->boost, 0.45f);
+    if (IsSoundValid(audio->sonic)) SetSoundVolume(audio->sonic, 0.54f);
     if (IsSoundValid(audio->reentry)) SetSoundVolume(audio->reentry, 0.4f);
     if (IsSoundValid(audio->splash)) SetSoundVolume(audio->splash, 0.5f);
     return true;
@@ -390,6 +403,13 @@ void GameAudioPlayBoost(GameAudio *audio)
     PlaySound(audio->boost);
 }
 
+void GameAudioPlaySonic(GameAudio *audio)
+{
+    if (audio == NULL || !audio->ready || !IsSoundValid(audio->sonic)) return;
+    SetSoundPitch(audio->sonic, GameAudioRandomRange(audio, 0.96f, 1.04f));
+    PlaySound(audio->sonic);
+}
+
 void GameAudioPlayImpact(GameAudio *audio, float strength)
 {
     if (audio == NULL || !audio->ready || audio->impactCooldown > 0.0f ||
@@ -512,6 +532,7 @@ void GameAudioUnload(GameAudio *audio)
         if (IsSoundValid(audio->chillImpact)) UnloadSound(audio->chillImpact);
         if (IsSoundValid(audio->splash)) UnloadSound(audio->splash);
         if (IsSoundValid(audio->reentry)) UnloadSound(audio->reentry);
+        if (IsSoundValid(audio->sonic)) UnloadSound(audio->sonic);
         if (IsSoundValid(audio->boost)) UnloadSound(audio->boost);
         CloseAudioDevice();
     }

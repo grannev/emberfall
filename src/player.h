@@ -10,6 +10,7 @@
 typedef enum PlayerPose {
     PLAYER_POSE_FLY = 0,
     PLAYER_POSE_LASER,
+    PLAYER_POSE_CRYO,
     PLAYER_POSE_CHILL,
     PLAYER_POSE_BLAST,
     /* Both palms flat on something solid, shoulder-width apart, leaning into
@@ -36,6 +37,8 @@ typedef enum PlayerMode {
 #define PLAYER_GRAVITY 620.0f
 #define PLAYER_JUMP_SPEED 205.0f
 #define PLAYER_FALL_SPEED_LIMIT 560.0f
+#define PLAYER_HEAVY_LANDING_SPEED 140.0f
+#define PLAYER_LANDING_RECOVERY 0.60f
 /* The tallest step the character walks up without jumping, in cells: the
    world is cells, and ground that rises a cell at a time is a slope, not a
    series of walls. */
@@ -148,6 +151,11 @@ typedef struct Player {
     float walkPhase;
     float impactStrength;
     float impactTimer;
+    /* One landing contact, consumed by GameState; recovery is visual only. */
+    float landingSpeed;
+    float landingTimer;
+    Vector2 landingPosition;
+    bool landingOnBody;
     float animationTime;
     /* 0 upright and hovering, 1 laid out flat along the direction of travel.
        Smoothed, so the change of posture reads as the character shifting their
@@ -155,7 +163,6 @@ typedef struct Player {
     float leanAmount;
     PlayerPose pose;
     float poseTimer;
-    float boostTrailTimer;
     float boostBurstTimer;
     int drilledCells;
     /* Leaves knocked out of a canopy this frame by passing through it. */
@@ -163,10 +170,10 @@ typedef struct Player {
     /* One-frame event consumed by main for particles, audio and camera kick:
        the boost has just been engaged from rest. */
     bool boostEngaged;
+    bool sonicBreakArmed;
     bool facingRight;
     bool thrusting;
     bool boosting;
-    bool boostTrailEmitted;
 } Player;
 
 void PlayerInit(Player *player, Vector2 position);
@@ -183,6 +190,7 @@ void PlayerResolveWorldCollision(Player *player, World *world);
 /* Adds velocity directly. Used for recoil, where the direction is known and no
    falloff applies. */
 void PlayerApplyImpulse(Player *player, Vector2 impulse);
+void PlayerRecordLanding(Player *player, float speed, Vector2 contact, bool onBody);
 
 /* True while the boost is actually cutting rather than merely running. Shared
    so that detached terrain can be cut by the same drill that cuts the static
@@ -238,6 +246,9 @@ Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim);
    picks the far hand; the near one leads. Built in the same body frame as
    PlayerBeamOrigin, so both rotate with the lean together. */
 Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing);
+/* The fully extended knuckle at the first frame of the force punch. The
+   renderer uses the same target, so its pressure front has a visible source. */
+Vector2 PlayerForceOrigin(const Player *player, Vector2 aim);
 
 /* The body axis: hips to head. Straight up when hovering, turning toward the
    direction of travel as the character leans, so at full boost it *is* the
@@ -248,10 +259,11 @@ Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing);
    axis while the laser is cast from a point measured straight up in world space
    are two different heads, and the player sees both. */
 Vector2 PlayerBodyUp(const Player *player);
+/* Shared animation anchor: eyes, hands and figure breathe/crouch together. */
+Vector2 PlayerBodyOrigin(const Player *player);
 /* Cells the body travels over one whole walking cycle, two steps: longer as
-   the walk becomes a run. The gait advances by distance over this, and the
-   renderer swings the legs by a quarter of it either way, so a planted foot
-   stays where it was put. */
+   the walk becomes a run. The renderer caps the literal quarter-stride reach
+   at sprint speed so adult legs never split wider than the figure can support. */
 float PlayerStride(const Player *player);
 
 /* Faster than this through a canopy and leaves come away. */

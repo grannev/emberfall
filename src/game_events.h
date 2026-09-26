@@ -15,6 +15,9 @@ typedef enum GameEventType {
     GAME_EVENT_PLAYER_IMPACT,
     GAME_EVENT_PLAYER_DRILL,
     GAME_EVENT_BOOST_ENGAGED,
+    /* The first crossing of sonic speed in air, with hysteresis before it can
+       fire again. Direction is travel; there is no pressure wave in space. */
+    GAME_EVENT_SONIC_BREAK,
     GAME_EVENT_FORCE,
     GAME_EVENT_EXPLOSION,
     GAME_EVENT_LASER_HIT,
@@ -38,6 +41,9 @@ typedef enum GameEventType {
        of body (zero for the character). Repeated while the burn lasts, at
        most every `eventInterval`. */
     GAME_EVENT_REENTRY,
+    GAME_EVENT_HEAVY_LANDING,
+    GAME_EVENT_FOOTSTEP,
+    GAME_EVENT_TAKEOFF,
     GAME_EVENT_COUNT
 } GameEventType;
 

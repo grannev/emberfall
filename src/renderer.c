@@ -1,5 +1,6 @@
 #include "renderer.h"
 
+#include <math.h>
 #include <stddef.h>
 
 #include <rlgl.h>
@@ -31,6 +32,26 @@ static const BloomTuning BLOOM = {
 #define BLOOM_DOWNSAMPLE_SHADER "assets/shaders/bloom_downsample.fs"
 #define BLOOM_BLUR_SHADER "assets/shaders/bloom_blur.fs"
 #define RENDERER_RESIZE_RETRY_FRAMES 120u
+
+static PlayerVisualEnvironment RendererPlayerEnvironment(const GameState *game)
+{
+    const Player *player = &game->player;
+    PlayerVisualEnvironment environment = {0};
+    float extent = PlayerExtent(player);
+    float heights[3] = {-extent * 0.55f, 0.0f, extent * 0.72f};
+    int sample;
+
+    environment.heat = game->atmosphere.playerHeat;
+    for (sample = 0; sample < 3; ++sample) {
+        CellMaterial material = WorldGetCell(&game->world,
+            (int)floorf(player->position.x),
+            (int)floorf(player->position.y + heights[sample]));
+
+        if (material == MATERIAL_WATER) environment.water += 1.0f / 3.0f;
+        if (material == MATERIAL_LAVA) environment.heat = fmaxf(environment.heat, 0.8f);
+    }
+    return environment;
+}
 
 static bool RendererTargetIsValid(RenderTexture2D target)
 {
@@ -513,7 +534,11 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         DrawRectangleLines(0, 0, game->world.width, game->world.height,
                            (Color){74, 103, 127, 255});
         ParticleRendererDraw(&game->particles);
-        PlayerRendererDraw(&game->player, aimPosition);
+        PlayerRendererDraw(&game->player, aimPosition,
+                           RendererPlayerEnvironment(game));
+        ReentryRendererDrawAir(&game->player,
+            WorldGravityScaleAt(&game->world, game->player.position.y),
+            game->atmosphere.playerHeat, renderer->presentationTime, false);
         /* In front of the character and the bodies: the cap of glowing air
            stands ahead of whatever is burning through it. */
         ReentryRendererDraw(&game->atmosphere, &game->player,
@@ -586,6 +611,9 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             PlayerRendererDrawSilhouette(&game->player, aimPosition);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
+            ReentryRendererDrawAir(&game->player,
+                WorldGravityScaleAt(&game->world, game->player.position.y),
+                game->atmosphere.playerHeat, renderer->presentationTime, true);
             ReentryRendererDrawEmissive(&game->atmosphere, &game->player,
                                         &game->dynamicTerrain, visible,
                                         renderer->presentationTime);

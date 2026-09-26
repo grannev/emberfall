@@ -33,6 +33,8 @@ typedef struct ReentryShape {
     float heat;
     float block;
     int salt;
+    bool air;
+    float opacity;
 } ReentryShape;
 
 static float ReentryClamp(float value, float minimum, float maximum)
@@ -68,6 +70,18 @@ static Color ReentryFire(float depth, float alpha, bool emissive)
                    (unsigned char)(255.0f * ReentryClamp(alpha, 0.0f, 1.0f))};
 }
 
+static Color ReentryColor(const ReentryShape *shape, float depth, float alpha,
+                           bool emissive)
+{
+    if (!shape->air) return ReentryFire(depth, alpha, emissive);
+    float d = ReentryClamp(depth, 0.0f, 1.0f);
+    return (Color){(unsigned char)(225.0f - d * 70.0f),
+                   (unsigned char)(239.0f - d * 61.0f),
+                   (unsigned char)(233.0f - d * 48.0f),
+                   (unsigned char)(255.0f * ReentryClamp(alpha * shape->opacity *
+                                          (emissive ? 0.24f : 0.64f), 0.0f, 1.0f))};
+}
+
 static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive)
 {
     float glow = ReentryClamp((shape->heat - REENTRY_CAP_MINIMUM_HEAT) /
@@ -87,6 +101,7 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
     int layers = 3 + (int)(3.0f * glow + 0.5f);
     int layer;
     int arm;
+    if (shape->air) layers = 4;
 
     glow = glow * glow * (3.0f - 2.0f * glow);
 
@@ -108,7 +123,7 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
             }
             point = ReentryPoint(shape, u, v);
             BeamBlock(point.x, point.y, block,
-                      ReentryFire(0.35f + 0.15f * (float)layer,
+                      ReentryColor(shape, 0.35f + 0.15f * (float)layer,
                                   glow * (emissive ? 0.55f : 0.35f) /
                                       (float)layer,
                                   emissive));
@@ -132,7 +147,9 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
             float alpha = glow * (1.0f - 0.3f * along) * (1.0f - 0.3f * depth);
             Vector2 point;
 
-            if (noise < 0.04f + 0.36f * depth + 0.3f * along * along) {
+            if (noise < (shape->air
+                             ? 0.015f + 0.16f * depth + 0.18f * along * along
+                             : 0.04f + 0.36f * depth + 0.3f * along * along)) {
                 continue;
             }
             /* The flicker of the shock: each block breathes a little in and
@@ -140,7 +157,7 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
             u += (noise - 0.5f) * block * (0.4f + depth);
             point = ReentryPoint(shape, u, v);
             BeamBlock(point.x, point.y, block,
-                      ReentryFire(depth * 0.85f + along * 0.35f,
+                      ReentryColor(shape, depth * 0.85f + along * 0.35f,
                                   emissive ? fminf(1.0f, alpha * 1.3f) : alpha,
                                   emissive));
         }
@@ -158,6 +175,8 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
                            (0.6f + 0.5f * BeamNoise(streamer, frame / 2,
                                                     shape->salt + arm * 13));
             float t;
+            /* Short ragged peel at the rim, never long straight speed lines. */
+            if (shape->air) length = (3.0f + 5.0f * glow) * (1.0f - 0.2f * (float)streamer);
 
             for (t = 0.0f; t < length; t += block * 0.8f) {
                 float fade = 1.0f - t / length;
@@ -177,7 +196,7 @@ static void ReentryDrawShape(const ReentryShape *shape, int frame, bool emissive
                                                    spread) +
                                          waver);
                 BeamBlock(point.x, point.y, block,
-                          ReentryFire(0.35f + 0.6f * (1.0f - fade),
+                          ReentryColor(shape, 0.35f + 0.6f * (1.0f - fade),
                                       glow * fade * 0.9f, emissive));
             }
         }
@@ -202,7 +221,28 @@ static bool ReentryShapeFor(ReentryShape *shape, Vector2 centre, Vector2 velocit
        blocks it is, not how big it is. */
     shape->block = size / 8.0f > 1.0f ? size / 8.0f : 1.0f;
     shape->salt = salt;
+    shape->air = false;
+    shape->opacity = 1.0f;
     return true;
+}
+
+void ReentryRendererDrawAir(const Player *player, float density, float heat,
+                            float time, bool emissive)
+{
+    ReentryShape shape;
+    float speed;
+    float power;
+    if (player == NULL || density <= 0.0f) return;
+    speed = sqrtf(player->velocity.x * player->velocity.x + player->velocity.y * player->velocity.y);
+    power = ReentryClamp((speed - player->maxSpeed) /
+                         fmaxf(1.0f, player->boostSpeed - player->maxSpeed), 0.0f, 1.0f);
+    if (!ReentryShapeFor(&shape, player->position, player->velocity,
+                         PlayerExtent(player) * 0.7f, power, 0x19a3)) return;
+    shape.air = true;
+    shape.opacity = ReentryClamp(density, 0.0f, 1.0f) *
+                    (1.0f - ReentryClamp(heat * 2.0f, 0.0f, 1.0f));
+    if (shape.opacity <= 0.0f) return;
+    ReentryDrawShape(&shape, (int)floorf(time * 24.0f), emissive);
 }
 
 static bool ReentryVisible(Rectangle visible, Vector2 centre, float reach)

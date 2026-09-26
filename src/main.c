@@ -262,32 +262,116 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
    appears in the hint the moment it is defined and bound. */
 static void DrawControlsHint(void)
 {
-    const char *hint = "AD walk  |  Space jump, x2 fly/land  |  Shift run/boost";
-    int fontSize = 18;
-    int id;
+    const char *hint = "AD walk | Space jump / fly | Shift boost | TAB powers | LMB use | RMB grab";
+    int fontSize = GetScreenWidth() < 1000 ? 12 : 16;
     int width;
     int x;
     int y;
 
-    for (id = 0; id < ABILITY_COUNT; ++id) {
-        const char *binding = InputAbilityBinding((AbilityId)id);
-
-        /* An ability with no control is not one of the player's, and listing it
-           would promise something the buttons cannot deliver. */
-        if (binding == NULL) {
-            continue;
-        }
-        hint = TextFormat("%s  |  %s %s", hint, binding,
-                          AbilityDefinitionAt((AbilityId)id)->name);
-    }
-    hint = TextFormat("%s  |  RMB grab  |  R new world  |  F1 HUD",
-                      hint);
     width = MeasureText(hint, fontSize);
     x = (GetScreenWidth() - width) / 2;
     y = GetScreenHeight() - 34;
 
     DrawRectangle(x - 10, y - 5, width + 20, fontSize + 10, (Color){3, 6, 12, 190});
     DrawText(hint, x, y, fontSize, (Color){214, 221, 229, 255});
+}
+
+static Color AbilityColor(AbilityId id)
+{
+    if (id == ABILITY_NUCLEAR) return (Color){247, 179, 76, 255};
+    if (id == ABILITY_LASER) return (Color){241, 91, 77, 255};
+    if (id == ABILITY_CRYO) return (Color){119, 209, 234, 255};
+    return (Color){239, 203, 146, 255};
+}
+
+/* Small pixel glyphs remain readable at the same scale as the world. */
+static void DrawAbilityIcon(AbilityId id, Vector2 at, float scale, Color color)
+{
+    static const unsigned char punch[7] = {14, 31, 31, 31, 30, 14, 12};
+    static const unsigned char laser[7] = {0, 16, 8, 31, 2, 1, 0};
+    static const unsigned char cryo[7] = {4, 21, 14, 31, 14, 21, 4};
+    static const unsigned char nuclear[7] = {17, 27, 14, 4, 14, 27, 17};
+    const unsigned char *glyph = id == ABILITY_NUCLEAR ? nuclear : id == ABILITY_LASER ? laser :
+                                 (id == ABILITY_CRYO ? cryo : punch);
+    int y;
+
+    for (y = 0; y < 7; ++y) {
+        int x;
+        for (x = 0; x < 5; ++x) {
+            if ((glyph[y] & (1u << (unsigned int)(4 - x))) != 0) {
+                DrawRectangleV((Vector2){at.x + ((float)x - 2.5f) * scale,
+                                          at.y + ((float)y - 3.5f) * scale},
+                               (Vector2){scale, scale}, color);
+            }
+        }
+    }
+}
+
+static void DrawAbilitySelection(const AbilitySelection *selection,
+                                  const AbilitySystem *abilities)
+{
+    float scale = fminf((float)GetScreenWidth() / 1280.0f,
+                        (float)GetScreenHeight() / 720.0f);
+    Color accent = AbilityColor(selection->selected);
+    const AbilityState *state = AbilityStateAt(abilities, selection->selected);
+    int font = (int)(18.0f * scale);
+
+    if (!selection->open) {
+        float y = (float)GetScreenHeight() - 92.0f * scale;
+        DrawRectangle(18, (int)y, (int)(242.0f * scale), (int)(48.0f * scale),
+                      (Color){12, 17, 24, 224});
+        DrawRectangle(18, (int)y, (int)(3.0f * scale), (int)(48.0f * scale), accent);
+        DrawAbilityIcon(selection->selected, (Vector2){18.0f + 25.0f * scale,
+                                                       y + 24.0f * scale}, 3.0f * scale, accent);
+        DrawText(AbilityDefinitionAt(selection->selected)->name,
+                 (int)(18.0f + 48.0f * scale), (int)(y + 7.0f * scale), font, RAYWHITE);
+        const char *hint = state->cooldown > 0.0f ? "RECOVERING" :
+                          (selection->selected == ABILITY_NUCLEAR ?
+                           "HOLD LMB / RELEASE TO FIRE" : "LMB  /  TAB to select");
+        if (selection->selected == ABILITY_NUCLEAR && state->active) {
+            float charge = Clamp(state->chargeTime / ABILITY_NUCLEAR_CHARGE_TIME, 0.0f, 1.0f);
+            hint = TextFormat("CHARGE %d%% / RELEASE", (int)roundf(charge * 100.0f));
+            DrawRectangle(18, (int)(y + 46.0f * scale),
+                          (int)(242.0f * scale * charge), (int)(2.0f * scale), accent);
+        }
+        DrawText(hint,
+                 (int)(18.0f + 48.0f * scale), (int)(y + 29.0f * scale),
+                 (int)(12.0f * scale), accent);
+        return;
+    }
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){3, 7, 13, 144});
+    {
+        int count = InputAbilityCount();
+        int index;
+        Vector2 center = selection->center;
+        for (index = 0; index < count; ++index) {
+            AbilityId id = InputAbilityAt(index);
+            float angle = -90.0f + (float)index * 360.0f / (float)count;
+            float half = 180.0f / (float)count - 2.0f;
+            bool hovered = selection->hovered == index;
+            Vector2 label = {center.x + cosf(angle * DEG2RAD) * 111.0f * scale,
+                             center.y + sinf(angle * DEG2RAD) * 111.0f * scale};
+            Color color = AbilityColor(id);
+            const char *name = AbilityDefinitionAt(id)->name;
+            DrawRing(center, 49.0f * scale, 162.0f * scale, angle - half,
+                     angle + half, 40, hovered ? (Color){53, 64, 76, 248} :
+                                                (Color){16, 23, 33, 242});
+            DrawRing(center, 158.0f * scale, 162.0f * scale, angle - half,
+                     angle + half, 40, hovered || id == selection->selected ? color :
+                                                (Color){68, 78, 91, 255});
+            DrawAbilityIcon(id, (Vector2){label.x, label.y - 12.0f * scale},
+                            4.0f * scale, color);
+            DrawText(name, (int)label.x - MeasureText(name, font) / 2,
+                     (int)(label.y + 14.0f * scale), font, RAYWHITE);
+        }
+        DrawText("TAB", (int)center.x - MeasureText("TAB", font) / 2,
+                 (int)center.y - font / 2, font, RAYWHITE);
+        {
+            const char *hint = "Point to a power / release TAB / LMB to use";
+            DrawText(hint, (int)center.x - MeasureText(hint, font) / 2,
+                     (int)(center.y + 188.0f * scale), font, RAYWHITE);
+        }
+    }
 }
 
 /* Puts the settings into effect. Every one of them is presentation or
@@ -320,8 +404,15 @@ static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
         const GameEvent *event = &events->events[index];
 
         switch (event->type) {
+        case GAME_EVENT_HEAVY_LANDING:
+            GameAudioPlayImpact(audio, 180.0f + event->strength * 380.0f);
+            GameAudioPlayExplosion(audio, 60.0f + event->strength * 140.0f);
+            break;
         case GAME_EVENT_BOOST_ENGAGED:
             GameAudioPlayBoost(audio);
+            break;
+        case GAME_EVENT_SONIC_BREAK:
+            GameAudioPlaySonic(audio);
             break;
         case GAME_EVENT_PLAYER_IMPACT:
             GameAudioPlayImpact(audio, event->strength);
@@ -386,6 +477,7 @@ int main(int argc, char **argv)
        tall. */
     Vector2 lastPlayerPosition;
     ViewZoom viewZoom = {1.0f, 1.0f};
+    AbilitySelection selection = {.selected = ABILITY_FORCE, .hovered = -1};
     /* The cursor and the aim survive a frame spent in the menu: the world
        under it is drawn as the last frame of play left it. */
     Vector2 cursorCell = {0.0f, 0.0f};
@@ -563,7 +655,7 @@ int main(int argc, char **argv)
                 break;
             }
         } else {
-            AppInput input = InputPoll(&game.world, aimCamera);
+            AppInput input = InputPoll(&game.world, aimCamera, &selection);
             Vector2 desiredCamera;
 
             if (!smokeTest) {
@@ -609,7 +701,8 @@ int main(int argc, char **argv)
             {
                 GameAudioState sounding = {0};
 
-                sounding.laser = AbilityStateAt(&game.abilities, ABILITY_LASER)->active;
+                sounding.laser = AbilityStateAt(&game.abilities, ABILITY_LASER)->active ||
+                                  AbilityStateAt(&game.abilities, ABILITY_NUCLEAR)->active;
                 sounding.drilling = game.player.drilledCells > 0;
                 sounding.drillMaterial = game.player.drillMaterial;
                 sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
@@ -675,6 +768,9 @@ int main(int argc, char **argv)
             /* Escape opens the menu at the end of the frame, over the world
                exactly as this frame left it. */
             if (input.menuPressed && !smokeTest) {
+                AbilitiesCancelCharge(&game.abilities);
+                selection.open = false;
+                selection.blockPrimary = true;
                 menuOpen = true;
                 MenuOpen(&menu);
             }
@@ -720,6 +816,7 @@ int main(int argc, char **argv)
             if (smokeTest || settings.showControls) {
                 DrawControlsHint();
             }
+            if (!smokeTest) DrawAbilitySelection(&selection, &game.abilities);
         }
         if (smokeTest) {
             SmokeTestCapture(&smoke);

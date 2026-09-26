@@ -23,6 +23,11 @@
 #include "dynamic_terrain.h"
 #include "player.h"
 
+/* Cool compressed air uses the same bow as re-entry, faded by atmospheric
+   density and by the hot sheath. Zero density draws nothing. */
+void ReentryRendererDrawAir(const Player *player, float density, float heat,
+                            float time, bool emissive);
+
 /* Scene pass: the cap and its streamers in fire colours, after the character
    and the bodies so it stands in front of them. */
 void ReentryRendererDraw(const AtmosphereSystem *atmosphere, const Player *player,

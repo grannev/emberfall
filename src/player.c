@@ -58,18 +58,21 @@ void PlayerInit(Player *player, Vector2 position)
     player->walkPhase = 0.0f;
     player->impactStrength = 0.0f;
     player->impactTimer = 0.0f;
+    player->landingSpeed = 0.0f;
+    player->landingTimer = 0.0f;
+    player->landingPosition = position;
+    player->landingOnBody = false;
     player->animationTime = 0.0f;
     player->leanAmount = 0.0f;
     player->pose = PLAYER_POSE_FLY;
     player->poseTimer = 0.0f;
-    player->boostTrailTimer = 0.0f;
     player->boostBurstTimer = 0.0f;
     player->drilledCells = 0;
     player->boostEngaged = false;
+    player->sonicBreakArmed = true;
     player->facingRight = true;
     player->thrusting = false;
     player->boosting = false;
-    player->boostTrailEmitted = false;
 }
 
 float PlayerExtent(const Player *player)
@@ -197,6 +200,10 @@ Vector2 PlayerBodyUp(const Player *player)
     if (player == NULL) {
         return (Vector2){0.0f, -1.0f};
     }
+    if (player->mode == PLAYER_MODE_WALK) {
+        float tilt = Clamp(player->velocity.x / PLAYER_RUN_SPEED, -1.0f, 1.0f) * 0.14f;
+        return (Vector2){sinf(tilt), -cosf(tilt)};
+    }
     lean = Clamp(player->leanAmount, 0.0f, 1.0f);
     speed = sqrtf(player->velocity.x * player->velocity.x +
                   player->velocity.y * player->velocity.y);
@@ -227,6 +234,27 @@ float PlayerStride(const Player *player)
     pace = (fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
            (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED);
     return 14.0f + 9.0f * Clamp(pace, 0.0f, 1.0f);
+}
+
+Vector2 PlayerBodyOrigin(const Player *player)
+{
+    Vector2 up = PlayerBodyUp(player);
+    float bob;
+    if (player == NULL) return (Vector2){0.0f, 0.0f};
+    if (player->mode == PLAYER_MODE_WALK) {
+        float moving = player->grounded ? Clamp(fabsf(player->velocity.x) / 20.0f, 0.0f, 1.0f) : 0.0f;
+        float run = Clamp((fabsf(player->velocity.x) - PLAYER_WALK_SPEED) /
+                          (PLAYER_RUN_SPEED - PLAYER_WALK_SPEED), 0.0f, 1.0f);
+        bob = -fabsf(sinf(player->walkPhase * 2.0f * PI)) * (0.35f + run * 0.4f) * moving +
+              sinf(player->animationTime * 1.8f) * 0.10f * (1.0f - moving);
+        if (player->grounded && player->landingTimer > 0.0f) {
+            float recovery = player->landingTimer / PLAYER_LANDING_RECOVERY;
+            bob -= 3.2f * recovery * recovery;
+        }
+    } else {
+        bob = (1.0f - player->leanAmount) * sinf(player->animationTime * 2.4f) * 0.3f;
+    }
+    return Vector2Add(player->position, Vector2Scale(up, bob));
 }
 
 /* Distance up the body axis from the hips to the visor. The renderer builds the
@@ -271,9 +299,38 @@ Vector2 PlayerHandOrigin(const Player *player, Vector2 aim, bool trailing)
     dx /= length;
     dy /= length;
 
-    shoulder = (Vector2){player->position.x + up.x * along + side.x * across,
-                         player->position.y + up.y * along + side.y * across};
+    if (dx * side.x + dy * side.y < 0.0f) side = Vector2Negate(side);
+    {
+        Vector2 anchor = PlayerBodyOrigin(player);
+        shoulder = (Vector2){anchor.x + up.x * along + side.x * across,
+                             anchor.y + up.y * along + side.y * across};
+    }
     return (Vector2){shoulder.x + dx * reach, shoulder.y + dy * reach};
+}
+
+Vector2 PlayerForceOrigin(const Player *player, Vector2 aim)
+{
+    Vector2 up;
+    Vector2 side;
+    Vector2 anchor;
+    Vector2 direction;
+    float length;
+
+    if (player == NULL) return aim;
+    up = PlayerBodyUp(player);
+    side = (Vector2){-up.y, up.x};
+    direction = Vector2Subtract(aim, player->position);
+    length = Vector2Length(direction);
+    if (length <= 0.001f) direction = side;
+    else direction = Vector2Scale(direction, 1.0f / length);
+    if (Vector2DotProduct(direction, side) < 0.0f) side = Vector2Negate(side);
+    anchor = PlayerBodyOrigin(player);
+    return (Vector2){anchor.x + up.x * (PLAYER_SHOULDER_UP - 0.4f) * PLAYER_BODY_SCALE +
+                         side.x * 1.0f * PLAYER_BODY_SCALE +
+                         direction.x * 7.4f * PLAYER_BODY_SCALE,
+                     anchor.y + up.y * (PLAYER_SHOULDER_UP - 0.4f) * PLAYER_BODY_SCALE +
+                         side.y * 1.0f * PLAYER_BODY_SCALE +
+                         direction.y * 7.4f * PLAYER_BODY_SCALE};
 }
 
 Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim)
@@ -307,15 +364,17 @@ Vector2 PlayerVisorOrigin(const Player *player, Vector2 aim)
     dy /= length;
     /* The head turns a little toward the cursor, exactly as it is drawn. */
     aimAcross = dx * side.x + dy * side.y;
+    if (aimAcross < 0.0f) side = Vector2Negate(side);
 
     {
         float alongUp = PLAYER_VISOR_ALONG_UP * PLAYER_BODY_SCALE;
-        float alongSide = (PLAYER_VISOR_ALONG_SIDE + 0.25f * aimAcross) *
+        float alongSide = (PLAYER_VISOR_ALONG_SIDE + 0.15f * fabsf(aimAcross)) *
                           PLAYER_BODY_SCALE;
+        Vector2 anchor = PlayerBodyOrigin(player);
 
         visor = (Vector2){
-            player->position.x + up.x * alongUp + side.x * alongSide,
-            player->position.y + up.y * alongUp + side.y * alongSide};
+            anchor.x + up.x * alongUp + side.x * alongSide,
+            anchor.y + up.y * alongUp + side.y * alongSide};
     }
     return visor;
 }
@@ -680,6 +739,16 @@ static bool PlayerSnapDown(Player *player, const World *world)
     return false;
 }
 
+void PlayerRecordLanding(Player *player, float speed, Vector2 contact, bool onBody)
+{
+    if (player == NULL || speed < PLAYER_HEAVY_LANDING_SPEED ||
+        player->landingTimer > 0.0f) return;
+    player->landingSpeed = speed;
+    player->landingPosition = contact;
+    player->landingOnBody = onBody;
+    player->landingTimer = PLAYER_LANDING_RECOVERY;
+}
+
 static void PlayerUpdateWalk(Player *player, World *world, Vector2 input,
                              float gravityScale, float deltaTime)
 {
@@ -713,6 +782,9 @@ static void PlayerUpdateWalk(Player *player, World *world, Vector2 input,
         player->airTime = PLAYER_COYOTE_TIME + 0.001f;
         player->jumped = true;
     }
+    /* A committed fall gains weight beyond an ordinary jump's return speed.
+       The existing terminal speed and half-cell substep budget still apply. */
+    if (player->velocity.y > 250.0f) gravity *= 1.35f;
     player->velocity.y += gravity * deltaTime;
     /* Let go of jump on the way up and the rise is cut short: a tap is a hop,
        a hold is a leap. */
@@ -764,6 +836,7 @@ static void PlayerUpdateWalk(Player *player, World *world, Vector2 input,
             player->position.y = candidate.y;
         } else {
             if (player->velocity.y > 0.0f) {
+                PlayerRecordLanding(player, player->velocity.y, PlayerFeet(player), false);
                 player->grounded = true;
             }
             player->velocity.y = 0.0f;
@@ -823,10 +896,11 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     }
 
     player->impactStrength = 0.0f;
+    player->landingSpeed = 0.0f;
+    player->landingTimer = fmaxf(0.0f, player->landingTimer - deltaTime);
     player->impactNormal = (Vector2){0.0f, 0.0f};
     player->impactTimer = fmaxf(0.0f, player->impactTimer - deltaTime);
     player->drilledCells = 0;
-    player->boostTrailEmitted = false;
     player->boostEngaged = false;
     player->boostBurstTimer = fmaxf(0.0f, player->boostBurstTimer - deltaTime);
     player->thrusting = false;
@@ -921,15 +995,6 @@ void PlayerUpdate(Player *player, World *world, Vector2 input, bool boostHeld,
     player->poseTimer = fmaxf(0.0f, player->poseTimer - deltaTime);
     if (player->poseTimer <= 0.0f) {
         player->pose = PLAYER_POSE_FLY;
-    }
-    if (player->boosting && velocityLength >= player->drillSpeed * 0.65f) {
-        player->boostTrailTimer -= deltaTime;
-        if (player->boostTrailTimer <= 0.0f) {
-            player->boostTrailEmitted = true;
-            player->boostTrailTimer = 0.016f;
-        }
-    } else {
-        player->boostTrailTimer = 0.0f;
     }
 
     /* The corridor first, once, for the whole frame. Everything after this is

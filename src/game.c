@@ -165,6 +165,56 @@ static void GameActivatePlayerRegion(GameState *game)
     game->activatedPlayerChunkY = chunkY;
 }
 
+static void GameApplyLanding(GameState *game, GameEventBuffer *events)
+{
+    Player *player = &game->player;
+    float strength;
+    float radius;
+    Vector2 at;
+
+    if (player->landingSpeed < PLAYER_HEAVY_LANDING_SPEED) return;
+    strength = Clamp((player->landingSpeed - PLAYER_HEAVY_LANDING_SPEED) /
+                      (PLAYER_FALL_SPEED_LIMIT - PLAYER_HEAVY_LANDING_SPEED), 0.0f, 1.0f);
+    radius = Lerp(8.0f, 28.0f, strength);
+    at = player->landingPosition;
+    if (!player->landingOnBody) {
+        int step;
+        /* Feet stop just clear of the cell: put the dent on its surface. */
+        at.y += 0.6f;
+        WorldApplyPunch(&game->world, at, (Vector2){0.0f, 1.0f}, (int)radius,
+                        5 + (int)(strength * 7.0f), 14 + (int)(strength * 38.0f));
+        /* Follow the newly formed shallow bowl with bounded collision steps.
+           If it opened into a cave the hero resumes falling, never teleports. */
+        for (step = 0; step < 44; ++step) {
+            Vector2 next = {player->position.x, player->position.y + 0.5f};
+            if (PlayerCollidesAt(player, &game->world, next) ||
+                next.y > (float)game->world.height - PlayerExtent(player)) break;
+            player->position = next;
+        }
+        player->grounded = PlayerCollidesAt(player, &game->world,
+            (Vector2){player->position.x, player->position.y + 0.6f});
+    }
+    WorldApplyShockwave(&game->world, (int)floorf(at.x), (int)floorf(at.y),
+                        0, (int)(radius * 3.0f));
+    (void)TerrainImpulseQueueBlast(&game->impulses, (TerrainBlast){
+        .shape = TERRAIN_BLAST_RADIAL,
+        .origin = at,
+        .radius = radius * 3.0f,
+        .momentum = Lerp(16000.0f, 90000.0f, strength),
+        .carveRadius = player->landingOnBody ? radius * 0.4f : 0.0f,
+    });
+    ParticlesSpawnImpact(&game->particles, at, (Vector2){0.0f, -1.0f},
+                         player->landingSpeed);
+    (void)GameEventsPush(events, (GameEvent){
+        .type = GAME_EVENT_HEAVY_LANDING,
+        .position = at,
+        .direction = {0.0f, -1.0f},
+        .strength = strength,
+        .radius = radius * 3.0f,
+    });
+    player->landingSpeed = 0.0f;
+}
+
 static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
 {
     Player *player = &game->player;
@@ -191,10 +241,6 @@ static void GamePublishPlayerFeedback(GameState *game, GameEventBuffer *events)
         });
         ParticlesSpawnImpact(&game->particles, player->impactPosition,
                              player->impactNormal, player->impactStrength);
-    }
-    if (player->boostTrailEmitted) {
-        ParticlesSpawnBoostTrail(&game->particles, player->position,
-                                 player->velocity);
     }
     if (player->brushedLeaves > 0) {
         ParticlesSpawnLeaves(&game->particles, player->position, player->velocity,
@@ -352,6 +398,12 @@ static void GameKeepInWorld(GameState *game)
         float shift = -floorf(game->player.position.x / width) * width;
 
         game->player.position.x += shift;
+        game->player.landingPosition.x += shift;
+        for (index = 0; index < ABILITY_COUNT; ++index) {
+            game->abilities.states[index].origin.x += shift;
+            game->abilities.states[index].endpoint.x += shift;
+            game->abilities.states[index].dwellPoint.x += shift;
+        }
         game->wrapShift = shift;
         ++game->wraps;
     }
@@ -404,17 +456,74 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
         (game->player.mode == PLAYER_MODE_WALK && input->upPressed);
     game->player.jumpHeld = input->jumpHeld;
     game->player.runHeld = input->boostHeld;
-    PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,
-                 deltaTime);
+    {
+        bool grounded = game->player.grounded;
+        PlayerMode mode = game->player.mode;
+        int foot = (int)(game->player.walkPhase * 2.0f);
+        PlayerUpdate(&game->player, &game->world, input->move, input->boostHeld,
+                     deltaTime);
+        {
+            float speed = Vector2Length(game->player.velocity);
+            float density = WorldGravityScaleAt(&game->world,
+                                                game->player.position.y);
+
+            if (speed < game->player.sonicSpeed * 0.85f || density <= 0.02f)
+                game->player.sonicBreakArmed = true;
+            if (game->player.mode == PLAYER_MODE_FLY &&
+                game->player.sonicBreakArmed &&
+                speed >= game->player.sonicSpeed && density > 0.06f) {
+                (void)GameEventsPush(events, (GameEvent){
+                    .type = GAME_EVENT_SONIC_BREAK,
+                    .position = game->player.position,
+                    .direction = Vector2Scale(game->player.velocity, 1.0f / speed),
+                    .strength = density,
+                    .radius = 36.0f,
+                });
+                game->player.sonicBreakArmed = false;
+            }
+        }
+        if (game->player.boosting && Vector2Length(game->player.velocity) > game->player.maxSpeed &&
+            (int)(game->player.animationTime * 40.0f) !=
+            (int)((game->player.animationTime - deltaTime) * 40.0f)) {
+            ParticlesSpawnBoostTrail(&game->particles, game->player.position, game->player.velocity);
+        }
+        if (grounded && !game->player.grounded && game->player.velocity.y < -40.0f) {
+            (void)GameEventsPush(events, (GameEvent){
+                .type = GAME_EVENT_TAKEOFF, .position = PlayerFeet(&game->player),
+                .strength = input->boostHeld ? 1.0f : 0.4f,
+            });
+        } else if (mode == PLAYER_MODE_WALK && game->player.mode == PLAYER_MODE_FLY) {
+            (void)GameEventsPush(events, (GameEvent){
+                .type = GAME_EVENT_TAKEOFF, .position = PlayerFeet(&game->player),
+                .strength = 0.25f,
+            });
+        } else if (game->player.grounded && fabsf(game->player.velocity.x) > 12.0f &&
+                   foot != (int)(game->player.walkPhase * 2.0f)) {
+            (void)GameEventsPush(events, (GameEvent){
+                .type = GAME_EVENT_FOOTSTEP, .position = PlayerFeet(&game->player),
+                .strength = Clamp(fabsf(game->player.velocity.x) / PLAYER_RUN_SPEED, 0.0f, 1.0f),
+            });
+        }
+    }
     (void)PlayerBrushFlora(&game->player, &game->world);
     GameActivatePlayerRegion(game);
+    GameApplyLanding(game, events);
     GamePublishPlayerFeedback(game, events);
 
-    AbilitiesUpdate(&game->abilities, &game->world, &game->dynamicTerrain,
-                    &game->damage, &game->impulses,
-                    &game->particles, events,
-                    PlayerBeamOrigin(&game->player, input->aimWorld),
-                    input->aimWorld, deltaTime, input->ability);
+    if (input->cancelCharge) AbilitiesCancelCharge(&game->abilities);
+    {
+        Vector2 eye = PlayerBeamOrigin(&game->player, input->aimWorld);
+        Vector2 origins[ABILITY_COUNT];
+        int ability;
+
+        for (ability = 0; ability < ABILITY_COUNT; ++ability) origins[ability] = eye;
+        origins[ABILITY_FORCE] = PlayerForceOrigin(&game->player, input->aimWorld);
+        AbilitiesUpdateFromOrigins(&game->abilities, &game->world,
+                                   &game->dynamicTerrain, &game->damage,
+                                   &game->impulses, &game->particles, events,
+                                   origins, input->aimWorld, deltaTime,
+                                   input->ability);
+    }
     GameApplyAbilityFeedback(game, events);
 
     ParticlesUpdate(&game->particles, &game->world, deltaTime);
@@ -432,6 +541,7 @@ void GameUpdate(GameState *game, const GameInput *input, float deltaTime,
     TerrainInteractionUpdate(&game->interaction, &game->player,
                              &game->dynamicTerrain, &game->damage,
                              input->aimWorld, input->grabHeld, deltaTime);
+    GameApplyLanding(game, events);
     GameKeepInWorld(game);
 }
 

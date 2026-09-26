@@ -113,6 +113,13 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
 
         impulse.phase = CameraFeedbackPhase(event, index);
         switch (event->type) {
+        case GAME_EVENT_HEAVY_LANDING:
+            impulse.direction = (Vector2){0.0f, 1.0f};
+            impulse.positionStrength = 3.4f + event->strength * 5.0f;
+            impulse.rotationStrength = 0.12f + event->strength * 0.3f;
+            impulse.zoomStrength = 0.035f + event->strength * 0.04f;
+            impulse.duration = 0.22f + event->strength * 0.16f;
+            break;
         case GAME_EVENT_EXPLOSION:
             impulse.direction = CameraFeedbackDirection(
                 Vector2Subtract(playerPosition, event->position),
@@ -141,6 +148,14 @@ void CameraFeedbackConsumeEvents(CameraFeedback *feedback,
             impulse.rotationStrength = 0.22f;
             impulse.zoomStrength = 0.026f;
             impulse.duration = 0.22f;
+            break;
+        case GAME_EVENT_SONIC_BREAK:
+            impulse.direction = Vector2Negate(CameraFeedbackDirection(
+                event->direction, (Vector2){1.0f, 0.0f}));
+            impulse.positionStrength = 2.0f * event->strength;
+            impulse.rotationStrength = 0.1f * event->strength;
+            impulse.zoomStrength = 0.026f * event->strength;
+            impulse.duration = 0.18f;
             break;
         case GAME_EVENT_PLAYER_IMPACT:
             if (event->strength < 14.0f) {

@@ -169,6 +169,29 @@ coherent phase with an explanatory message.
 
 ## Current engineering audit
 
+- Player powers are selected with a held Tab wheel and fired with LMB; RMB
+  always controls telekinesis. The internal instant explosion stays unbound.
+  Nuclear strike is a separate release-triggered ability: its aiming beam
+  never damages, charge is capped at three seconds, and opening UI or losing
+  focus cancels without detonating. The last visible target is the release target.
+- The hero has an original dark-red suit, muted pale trim, grey cape and
+  stubble. Half-cell drawing preserves adult proportions at the existing body
+  scale. Standing knees must relax toward straight legs and hands hang down.
+  `PlayerBodyOrigin` is shared by drawing, eyes and hands: landing crouch and
+  breathing must never detach a beam from the face.
+- Laser and cryo both cast through `PlayerBeamOrigin` and draw from
+  `PlayerVisorOrigin`; telekinesis alone keeps the open-palms `CHILL` pose.
+- Heavy walking-mode landings (including falls after flight is disabled) use
+  the incoming speed, one contact record, ordinary world fractures and queued
+  body impulses. Recovery is visual and never locks movement. Bounded stepping
+  settles the player into the new crater without embedding or teleporting
+  through its floor. Air/liquid still never slow flight.
+- Fast flight draws a broad cool bow using the re-entry shape, faded by
+  atmospheric density; no air bow in space. No long straight speed stripes or
+  triangular wake. Soft emission and sparse pixel particles may trail behind.
+  Crossing sonic speed in air publishes one pressure break; it rearms only
+  after slowing well below the threshold and never fires in vacuum.
+
 - The immutable baseline and confirmed hypotheses are recorded in
   `docs/performance.md`; do not rewrite the baseline after an optimization.
 - `World.lastTickStats` exposes processed cells/chunks for non-flaky performance

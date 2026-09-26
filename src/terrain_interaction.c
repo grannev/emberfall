@@ -473,6 +473,9 @@ static bool TerrainInteractionResolve(TerrainInteractionSystem *system,
     pointVelocity = TerrainBodyPointVelocity(body, contact);
     approach = (player->velocity.x - pointVelocity.x) * normal.x +
                (player->velocity.y - pointVelocity.y) * normal.y;
+    if (player->mode == PLAYER_MODE_WALK && normal.y < -0.6f) {
+        PlayerRecordLanding(player, -approach, contact, true);
+    }
     if (approach >= 0.0f) {
         /* Already separating: pushing them apart again would be inventing
            energy. */

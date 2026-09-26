@@ -21,7 +21,18 @@ typedef struct AppInput {
     bool menuPressed;
 } AppInput;
 
-AppInput InputPoll(const World *world, Camera2D camera);
+/* App-owned selection; replay still records ordinary GameInput flags. */
+typedef struct AbilitySelection {
+    AbilityId selected;
+    int hovered;
+    bool open;
+    bool blockPrimary;
+    Vector2 center;
+} AbilitySelection;
+
+int InputAbilityCount(void);
+AbilityId InputAbilityAt(int index);
+AppInput InputPoll(const World *world, Camera2D camera, AbilitySelection *selection);
 /* The menu's controls: arrows or WASD, enter or space, escape or backspace
    on an empty field, the pointer, and typed characters for the seed. */
 MenuInput InputPollMenu(void);
