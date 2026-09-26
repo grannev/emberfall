@@ -61,6 +61,7 @@ typedef struct WeatherSample {
 typedef struct WeatherStats {
     int grainsLifted;
     int bodiesPushed;
+    int tumbleweedsReleased;
 } WeatherStats;
 
 typedef struct WeatherSystem {
@@ -96,8 +97,20 @@ float WeatherWindAt(const WeatherSystem *weather, const World *world, float x, f
    downwind as particles that settle again. Bounded per tick. */
 void WeatherErode(WeatherSystem *weather, World *world, struct ParticleSystem *particles,
                   Vector2 around);
-/* Pushes the awake bodies in open air toward the wind's speed, the lighter
-   the body the harder. */
+/* How close to the character a tumbleweed has to be for the wind to take
+   it, in cells, and the wind it takes. */
+#define WEATHER_TUMBLEWEED_REACH 420.0f
+#define WEATHER_TUMBLEWEED_WIND 22.0f
+/* Bodies lighter per cell than this — leaves, brush, grass, kelp — are the wind's
+   to carry: it wakes them where they lie, rolls them and makes them hop. */
+#define WEATHER_LIGHT_BODY_DENSITY 0.3f
+
+/* Lets the wind take tumbleweeds near `around`: the twigs one stands on are
+   snapped and the destruction is logged, so the ordinary detach check turns
+   the ball into a body. Returns how many went. */
+int WeatherReleaseTumbleweeds(WeatherSystem *weather, World *world, Vector2 around);
+/* Pushes the bodies in open air toward the wind's speed, the lighter the
+   body the harder; light ones asleep are woken, rolled and made to hop. */
 void WeatherPushBodies(WeatherSystem *weather, const World *world,
                        struct DynamicTerrainSystem *terrain, float deltaTime);
 const char *WeatherKindName(WeatherKind kind);

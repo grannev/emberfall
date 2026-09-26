@@ -16,7 +16,7 @@ SOURCES := src/main.c src/smoke_test.c src/menu.c src/settings.c src/game.c src/
 	src/player.c src/player_renderer.c src/abilities.c src/ability_renderer.c \
 	src/dynamic_terrain.c src/terrain_extraction.c src/terrain_physics.c src/terrain_body_collision.c src/terrain_contact.c \
 	src/terrain_detach.c src/terrain_weld.c src/terrain_impulse.c src/terrain_damage.c src/terrain_interaction.c src/fluid_interaction.c src/terrain_fluid.c src/terrain_stability.c src/atmosphere.c \
-	src/particles.c src/weather.c src/particle_renderer.c src/audio.c
+	src/particles.c src/weather.c src/fauna.c src/particle_renderer.c src/audio.c
 # The headless suite links CPU-side gameplay only: no window or GL context.
 TEST_APP := emberfall-tests
 # input.c is linked for its binding table alone — the tests assert what the
@@ -24,7 +24,7 @@ TEST_APP := emberfall-tests
 # the suite polls a key.
 TEST_SOURCES := tests/world_tests.c src/game.c src/game_events.c src/input.c \
 	$(WORLD_SOURCES) \
-	src/player.c src/abilities.c src/particles.c src/weather.c src/dynamic_terrain.c \
+	src/player.c src/abilities.c src/particles.c src/weather.c src/fauna.c src/dynamic_terrain.c \
 	src/terrain_extraction.c src/terrain_physics.c src/terrain_body_collision.c src/terrain_contact.c src/terrain_detach.c src/terrain_weld.c \
 	src/terrain_impulse.c src/terrain_damage.c src/terrain_interaction.c src/fluid_interaction.c src/terrain_fluid.c src/terrain_stability.c src/atmosphere.c \
 	src/presentation_fx.c src/camera_feedback.c src/terrain_body_render_data.c \
@@ -33,7 +33,7 @@ BENCH_APP := emberfall-bench
 # The traversal scenario drives the real GameUpdate, so the benchmark links the
 # whole headless gameplay stack rather than a hand-rolled imitation of it.
 BENCH_SOURCES := bench/benchmark.c $(WORLD_SOURCES) src/player.c src/game.c \
-	src/game_events.c src/abilities.c src/particles.c src/weather.c \
+	src/game_events.c src/abilities.c src/particles.c src/weather.c src/fauna.c \
 	src/dynamic_terrain.c src/terrain_physics.c src/terrain_body_collision.c src/terrain_contact.c \
 	src/terrain_extraction.c src/terrain_detach.c src/terrain_weld.c src/terrain_impulse.c \
 	src/terrain_damage.c src/terrain_interaction.c src/fluid_interaction.c src/terrain_fluid.c src/terrain_stability.c src/atmosphere.c

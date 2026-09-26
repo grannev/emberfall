@@ -280,6 +280,29 @@ typedef struct WorldTumbleweed {
     int y;
 } WorldTumbleweed;
 
+/* Where animals would live — the groundwork for fauna, which has none yet.
+   The generator marks a place in each biome's own terms (a nest in a crown,
+   a burrow in the dunes, a roost on a cave ceiling) and `fauna.c` names what
+   would come from it; nothing is simulated or drawn there yet. */
+#define WORLD_MAX_HABITATS 768
+
+typedef enum WorldHabitatKind {
+    WORLD_HABITAT_NEST = 0,
+    WORLD_HABITAT_MEADOW,
+    WORLD_HABITAT_BURROW,
+    WORLD_HABITAT_DEN,
+    WORLD_HABITAT_VENT,
+    WORLD_HABITAT_REEF,
+    WORLD_HABITAT_ROOST,
+    WORLD_HABITAT_KIND_COUNT
+} WorldHabitatKind;
+
+typedef struct WorldHabitat {
+    uint8_t kind;
+    int x;
+    int y;
+} WorldHabitat;
+
 /* Cells per side of one back-wall block. */
 #define WORLD_BACK_WALL_SCALE 4
 /* Blocks per side of the window the back layer's hold is checked in. A part
@@ -383,6 +406,8 @@ typedef struct World {
     uint16_t generationPlant;
     WorldTumbleweed tumbleweeds[WORLD_MAX_TUMBLEWEEDS];
     int tumbleweedCount;
+    WorldHabitat habitats[WORLD_MAX_HABITATS];
+    int habitatCount;
     /* The wind in the part of the world being played, cells per second,
        set by the game each tick from the weather. Smoke, steam and flame in
        open air drift with it. */

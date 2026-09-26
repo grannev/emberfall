@@ -253,11 +253,14 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
     {
         WeatherSample weather = WeatherAt(&game->weather, world, player->position.x);
 
-        DrawText(TextFormat("SEED: 0x%llx | BIOME: %s | WEATHER: %s %d%% | WIND %+.0f",
+        DrawText(TextFormat("SEED: 0x%llx | BIOME: %s | WEATHER: %s %d%% | WIND %+.0f | HABITAT: %s",
                             (unsigned long long)game->worldSeed,
                             WorldBiomeName(WorldBiomeAt(world, (int)player->position.x)),
                             WeatherKindName(weather.kind),
-                            (int)(weather.intensity * 100.0f), (double)world->wind),
+                            (int)(weather.intensity * 100.0f), (double)world->wind,
+                            game->fauna.nearest >= 0
+                                ? FaunaKindName((FaunaKind)game->fauna.nearest)
+                                : "-"),
                  24, 279, 14, (Color){186, 194, 205, 255});
     }
     if (cooldown <= 0.0f) {
@@ -731,6 +734,7 @@ int main(int argc, char **argv)
                     sounding.thunder = renderer.weather.thunderThisFrame;
                     sounding.leavesRustle = game.player.brushedLeaves > 0;
                     sounding.sandBlowing = weather.kind == WEATHER_SANDSTORM;
+                    sounding.fauna = game.fauna.nearest;
                 }
                 GameAudioUpdate(&audio, sounding, deltaTime);
             }

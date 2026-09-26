@@ -138,6 +138,7 @@ void GameReset(GameState *game, uint64_t seed)
     TerrainFluidInit(&game->bodyFluid);
     TerrainStabilityInit(&game->stability);
     AtmosphereInit(&game->atmosphere);
+    FaunaInit(&game->fauna);
     WeatherInit(&game->weather, RngStreamSeed(seed, GAME_RNG_STREAM_WEATHER),
                 game->config.forcedWeather);
     game->simulationAccumulator = 0.0f;
@@ -363,6 +364,9 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
         WeatherErode(&game->weather, &game->world, &game->particles, game->player.position);
         WeatherPushBodies(&game->weather, &game->world, &game->dynamicTerrain,
                           game->config.fixedStep);
+        /* Logged for the next tick's detach check, like any other cut. */
+        (void)WeatherReleaseTumbleweeds(&game->weather, &game->world, game->player.position);
+        FaunaUpdate(&game->fauna, &game->world, game->player.position);
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible

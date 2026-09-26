@@ -48,13 +48,16 @@ typedef struct GameAudioState {
     bool chill;
     /* The weather and the living world, for the sound rework to come. Kept
        here so the game already says what it would play — wind by strength,
-       rain, a thunderclap, leaves, sand — while the current sound set has
+       rain, a thunderclap, leaves, sand, the animals of a habitat nearby — while the current sound set has
        nothing to play for it. GameAudioUpdate records it and plays nothing. */
     float windStrength;
     float rainIntensity;
     bool thunder;
     bool leavesRustle;
     bool sandBlowing;
+    /* The animal whose habitat is nearest (FaunaKind), or -1: birdsong,
+       insects, bats, once there are sounds and animals for it. */
+    int fauna;
 } GameAudioState;
 
 bool GameAudioInit(GameAudio *audio);

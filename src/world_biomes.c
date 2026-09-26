@@ -1814,6 +1814,13 @@ static void FloraPlaceDryShrub(World *world, int x, int groundY, Rng *rng)
     world->generationPlant = 0u;
 }
 
+/* Marks a place animals would live. Only the mark: fauna is a stub. */
+static void HabitatAdd(World *world, WorldHabitatKind kind, int x, int y)
+{
+    if (world->habitatCount >= WORLD_MAX_HABITATS) return;
+    world->habitats[world->habitatCount++] = (WorldHabitat){(uint8_t)kind, x, y};
+}
+
 /* A tumbleweed: a loose ball of brush sitting on the sand, remembered so the
    wind can take it. */
 static void FloraPlaceTumbleweed(World *world, int x, int groundY, Rng *rng)
@@ -1953,6 +1960,10 @@ static void GenerateCaveGrowth(World *world)
                     FloraPut(world, vx, y + step, MATERIAL_LEAF);
                 }
                 world->generationPlant = 0u;
+            } else if (MaterialIsSolid(above) && !MaterialIsBackdrop(above) &&
+                       roll >= 45 && roll < 49 && x % 9 == 0) {
+                /* A ledge under the ceiling where bats would hang. */
+                HabitatAdd(world, WORLD_HABITAT_ROOST, x, y);
             } else if (MaterialIsSolid(below) && !MaterialIsBackdrop(below) &&
                        !MaterialIsDynamic(below) && roll > 985) {
                 /* A patch of glowing moss along the floor. */
@@ -2084,6 +2095,24 @@ static void GenerateFlora(World *world)
                 break;
             case WORLD_BIOME_COUNT:
                 break;
+        }
+        /* Now and then a place something would live, in the biome's own
+           terms: a nest up in a crown, a meadow, a burrow, a den, a vent, a
+           reef. Its own roll, so the plants above do not move. */
+        if (GenerationUnit(world->seed, x, 0, GENERATION_SURFACE_FEATURES + 78u) < 0.004f) {
+            static const WorldHabitatKind surfaceHabitat[WORLD_BIOME_COUNT] = {
+                [WORLD_BIOME_TEMPERATE] = WORLD_HABITAT_MEADOW,
+                [WORLD_BIOME_DUNES] = WORLD_HABITAT_BURROW,
+                [WORLD_BIOME_FROST] = WORLD_HABITAT_DEN,
+                [WORLD_BIOME_VOLCANIC] = WORLD_HABITAT_VENT,
+                [WORLD_BIOME_OCEAN] = WORLD_HABITAT_REEF,
+            };
+            int top = surface;
+
+            /* Up through a crown standing here: that is a nest. */
+            while (top > 1 && MaterialIsFlora(WorldMaterialAt(world, x, top - 1))) --top;
+            HabitatAdd(world, top < surface - 24 ? WORLD_HABITAT_NEST : surfaceHabitat[biome],
+                       x, top - 1);
         }
     }
 }

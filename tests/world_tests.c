@@ -40,6 +40,8 @@
 #include "terrain_physics.h"
 #include "sky_renderer.h"
 #include "terrain_weld.h"
+#include "fauna.h"
+#include "weather.h"
 #include "world_components.h"
 #include "world_lighting.h"
 #include "world_render_data.h"
@@ -7803,6 +7805,32 @@ static void test_the_generated_world_has_its_landmarks(void)
         }
     }
     CHECK(skyCells == 0, "%d samples of something in the sky above the ground", skyCells);
+    /* Where animals would live, in every biome's own terms: the groundwork
+       for fauna. Nothing lives there yet; the fauna module only names it. */
+    {
+        int kinds[WORLD_HABITAT_KIND_COUNT] = {0};
+        int kind;
+        int present = 0;
+        int habitat;
+        FaunaSystem fauna;
+
+        for (habitat = 0; habitat < world.habitatCount; ++habitat) {
+            ++kinds[world.habitats[habitat].kind];
+        }
+        for (kind = 0; kind < WORLD_HABITAT_KIND_COUNT; ++kind) {
+            if (kinds[kind] > 0) ++present;
+        }
+        CHECK(world.habitatCount > 30, "only %d habitats", world.habitatCount);
+        CHECK(present >= 6, "only %d kinds of habitat", present);
+        FaunaInit(&fauna);
+        FaunaUpdate(&fauna, &world, (Vector2){(float)world.habitats[0].x,
+                                               (float)world.habitats[0].y});
+        CHECK(fauna.nearest == (int)FaunaKindForHabitat(
+                                   (WorldHabitatKind)world.habitats[0].kind) ||
+                  fauna.nearby[FaunaKindForHabitat(
+                      (WorldHabitatKind)world.habitats[0].kind)] > 0,
+              "standing on a habitat, the fauna stub did not see it");
+    }
 
     digest = WorldDigest(&world);
     WorldGenerate(&world, 0x1234u);
@@ -13707,6 +13735,75 @@ static void test_falling_grains_pass_through_the_character(void)
     WorldUnload(&world);
 }
 
+/* The dunes have tumbleweeds, and a sandstorm takes them: the twigs one
+   stands on snap, the detach check makes a body of the ball, and the wind
+   rolls it away downwind. */
+static void test_a_sandstorm_takes_the_tumbleweeds(void)
+{
+    static World world;
+    static DynamicTerrainSystem weedTerrain;
+    static TerrainDetachSystem weedDetach;
+    WeatherSystem weather;
+    const WorldTumbleweed *weed = NULL;
+    Vector2 around;
+    int bodies = 0;
+    int slot;
+    int tick;
+    int index;
+    float startX = 0.0f;
+    float wind;
+    const TerrainBody *ball = NULL;
+
+    CHECK(WorldInit(&world, 16384, 4096), "world allocation failed");
+    CHECK(DynamicTerrainInit(&weedTerrain), "dynamic terrain allocation failed");
+    TerrainDetachInit(&weedDetach);
+    WorldGenerate(&world, 0x1234u);
+    CHECK(world.tumbleweedCount > 5, "only %d tumbleweeds on the dunes", world.tumbleweedCount);
+    WeatherInit(&weather, 7u, WEATHER_SANDSTORM);
+    /* One out under the sky in a strong wind. */
+    for (index = 0; index < world.tumbleweedCount && weed == NULL; ++index) {
+        const WorldTumbleweed *candidate = &world.tumbleweeds[index];
+
+        if (fabsf(WeatherWindAt(&weather, &world, (float)candidate->x, (float)candidate->y)) >
+            WEATHER_TUMBLEWEED_WIND * 1.2f) {
+            weed = candidate;
+        }
+    }
+    CHECK(weed != NULL, "no tumbleweed stands in the storm's wind");
+    if (weed == NULL) goto done;
+    around = (Vector2){(float)weed->x, (float)weed->y};
+    for (tick = 0; tick < 3600 && !weed->released; ++tick) {
+        WeatherAdvance(&weather, MOVEMENT_STEP);
+        (void)WeatherReleaseTumbleweeds(&weather, &world, around);
+    }
+    CHECK(weed->released, "a minute of sandstorm did not take the tumbleweed");
+    bodies = TerrainDetachProcess(&weedDetach, &world, &weedTerrain, NULL);
+    CHECK(bodies >= 1, "the released tumbleweed did not come loose as a body");
+    for (slot = 0; slot < MAX_TERRAIN_BODIES; ++slot) {
+        const TerrainBody *body = &weedTerrain.bodies[slot];
+
+        if (body->active && body->cellCount > 0 &&
+            body->mass / (float)body->cellCount < WEATHER_LIGHT_BODY_DENSITY) {
+            ball = body;
+        }
+    }
+    CHECK(ball != NULL, "no body of brush came loose");
+    if (ball == NULL) goto done;
+    startX = ball->position.x;
+    wind = WeatherWindAt(&weather, &world, around.x, around.y);
+    for (tick = 0; tick < 180; ++tick) {
+        WeatherAdvance(&weather, MOVEMENT_STEP);
+        WeatherPushBodies(&weather, &world, &weedTerrain, MOVEMENT_STEP);
+        TerrainPhysicsUpdate(&weedTerrain, &world, MOVEMENT_STEP);
+    }
+    CHECK(ball->active && (ball->position.x - startX) * (wind > 0.0f ? 1.0f : -1.0f) > 20.0f,
+          "three seconds of storm moved the tumbleweed %.1f cells, wind %.1f",
+          (double)(ball->position.x - startX), (double)wind);
+done:
+    DynamicTerrainUnload(&weedTerrain);
+    WorldUnload(&world);
+}
+
 /* A step no higher than PLAYER_STEP_HEIGHT is walked up; a wall is not. */
 static void test_the_walker_climbs_a_step_and_stops_at_a_wall(void)
 {
@@ -14662,6 +14759,7 @@ int main(void)
     RUN(test_the_walker_walks_and_runs_on_the_ground);
     RUN(test_the_walker_climbs_a_step_and_stops_at_a_wall);
     RUN(test_falling_grains_pass_through_the_character);
+    RUN(test_a_sandstorm_takes_the_tumbleweeds);
     RUN(test_jumping_double_jump_flight_and_landing);
     RUN(test_trees_stand_behind_the_character_and_lose_leaves_to_him);
     RUN(test_the_ground_has_a_wall_behind_it_and_the_sky_does_not);

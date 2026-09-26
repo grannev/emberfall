@@ -291,6 +291,81 @@ void WeatherErode(WeatherSystem *weather, World *world, struct ParticleSystem *p
     }
 }
 
+/* Horizontal distance on the wrapped world, signed, from `from` to `to`. */
+static float WeatherWrappedDistance(const World *world, float from, float to)
+{
+    float width = (float)world->width;
+    float distance = fmodf(to - from, width);
+
+    if (distance > width * 0.5f) distance -= width;
+    if (distance < -width * 0.5f) distance += width;
+    return distance;
+}
+
+int WeatherReleaseTumbleweeds(WeatherSystem *weather, World *world, Vector2 around)
+{
+    int released = 0;
+    int index;
+
+    if (weather == NULL || world == NULL || world->cells == NULL) {
+        return 0;
+    }
+    for (index = 0; index < world->tumbleweedCount; ++index) {
+        WorldTumbleweed *weed = &world->tumbleweeds[index];
+        float wind;
+        uint16_t plant;
+        int radius = weed->radius;
+        int x;
+        int y;
+
+        if (weed->released ||
+            fabsf(WeatherWrappedDistance(world, around.x, (float)weed->x)) >
+                WEATHER_TUMBLEWEED_REACH ||
+            fabsf((float)weed->y - around.y) > WEATHER_TUMBLEWEED_REACH) {
+            continue;
+        }
+        wind = WeatherWindAt(weather, world, (float)weed->x, (float)weed->y);
+        if (fabsf(wind) < WEATHER_TUMBLEWEED_WIND) continue;
+        /* Not all at once: each gust takes a few, the stronger the more. */
+        if (RngFloat(&weather->rng, 0.0f, 1.0f) >
+            fabsf(wind) / WEATHER_TUMBLEWEED_WIND * 0.004f) {
+            continue;
+        }
+        weed->released = true;
+        /* Whichever of its cells is still there names it: burned, drilled
+           or brushed away, there is nothing left to blow. */
+        plant = 0u;
+        for (y = weed->y - radius; y <= weed->y + radius && plant == 0u; ++y) {
+            for (x = weed->x - radius; x <= weed->x + radius; ++x) {
+                if (WorldGetCell(world, x, y) == MATERIAL_DRYBRUSH) {
+                    plant = WorldGetPlant(world, x, y);
+                    break;
+                }
+            }
+        }
+        if (plant == 0u) continue;
+        /* Snap the twigs it stands on — every one of its cells with ground
+           under it — and let the ordinary detach check find the ball loose
+           and make a body of it, which the wind then rolls. */
+        for (y = weed->y - radius; y <= weed->y + radius + 1; ++y) {
+            for (x = weed->x - radius; x <= weed->x + radius; ++x) {
+                CellMaterial below = WorldGetCell(world, x, y + 1);
+
+                if (WorldGetCell(world, x, y) == MATERIAL_DRYBRUSH &&
+                    WorldGetPlant(world, x, y) == plant && below != MATERIAL_EMPTY &&
+                    !MaterialIsFlora(below)) {
+                    WorldSetCell(world, x, y, MATERIAL_EMPTY);
+                }
+            }
+        }
+        WorldRecordDestruction(world, weed->x - radius - 1, weed->y - radius - 1,
+                               weed->x + radius + 1, weed->y + radius + 2);
+        ++released;
+        ++weather->stats.tumbleweedsReleased;
+    }
+    return released;
+}
+
 void WeatherPushBodies(WeatherSystem *weather, const World *world,
                        struct DynamicTerrainSystem *terrain, float deltaTime)
 {
@@ -303,18 +378,52 @@ void WeatherPushBodies(WeatherSystem *weather, const World *world,
         TerrainBody *body = &terrain->bodies[slot];
         float wind;
         float density;
+        bool light;
 
-        if (!body->active || !body->awake || body->cellCount <= 0) {
+        if (!body->active || body->cellCount <= 0) {
             continue;
         }
         wind = WeatherWindAt(weather, world, body->position.x, body->position.y);
         if (wind == 0.0f) {
             continue;
         }
+        density = body->mass / (float)body->cellCount;
+        light = density < WEATHER_LIGHT_BODY_DENSITY;
+        /* A crown of leaves or a ball of brush at rest is picked up again by
+           a strong wind; a rock is left where it lies. */
+        if (!body->awake) {
+            if (!light || fabsf(wind) < WEATHER_LIFT_WIND) continue;
+            if (!DynamicTerrainWakeBody(terrain, (TerrainBodyHandle){(uint16_t)slot,
+                                                                     body->generation})) {
+                continue;
+            }
+        }
         /* Drag toward the wind, divided by how heavy each cell is: a crown
            of leaves goes with it, a slab of rock hardly notices. */
-        density = body->mass / (float)body->cellCount;
         body->velocity.x += (wind - body->velocity.x) * fminf(1.0f, 0.35f / density * deltaTime);
+        if (light) {
+            Vector2 minimum;
+            Vector2 maximum;
+
+            /* Brush rolls rather than slides: it turns at the rate its
+               speed would roll it over the ground, and every so often it
+               hits a bump and hops. */
+            if (TerrainBodyWorldBounds(body, &minimum, &maximum)) {
+                float radius = fmaxf(2.0f, (maximum.y - minimum.y) * 0.5f);
+                bool onGround = WorldCellBlocksBodies(world, (int)floorf(body->position.x),
+                                                      (int)floorf(maximum.y) + 1);
+
+                if (onGround) {
+                    body->angularVelocity +=
+                        (body->velocity.x / radius - body->angularVelocity) *
+                        fminf(1.0f, 4.0f * deltaTime);
+                    if (fabsf(body->velocity.x) > 12.0f &&
+                        RngFloat(&weather->rng, 0.0f, 1.0f) < 0.02f) {
+                        body->velocity.y = -RngFloat(&weather->rng, 18.0f, 16.0f + fabsf(wind) * 0.6f);
+                    }
+                }
+            }
+        }
         ++weather->stats.bodiesPushed;
     }
 }

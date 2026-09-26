@@ -18,6 +18,7 @@
 #include "terrain_fluid.h"
 #include "terrain_stability.h"
 #include "atmosphere.h"
+#include "fauna.h"
 #include "weather.h"
 #include "terrain_interaction.h"
 #include "world.h"
@@ -83,6 +84,8 @@ typedef struct GameState {
     /* The wind and the weather: a schedule from the seed and the clock, and
        what the wind does to loose ground, gases, particles and bodies. */
     WeatherSystem weather;
+    /* Groundwork: the habitats near the character. Nothing lives yet. */
+    FaunaSystem fauna;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

@@ -64,6 +64,7 @@ void WorldGenerate(World *world, uint64_t seed)
        completely different terrain. */
     world->destructionCount = 0;
     world->tumbleweedCount = 0;
+    world->habitatCount = 0;
     world->destructionDropped = 0;
     /* Likewise the pushes still travelling through liquid that is gone. */
     world->fluid = (WorldFluidStats){0};
