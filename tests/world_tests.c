@@ -147,8 +147,11 @@ typedef struct RenderProbe {
 static bool CaptureRenderChunk(void *context, Rectangle bounds,
                                const Color *pixels,
                                const Color *emissivePixels,
-                               const Color *floraPixels)
+                               const Color *floraPixels,
+                              const Color *liquidPixels, const Color *liquidGlowPixels)
 {
+    (void)liquidPixels;
+    (void)liquidGlowPixels;
     RenderProbe *probe = context;
 
     (void)floraPixels;
@@ -203,8 +206,11 @@ typedef struct EmptyRenderProbe {
 static bool CaptureEmptyRenderData(void *context, Rectangle bounds,
                                    const Color *pixels,
                                    const Color *emissivePixels,
-                                   const Color *floraPixels)
+                                   const Color *floraPixels,
+                              const Color *liquidPixels, const Color *liquidGlowPixels)
 {
+    (void)liquidPixels;
+    (void)liquidGlowPixels;
     (void)floraPixels;
     EmptyRenderProbe *probe = context;
     int width = (int)bounds.width;
@@ -299,8 +305,11 @@ static void test_the_light_shader_declares_what_the_renderer_sets(void)
    change that chunk again, which is exactly the kind of bug that only shows up
    on a machine with a smaller page cache than the one it was written on. */
 static bool RefuseRenderChunk(void *context, Rectangle bounds, const Color *pixels,
-                              const Color *emissivePixels, const Color *floraPixels)
+                              const Color *emissivePixels, const Color *floraPixels,
+                              const Color *liquidPixels, const Color *liquidGlowPixels)
 {
+    (void)liquidPixels;
+    (void)liquidGlowPixels;
     (void)floraPixels;
     (void)bounds;
     (void)pixels;
@@ -318,8 +327,11 @@ typedef struct EmissiveProbe {
 static bool CaptureMaterialEmission(void *context, Rectangle bounds,
                                     const Color *pixels,
                                     const Color *emissivePixels,
-                                    const Color *floraPixels)
+                                    const Color *floraPixels,
+                              const Color *liquidPixels, const Color *liquidGlowPixels)
 {
+    (void)liquidPixels;
+    (void)liquidGlowPixels;
     (void)floraPixels;
     EmissiveProbe *probe = context;
 

@@ -18,11 +18,19 @@
    its alpha carrying how freely that pixel sways (see
    MATERIAL_RENDER_FLORA_ALPHA), and nothing elsewhere. Where a plant stands,
    `pixels` and `emissivePixels` hold what is behind it — the back wall or the
-   air — so the plant can move without leaving a hole. */
+   air — so the plant can move without leaving a hole.
+
+   `liquidPixels` is the liquid again, partly transparent, drawn in front of
+   the character and the bodies so what is in water is seen through it; the
+   page already holds the liquid over what is behind it. `liquidGlowPixels`
+   is the same for the emissive plane: a lava's glow in front of what is in
+   it, nothing for a liquid that does not glow. */
 typedef bool (*WorldRenderChunkVisitor)(void *context, Rectangle bounds,
                                         const Color *pixels,
                                         const Color *emissivePixels,
-                                        const Color *floraPixels);
+                                        const Color *floraPixels,
+                                        const Color *liquidPixels,
+                                        const Color *liquidGlowPixels);
 
 void WorldPrepareVisible(World *world, Rectangle visible,
                          WorldRenderChunkVisitor visitor, void *context);

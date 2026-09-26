@@ -100,6 +100,8 @@ void WorldPrepareVisible(World *world, Rectangle visible,
     Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     Color emissivePixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     Color floraPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
+    Color liquidPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
+    Color liquidGlowPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
     int lastVisibleColumn;
     int firstVisibleRow;
@@ -194,6 +196,8 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                 Color *emissive =
                     emissivePixels + (size_t)(y - minimumY) * (size_t)width;
                 Color *flora = floraPixels + (size_t)(y - minimumY) * (size_t)width;
+                Color *liquidFront = liquidPixels + (size_t)(y - minimumY) * (size_t)width;
+                Color *liquidGlow = liquidGlowPixels + (size_t)(y - minimumY) * (size_t)width;
                 MaterialRenderSample air = MaterialRenderAir(y, world->height);
                 int x;
 
@@ -254,9 +258,8 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                     } else {
                         CellMaterial decor = WorldDecorAt(world, minimumX + x, y);
 
-                        /* Kelp is decor, and sways on the plants' layer; in
-                           water it is seen through the water, so it takes
-                           the water's colour over its own. */
+                        /* Kelp is decor, and sways on the plants' layer; the
+                           water in front of it is drawn over that layer. */
                         if (MaterialIsFlora(decor) &&
                             (material == MATERIAL_EMPTY || MaterialIsLiquid(material))) {
                             MaterialRenderContext around = {0};
@@ -264,14 +267,22 @@ void WorldPrepareVisible(World *world, Rectangle visible,
 
                             around.shade = WorldShadeFor(minimumX + x, y, decor);
                             plant = MaterialRenderCell(decor, 20.0f, minimumX + x, y, around).scene;
-                            if (MaterialIsLiquid(material)) {
-                                plant.r = (unsigned char)(((int)plant.r * 3 + (int)sample.scene.r * 2) / 5);
-                                plant.g = (unsigned char)(((int)plant.g * 3 + (int)sample.scene.g * 2) / 5);
-                                plant.b = (unsigned char)(((int)plant.b * 3 + (int)sample.scene.b * 2) / 5);
-                            }
                             flora[x] = WorldPassableShade(plant);
                             flora[x].a = (unsigned char)(MATERIAL_RENDER_FLORA_ALPHA +
                                                          (unsigned char)(MaterialRenderSway(decor, around.shade) * 127.0f));
+                        }
+                    }
+                    liquidFront[x] = BLANK;
+                    liquidGlow[x] = BLANK;
+                    if (MaterialIsLiquid(material)) {
+                        /* In front of whatever is in it: see-through for
+                           water, nearly opaque for lava. */
+                        liquidFront[x] = sample.scene;
+                        liquidFront[x].a = material == MATERIAL_LAVA ? 215 : 150;
+                        if (sample.emissive.r != 0 || sample.emissive.g != 0 ||
+                            sample.emissive.b != 0) {
+                            liquidGlow[x] = sample.emissive;
+                            liquidGlow[x].a = material == MATERIAL_LAVA ? 215 : 150;
                         }
                     }
                     scene[x] = sample.scene;
@@ -285,7 +296,8 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             if (visitor(context,
                         (Rectangle){(float)minimumX, (float)minimumY,
                                     (float)width, (float)(maximumY - minimumY)},
-                        uploadPixels, emissivePixels, floraPixels)) {
+                        uploadPixels, emissivePixels, floraPixels, liquidPixels,
+                        liquidGlowPixels)) {
                 world->dirtyChunks[chunkIndex] = 0u;
             }
         }

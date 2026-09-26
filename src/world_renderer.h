@@ -48,6 +48,9 @@ typedef struct WorldRenderPage {
     Texture2D emissiveTexture;
     /* The plants alone, drawn over the page with their sway. */
     Texture2D floraTexture;
+    /* The liquids again, in front of what is in them, in each plane. */
+    Texture2D liquidTexture;
+    Texture2D liquidGlowTexture;
     /* Which page of the world this texture currently holds, or -1 when the
        slot has never been bound. */
     int pageX;
@@ -77,6 +80,10 @@ void WorldRendererDrawFlora(const WorldRenderer *renderer, const World *world,
                             Rectangle visible);
 void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
                                Rectangle visible);
+/* The liquids in front of the character and the bodies: after them, inside
+   the light pass (scene) or after the silhouettes (emissive). */
+void WorldRendererDrawLiquidFront(const WorldRenderer *renderer, const World *world,
+                                  Rectangle visible, bool emissive);
 void WorldRendererUnload(WorldRenderer *renderer);
 
 #endif

@@ -632,6 +632,11 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         ParticleRendererDraw(&game->particles);
         PlayerRendererDraw(&game->player, aimPosition,
                            RendererPlayerEnvironment(game));
+        /* The liquids once more, in front of the character and the bodies:
+           what is in the water is seen through it, not pasted over it. */
+        LightRendererBegin(&renderer->light, &game->world, LIGHT_PASS_SCENE);
+            WorldRendererDrawLiquidFront(&renderer->world, &game->world, visible, false);
+        LightRendererEnd(&renderer->light);
         ReentryRendererDrawAir(&game->player,
             WorldGravityScaleAt(&game->world, game->player.position.y),
             game->atmosphere.playerHeat, renderer->presentationTime, false);
@@ -719,6 +724,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             PlayerRendererDrawSilhouette(&game->player, aimPosition);
             ParticleRendererDrawEmissive(&game->particles);
             PlayerRendererDrawEmissive(&game->player);
+            WorldRendererDrawLiquidFront(&renderer->world, &game->world, visible, true);
             ReentryRendererDrawAir(&game->player,
                 WorldGravityScaleAt(&game->world, game->player.position.y),
                 game->atmosphere.playerHeat, renderer->presentationTime, true);
