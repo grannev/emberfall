@@ -1831,16 +1831,29 @@ static void FloraPlaceTumbleweed(World *world, int x, int groundY, Rng *rng)
 
     if (world->tumbleweedCount >= WORLD_MAX_TUMBLEWEEDS) return;
     world->generationPlant = PlantIdAt(x, groundY);
+    int spoke;
+
+    /* A shell of twigs round a hollow, whole: a shell with gaps in it was
+       several pieces, and the wind took one ball away as a scatter of
+       splinters. The tangle is inside it — spokes from the middle to the
+       shell, each one joined to it. */
     for (dy = -radius; dy <= radius; ++dy) {
         int dx;
 
         for (dx = -radius; dx <= radius; ++dx) {
             int distance = dx * dx + dy * dy;
 
-            /* A shell of twigs round a hollow, with gaps in it. */
-            if (distance > radius * radius || distance < (radius - 3) * (radius - 3)) continue;
-            if (PatchUnit(world->seed, (x + dx) * 5, (centreY + dy) * 5) < 0.3f) continue;
+            if (distance > radius * radius || distance < (radius - 2) * (radius - 2)) continue;
             FloraPut(world, x + dx, centreY + dy, MATERIAL_DRYBRUSH);
+        }
+    }
+    for (spoke = 0; spoke < 6; ++spoke) {
+        float angle = (float)RngRange(rng, 0, 628) * 0.01f;
+        int step;
+
+        for (step = 0; step < radius; ++step) {
+            FloraPut(world, x + (int)lroundf(cosf(angle) * (float)step),
+                     centreY + (int)lroundf(sinf(angle) * (float)step), MATERIAL_DRYBRUSH);
         }
     }
     FloraPut(world, x, groundY - 1, MATERIAL_DRYBRUSH);

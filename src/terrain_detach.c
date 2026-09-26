@@ -47,6 +47,7 @@ void TerrainDetachInit(TerrainDetachSystem *system)
         return;
     }
     system->config = TerrainDetachDefaultConfig();
+    system->crumbCount = 0;
     TerrainDetachResetStats(system);
 }
 
@@ -56,7 +57,7 @@ void TerrainDetachResetStats(TerrainDetachSystem *system)
         return;
     }
     {
-        TerrainDetachStats empty = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        TerrainDetachStats empty = {0};
 
         system->stats = empty;
     }
@@ -190,6 +191,29 @@ static bool DetachAccepts(TerrainDetachSystem *system,
     return true;
 }
 
+/* Takes a proven-loose chip out of the world cell by cell and lists it for
+   the caller's particles. All or nothing: a chip that does not fit the list
+   stays, to be crumbled by a later check rather than half of it now. */
+static void DetachCrumble(TerrainDetachSystem *system, World *world,
+                          WorldComponentResult component)
+{
+    int index;
+
+    if (system->crumbCount + component.cellCount > TERRAIN_DETACH_MAX_CRUMBS) {
+        return;
+    }
+    for (index = 0; index < component.cellCount; ++index) {
+        int x = (int)system->workspace.cellX[index];
+        int y = (int)system->workspace.cellY[index];
+        CellMaterial material = WorldGetCell(world, x, y);
+
+        if (!WorldMaterialIsSolid(material)) continue;
+        system->crumbs[system->crumbCount++] = (TerrainCrumb){x, y, material};
+        WorldSetCell(world, x, y, MATERIAL_EMPTY);
+        ++system->stats.crumbledCells;
+    }
+}
+
 /* One damaged region: sweep it for seeds, prove what can be proven, extract.
    Returns bodies created. */
 static int DetachProcessRegion(TerrainDetachSystem *system, World *world,
@@ -267,6 +291,14 @@ static int DetachProcessRegion(TerrainDetachSystem *system, World *world,
             system->stats.detachCellsExplored += component.exploredCells;
             DetachMarkExplored(system, component, regionX, regionY, spanX, spanY);
             if (!DetachAccepts(system, component)) {
+                /* A loose chip too small for a body crumbles: left as it was,
+                   it hung in the air for ever — a tuft of leaves the character
+                   flew through, a splinter of a felled trunk, a chip of rock
+                   after a blast. */
+                if (component.status == WORLD_COMPONENT_DETACHED &&
+                    component.cellCount < system->config.minimumBodyCells) {
+                    DetachCrumble(system, world, component);
+                }
                 continue;
             }
 
@@ -314,6 +346,7 @@ int TerrainDetachProcess(TerrainDetachSystem *system, World *world,
         terrain == NULL) {
         return 0;
     }
+    system->crumbCount = 0;
     /* Regions are consumed in the order the world recorded them, and the log is
        emptied whether or not anything came of it. Leaving a region behind would
        make the next call's work depend on how many ticks the last frame

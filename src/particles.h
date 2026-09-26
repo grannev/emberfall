@@ -73,6 +73,9 @@ void ParticlesSpawnWindGrain(ParticleSystem *system, Vector2 position, Vector2 v
                              CellMaterial material);
 /* Leaves knocked out of a canopy: they tumble away from the pass and flutter
    down. Only what was actually taken out of the world. */
+/* One cell of a loose chip too small to be a body: a plant's flutters away,
+   anything else falls and settles again as a cell. */
+void ParticlesSpawnCrumb(ParticleSystem *system, Vector2 position, CellMaterial material);
 void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velocity,
                           int leaves);
 

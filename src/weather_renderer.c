@@ -588,7 +588,7 @@ void WeatherRendererUpdate(WeatherRenderer *renderer, const WeatherSystem *weath
                                                   -30.0f - WeatherRandom(renderer) * 40.0f};
                     droplet->life = 0.14f;
                     droplet->phase = 0.0f;
-                    droplet->color = (Color){150, 176, 206, 110};
+                    droplet->color = (Color){150, 176, 206, 55};
                 }
             }
             drop->active = false;
@@ -641,7 +641,7 @@ void WeatherRendererDraw(const WeatherRenderer *renderer, Rectangle visible)
             DrawLineEx(drop->position,
                        (Vector2){drop->position.x - drop->velocity.x * 0.018f,
                                  drop->position.y - drop->velocity.y * 0.018f},
-                       0.8f, (Color){170, 196, 226, 150});
+                       0.8f, (Color){170, 196, 226, 62});
             break;
         case WEATHER_DROP_SPLASH:
         case WEATHER_DROP_SPRAY:
@@ -694,17 +694,17 @@ void WeatherRendererDraw(const WeatherRenderer *renderer, Rectangle visible)
             break;
         }
         case WEATHER_DROP_SNOW:
-            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){238, 244, 255, 220});
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){238, 244, 255, 105});
             break;
         case WEATHER_DROP_ASH:
-            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){120, 112, 106, 200});
+            DrawRectangleV(drop->position, (Vector2){1.0f, 1.0f}, (Color){120, 112, 106, 110});
             break;
         case WEATHER_DROP_SAND:
         default:
             DrawLineEx(drop->position,
                        (Vector2){drop->position.x - drop->velocity.x * 0.03f,
                                  drop->position.y - drop->velocity.y * 0.03f},
-                       0.7f, (Color){214, 186, 128, 170});
+                       0.7f, (Color){214, 186, 128, 90});
             break;
         }
     }

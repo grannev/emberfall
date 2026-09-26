@@ -55,10 +55,11 @@ _Static_assert(WORLD_DESTRUCTION_MAX_SPAN <= TERRAIN_DETACH_SEARCH_SPAN,
                "damage can be aggregated wider than the detach search window");
 
 typedef struct TerrainDetachConfig {
-    /* Fragments smaller than this stay static. Without it a single blast
-       leaves dozens of one- and two-cell bodies, each holding a body slot and a
-       raster, none of them worth a rigid body. They are terrain chips, and
-       terrain chips are what the particle system is for. */
+    /* Fragments smaller than this never become bodies. Without it a single
+       blast leaves dozens of one- and two-cell bodies, each holding a body
+       slot and a raster, none of them worth a rigid body. They are terrain
+       chips, and terrain chips are what the particle system is for: a proven
+       loose chip is crumbled into `crumbs` rather than left in the air. */
     int minimumBodyCells;
     /* Fragments larger than this stay static. A large piece is exactly the case
        where a mistake is most expensive and the simulation cost is highest, and
@@ -90,6 +91,8 @@ typedef struct TerrainDetachStats {
     int autoDetachRejectedAnchored;
     int autoDetachRejectedUnknown;
     int autoDetachRejectedTooSmall;
+    /* Loose pieces too small for a body that were crumbled instead. */
+    int crumbledCells;
     int autoDetachRejectedTooLarge;
     int autoDetachRejectedBudget;
     /* Cells that left the static world this way, useful for telling a session
@@ -102,9 +105,23 @@ typedef struct TerrainDetachStats {
     int detachCellsExplored;
 } TerrainDetachStats;
 
+/* One cell of a loose piece too small to be a body, taken out of the world
+   so it is not left hanging: the caller turns it into a particle — a falling
+   grain that settles again, or for a plant a leaf that flutters away. */
+typedef struct TerrainCrumb {
+    int x;
+    int y;
+    CellMaterial material;
+} TerrainCrumb;
+
+#define TERRAIN_DETACH_MAX_CRUMBS 512
+
 typedef struct TerrainDetachSystem {
     TerrainDetachConfig config;
     TerrainDetachStats stats;
+    /* What the last call crumbled; read it after TerrainDetachProcess. */
+    TerrainCrumb crumbs[TERRAIN_DETACH_MAX_CRUMBS];
+    int crumbCount;
     /* One workspace, owned here. At ~34 KiB it is far too large for the stack
        of a per-tick call, and there is exactly one caller, so a single
        long-lived copy is both the cheapest and the clearest arrangement. */

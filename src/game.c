@@ -328,6 +328,13 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
             memcpy(cut, game->world.destruction, (size_t)cuts * sizeof(cut[0]));
             TerrainDetachProcess(&game->detach, &game->world, &game->dynamicTerrain,
                                  events);
+            for (index = 0; index < game->detach.crumbCount; ++index) {
+                const TerrainCrumb *crumb = &game->detach.crumbs[index];
+
+                ParticlesSpawnCrumb(&game->particles,
+                                    (Vector2){(float)crumb->x + 0.5f, (float)crumb->y + 0.5f},
+                                    crumb->material);
+            }
             for (index = 0; index < cuts; ++index) {
                 WorldBackWallPiece pieces[GAME_BACK_WALL_PIECES];
                 int count = WorldBreakBackWalls(&game->world, cut[index].minimumX,

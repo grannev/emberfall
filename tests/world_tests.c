@@ -7100,7 +7100,7 @@ static void test_a_fragment_that_escapes_the_search_window_stays_static(void)
     DynamicTerrainUnload(&terrain);
 }
 
-static void test_a_fragment_below_the_minimum_size_stays_static(void)
+static void test_a_fragment_below_the_minimum_size_crumbles(void)
 {
     World world;
 
@@ -7114,8 +7114,12 @@ static void test_a_fragment_below_the_minimum_size_stays_static(void)
     CHECK(RunDetach(&world, &terrain) == 0, "a four-cell chip became a body");
     CHECK(detach.stats.autoDetachRejectedTooSmall > 0,
           "the chip was not rejected for its size");
-    CHECK(WorldGetCell(&world, 60, 68) == MATERIAL_ROCK,
-          "the chip was removed from the world anyway");
+    /* Not a body, and not left hanging in the air either: it crumbles into
+       grains for the particles to drop. */
+    CHECK(WorldGetCell(&world, 60, 68) == MATERIAL_EMPTY,
+          "the chip was left hanging in the air");
+    CHECK(detach.crumbCount >= 4 && detach.crumbs[0].material == MATERIAL_ROCK,
+          "the chip crumbled into %d crumbs", detach.crumbCount);
     WorldUnload(&world);
     DynamicTerrainUnload(&terrain);
 }
@@ -13736,8 +13740,9 @@ static void test_falling_grains_pass_through_the_character(void)
 }
 
 /* The dunes have tumbleweeds, and a sandstorm takes them: the twigs one
-   stands on snap, the detach check makes a body of the ball, and the wind
-   rolls it away downwind. */
+   stands on snap, the detach check makes a body of the ball — one body, not
+   a scatter of splinters — and the wind rolls it downwind until something
+   shelters it. */
 static void test_a_sandstorm_takes_the_tumbleweeds(void)
 {
     static World world;
@@ -13789,15 +13794,17 @@ static void test_a_sandstorm_takes_the_tumbleweeds(void)
     }
     CHECK(ball != NULL, "no body of brush came loose");
     if (ball == NULL) goto done;
+    CHECK(ball->cellCount > 40, "the tumbleweed came loose as a splinter of %d cells",
+          ball->cellCount);
     startX = ball->position.x;
     wind = WeatherWindAt(&weather, &world, around.x, around.y);
-    for (tick = 0; tick < 180; ++tick) {
+    for (tick = 0; tick < 300; ++tick) {
         WeatherAdvance(&weather, MOVEMENT_STEP);
         WeatherPushBodies(&weather, &world, &weedTerrain, MOVEMENT_STEP);
         TerrainPhysicsUpdate(&weedTerrain, &world, MOVEMENT_STEP);
     }
-    CHECK(ball->active && (ball->position.x - startX) * (wind > 0.0f ? 1.0f : -1.0f) > 20.0f,
-          "three seconds of storm moved the tumbleweed %.1f cells, wind %.1f",
+    CHECK(ball->active && (ball->position.x - startX) * (wind > 0.0f ? 1.0f : -1.0f) > 12.0f,
+          "five seconds of storm moved the tumbleweed %.1f cells, wind %.1f",
           (double)(ball->position.x - startX), (double)wind);
 done:
     DynamicTerrainUnload(&weedTerrain);
@@ -14597,7 +14604,7 @@ int main(void)
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);
     RUN(test_drilling_through_a_support_detaches_the_section_above);
     RUN(test_a_fragment_that_escapes_the_search_window_stays_static);
-    RUN(test_a_fragment_below_the_minimum_size_stays_static);
+    RUN(test_a_fragment_below_the_minimum_size_crumbles);
     RUN(test_a_building_sized_slab_becomes_one_body);
     RUN(test_a_fragment_above_the_maximum_size_stays_static);
     RUN(test_rubble_that_lies_still_long_enough_becomes_ground_again);

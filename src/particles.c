@@ -463,6 +463,33 @@ void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position)
     }
 }
 
+void ParticlesSpawnCrumb(ParticleSystem *system, Vector2 position, CellMaterial material)
+{
+    Particle *particle;
+    Color color;
+
+    if (system == NULL) {
+        return;
+    }
+    color = MaterialAt(material)->color;
+    color.a = 235;
+    if (MaterialIsFlora(material)) {
+        /* A plant's crumb is a leaf or a twig: it flutters off and is gone. */
+        particle = ParticlesSpawnOne(
+            system, position,
+            (Vector2){(RandomUnit(system) - 0.5f) * 30.0f, -RandomUnit(system) * 12.0f}, color,
+            0.9f + RandomUnit(system) * 1.1f, 0.6f, 30.0f);
+        particle->contact = PARTICLE_CONTACT_BOUNCE;
+        return;
+    }
+    /* Anything else falls as what it is and settles again as a cell. */
+    particle = ParticlesSpawnOne(
+        system, position, (Vector2){(RandomUnit(system) - 0.5f) * 12.0f, 0.0f}, color, 12.0f,
+        0.9f, 90.0f);
+    particle->contact = PARTICLE_CONTACT_SETTLE;
+    particle->settleMaterial = material;
+}
+
 void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velocity,
                           int leaves)
 {
