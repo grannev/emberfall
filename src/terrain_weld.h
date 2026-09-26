@@ -57,6 +57,21 @@ typedef struct TerrainWeldConfig {
     /* Cells around the player kept clear of any weld. A body whose footprint
        reaches into this box waits; it does not lose its chance. */
     float playerClearance;
+    /* A body that never falls asleep — a jitter it never loses — is welded
+       where it lies once it has moved slower than `quietSpeed` (and turned
+       slower than `quietSpin`) for `quietDelay` seconds, if it lies on
+       static ground. */
+    float quietDelay;
+    float quietSpeed;
+    float quietSpin;
+    /* A body farther than `awayX`/`awayY` cells from the character — out of
+       sight — for `awayDelay` seconds is lowered straight down to the solid
+       ground under it, through water and air, and welded there: a slab
+       left floating on the sea is found on the sea bed. Distance from the
+       character, not the camera: the simulation never reads the camera. */
+    float awayDelay;
+    float awayX;
+    float awayY;
 } TerrainWeldConfig;
 
 typedef struct TerrainWeldStats {
@@ -73,6 +88,7 @@ typedef struct TerrainWeldStats {
     int bodiesRefused;
     int bodiesDeferredByPlayer;
     int bodiesDeferredByBudget;
+    int bodiesSettledAway;
 } TerrainWeldStats;
 
 typedef struct TerrainWeldSystem {
@@ -84,6 +100,10 @@ typedef struct TerrainWeldSystem {
        nothing to do with rigid bodies. Reset whenever the slot's generation
        changes, so a new body in a reused slot starts from zero. */
     float rested[MAX_TERRAIN_BODIES];
+    /* Seconds each slot has been hardly moving, asleep or not, and out of
+       the character's sight. */
+    float quiet[MAX_TERRAIN_BODIES];
+    float away[MAX_TERRAIN_BODIES];
     uint16_t restedGeneration[MAX_TERRAIN_BODIES];
 } TerrainWeldSystem;
 

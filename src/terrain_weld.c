@@ -18,6 +18,14 @@ TerrainWeldConfig TerrainWeldDefaultConfig(void)
     /* Wider than the player is, so a weld cannot close on them even if they
        are moving into it as it happens. */
     config.playerClearance = 24.0f;
+    /* Half a minute of hardly moving, a minute out of sight. */
+    config.quietDelay = 30.0f;
+    config.quietSpeed = 4.0f;
+    config.quietSpin = 0.3f;
+    config.awayDelay = 60.0f;
+    /* Past the edge of the view (426 by 240) with a margin. */
+    config.awayX = 320.0f;
+    config.awayY = 200.0f;
     return config;
 }
 
@@ -87,7 +95,7 @@ static bool TerrainWeldLiquidCanRise(const World *world, int x, int y)
     return false;
 }
 
-static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
+static bool TerrainWeldBody(TerrainWeldSystem *system, World *world,
                             DynamicTerrainSystem *terrain, int slot)
 {
     TerrainBody *body = &terrain->bodies[slot];
@@ -158,7 +166,10 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                 continue;
             }
             there = WorldGetCell(world, worldX, worldY);
-            if (there == MATERIAL_EMPTY) {
+            /* A plant under a rock is crushed by it: bodies fall through
+               flora, so a slab at rest on a meadow lies among grass blades,
+               and refusing it for them kept it a body for ever. */
+            if (there == MATERIAL_EMPTY || MaterialIsFlora(there)) {
                 continue;
             }
             if (!MaterialIsLiquid(there) ||
@@ -166,7 +177,9 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                 ++system->stats.cellsRefused;
                 ++system->stats.bodiesRefused;
                 system->rested[slot] = system->config.weldDelay * 0.5f;
-                return;
+                system->quiet[slot] *= 0.5f;
+                system->away[slot] *= 0.5f;
+                return false;
             }
         }
     }
@@ -189,6 +202,10 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
                 continue;
             }
             there = WorldGetCell(world, worldX, worldY);
+            if (MaterialIsFlora(there)) {
+                WorldSetCell(world, worldX, worldY, MATERIAL_EMPTY);
+                continue;
+            }
             if (there != MATERIAL_EMPTY &&
                 !WorldLiftLiquidOut(world, worldX, worldY,
                                     TERRAIN_WELD_LIQUID_REACH)) {
@@ -229,8 +246,78 @@ static void TerrainWeldBody(TerrainWeldSystem *system, World *world,
 
     DynamicTerrainFreeBody(terrain, handle);
     system->rested[slot] = 0.0f;
+    system->quiet[slot] = 0.0f;
+    system->away[slot] = 0.0f;
     system->restedGeneration[slot] = 0u;
     ++system->stats.bodiesWelded;
+    return true;
+}
+
+/* Whether a static solid cell holds the body up: one right under any of its
+   lowest cells. Liquid does not: a body floating on a lake is not lying on
+   anything. */
+static bool TerrainWeldIsSupported(const DynamicTerrainSystem *terrain, int slot,
+                                   const TerrainBody *body, const World *world)
+{
+    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    int index;
+
+    for (index = 0; index < body->surfaceCount; ++index) {
+        Vector2 at = TerrainBodyLocalToWorld(
+            body, (float)terrain->surfaceX[surfaceBase + (size_t)index] + 0.5f,
+            (float)terrain->surfaceY[surfaceBase + (size_t)index] + 1.5f);
+        int gap;
+
+        /* Two rows: a body at rest sits within a contact's slop of what
+           holds it, not always flush on it. */
+        for (gap = 0; gap < 2; ++gap) {
+            CellMaterial below =
+                WorldGetCell(world, (int)floorf(at.x), (int)floorf(at.y) + gap);
+
+            if (WorldMaterialIsSolid(below) && !MaterialIsFlora(below) &&
+                !MaterialIsDynamic(below)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* How far the body can drop straight down before a cell of it would meet
+   the ground — through water and air and plants, which a lowered body
+   passes as a falling one would. Asked per column of the body, from its
+   lowest cell there, and bounded. */
+#define TERRAIN_WELD_MAX_DROP 1200
+
+static int TerrainWeldDropDistance(const DynamicTerrainSystem *terrain, int slot,
+                                   const TerrainBody *body, const World *world)
+{
+    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    int drop = TERRAIN_WELD_MAX_DROP;
+    int index;
+
+    for (index = 0; index < body->surfaceCount; ++index) {
+        Vector2 at = TerrainBodyLocalToWorld(
+            body, (float)terrain->surfaceX[surfaceBase + (size_t)index] + 0.5f,
+            (float)terrain->surfaceY[surfaceBase + (size_t)index] + 0.5f);
+        int x = (int)floorf(at.x);
+        int y = (int)floorf(at.y);
+        int fall;
+
+        /* A cell with more of the body under it meets the ground later
+           than that one does, so it never sets the minimum; the world is
+           read, not the body, and the body is not in the world. */
+        for (fall = 0; fall < drop; ++fall) {
+            CellMaterial below = WorldGetCell(world, x, y + fall + 1);
+
+            if (WorldMaterialIsSolid(below) && !MaterialIsFlora(below) &&
+                !MaterialIsDynamic(below)) {
+                break;
+            }
+        }
+        if (fall < drop) drop = fall;
+    }
+    return drop;
 }
 
 int TerrainWeldProcess(TerrainWeldSystem *system, World *world,
@@ -250,6 +337,8 @@ int TerrainWeldProcess(TerrainWeldSystem *system, World *world,
 
         if (!body->active) {
             system->rested[slot] = 0.0f;
+            system->quiet[slot] = 0.0f;
+            system->away[slot] = 0.0f;
             system->restedGeneration[slot] = 0u;
             continue;
         }
@@ -258,14 +347,77 @@ int TerrainWeldProcess(TerrainWeldSystem *system, World *world,
         if (system->restedGeneration[slot] != body->generation) {
             system->restedGeneration[slot] = body->generation;
             system->rested[slot] = 0.0f;
+            system->quiet[slot] = 0.0f;
+            system->away[slot] = 0.0f;
+        }
+        /* Far from the character: out of sight. Counted whatever the body
+           is doing, because what never ends out there is exactly a body
+           that keeps a small motion for ever and never sleeps. */
+        if (fabsf(body->position.x - playerAt.x) > system->config.awayX ||
+            fabsf(body->position.y - playerAt.y) > system->config.awayY) {
+            system->away[slot] += deltaTime;
+        } else {
+            system->away[slot] = 0.0f;
         }
         if (body->awake) {
+            float speed = sqrtf(body->velocity.x * body->velocity.x +
+                                body->velocity.y * body->velocity.y);
+
             system->rested[slot] = 0.0f;
-            continue;
+            /* Awake but hardly moving — a jitter under a pile, a rock that
+               rocks — counts as lying still, only more slowly. */
+            if (speed < system->config.quietSpeed &&
+                fabsf(body->angularVelocity) < system->config.quietSpin) {
+                system->quiet[slot] += deltaTime;
+            } else {
+                system->quiet[slot] = 0.0f;
+            }
+        } else {
+            system->rested[slot] += deltaTime;
+            system->quiet[slot] += deltaTime;
         }
 
-        system->rested[slot] += deltaTime;
+        if (system->away[slot] >= system->config.awayDelay) {
+            /* Out of sight for long: it goes down to whatever solid ground
+               is under it — to the sea bed from the surface of the sea —
+               and becomes part of it there. */
+            int drop;
+
+            if (welded >= system->config.maxWeldsPerTick) {
+                ++system->stats.bodiesDeferredByBudget;
+                continue;
+            }
+            drop = TerrainWeldDropDistance(terrain, slot, body, world);
+            if (drop >= TERRAIN_WELD_MAX_DROP) {
+                system->away[slot] = 0.0f;
+                continue;
+            }
+            body->position.y += (float)drop;
+            body->velocity = (Vector2){0.0f, 0.0f};
+            body->angularVelocity = 0.0f;
+            if (TerrainWeldBody(system, world, terrain, slot)) {
+                ++system->stats.bodiesSettledAway;
+                ++welded;
+            }
+            continue;
+        }
+        if (system->quiet[slot] >= system->config.quietDelay &&
+            system->rested[slot] < system->config.weldDelay) {
+            /* Lying still for long without ever falling asleep: welded
+               where it lies, when it lies on something. */
+            if (!TerrainWeldIsSupported(terrain, slot, body, world)) {
+                continue;
+            }
+            system->rested[slot] = system->config.weldDelay;
+        }
         if (system->rested[slot] < system->config.weldDelay) {
+            continue;
+        }
+        /* Asleep on the water is not lying on the ground: welded where it
+           floats, it was a slab of static wood standing on the sea. It stays
+           a body until it is out of sight, and then goes to the bottom. */
+        if ((body->inLiquid || body->submerged > 0.0f) &&
+            !TerrainWeldIsSupported(terrain, slot, body, world)) {
             continue;
         }
         if (welded >= system->config.maxWeldsPerTick) {
@@ -277,8 +429,9 @@ int TerrainWeldProcess(TerrainWeldSystem *system, World *world,
             ++system->stats.bodiesDeferredByPlayer;
             continue;
         }
-        TerrainWeldBody(system, world, terrain, slot);
-        ++welded;
+        if (TerrainWeldBody(system, world, terrain, slot)) {
+            ++welded;
+        }
     }
     return welded;
 }

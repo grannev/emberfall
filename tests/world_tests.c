@@ -6831,6 +6831,54 @@ static void test_small_floating_bodies_stop_bobbing(void)
     DynamicTerrainUnload(&terrain);
 }
 
+/* A body left floating on the sea out of the character's sight goes down to
+   the sea bed and becomes part of it, and the water it displaced is lifted,
+   not destroyed. */
+static void test_a_body_out_of_sight_settles_on_the_sea_bed(void)
+{
+    static TerrainWeldSystem settle;
+    World world;
+    GameEventBuffer events;
+    TerrainBodyHandle handle;
+    int waterBefore;
+    int waterAfter;
+    int wood = 0;
+    int step;
+    int x;
+    int y;
+
+    CHECK(WorldInit(&world, 160, 128), "world allocation failed");
+    FillRect(&world, 0, 110, 159, 127, MATERIAL_ROCK);
+    FillRect(&world, 0, 40, 3, 109, MATERIAL_ROCK);
+    FillRect(&world, 156, 40, 159, 109, MATERIAL_ROCK);
+    FillRect(&world, 4, 80, 155, 109, MATERIAL_WATER);
+    Tick(&world, 60);
+    waterBefore = CountMaterial(&world, MATERIAL_WATER);
+    CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
+    TerrainFluidInit(&bodyFluid);
+    TerrainWeldInit(&settle);
+    handle = MakeMaterialBody(&terrain, 6, 4, MATERIAL_WOOD, (Vector2){80.0f, 74.0f});
+    for (step = 0; step < 60 * 70 && DynamicTerrainGetConst(&terrain, handle) != NULL; ++step) {
+        FluidTick(&terrain, &world, &events, 1);
+        (void)TerrainWeldProcess(&settle, &world, &terrain, (Vector2){5000.0f, 74.0f},
+                                 KINEMATIC_STEP);
+    }
+    CHECK(DynamicTerrainGetConst(&terrain, handle) == NULL,
+          "a body out of sight for over a minute is still a body");
+    for (y = 100; y < 110; ++y) {
+        for (x = 60; x < 100; ++x) {
+            if (WorldGetCell(&world, x, y) == MATERIAL_WOOD) ++wood;
+        }
+    }
+    CHECK(wood >= 20, "only %d cells of wood lie on the sea bed", wood);
+    Tick(&world, 120);
+    waterAfter = CountMaterial(&world, MATERIAL_WATER);
+    CHECK(waterAfter == waterBefore, "settling the body changed the water from %d to %d",
+          waterBefore, waterAfter);
+    WorldUnload(&world);
+    DynamicTerrainUnload(&terrain);
+}
+
 static void test_a_body_hitting_water_splashes_and_slows(void)
 {
     World world;
@@ -14650,6 +14698,7 @@ int main(void)
     RUN(test_the_span_is_measured_between_supports);
     RUN(test_ice_floats_and_rock_sinks);
     RUN(test_small_floating_bodies_stop_bobbing);
+    RUN(test_a_body_out_of_sight_settles_on_the_sea_bed);
     RUN(test_a_body_hitting_water_splashes_and_slows);
     RUN(test_a_beam_that_burns_through_a_support_detaches_the_block);
     RUN(test_damage_that_leaves_the_support_standing_detaches_nothing);

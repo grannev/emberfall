@@ -633,8 +633,9 @@ bool WorldCellBlocksBodies(const World *world, int x, int y)
     /* A grain counts when it rests. One that moved in the last few ticks is
        in the air — falling, sliding down a pile, thrown — and passes
        through the character and the bodies like a speck of dust. */
-    if ((uint16_t)(WorldTickStamp(world) - WorldCellConst(world, x, y)->updatedTick) <=
-        WORLD_GRAIN_FALLING_TICKS) {
+    if (WorldCellConst(world, x, y)->updatedTick != 0u &&
+        (uint16_t)(WorldTickStamp(world) - WorldCellConst(world, x, y)->updatedTick) <=
+            WORLD_GRAIN_FALLING_TICKS) {
         return false;
     }
     /* And it must rest on something that holds it, and if that is a grain

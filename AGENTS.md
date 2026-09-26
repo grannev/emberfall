@@ -276,6 +276,17 @@ coherent phase with an explanatory message.
 - Fauna is groundwork only: the generator marks `World.habitats` and
   `fauna.c` names what would live there. Nothing is alive, updated or drawn
   until the player asks for animals.
+- Welding (`terrain_weld.c`) gives bodies back to the world three ways:
+  asleep for `weldDelay` (in place; never while floating — a body in liquid
+  must have ground under it), hardly moving for `quietDelay` without ever
+  sleeping (in place, on ground), and farther than `awayX`/`awayY` from the
+  character for `awayDelay` (lowered straight down through water and air to
+  the ground under it, then welded — the sea keeps its water). This is not
+  destruction: every cell is given back. Distance is from the character,
+  never from the camera. Plants under a welding body are crushed by it.
+- Loose chips smaller than `minimumBodyCells` crumble (`TerrainDetachSystem.crumbs`):
+  a plant's cells flutter away as particles, anything else falls and settles
+  as the material it was. Nothing proven loose is left hanging in the air.
 - There are no floating islands. The sky above the ground band is generated
   empty, and the backdrop has no islands either: the player asked for them
   to be taken out of the game entirely.
