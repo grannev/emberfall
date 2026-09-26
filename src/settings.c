@@ -9,6 +9,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+/* MinGW's mkdir takes no mode. */
+#define SettingsMakeDirectory(path) _mkdir(path)
+#else
+#define SettingsMakeDirectory(path) mkdir((path), 0755)
+#endif
 
 static const char *const FRAME_LIMIT_CHOICES[SETTINGS_FRAME_LIMIT_COUNT] = {
     "60", "120", "144", "240", "UNLIMITED",
@@ -102,6 +109,17 @@ bool SettingsPath(char *buffer, size_t size)
     if (buffer == NULL || size == 0u) {
         return false;
     }
+#ifdef _WIN32
+    /* Windows keeps per-user settings under %APPDATA%. */
+    {
+        const char *appData = getenv("APPDATA");
+
+        if (appData != NULL && appData[0] != '\0') {
+            written = snprintf(buffer, size, "%s/emberfall/settings.ini", appData);
+            return written > 0 && (size_t)written < size;
+        }
+    }
+#endif
     if (config != NULL && config[0] != '\0') {
         written = snprintf(buffer, size, "%s/emberfall/settings.ini", config);
     } else if (home != NULL && home[0] != '\0') {
@@ -217,7 +235,7 @@ static void SettingsMakeParents(const char *path)
     for (index = 1u; index < length; ++index) {
         if (buffer[index] == '/') {
             buffer[index] = '\0';
-            if (mkdir(buffer, 0755) != 0 && errno != EEXIST) {
+            if (SettingsMakeDirectory(buffer) != 0 && errno != EEXIST) {
                 return;
             }
             buffer[index] = '/';

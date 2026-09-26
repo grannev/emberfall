@@ -9,22 +9,81 @@ lore. Разрушаемый foreground находится перед проце
 
 Подробная документация для разработчиков: [docs/README.md](docs/README.md).
 
-## Зависимости
+## Установка
 
-- Linux
-- GCC с поддержкой C11
-- GNU Make
-- pkg-config (`pkgconf` в Arch Linux)
-- raylib
+Нужны компилятор C11 (GCC или Clang), GNU Make, pkg-config и
+[raylib](https://www.raylib.com/) 5.5 (или новее) — Makefile находит raylib
+через `pkg-config` и не содержит жёстко заданных путей. Проверено на Linux;
+для macOS и Windows ниже указан путь, который должен работать, но регулярно
+не проверяется.
 
-Arch Linux:
+### Linux
+
+**Arch Linux** (и производные: Manjaro, EndeavourOS):
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf raylib
+sudo pacman -S --needed base-devel git pkgconf raylib
 ```
 
-Если raylib установлен вручную, убедитесь, что `raylib.pc` доступен через
-`PKG_CONFIG_PATH`. Makefile не содержит жёстко заданных путей к библиотеке.
+**Fedora:**
+
+```sh
+sudo dnf install gcc make git pkgconf-pkg-config raylib-devel
+```
+
+**Debian, Ubuntu, Linux Mint.** В свежих выпусках (Debian 13, Ubuntu 24.10 и
+новее, Mint на их базе) raylib есть в репозитории:
+
+```sh
+sudo apt install build-essential git pkg-config libraylib-dev
+```
+
+Если пакета `libraylib-dev` нет (Debian 12, Ubuntu 22.04/24.04, Mint 21/22)
+или он старше 5.5, соберите raylib из исходников:
+
+```sh
+sudo apt install build-essential git pkg-config cmake \
+    libasound2-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+    libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev libxkbcommon-dev
+git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git
+cmake -S raylib -B raylib/build -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build raylib/build -j
+sudo cmake --install raylib/build && sudo ldconfig
+```
+
+### macOS
+
+Нужны Command Line Tools и [Homebrew](https://brew.sh/):
+
+```sh
+xcode-select --install
+brew install raylib pkg-config
+```
+
+`make` из Command Line Tools подходит; `gcc` на macOS — это Clang, он тоже
+подходит.
+
+### Windows
+
+Через [MSYS2](https://www.msys2.org/): установите его, откройте терминал
+**MSYS2 UCRT64** и выполните
+
+```sh
+pacman -S --needed git make mingw-w64-ucrt-x86_64-gcc \
+    mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-raylib
+```
+
+Дальше все команды из раздела «Сборка и запуск» выполняются в том же
+терминале UCRT64. Настройки игра хранит в `%APPDATA%\emberfall`. Другой
+путь — WSL2 с Ubuntu и инструкцией для Linux выше.
+
+### Получить исходники
+
+```sh
+git clone https://github.com/grannev/emberfall.git
+cd emberfall
+make run
+```
 
 ## Сборка и запуск
 
