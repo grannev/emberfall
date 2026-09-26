@@ -8,6 +8,7 @@
 #include <rlgl.h>
 
 #include "material_render.h"
+#include "world_renderer.h"
 #include "world_lighting.h"
 
 #define LIGHT_VERTEX_SHADER "assets/shaders/world_light.vs"
@@ -45,6 +46,13 @@ static bool LightRendererLoadShader(LightRenderer *renderer)
     renderer->airAlphaLocation = GetShaderLocation(renderer->shader, "airAlpha");
     renderer->emissivePassLocation =
         GetShaderLocation(renderer->shader, "emissivePass");
+    renderer->swayPassLocation = GetShaderLocation(renderer->shader, "swayPass");
+    renderer->floraAlphaLocation = GetShaderLocation(renderer->shader, "floraAlpha");
+    renderer->swayTimeLocation = GetShaderLocation(renderer->shader, "swayTime");
+    renderer->swayWindLocation = GetShaderLocation(renderer->shader, "swayWind");
+    renderer->swayPlayerLocation = GetShaderLocation(renderer->shader, "swayPlayer");
+    renderer->swayBlastsLocation = GetShaderLocation(renderer->shader, "swayBlasts");
+    renderer->pageTexelLocation = GetShaderLocation(renderer->shader, "pageTexel");
     return renderer->lightMapLocation >= 0 && renderer->lightTexelLocation >= 0 &&
            renderer->lightScaleLocation >= 0 && renderer->daylightLocation >= 0 &&
            renderer->minimumLightLocation >= 0 && renderer->warmthLocation >= 0 &&
@@ -81,6 +89,19 @@ static void LightRendererSetConstants(const LightRenderer *renderer)
                    SHADER_UNIFORM_VEC2);
     SetShaderValue(renderer->shader, renderer->airAlphaLocation, &airAlpha,
                    SHADER_UNIFORM_FLOAT);
+    {
+        float floraAlpha = (float)MATERIAL_RENDER_FLORA_ALPHA / 255.0f;
+        Vector2 pageTexel = {1.0f / (float)WORLD_RENDER_PAGE_SIZE,
+                             1.0f / (float)WORLD_RENDER_PAGE_SIZE};
+        int off = 0;
+
+        SetShaderValue(renderer->shader, renderer->floraAlphaLocation, &floraAlpha,
+                       SHADER_UNIFORM_FLOAT);
+        SetShaderValue(renderer->shader, renderer->pageTexelLocation, &pageTexel,
+                       SHADER_UNIFORM_VEC2);
+        SetShaderValue(renderer->shader, renderer->swayPassLocation, &off,
+                       SHADER_UNIFORM_INT);
+    }
 }
 
 bool LightRendererInit(LightRenderer *renderer, const World *world)
@@ -263,6 +284,40 @@ void LightRendererBegin(LightRenderer *renderer, const World *world,
        one. */
     SetShaderValueTexture(renderer->shader, renderer->lightMapLocation,
                           renderer->texture);
+}
+
+void LightRendererBeginSway(LightRenderer *renderer, const LightSway *sway)
+{
+    int on = 1;
+
+    if (renderer == NULL || !renderer->ready || sway == NULL) {
+        return;
+    }
+    /* What was queued before is drawn as it was: the uniforms apply to the
+       whole batch when it flushes. */
+    rlDrawRenderBatchActive();
+    SetShaderValue(renderer->shader, renderer->swayPassLocation, &on, SHADER_UNIFORM_INT);
+    SetShaderValue(renderer->shader, renderer->swayTimeLocation, &sway->time,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(renderer->shader, renderer->swayWindLocation, &sway->wind,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(renderer->shader, renderer->swayPlayerLocation, &sway->player,
+                   SHADER_UNIFORM_VEC4);
+    SetShaderValueV(renderer->shader, renderer->swayBlastsLocation, sway->blasts,
+                    SHADER_UNIFORM_VEC4, 4);
+    SetShaderValueTexture(renderer->shader, renderer->lightMapLocation, renderer->texture);
+}
+
+void LightRendererEndSway(LightRenderer *renderer)
+{
+    int off = 0;
+
+    if (renderer == NULL || !renderer->ready) {
+        return;
+    }
+    rlDrawRenderBatchActive();
+    SetShaderValue(renderer->shader, renderer->swayPassLocation, &off, SHADER_UNIFORM_INT);
+    SetShaderValueTexture(renderer->shader, renderer->lightMapLocation, renderer->texture);
 }
 
 void LightRendererEnd(const LightRenderer *renderer)

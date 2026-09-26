@@ -380,3 +380,20 @@ MaterialRenderSample MaterialRenderOverWall(MaterialRenderSample front,
     }
     return front;
 }
+
+float MaterialRenderSway(CellMaterial material, unsigned char shade)
+{
+    switch (material) {
+    case MATERIAL_GRASS:
+        /* The shade of a blade is its height along it: tips move. */
+        return 0.1f + 0.9f * (float)shade / 63.0f;
+    case MATERIAL_LEAF:
+        return 0.75f;
+    case MATERIAL_FUNGUS:
+        return 0.25f;
+    case MATERIAL_WOOD:
+        return 0.06f;
+    default:
+        return 0.0f;
+    }
+}

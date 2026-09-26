@@ -46,6 +46,15 @@ typedef struct GameAudioState {
     /* What the drill is currently chewing, so rock does not sound like dirt. */
     CellMaterial drillMaterial;
     bool chill;
+    /* The weather and the living world, for the sound rework to come. Kept
+       here so the game already says what it would play — wind by strength,
+       rain, a thunderclap, leaves, sand — while the current sound set has
+       nothing to play for it. GameAudioUpdate records it and plays nothing. */
+    float windStrength;
+    float rainIntensity;
+    bool thunder;
+    bool leavesRustle;
+    bool sandBlowing;
 } GameAudioState;
 
 bool GameAudioInit(GameAudio *audio);

@@ -46,6 +46,8 @@ typedef struct WorldRendererStats {
 typedef struct WorldRenderPage {
     Texture2D texture;
     Texture2D emissiveTexture;
+    /* The plants alone, drawn over the page with their sway. */
+    Texture2D floraTexture;
     /* Which page of the world this texture currently holds, or -1 when the
        slot has never been bound. */
     int pageX;
@@ -68,6 +70,10 @@ void WorldRendererPrepare(WorldRenderer *renderer, World *world, Rectangle visib
 /* Draw the resident pages. Both expect to be called inside the camera
    transform and inside the light renderer's pass, which is what lights them. */
 void WorldRendererDrawScene(WorldRenderer *renderer, const World *world,
+                            Rectangle visible);
+/* The plants' layer, over the drawn pages: drawn with the light shader in
+   its sway pass (LightRendererBeginSway), in both planes. */
+void WorldRendererDrawFlora(const WorldRenderer *renderer, const World *world,
                             Rectangle visible);
 void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
                                Rectangle visible);

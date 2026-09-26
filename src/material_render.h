@@ -77,6 +77,14 @@ MaterialRenderSample MaterialRenderCell(CellMaterial material,
    backdrop never shows through the ground. Whatever is empty in front of a
    wall shows this instead of air. */
 MaterialRenderSample MaterialRenderBackWall(CellMaterial wall, int x, int y);
+/* The plants' layer keeps its alpha for how freely a pixel sways: from this
+   value (a pixel that stands still) to 255 (one that moves the most). Below
+   it there is no plant. */
+#define MATERIAL_RENDER_FLORA_ALPHA 128u
+/* How freely a plant's pixel sways in the wind and under a touch, 0..1: a
+   blade's tip more than its foot, leaves more than wood, a cactus not at
+   all. */
+float MaterialRenderSway(CellMaterial material, unsigned char shade);
 /* A cell that lets what is behind it through — a liquid, a gas — laid over
    the back wall behind it, opaque. */
 MaterialRenderSample MaterialRenderOverWall(MaterialRenderSample front,

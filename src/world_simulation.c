@@ -64,15 +64,26 @@ static bool WorldTryMoveInto(World *world, int x, int y, int targetX, int target
     return false;
 }
 
+/* A grain that has just left from under a plant: the plant stood on it, and
+   now stands on whatever is left. The one place ordinary simulation reports
+   a cut — and only this one: a bounded box at the plant's root, asked once
+   per grain that leaves one, so the detach check finds a cactus whose dune
+   slid away and brings it down instead of leaving it hanging where the
+   sand used to be. */
+static void WorldGrainLeftRoot(World *world, int x, int y)
+{
+    if (y > 0 && MaterialIsFlora(WorldMaterialAt(world, x, y - 1))) {
+        WorldRecordDestruction(world, x - 2, y - 2, x + 2, y);
+    }
+}
+
 static void WorldUpdateSand(World *world, int x, int y, int direction)
 {
-    if (WorldTryMoveInto(world, x, y, x, y + 1, true)) {
-        return;
+    if (WorldTryMoveInto(world, x, y, x, y + 1, true) ||
+        WorldTryMoveInto(world, x, y, x + direction, y + 1, true) ||
+        WorldTryMoveInto(world, x, y, x - direction, y + 1, true)) {
+        WorldGrainLeftRoot(world, x, y);
     }
-    if (WorldTryMoveInto(world, x, y, x + direction, y + 1, true)) {
-        return;
-    }
-    (void)WorldTryMoveInto(world, x, y, x - direction, y + 1, true);
 }
 
 /* One sideways run, up to `reach` cells, ending at the first cell with a drop
@@ -277,6 +288,19 @@ static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool
 {
     if (slow && ((world->tick + (uint32_t)x + (uint32_t)y) & 1u) != 0u) {
         return;
+    }
+
+    /* Out under the sky the wind takes it: some ticks, as many as the wind
+       is strong, the gas goes downwind before it goes up. */
+    if (world->wind != 0.0f && WorldBackWallAt(world, x, y) == MATERIAL_EMPTY) {
+        int downwind = world->wind > 0.0f ? 1 : -1;
+        uint32_t chance = (uint32_t)(fminf(fabsf(world->wind) / 40.0f, 0.85f) * 100.0f);
+
+        if ((CoordinateHash(x, y) + world->tick * 7u) % 100u < chance &&
+            (WorldGasRisesInto(world, x, y, x + downwind, y - 1) ||
+             WorldTryMoveInto(world, x, y, x + downwind, y, false))) {
+            return;
+        }
     }
 
     if (WorldGasRisesInto(world, x, y, x, y - 1)) {

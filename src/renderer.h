@@ -10,6 +10,7 @@
 #include "sky_renderer.h"
 #include "space_renderer.h"
 #include "backwall_debris.h"
+#include "weather_renderer.h"
 #include "game.h"
 #include "light_renderer.h"
 #include "presentation_fx.h"
@@ -56,6 +57,13 @@ typedef struct Renderer {
     EnvironmentRenderer environment;
     SpaceRenderer space;
     BackWallDebris backWallDebris;
+    WeatherRenderer weather;
+    /* When the weather was last stepped, in presentation seconds. */
+    float weatherTime;
+    /* The last few blasts, for the grass and the leaves to be flattened by:
+       x, y, radius, strength — fading as they age. */
+    Vector4 swayBlasts[4];
+    float swayBlastAge[4];
     SkyRenderer sky;
     PresentationFxSystem effects;
     TerrainBodyRenderer terrainBodies;

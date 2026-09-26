@@ -81,10 +81,15 @@ Vector2 WorldPlayerSpawn(const World *world)
     }
 
     /* The central plateau is feature-free, but derive the spawn from actual
-       cells so tuning any biome surface cannot place the player inside it. */
+       cells so tuning any biome surface cannot place the player inside it.
+       The ground, not the first solid thing down the column: that was an
+       island in orbit, and the crown of a tree on it — and plants are not
+       ground to stand on any more. */
     x = world->width / 2;
-    for (y = 0; y < world->height; ++y) {
-        if (MaterialIsSolid(WorldMaterialAt(world, x, y))) {
+    for (y = WorldSkyRows(world); y < world->height; ++y) {
+        CellMaterial material = WorldMaterialAt(world, x, y);
+
+        if (MaterialIsSolid(material) && !MaterialIsBackdrop(material)) {
             break;
         }
     }

@@ -464,14 +464,20 @@ static float SurfaceHeightRaw(const World *world, int x)
                      MountainRelief(world, x) * shape.mountainAmplitude;
 
     /* Mesas: the ground rises in flat steps with steep sides, the step's rise
-       squeezed into its last few cells. */
+       squeezed into its last few cells. The steps are always the full size
+       of the steppe's own and it is how much of them shows that blends
+       across a border: blending the step size instead shrank it toward the
+       border until the mesas became a saw of tiny teeth, a band of the
+       desert oscillating like a sine wave. */
     if (shape.terrace > 0.0f) {
-        float steps = fraction / shape.terrace;
+        const float full = BIOME_SURFACES[WORLD_BIOME_DUNES].terrace;
+        float steps = fraction / full;
         float step = floorf(steps);
         float rise = steps - step;
+        float amount = shape.terrace / full;
 
         rise = rise * rise * rise * rise * rise * rise;
-        fraction = (step + rise) * shape.terrace;
+        fraction = LerpFloat(fraction, (step + rise) * full, SmoothStep(amount));
     }
     return WorldGroundY(world, fraction);
 }
@@ -1159,7 +1165,7 @@ static int SurfaceSolidY(const World *world, int x)
 
         /* A plant is never the ground: a blade leaning over from the next
            column is not where this column's soil is. */
-        if (MaterialIsSolid(material) && !MaterialIsFlora(material)) return y;
+        if (MaterialIsSolid(material) && !MaterialIsBackdrop(material)) return y;
     }
     return -1;
 }
@@ -1374,7 +1380,7 @@ static void FloraGrowLimb(World *world, float x, float y, float angle,
  * the new height by lengthening the first limb instead produced a bare pole
  * with a tuft on top — an umbrella, not a broadleaf. Height belongs to the
  * branching: the crown is where a tree keeps its size. */
-static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
+static void FloraPlaceBroadleafBody(World *world, int x, int groundY, Rng *rng,
                                 int trunkHeight, int canopyRadius,
                                 CellMaterial canopy)
 {
@@ -1411,7 +1417,18 @@ static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
  * is made of, and it is what keeps the edge a saw instead of a straight cone.
  * The edge is eaten by the same hash the canopies and the beams use, so no two
  * pines on a slope are the same pine. */
-static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
+/* Half the width of a pine's trunk `along` (0 at the foot, 1 at the tip)
+   of a tree `height` tall: about a twentieth of the height at the foot,
+   narrowing to a single cell at the top. */
+static int ConiferGirth(int height, float along)
+{
+    float foot = (float)height / 40.0f + 1.0f;
+    float half = foot * (1.0f - 0.85f * along);
+
+    return half < 0.5f ? 0 : (int)(half + 0.5f);
+}
+
+static void FloraPlaceConiferBody(World *world, int x, int groundY, Rng *rng,
                               int trunkHeight, CellMaterial canopy)
 {
     int top = groundY - trunkHeight;
@@ -1427,15 +1444,40 @@ static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
     if (!FloraSpaceIsClear(world, x, groundY - 1, 1, trunkHeight / 2)) {
         return;
     }
+    /* Rooted through the snow into the ground under it. Standing on the
+       snow itself, a pine was held by nothing — loose grains hold nothing
+       up — and the first blast nearby carried it off. */
+    {
+        int root = groundY;
+        int half = ConiferGirth(trunkHeight, 0.0f);
+        int offset;
 
-    /* The bole first, two cells thick, and it stops at whatever it meets: a
-       trunk does not grow through a cliff. */
+        while (root < world->height && root < groundY + 24 &&
+               MaterialIsDynamic(WorldMaterialAt(world, x, root))) {
+            for (offset = -half; offset <= half; ++offset) {
+                if (MaterialIsDynamic(WorldMaterialAt(world, x + offset, root))) {
+                    WorldSetGeneratedCell(world, x + offset, root, MATERIAL_WOOD);
+                }
+            }
+            ++root;
+        }
+    }
+
+    /* The bole first, and it stops at whatever it meets: a trunk does not
+       grow through a cliff. Its girth follows the tree's height — a pine
+       two hundred cells tall on a stem two cells wide was a feather duster
+       — and narrows toward the top. */
     for (y = groundY - 1; y > crownBottom; --y) {
+        int half;
         int offset;
 
         if (!WorldInBounds(world, x, y)) return;
-        if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY) break;
-        for (offset = 0; offset < 2; ++offset) {
+        if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY &&
+            !MaterialIsFlora(WorldMaterialAt(world, x, y))) {
+            break;
+        }
+        half = ConiferGirth(trunkHeight, (float)(groundY - y) / (float)trunkHeight);
+        for (offset = -half; offset <= half; ++offset) {
             if (!WorldInBounds(world, x + offset, y)) continue;
             if (WorldMaterialAt(world, x + offset, y) != MATERIAL_EMPTY) {
                 continue;
@@ -1491,13 +1533,18 @@ static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
        between two layers is exactly where a real trunk is visible. */
     for (y = crownBottom; y >= top; --y) {
         bool gap = (crownBottom - y) % tierHeight == tierHeight - 1;
+        int half = ConiferGirth(trunkHeight, (float)(groundY - y) / (float)trunkHeight);
+        int offset;
 
         if (!WorldInBounds(world, x, y)) break;
-        if (WorldMaterialAt(world, x, y) != MATERIAL_EMPTY &&
-            !(gap && WorldMaterialAt(world, x, y) == canopy)) {
-            continue;
+        for (offset = -half; offset <= half; ++offset) {
+            CellMaterial here = WorldMaterialAt(world, x + offset, y);
+
+            if (here != MATERIAL_EMPTY && !(gap && here == canopy)) {
+                continue;
+            }
+            WorldSetGeneratedCell(world, x + offset, y, MATERIAL_WOOD);
         }
-        WorldSetGeneratedCell(world, x, y, MATERIAL_WOOD);
     }
 }
 
@@ -1539,7 +1586,7 @@ static void FloraCactusColumn(World *world, int x, int topY, int bottomY,
  * The ribs are the same trick as the broken edge of a beam and the eaten edge
  * of a canopy — a hash decides them rather than a drawing — so no two cacti in
  * a dune field are the same cactus. */
-static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
+static void FloraPlaceCactusBody(World *world, int x, int groundY, Rng *rng,
                              int height)
 {
     int width = RngRange(rng, 0, 99) < 55 ? 15 : 13;
@@ -1618,7 +1665,7 @@ static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng,
  * are the same wherever the column is generated from; the blade's own
  * height, lean and flower come from the column's stream. The soil itself
  * stays soil: the blade stands on it. */
-static void FloraGrowGrass(World *world, int x, int groundY, Rng *rng)
+static void FloraGrowGrassBody(World *world, int x, int groundY, Rng *rng)
 {
     float meadow = ValueNoise1D(world->seed, x, 46, world->width, GENERATION_DETAIL) * 0.5f +
                    0.5f;
@@ -1657,6 +1704,67 @@ static void FloraGrowGrass(World *world, int x, int groundY, Rng *rng)
     }
 }
 
+/* A plant's identity: a hash of where it stands, never zero, so two trees
+   whose crowns touch are still two trees. */
+static uint16_t PlantIdAt(int x, int y)
+{
+    uint32_t value = (uint32_t)x * 0x9e3779b1u ^ (uint32_t)y * 0x85ebca77u;
+
+    value ^= value >> 15;
+    value *= 0x2c1b3c6du;
+    value ^= value >> 12;
+    return (uint16_t)((value & 0xfffeu) | 1u);
+}
+
+static void FloraPlaceBroadleaf(World *world, int x, int groundY, Rng *rng,
+                                int trunkHeight, int canopyRadius,
+                                CellMaterial canopy)
+{
+    world->generationPlant = PlantIdAt(x, groundY);
+    FloraPlaceBroadleafBody(world, x, groundY, rng, trunkHeight, canopyRadius, canopy);
+    world->generationPlant = 0u;
+}
+
+static void FloraPlaceConifer(World *world, int x, int groundY, Rng *rng,
+                              int trunkHeight, CellMaterial canopy)
+{
+    world->generationPlant = PlantIdAt(x, groundY);
+    FloraPlaceConiferBody(world, x, groundY, rng, trunkHeight, canopy);
+    world->generationPlant = 0u;
+}
+
+static void FloraPlaceCactus(World *world, int x, int groundY, Rng *rng, int height)
+{
+    world->generationPlant = PlantIdAt(x, groundY);
+    FloraPlaceCactusBody(world, x, groundY, rng, height);
+    world->generationPlant = 0u;
+}
+
+static void FloraGrowGrass(World *world, int x, int groundY, Rng *rng)
+{
+    world->generationPlant = PlantIdAt(x, groundY);
+    FloraGrowGrassBody(world, x, groundY, rng);
+    world->generationPlant = 0u;
+}
+
+/* Whether the ground at (x, y) is something built — a roof, a plinth, a
+   hull — under at most a drift of snow. Nothing grows on a roof: a pine on
+   the snow on an outpost's roof was a pine standing in the air. */
+static bool GroundIsBuilt(const World *world, int x, int y)
+{
+    int depth;
+
+    for (depth = 0; depth < 16; ++depth) {
+        CellMaterial material = WorldMaterialAt(world, x, y + depth);
+
+        if (material == MATERIAL_SNOW) continue;
+        return material == MATERIAL_METAL || material == MATERIAL_RELIC ||
+               material == MATERIAL_BRICK || material == MATERIAL_BASALT ||
+               material == MATERIAL_LUMEN || MaterialIsBackdrop(material);
+    }
+    return false;
+}
+
 static void GenerateFlora(World *world)
 {
     int x;
@@ -1669,7 +1777,9 @@ static void GenerateFlora(World *world)
         CellMaterial ground;
         Rng rng;
 
-        if (surface <= 8 || IsNearSpawn(world, x)) continue;
+        if (surface <= 8 || IsNearSpawn(world, x) || GroundIsBuilt(world, x, surface)) {
+            continue;
+        }
         ground = WorldMaterialAt(world, x, surface);
         /* One stream per column, so what grows at a column depends on the
            column and the seed and on nothing that was drawn before it — the
@@ -1837,7 +1947,7 @@ static void WorldPlaceSpike(World *world, int x, int y, int length, int directio
 }
 
 /* A mushroom: a pale stalk and a glowing dome of cap. */
-static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int capRadius)
+static void WorldPlaceMushroomBody(World *world, int x, int floorY, int height, int capRadius)
 {
     int y;
     int top = floorY - height;
@@ -1867,6 +1977,13 @@ static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int 
             WorldSetGeneratedCell(world, column, y, MATERIAL_FUNGUS);
         }
     }
+}
+
+static void WorldPlaceMushroom(World *world, int x, int floorY, int height, int capRadius)
+{
+    world->generationPlant = PlantIdAt(x, floorY);
+    WorldPlaceMushroomBody(world, x, floorY, height, capRadius);
+    world->generationPlant = 0u;
 }
 
 static void GenerateCaverns(World *world)
@@ -2028,8 +2145,11 @@ static void GenerateTunnels(World *world)
         int steps = RngRange(&rng, 260, 620);
         int step;
 
+        /* No mouth under the sea, on the shelf or on a drowned shore: the
+           sea would pour down it into every cave the tunnel joins. */
         if (IsNearSpawn(world, (int)x) ||
-            WorldBiomeAt(world, (int)x) == WORLD_BIOME_OCEAN) {
+            WorldBiomeAt(world, (int)x) == WORLD_BIOME_OCEAN ||
+            SurfaceHeightAt(world, (int)x) > (int)WorldSeaLevelY(world) - 16) {
             continue;
         }
         y = (float)SurfaceHeightAt(world, (int)x) - 2.0f;
@@ -2088,6 +2208,53 @@ static bool LiquidHeld(const World *world, int x, int y)
     return (y + 1 >= world->height || WorldMaterialAt(world, x, y + 1) != MATERIAL_EMPTY) &&
            WorldMaterialAt(world, x - 1, y) != MATERIAL_EMPTY &&
            WorldMaterialAt(world, x + 1, y) != MATERIAL_EMPTY;
+}
+
+/* Where generated water meets generated lava, the lava has already met it:
+   the face between them is cooled rock, the crust a lava lake grows wherever
+   the sea finds it. Left touching, the pair would be generated asleep and
+   boil the moment the player came near. Only the chunks holding both are
+   read. */
+static void SettleLavaAgainstWater(World *world)
+{
+    int chunkY;
+
+    for (chunkY = 0; chunkY < world->chunkRows; ++chunkY) {
+        int chunkX;
+
+        for (chunkX = 0; chunkX < world->chunkColumns; ++chunkX) {
+            size_t chunk = WorldChunkIndex(world, chunkX, chunkY);
+            int y;
+
+            if (world->chunkLava[chunk] == 0u) continue;
+            for (y = chunkY * WORLD_CHUNK_SIZE;
+                 y < (chunkY + 1) * WORLD_CHUNK_SIZE && y < world->height; ++y) {
+                int x;
+
+                for (x = chunkX * WORLD_CHUNK_SIZE;
+                     x < (chunkX + 1) * WORLD_CHUNK_SIZE && x < world->width; ++x) {
+                    int offsetY;
+                    bool wet = false;
+
+                    if (WorldMaterialAt(world, x, y) != MATERIAL_LAVA) continue;
+                    for (offsetY = -1; offsetY <= 1 && !wet; ++offsetY) {
+                        int offsetX;
+
+                        for (offsetX = -1; offsetX <= 1; ++offsetX) {
+                            if (WorldMaterialAt(world, x + offsetX, y + offsetY) ==
+                                MATERIAL_WATER) {
+                                wet = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (wet) {
+                        WorldSetGeneratedCell(world, x, y, MATERIAL_BASALT);
+                    }
+                }
+            }
+        }
+    }
 }
 
 static void SettleLiquids(World *world)
@@ -2167,6 +2334,7 @@ static void SettleLiquids(World *world)
         }
     }
     free(queue);
+    SettleLavaAgainstWater(world);
 }
 
 /* Snow on everything high enough, and on the whole of the frost: a few cells

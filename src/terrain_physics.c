@@ -84,7 +84,7 @@ static bool TerrainWorldCellIsSolid(const World *world, int x, int y)
        stray leaf. */
     CellMaterial material = WorldGetCell(world, x, y);
 
-    return WorldMaterialIsSolid(material) && !MaterialIsFlora(material);
+    return WorldMaterialIsSolid(material) && !MaterialIsBackdrop(material);
 }
 
 /* Chooses which way to push a sample out of the solid cell it landed in.

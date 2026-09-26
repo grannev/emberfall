@@ -418,14 +418,6 @@ const AbilityState *AbilityStateAt(const AbilitySystem *abilities, AbilityId id)
     return &abilities->states[id];
 }
 
-const char *AbilitiesCurrentName(const AbilitySystem *abilities)
-{
-    if (abilities == NULL) {
-        return "UNKNOWN";
-    }
-    return AbilityDefinitionAt(abilities->lastUsed)->name;
-}
-
 bool AbilitiesValidate(void)
 {
     int id;

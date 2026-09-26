@@ -39,6 +39,7 @@ GameConfig GameDefaultConfig(void)
         .fixedStep = DEFAULT_FIXED_STEP,
         .activeRadiusX = DEFAULT_ACTIVE_RADIUS_X,
         .activeRadiusY = DEFAULT_ACTIVE_RADIUS_Y,
+        .forcedWeather = -1,
     };
 }
 
@@ -106,6 +107,7 @@ bool GameInit(GameState *game, GameConfig config)
 
 #define GAME_RNG_STREAM_POWERS 11u
 #define GAME_RNG_STREAM_PARTICLES 12u
+#define GAME_RNG_STREAM_WEATHER 13u
 
 void GameReset(GameState *game, uint64_t seed)
 {
@@ -136,6 +138,8 @@ void GameReset(GameState *game, uint64_t seed)
     TerrainFluidInit(&game->bodyFluid);
     TerrainStabilityInit(&game->stability);
     AtmosphereInit(&game->atmosphere);
+    WeatherInit(&game->weather, RngStreamSeed(seed, GAME_RNG_STREAM_WEATHER),
+                game->config.forcedWeather);
     game->simulationAccumulator = 0.0f;
     game->activatedPlayerChunkX = -1;
     game->activatedPlayerChunkY = -1;
@@ -346,6 +350,19 @@ static void GameAdvanceWorld(GameState *game, GameEventBuffer *events)
            however many fixed steps this frame runs. */
         (void)TerrainImpulseApply(&game->impulses, &game->dynamicTerrain,
                                   &game->damage, &game->world);
+        /* The weather's tick: the clock, the wind the world's gases and the
+           particles feel where the character is, the loose ground it lifts
+           there, and the push it gives light bodies. */
+        WeatherAdvance(&game->weather, game->config.fixedStep);
+        game->world.wind = WeatherWindAt(&game->weather, &game->world,
+                                         game->player.position.x,
+                                         game->player.position.y - 40.0f);
+        ParticlesSetWind(&game->particles,
+                         WeatherAt(&game->weather, &game->world, game->player.position.x).wind *
+                             WorldGravityScaleAt(&game->world, game->player.position.y));
+        WeatherErode(&game->weather, &game->world, &game->particles, game->player.position);
+        WeatherPushBodies(&game->weather, &game->world, &game->dynamicTerrain,
+                          game->config.fixedStep);
         /* On the fixed step, beside the world: bodies must advance at the same
            rate the simulation does, never at the renderer's frame rate. The
            world goes in as a const pointer, which is what makes it impossible

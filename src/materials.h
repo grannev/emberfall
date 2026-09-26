@@ -102,6 +102,12 @@ typedef struct MaterialInfo {
        surface here": a tree is not a cliff, and code that measures terrain has
        to be able to say so. */
     bool flora;
+    /* Stands behind the character, as the plants do: a girder under an
+       outpost, a column in a hall. The character and the bodies pass
+       through it, the light passes through it, and it is solid to
+       everything else — the drill, the fire, a blast, what holds a roof up.
+       Every plant is backdrop too, without saying so. */
+    bool backdrop;
     /* How much light the material gives off by itself, 0..1. Heat adds more on
        top of this, so a laser-blasted rock face lights its own crater. */
     float emission;
@@ -135,6 +141,14 @@ static inline bool MaterialIsFlora(CellMaterial material)
 {
     if (material < 0 || material >= MATERIAL_COUNT) return false;
     return MATERIALS[material].flora;
+}
+
+/* Whether the material stands behind the character: every plant, and what
+   the builders put up to be walked past rather than into. */
+static inline bool MaterialIsBackdrop(CellMaterial material)
+{
+    if (material < 0 || material >= MATERIAL_COUNT) return false;
+    return MATERIALS[material].flora || MATERIALS[material].backdrop;
 }
 
 /* Inline because the simulation asks for a material's properties several times

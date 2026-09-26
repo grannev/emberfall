@@ -6,6 +6,8 @@
 
 #include <raymath.h>
 
+#include "materials.h"
+
 static float RandomUnit(ParticleSystem *system)
 {
     return RngFloat(&system->rng, 0.0f, 1.0f);
@@ -67,15 +69,24 @@ void ParticlesInit(ParticleSystem *system, uint64_t seed)
 
 /* Integrates one particle and returns where it wants to be next. Shared by
    both roles so their motion cannot drift apart. */
-static void ParticleIntegrate(Particle *particle, const World *world,
+static void ParticleIntegrate(Particle *particle, const World *world, float wind,
                               float deltaTime, float *nextX, float *nextY)
 {
+    /* The air carries what is in it: the drag that slows a particle across
+       pulls it toward the wind's speed instead of toward rest, wherever the
+       air is open to the sky. */
+    float air = world != NULL && WorldGetBackWall(world, (int)floorf(particle->position.x),
+                                                  (int)floorf(particle->position.y)) ==
+                                     MATERIAL_EMPTY
+                    ? wind
+                    : 0.0f;
+
     /* Debris in the weightless band drifts instead of falling, exactly as a
        slab does: the two must not disagree about where gravity stops. */
     particle->velocity.y += particle->gravity *
                             WorldGravityScaleAt(world, particle->position.y) *
                             deltaTime;
-    particle->velocity.x *= 1.0f - Clamp(1.8f * deltaTime, 0.0f, 0.9f);
+    particle->velocity.x += (air - particle->velocity.x) * Clamp(1.8f * deltaTime, 0.0f, 0.9f);
     *nextX = particle->position.x + particle->velocity.x * deltaTime;
     *nextY = particle->position.y + particle->velocity.y * deltaTime;
 }
@@ -83,14 +94,14 @@ static void ParticleIntegrate(Particle *particle, const World *world,
 /* Presentation particles. The `const World *` is the point: a visual effect
    reads terrain to bounce off it and is structurally unable to change a cell,
    so decoration can never quietly become gameplay. */
-static void ParticleStepVisual(Particle *particle, const World *world,
+static void ParticleStepVisual(Particle *particle, const World *world, float wind,
                                float deltaTime)
 {
     float nextX;
     float nextY;
     bool embedded;
 
-    ParticleIntegrate(particle, world, deltaTime, &nextX, &nextY);
+    ParticleIntegrate(particle, world, wind, deltaTime, &nextX, &nextY);
 
     if (world == NULL || particle->contact == PARTICLE_CONTACT_PASS) {
         particle->position.x = nextX;
@@ -121,13 +132,14 @@ static void ParticleStepVisual(Particle *particle, const World *world,
 
 /* Gameplay debris: the one role allowed to write cells, and only by coming to
    rest in an empty one. */
-static void ParticleStepDebris(Particle *particle, World *world, float deltaTime)
+static void ParticleStepDebris(Particle *particle, World *world, float wind,
+                               float deltaTime)
 {
     float nextX;
     float nextY;
     bool embedded;
 
-    ParticleIntegrate(particle, world, deltaTime, &nextX, &nextY);
+    ParticleIntegrate(particle, world, wind, deltaTime, &nextX, &nextY);
 
     if (world == NULL) {
         particle->position.x = nextX;
@@ -177,9 +189,9 @@ void ParticlesUpdate(ParticleSystem *system, World *world, float deltaTime)
            preserves the property that matters — no allocation, ever — while
            the split below is what keeps the roles honest. */
         if (particle->contact == PARTICLE_CONTACT_SETTLE) {
-            ParticleStepDebris(particle, world, deltaTime);
+            ParticleStepDebris(particle, world, system->wind, deltaTime);
         } else {
-            ParticleStepVisual(particle, world, deltaTime);
+            ParticleStepVisual(particle, world, system->wind, deltaTime);
         }
     }
 }
@@ -450,4 +462,30 @@ void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velo
 
         particle->contact = PARTICLE_CONTACT_BOUNCE;
     }
+}
+
+void ParticlesSetWind(ParticleSystem *system, float wind)
+{
+    if (system != NULL) {
+        system->wind = wind;
+    }
+}
+
+void ParticlesSpawnWindGrain(ParticleSystem *system, Vector2 position, Vector2 velocity,
+                             CellMaterial material)
+{
+    Particle *particle;
+    Color color;
+
+    if (system == NULL) {
+        return;
+    }
+    color = MaterialAt(material)->color;
+    color.a = 235;
+    /* Long enough to come down wherever it was carried: a grain that ran out
+       of life in the air would be sand the wind destroyed. */
+    particle = ParticlesSpawnOne(system, position, velocity, color, 12.0f, 0.9f, 55.0f);
+    /* A grain the wind took is a grain: it comes down again as one. */
+    particle->contact = PARTICLE_CONTACT_SETTLE;
+    particle->settleMaterial = material;
 }

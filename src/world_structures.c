@@ -202,7 +202,8 @@ static void StructureSweep(World *world, int firstX, int firstY, int lastX, int 
                 (material != MATERIAL_BRICK && material != MATERIAL_WOOD &&
                  material != MATERIAL_BASALT && material != MATERIAL_CRYSTAL &&
                  material != MATERIAL_METAL && material != MATERIAL_LUMEN &&
-                 material != MATERIAL_RELIC)) {
+                 material != MATERIAL_RELIC && material != MATERIAL_GIRDER &&
+                 material != MATERIAL_PILLAR && material != MATERIAL_PLANK)) {
                 continue;
             }
             for (offsetY = -1; offsetY <= 1 && !joined; ++offsetY) {
@@ -264,7 +265,191 @@ static void StructureRubble(World *world, int centerX, int groundY, int halfWidt
     }
 }
 
+/* ---- what fills a place --------------------------------------------------
+
+   A building with nothing in it is a box. These are the things people left in
+   theirs, drawn from a few cells each. Almost all of them are backdrop —
+   planks, girders, carved stone that stands behind the character — so a
+   furnished room is still a room the character can walk across. */
+
+/* A line of `thickness` cells from (fromX, fromY) to (toX, toY). */
+static void StructureLine(World *world, int fromX, int fromY, int toX, int toY,
+                          int thickness, CellMaterial material)
+{
+    int dx = toX - fromX;
+    int dy = toY - fromY;
+    int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx)
+                                                          : (dy < 0 ? -dy : dy);
+    int step;
+
+    if (steps == 0) steps = 1;
+    for (step = 0; step <= steps; ++step) {
+        int x = fromX + dx * step / steps;
+        int y = fromY + dy * step / steps;
+
+        StructureFill(world, x, y, x + thickness - 1, y + thickness - 1, material);
+    }
+}
+
+/* A crate standing on `floorY`: a frame of girder round a body of planks,
+   a brace across it. */
+static void StructureCrate(World *world, int x, int floorY, int size)
+{
+    StructureFill(world, x, floorY - size, x + size - 1, floorY - 1, MATERIAL_PLANK);
+    StructureFill(world, x, floorY - size, x + size - 1, floorY - size, MATERIAL_GIRDER);
+    StructureFill(world, x, floorY - 1, x + size - 1, floorY - 1, MATERIAL_GIRDER);
+    StructureLine(world, x + 1, floorY - 2, x + size - 2, floorY - size + 1, 1,
+                  MATERIAL_GIRDER);
+}
+
+/* A drum of plate with two bands round it. */
+static void StructureBarrel(World *world, int x, int floorY, int width, int height)
+{
+    StructureFill(world, x, floorY - height, x + width - 1, floorY - 1, MATERIAL_GIRDER);
+    StructureFill(world, x, floorY - height / 3, x + width - 1, floorY - height / 3,
+                  MATERIAL_METAL);
+    StructureFill(world, x, floorY - height * 2 / 3, x + width - 1,
+                  floorY - height * 2 / 3, MATERIAL_METAL);
+}
+
+/* A bunk: two boards on posts. */
+static void StructureBunk(World *world, int x, int floorY, int length)
+{
+    StructureFill(world, x, floorY - 26, x + 1, floorY - 1, MATERIAL_GIRDER);
+    StructureFill(world, x + length - 2, floorY - 26, x + length - 1, floorY - 1,
+                  MATERIAL_GIRDER);
+    StructureFill(world, x, floorY - 8, x + length - 1, floorY - 6, MATERIAL_PLANK);
+    StructureFill(world, x, floorY - 22, x + length - 1, floorY - 20, MATERIAL_PLANK);
+}
+
+/* A table and a chair either side. */
+static void StructureTable(World *world, int x, int floorY, int length)
+{
+    StructureFill(world, x, floorY - 12, x + length - 1, floorY - 11, MATERIAL_PLANK);
+    StructureFill(world, x + 2, floorY - 10, x + 3, floorY - 1, MATERIAL_PLANK);
+    StructureFill(world, x + length - 4, floorY - 10, x + length - 3, floorY - 1,
+                  MATERIAL_PLANK);
+    StructureFill(world, x - 7, floorY - 7, x - 3, floorY - 6, MATERIAL_PLANK);
+    StructureFill(world, x - 7, floorY - 14, x - 7, floorY - 1, MATERIAL_PLANK);
+    StructureFill(world, x + length + 2, floorY - 7, x + length + 6, floorY - 6,
+                  MATERIAL_PLANK);
+    StructureFill(world, x + length + 6, floorY - 14, x + length + 6, floorY - 1,
+                  MATERIAL_PLANK);
+}
+
+/* Shelves on a wall, with things on them. */
+static void StructureShelves(World *world, Rng *rng, int x, int topY, int length, int rows)
+{
+    int row;
+
+    for (row = 0; row < rows; ++row) {
+        int y = topY + row * 12;
+        int item;
+
+        StructureFill(world, x, y, x + length - 1, y + 1, MATERIAL_PLANK);
+        for (item = x + 1; item < x + length - 3; item += RngRange(rng, 4, 8)) {
+            int tall = RngRange(rng, 2, 6);
+
+            StructureFill(world, item, y - tall, item + RngRange(rng, 1, 3), y - 1,
+                          RngRange(rng, 0, 3) == 0 ? MATERIAL_LUMEN : MATERIAL_GIRDER);
+        }
+    }
+}
+
+/* A locker: a tall cabinet of girder with a lit tag. */
+static void StructureLocker(World *world, int x, int floorY)
+{
+    StructureFill(world, x, floorY - 28, x + 9, floorY - 1, MATERIAL_GIRDER);
+    StructureFill(world, x + 4, floorY - 27, x + 5, floorY - 2, MATERIAL_METAL);
+    StructureFill(world, x + 2, floorY - 24, x + 2, floorY - 23, MATERIAL_LUMEN);
+}
+
+/* A lamp hanging from a ceiling on a cord. */
+static void StructureHangingLamp(World *world, int x, int ceilingY, int drop)
+{
+    StructureFill(world, x, ceilingY, x, ceilingY + drop, MATERIAL_GIRDER);
+    StructureFill(world, x - 2, ceilingY + drop + 1, x + 2, ceilingY + drop + 1,
+                  MATERIAL_GIRDER);
+    StructureFill(world, x - 1, ceilingY + drop + 2, x + 1, ceilingY + drop + 3,
+                  MATERIAL_LUMEN);
+}
+
+/* A pipe along a ceiling with a valve now and then. */
+static void StructurePipe(World *world, int fromX, int toX, int y)
+{
+    int x;
+
+    StructureFill(world, fromX, y, toX, y + 1, MATERIAL_GIRDER);
+    for (x = fromX + 9; x < toX - 4; x += 23) {
+        StructureFill(world, x, y - 1, x + 2, y + 2, MATERIAL_METAL);
+    }
+}
+
+/* A guardian: a tall hooded figure on a plinth, a staff in its hands with a
+   light at the top. The precursors stood them at every door. */
+static void StructureStatue(World *world, int x, int floorY, int height, CellMaterial stone)
+{
+    int base = floorY - 6;
+    int row;
+
+    StructureFill(world, x - 9, base, x + 9, floorY - 1, stone);
+    for (row = 0; row < height; ++row) {
+        int y = base - 1 - row;
+        float along = (float)row / (float)height;
+        /* A robe widening to the shoulders, a hood above them. */
+        int half = along < 0.72f ? (int)(4.0f + 3.0f * along / 0.72f)
+                                 : (int)(5.0f * (1.0f - (along - 0.72f) / 0.28f) + 1.0f);
+
+        StructureFill(world, x - half, y, x + half, y, stone);
+    }
+    /* The staff and its light. */
+    StructureFill(world, x + 8, base - height - 6, x + 9, base - 1, stone);
+    StructureDisc(world, x + 8, base - height - 9, 3, MATERIAL_LUMEN);
+}
+
+/* An urn: a belly, a neck, a lip. */
+static void StructureUrn(World *world, int x, int floorY, int height, CellMaterial stone)
+{
+    int row;
+
+    for (row = 0; row < height; ++row) {
+        float along = (float)row / (float)height;
+        float belly = sinf(along * 3.14159f * 0.9f + 0.2f);
+        int half = along > 0.8f ? 2 : (int)(1.5f + 4.0f * belly);
+
+        StructureFill(world, x - half, floorY - 1 - row, x + half, floorY - 1 - row, stone);
+    }
+    StructureFill(world, x - 3, floorY - height - 1, x + 3, floorY - height - 1, stone);
+}
+
+/* A sarcophagus: a long box on a step, its lid lined with a lit glyph. */
+static void StructureSarcophagus(World *world, int x, int floorY, int length)
+{
+    StructureFill(world, x - 2, floorY - 3, x + length + 1, floorY - 1, MATERIAL_PILLAR);
+    StructureFill(world, x, floorY - 14, x + length - 1, floorY - 4, MATERIAL_PILLAR);
+    StructureFill(world, x - 1, floorY - 17, x + length, floorY - 15, MATERIAL_PILLAR);
+    StructureFill(world, x + 3, floorY - 16, x + length - 4, floorY - 16, MATERIAL_LUMEN);
+}
+
+/* A mine cart on its rail, heaped with ore. */
+static void StructureCart(World *world, int x, int railY)
+{
+    StructureFill(world, x, railY - 12, x + 15, railY - 4, MATERIAL_METAL);
+    StructureFill(world, x + 1, railY - 11, x + 14, railY - 5, MATERIAL_GIRDER);
+    StructureDisc(world, x + 3, railY - 2, 2, MATERIAL_GIRDER);
+    StructureDisc(world, x + 12, railY - 2, 2, MATERIAL_GIRDER);
+    StructureDisc(world, x + 5, railY - 13, 2, MATERIAL_CRYSTAL);
+    StructureDisc(world, x + 10, railY - 14, 3, MATERIAL_ROCK);
+}
+
 /* ---- the precursors' stone -------------------------------------------------- */
+
+/* The column a builder's stone makes: relic stone stands behind the
+   character as a pillar; basalt and brick are left as they are. */
+static CellMaterial StructurePillarOf(CellMaterial stone)
+{
+    return stone == MATERIAL_RELIC ? MATERIAL_PILLAR : stone;
+}
 
 /* An obelisk lamp: a plinth, a shaft that narrows toward the top, and an orb
    of light resting on its point. The one thing on a precursor site that
@@ -281,7 +466,7 @@ static void StructureObeliskLamp(World *world, int centerX, int floorY, int heig
         float along = (float)(floorY - 14 - y) / (float)(height - 14);
         int half = (int)(6.0f - 3.0f * along);
 
-        StructureFill(world, centerX - half, y, centerX + half, y, stone);
+        StructureFill(world, centerX - half, y, centerX + half, y, StructurePillarOf(stone));
     }
     /* A collar, then the orb sitting in it. */
     StructureFill(world, centerX - 6, top, centerX + 6, top + 3, stone);
@@ -338,8 +523,10 @@ static void RuinGateway(World *world, Rng *rng, int centerX, CellMaterial stone,
                                        (0.35f + 0.25f * WorldGenUnit(world->seed, centerX,
                                                                      floorY, STRUCTURE_DECAY + 5u)));
         }
-        StructureWall(world, first, columnTop, last, floorY - 1, stone, floorY, topY,
-                      broken && side > 0 ? 0.9f : 0.25f);
+        /* The shafts are columns the character walks between and through;
+           the plinth, the capitals and the lintel they carry are stone. */
+        StructureWall(world, first, columnTop, last, floorY - 1, StructurePillarOf(stone),
+                      floorY, topY, broken && side > 0 ? 0.9f : 0.25f);
         /* A capital and a base a little wider than the shaft. */
         StructureFill(world, first - 5, floorY - 7, last + 5, floorY - 1, stone);
         if (columnTop == lintelBottom) {
@@ -350,7 +537,7 @@ static void RuinGateway(World *world, Rng *rng, int centerX, CellMaterial stone,
            marks. */
         for (y = floorY - 16; y > columnTop + 10; --y) {
             if (((floorY - y) / 6) % 3 != 2 &&
-                WorldMaterialAt(world, glyph, y) == stone) {
+                WorldMaterialAt(world, glyph, y) == StructurePillarOf(stone)) {
                 StructureFill(world, glyph - 1, y, glyph + 1, y, MATERIAL_LUMEN);
             }
         }
@@ -371,6 +558,9 @@ static void RuinGateway(World *world, Rng *rng, int centerX, CellMaterial stone,
     }
     /* The key-stone: an orb of light hung from the crown of the arch. */
     StructureDisc(world, centerX, lintelBottom + 13, 11, MATERIAL_LUMEN);
+    /* Guardians either side of the way through, on the plinth. */
+    StructureStatue(world, centerX - half - 2 - 12, floorY, 46, StructurePillarOf(stone));
+    StructureStatue(world, centerX + half + 2 + 12, floorY, 46, StructurePillarOf(stone));
     StructureFill(world, centerX - 2, lintelBottom, centerX + 2, lintelBottom + 2, stone);
 
     if (broken) {
@@ -433,6 +623,10 @@ static void RuinTerraces(World *world, Rng *rng, int centerX, CellMaterial stone
     StructureFill(world, centerX - 18, summit - 10, centerX + 18, summit, stone);
     StructureFill(world, centerX - 11, summit - 16, centerX + 11, summit - 11, stone);
     StructureDisc(world, centerX, summit - 30, 11, MATERIAL_CRYSTAL);
+    StructureStatue(world, centerX - 34, summit + 1, 40, StructurePillarOf(stone));
+    StructureStatue(world, centerX + 34, summit + 1, 40, StructurePillarOf(stone));
+    StructureUrn(world, centerX - 52, summit + 1, 14, StructurePillarOf(stone));
+    StructureUrn(world, centerX + 52, summit + 1, 14, StructurePillarOf(stone));
     StructureObeliskLamp(world, centerX - topHalf + 16, summit + 1,
                          RngRange(rng, 50, 70), 7, stone, MATERIAL_LUMEN);
     StructureObeliskLamp(world, centerX + topHalf - 16, summit + 1,
@@ -577,7 +771,7 @@ static void WreckShip(World *world, Rng *rng, int centerX, bool drowned)
                 float within = u - (float)frame * 30.0f;
                 bool rib = within < 3.0f && v < lower - 3.0f - (float)STRUCTURE_DOOR_ROWS;
 
-                StructureSet(world, x, y, rib ? MATERIAL_METAL : MATERIAL_EMPTY);
+                StructureSet(world, x, y, rib ? MATERIAL_GIRDER : MATERIAL_EMPTY);
                 WorldGenSetBackWall(world, x, y, x, y, MATERIAL_METAL);
                 continue;
             }
@@ -591,6 +785,31 @@ static void WreckShip(World *world, Rng *rng, int centerX, bool drowned)
                 StructureSet(world, x, y, MATERIAL_LUMEN);
             } else {
                 StructureSet(world, x, y, MATERIAL_METAL);
+            }
+        }
+    }
+    /* The cargo, still in the hold where it was stowed: crates and drums
+       along the deck, found by looking down from the middle of the hold. */
+    {
+        int cargo;
+
+        for (cargo = 0; cargo < 7; ++cargo) {
+            float t = 0.18f + 0.08f * (float)cargo;
+            float u = (t - 0.5f) * (float)length * noseSign;
+            float v = (float)height * 0.85f * 0.5f - 12.0f;
+            int cargoX = centerX + (int)(u * cosine - v * sine);
+            int cargoY = centerY + (int)(u * sine + v * cosine);
+            int floorY = cargoY;
+
+            if (fabsf(t - breakAt) < 0.06f) continue;
+            while (floorY < cargoY + 30 && WorldMaterialAt(world, cargoX, floorY) == MATERIAL_EMPTY) {
+                ++floorY;
+            }
+            if (floorY >= cargoY + 30) continue;
+            if ((cargo & 1) == 0) {
+                StructureCrate(world, cargoX, floorY, RngRange(rng, 9, 14));
+            } else {
+                StructureBarrel(world, cargoX, floorY, 8, RngRange(rng, 10, 15));
             }
         }
     }
@@ -649,31 +868,67 @@ static void WreckOutpost(World *world, Rng *rng, int centerX)
     doorLeft = RngRange(rng, 0, 1) != 0;
     StructureLevel(world, firstX - 40, lastX + 40, floorY, top - 90, MATERIAL_ROCK);
 
-    /* The legs, down to whatever holds them, braced across. */
+    /* The legs, down to whatever holds them, braced across and crossed:
+       girders, which the character walks past rather than into. */
     for (leg = 0; leg < 4; ++leg) {
         int legX = firstX + 6 + leg * (width - 16) / 3;
 
         for (y = bottom + 1; y < floorY + 60; ++y) {
-            if (y > floorY && MaterialIsSolid(WorldMaterialAt(world, legX, y))) break;
-            StructureFill(world, legX, y, legX + 4, y, MATERIAL_METAL);
+            if (y > floorY && MaterialIsSolid(WorldMaterialAt(world, legX, y)) &&
+                !MaterialIsBackdrop(WorldMaterialAt(world, legX, y))) {
+                break;
+            }
+            StructureFill(world, legX, y, legX + 4, y, MATERIAL_GIRDER);
+        }
+        if (leg < 3) {
+            int nextX = firstX + 6 + (leg + 1) * (width - 16) / 3;
+
+            StructureLine(world, legX + 4, bottom + 2, nextX, floorY - 2, 2, MATERIAL_GIRDER);
+            StructureLine(world, legX + 4, floorY - 2, nextX, bottom + 2, 2, MATERIAL_GIRDER);
         }
     }
     StructureFill(world, firstX + 6, bottom + legs / 2, lastX - 6, bottom + legs / 2 + 2,
-                  MATERIAL_METAL);
-    /* Floor, walls and roof, the roof worn. */
+                  MATERIAL_GIRDER);
+    /* Floor and walls, a gabled roof over them, the roof worn. */
     StructureFill(world, firstX, bottom - 5, lastX, bottom, MATERIAL_METAL);
     StructureWall(world, firstX, top, firstX + 5, bottom - 6, MATERIAL_METAL, bottom, top,
                   0.25f);
     StructureWall(world, lastX - 5, top, lastX, bottom - 6, MATERIAL_METAL, bottom, top,
                   0.25f);
-    StructureWall(world, firstX, top, lastX, top + 5, MATERIAL_METAL, bottom, top, 0.6f);
-    /* Lamps along the ceiling. */
-    for (x = firstX + 12; x < lastX - 12; x += 20) {
-        if (WorldMaterialAt(world, x, top + 5) == MATERIAL_METAL) {
-            StructureFill(world, x, top + 6, x + 6, top + 7, MATERIAL_LUMEN);
+    StructureWall(world, firstX, top, lastX, top + 5, MATERIAL_METAL, bottom, top, 0.4f);
+    for (x = firstX - 6; x <= lastX + 6; ++x) {
+        int fromCentre = x - centerX < 0 ? centerX - x : x - centerX;
+        int peak = (width / 2 + 6 - fromCentre) / 4;
+
+        if (peak > 0) {
+            StructureWall(world, x, top - peak, x, top - peak + 3, MATERIAL_METAL, top,
+                          top - 30, 0.5f);
         }
     }
+    /* A band of plate along the walls, a shade darker, at the height of a
+       window sill. */
+    StructureFill(world, firstX, bottom - 30, firstX + 5, bottom - 28, MATERIAL_GIRDER);
+    StructureFill(world, lastX - 5, bottom - 30, lastX, bottom - 28, MATERIAL_GIRDER);
+    /* Lamps hung from the ceiling, a pipe along it. */
+    for (x = firstX + 16; x < lastX - 14; x += 26) {
+        StructureHangingLamp(world, x, top + 6, RngRange(rng, 4, 9));
+    }
+    StructurePipe(world, firstX + 6, lastX - 6, top + 7);
     WorldGenSetBackWall(world, firstX + 6, top + 6, lastX - 6, bottom - 6, MATERIAL_METAL);
+    /* What the crew left: bunks, a table, lockers, shelves, crates. */
+    {
+        int left = firstX + 8;
+        int right = lastX - 8;
+        int bunkX = doorLeft ? right - 40 : left + 30;
+
+        StructureBunk(world, bunkX, bottom - 6, 34);
+        StructureTable(world, centerX - 12, bottom - 6, 24);
+        StructureLocker(world, doorLeft ? right - 56 : left + 70, bottom - 6);
+        StructureLocker(world, doorLeft ? right - 68 : left + 82, bottom - 6);
+        StructureShelves(world, rng, doorLeft ? left + 14 : right - 38, top + 22, 26, 2);
+        StructureCrate(world, doorLeft ? left + 10 : right - 22, bottom - 6, 12);
+        StructureCrate(world, doorLeft ? left + 12 : right - 20, bottom - 18, 9);
+    }
     /* The door and the stair down from it. */
     {
         int wallFirst = doorLeft ? firstX : lastX - 5;
@@ -690,16 +945,23 @@ static void WreckOutpost(World *world, Rng *rng, int centerX)
                 StructureFill(world, stepX + direction * run, stepY - 2,
                               stepX + direction * run, stepY, MATERIAL_METAL);
             }
+            /* A railing post on every step, a rail along the tops. */
+            StructureFill(world, stepX, stepY - 16, stepX, stepY - 3, MATERIAL_GIRDER);
+            StructureLine(world, stepX, stepY - 16, stepX + direction * 8, stepY - 12, 1,
+                          MATERIAL_GIRDER);
             stepX += direction * 8;
             stepY += 4;
         }
+        /* Drums by the foot of the stair. */
+        StructureBarrel(world, stepX + direction * 6, floorY, 8, 14);
+        StructureBarrel(world, stepX + direction * 16, floorY, 8, 12);
     }
     /* A console against the far wall: a cabinet with a lit screen. */
     {
         int consoleX = doorLeft ? lastX - 30 : firstX + 8;
 
         StructureFill(world, consoleX, bottom - 22, consoleX + 21, bottom - 6,
-                      MATERIAL_METAL);
+                      MATERIAL_GIRDER);
         StructureFill(world, consoleX + 2, bottom - 20, consoleX + 19, bottom - 15,
                       MATERIAL_LUMEN);
     }
@@ -709,18 +971,34 @@ static void WreckOutpost(World *world, Rng *rng, int centerX)
         int dishX = doorLeft ? firstX + 26 : lastX - 26;
         int mastTop = top - RngRange(rng, 60, 100);
 
-        StructureFill(world, mastX, mastTop, mastX + 3, top - 1, MATERIAL_METAL);
+        StructureFill(world, mastX, mastTop, mastX + 3, top - 1, MATERIAL_GIRDER);
         for (y = top - 16; y > mastTop + 4; y -= 16) {
-            StructureFill(world, mastX - 7, y, mastX + 10, y + 1, MATERIAL_METAL);
+            StructureFill(world, mastX - 7, y, mastX + 10, y + 1, MATERIAL_GIRDER);
+            StructureLine(world, mastX - 7, y, mastX, y - 14, 1, MATERIAL_GIRDER);
+            StructureLine(world, mastX + 10, y, mastX + 3, y - 14, 1, MATERIAL_GIRDER);
         }
         StructureDisc(world, mastX + 1, mastTop - 4, 4, MATERIAL_LUMEN);
         for (x = -18; x <= 18; ++x) {
             int dip = (x * x) / 26;
 
             StructureFill(world, dishX + x, top - 22 + dip, dishX + x, top - 19 + dip,
-                          MATERIAL_METAL);
+                          MATERIAL_GIRDER);
         }
-        StructureFill(world, dishX - 1, top - 10, dishX + 2, top - 1, MATERIAL_METAL);
+        StructureFill(world, dishX - 1, top - 10, dishX + 2, top - 1, MATERIAL_GIRDER);
+        /* A water tank on its own stand at the other end. */
+        {
+            int tankX = doorLeft ? firstX - 30 : lastX + 14;
+            int tankBottom = floorY - 24;
+
+            StructureFill(world, tankX, tankBottom, tankX + 1, floorY - 1, MATERIAL_GIRDER);
+            StructureFill(world, tankX + 14, tankBottom, tankX + 15, floorY - 1,
+                          MATERIAL_GIRDER);
+            StructureLine(world, tankX, floorY - 2, tankX + 15, tankBottom, 1, MATERIAL_GIRDER);
+            StructureFill(world, tankX - 2, tankBottom - 22, tankX + 17, tankBottom - 1,
+                          MATERIAL_METAL);
+            StructureFill(world, tankX - 2, tankBottom - 12, tankX + 17, tankBottom - 11,
+                          MATERIAL_GIRDER);
+        }
     }
     StructureSweep(world, firstX - 110, top - 110, lastX + 110, floorY + 60);
 }
@@ -812,10 +1090,36 @@ static void VaultRoom(World *world, Rng *rng, int left, int top, int width, int 
         }
     }
     for (x = left + 44; x < right - 40; x += RngRange(rng, 40, 60)) {
-        if (RngRange(rng, 0, 99) < 45) {
-            StructureFill(world, x, top, x + 8, bottom, MATERIAL_RELIC);
-            StructureFill(world, x - 3, top + 2, x + 11, top + 6, MATERIAL_RELIC);
-            StructureFill(world, x - 3, bottom - 4, x + 11, bottom, MATERIAL_RELIC);
+        int roll = RngRange(rng, 0, 99);
+
+        if (roll < 40) {
+            /* A column to the roof, walked past. */
+            StructureFill(world, x, top, x + 8, bottom, MATERIAL_PILLAR);
+            StructureFill(world, x - 3, top + 2, x + 11, top + 6, MATERIAL_PILLAR);
+            StructureFill(world, x - 3, bottom - 4, x + 11, bottom, MATERIAL_PILLAR);
+        } else if (roll < 65) {
+            StructureStatue(world, x + 4, bottom + 1, RngRange(rng, 34, height - 26),
+                            MATERIAL_PILLAR);
+        } else if (roll < 85) {
+            StructureUrn(world, x, bottom + 1, RngRange(rng, 10, 18), MATERIAL_PILLAR);
+            StructureUrn(world, x + 12, bottom + 1, RngRange(rng, 8, 14), MATERIAL_PILLAR);
+        } else {
+            StructureSarcophagus(world, x - 6, bottom + 1, 28);
+        }
+    }
+    /* Panels of glyphs set into the far wall, lit. */
+    for (x = left + 20; x < right - 30; x += RngRange(rng, 50, 80)) {
+        int row;
+
+        for (row = 0; row < 3; ++row) {
+            int mark;
+
+            for (mark = 0; mark < 5; ++mark) {
+                if (WorldGenUnit(world->seed, x + mark, top + row, STRUCTURE_DECAY + 9u) < 0.7f) {
+                    StructureFill(world, x + mark * 4, top + 14 + row * 6,
+                                  x + mark * 4 + 2, top + 15 + row * 6, MATERIAL_LUMEN);
+                }
+            }
         }
     }
     {
@@ -922,6 +1226,9 @@ static void GenerateVaults(World *world)
             plan[room].top = y;
             x += (RngRange(&rng, 0, 1) != 0 ? 1 : -1) * RngRange(&rng, 240, 340);
             y += RngRange(&rng, -50, 90);
+            /* Never climbing back toward the surface: a chamber that walked
+               up room by room broke out of the ground as a box. */
+            if (y < top) y = top;
             if (y > bottom - 120) y = bottom - 120;
         }
         entrance = RngRange(&rng, 0, 99) < 55;
@@ -935,7 +1242,9 @@ static void GenerateVaults(World *world)
                 VaultPassage(world, from->left + from->width / 2, from->top + from->height,
                              to->left + to->width / 2, to->top + to->height, pass == 0);
             }
-            if (entrance) {
+            if (entrance && WorldGenSurfaceY(world, plan[rooms - 1].left +
+                                                     plan[rooms - 1].width / 2) <
+                                (int)WorldSeaLevelY(world) - 12) {
                 const VaultRoomPlan *last = &plan[rooms - 1];
                 int stairX = last->left + last->width / 2;
 
@@ -981,17 +1290,23 @@ static void GenerateMines(World *world)
 
         if (RngRange(&rng, 0, 99) >= 65 || WorldGenNearSpawn(world, x) ||
             WorldBiomeAt(world, x) == WORLD_BIOME_OCEAN || top < 0 || wet ||
-            relief > 80 || top + depth > (int)WorldGroundY(world, 0.82f)) {
+            relief > 80 || top + depth > (int)WorldGroundY(world, 0.82f) ||
+            /* A shaft opened under the sea is the sea's way into the whole
+               underground. */
+            top > (int)WorldSeaLevelY(world) - 12) {
             continue;
         }
         /* The ground the headframe stands on, levelled. */
         StructureLevel(world, x - 40, x + 40, top + 1, top - relief - 2, MATERIAL_ROCK);
-        /* The headframe: two braced legs, a beam, a wheel. */
-        StructureFill(world, x - 32, top - 80, x - 28, top, MATERIAL_METAL);
-        StructureFill(world, x + 28, top - 80, x + 32, top, MATERIAL_METAL);
-        StructureFill(world, x - 36, top - 85, x + 36, top - 80, MATERIAL_METAL);
+        /* The headframe: two legs of girder, braced and crossed, a beam,
+           a wheel — all of it standing behind the character. */
+        StructureFill(world, x - 32, top - 80, x - 28, top, MATERIAL_GIRDER);
+        StructureFill(world, x + 28, top - 80, x + 32, top, MATERIAL_GIRDER);
+        StructureFill(world, x - 36, top - 85, x + 36, top - 80, MATERIAL_GIRDER);
         for (y = top - 70; y < top - 4; y += 22) {
-            StructureFill(world, x - 28, y, x + 28, y + 2, MATERIAL_METAL);
+            StructureFill(world, x - 28, y, x + 28, y + 2, MATERIAL_GIRDER);
+            StructureLine(world, x - 28, y + 2, x + 28, y + 22, 1, MATERIAL_GIRDER);
+            StructureLine(world, x + 28, y + 2, x - 28, y + 22, 1, MATERIAL_GIRDER);
         }
         for (y = -15; y <= 15; ++y) {
             int across;
@@ -1001,11 +1316,22 @@ static void GenerateMines(World *world)
 
                 if ((ring <= 225 && ring >= 160) ||
                     (ring < 160 && (across == 0 || y == 0) && ring > 4)) {
-                    StructureSet(world, x + across, top - 101 + y, MATERIAL_METAL);
+                    StructureSet(world, x + across, top - 101 + y, MATERIAL_GIRDER);
                 }
             }
         }
-        StructureFill(world, x - 2, top - 88, x + 2, top - 86, MATERIAL_METAL);
+        StructureFill(world, x - 2, top - 88, x + 2, top - 86, MATERIAL_GIRDER);
+        /* The cable down from the wheel, and a winch house beside. */
+        StructureFill(world, x + 14, top - 101, x + 14, top + 30, MATERIAL_GIRDER);
+        StructureFill(world, x + 44, top - 34, x + 76, top, MATERIAL_METAL);
+        StructureFill(world, x + 48, top - 30, x + 72, top - 4, MATERIAL_EMPTY);
+        WorldGenSetBackWall(world, x + 48, top - 30, x + 72, top - 4, MATERIAL_METAL);
+        StructureFill(world, x + 50, top - 18, x + 60, top - 4, MATERIAL_GIRDER);
+        StructureDisc(world, x + 55, top - 22, 3, MATERIAL_GIRDER);
+        StructureHangingLamp(world, x + 66, top - 30, 5);
+        StructureCrate(world, x - 60, top + 1, 12);
+        StructureCrate(world, x - 50, top + 1, 10);
+        StructureCrate(world, x - 57, top - 11, 9);
 
         for (y = top; y < top + depth; ++y) {
             int row = y - top;
@@ -1036,9 +1362,22 @@ static void GenerateMines(World *world)
                     WorldGenSetBackWall(world, column, y - STRUCTURE_CORRIDOR_ROWS + 1,
                                         column, y, MATERIAL_METAL);
                     StructureFill(world, column, y + 1, column, y + 4, MATERIAL_METAL);
+                    /* The rail along the floor. */
+                    StructureSet(world, column, y, MATERIAL_GIRDER);
+                    /* A frame every thirty cells: a beam under the roof on
+                       two posts, which the character walks through. */
                     if (step % 30 < 6) {
                         StructureFill(world, column, y - STRUCTURE_CORRIDOR_ROWS - 3, column,
-                                      y - STRUCTURE_CORRIDOR_ROWS, MATERIAL_METAL);
+                                      y - STRUCTURE_CORRIDOR_ROWS, MATERIAL_GIRDER);
+                    }
+                    if (step % 30 == 0 || step % 30 == 5) {
+                        StructureFill(world, column, y - STRUCTURE_CORRIDOR_ROWS + 1, column,
+                                      y - 1, MATERIAL_GIRDER);
+                    }
+                    if (step % 90 == 47) {
+                        StructureCart(world, column, y);
+                    } else if (step % 110 == 71) {
+                        StructureCrate(world, column, y, 10);
                     }
                     if (step % 60 == 15) {
                         StructureFill(world, column, y - STRUCTURE_CORRIDOR_ROWS + 1,
@@ -1050,7 +1389,7 @@ static void GenerateMines(World *world)
         }
         /* The machine at the bottom. */
         y = top + depth - 1;
-        StructureFill(world, x - 20, y - 28, x + 20, y, MATERIAL_METAL);
+        StructureFill(world, x - 20, y - 28, x + 20, y, MATERIAL_GIRDER);
         StructureFill(world, x - 14, y - 24, x + 14, y - 18, MATERIAL_LUMEN);
         StructureFill(world, x - 5, y + 1, x + 5, y + 20, MATERIAL_METAL);
     }
@@ -1088,8 +1427,17 @@ static void GenerateReliquaries(World *world)
                             MATERIAL_RELIC);
         for (column = x - width / 2 + 18; column < x + width / 2 - 14; column += 40) {
             if (column > x - 34 && column < x + 34) continue;
-            StructureFill(world, column, y, column + 8, y + height, MATERIAL_RELIC);
+            StructureFill(world, column, y, column + 8, y + height, MATERIAL_PILLAR);
             StructureFill(world, column - 3, y, column + 11, y + 5, MATERIAL_CRYSTAL);
+            /* Between the columns, the dead and what was left with them. */
+            if (column + 40 < x + width / 2 - 14) {
+                if (((column / 40) & 1) == 0) {
+                    StructureSarcophagus(world, column + 14, y + height + 1, 20);
+                } else {
+                    StructureUrn(world, column + 18, y + height + 1, 16, MATERIAL_PILLAR);
+                    StructureUrn(world, column + 28, y + height + 1, 11, MATERIAL_PILLAR);
+                }
+            }
         }
         for (column = x - width / 2 + 4; column < x + width / 2 - 4; ++column) {
             if (((column - x + 800) / 6) % 4 == 0) {

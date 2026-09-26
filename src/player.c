@@ -117,7 +117,7 @@ bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position
             /* Plants stand behind the character, like the back wall: he
                walks and flies through a tree, and it is the tree that pays
                for it (PlayerBrushFlora), never him. */
-            if (!WorldMaterialIsSolid(material) || MaterialIsFlora(material)) {
+            if (!WorldMaterialIsSolid(material) || MaterialIsBackdrop(material)) {
                 continue;
             }
 

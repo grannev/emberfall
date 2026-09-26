@@ -336,6 +336,7 @@ bool RendererInit(Renderer *renderer, const GameState *game,
        reason to refuse to start. */
     (void)SpaceRendererInit(&renderer->space, game->worldSeed);
     (void)BackWallDebrisInit(&renderer->backWallDebris);
+    WeatherRendererInit(&renderer->weather, game->worldSeed ^ 0x3ea7u);
     if (!SkyRendererLoad(&renderer->sky)) {
         TraceLog(LOG_WARNING, "RENDER: Cloud textures unavailable; the sky has no clouds");
     }
@@ -385,6 +386,38 @@ void RendererUpdatePresentation(Renderer *renderer,
     EnvironmentRendererUpdate(&renderer->environment, deltaTime);
     PresentationFxUpdate(&renderer->effects, deltaTime);
     (void)PresentationFxConsumeEvents(&renderer->effects, events);
+    /* Blasts the plants feel: every explosion, push of force and nuclear
+       strike lays the grass and the leaves over, outward, for a moment. */
+    {
+        int slot;
+        uint16_t index;
+
+        for (slot = 0; slot < 4; ++slot) {
+            renderer->swayBlastAge[slot] += deltaTime;
+            if (renderer->swayBlastAge[slot] > 1.2f) {
+                renderer->swayBlasts[slot].z = 0.0f;
+            }
+        }
+        for (index = 0; events != NULL && index < events->count; ++index) {
+            const GameEvent *event = &events->events[index];
+            int oldest = 0;
+
+            if (event->type != GAME_EVENT_EXPLOSION && event->type != GAME_EVENT_FORCE &&
+                event->type != GAME_EVENT_LIQUID_SPLASH) {
+                continue;
+            }
+            for (slot = 1; slot < 4; ++slot) {
+                if (renderer->swayBlastAge[slot] > renderer->swayBlastAge[oldest]) {
+                    oldest = slot;
+                }
+            }
+            renderer->swayBlasts[oldest] = (Vector4){
+                event->position.x, event->position.y,
+                fmaxf(40.0f, event->radius * 2.5f),
+                event->type == GAME_EVENT_LIQUID_SPLASH ? 3.0f : 8.0f};
+            renderer->swayBlastAge[oldest] = 0.0f;
+        }
+    }
     BackWallDebrisUpdate(&renderer->backWallDebris, deltaTime);
     BackWallDebrisConsumeEvents(&renderer->backWallDebris, events);
 }
@@ -396,6 +429,7 @@ void RendererClearPresentation(Renderer *renderer)
     }
     PresentationFxClear(&renderer->effects);
     BackWallDebrisClear(&renderer->backWallDebris);
+    WeatherRendererClear(&renderer->weather);
 }
 
 void RendererShiftPresentation(Renderer *renderer, float dx)
@@ -405,6 +439,7 @@ void RendererShiftPresentation(Renderer *renderer, float dx)
     }
     PresentationFxShift(&renderer->effects, dx);
     BackWallDebrisShift(&renderer->backWallDebris, dx);
+    WeatherRendererShift(&renderer->weather, dx);
     renderer->travel -= dx;
 }
 
@@ -413,6 +448,26 @@ bool RendererSetEnvironmentPalette(Renderer *renderer,
 {
     return renderer != NULL &&
            EnvironmentRendererSetPalette(&renderer->environment, palette);
+}
+
+/* What moves the plants this frame. Blasts fade over their first second. */
+static LightSway RendererSway(const Renderer *renderer, const GameState *game)
+{
+    LightSway sway;
+    int slot;
+
+    sway.time = renderer->presentationTime;
+    sway.wind = renderer->weather.sample.wind * renderer->weather.outdoor;
+    sway.player = (Vector4){game->player.position.x,
+                            game->player.position.y + PlayerExtent(&game->player) * 0.5f,
+                            game->player.velocity.x, game->player.velocity.y};
+    for (slot = 0; slot < 4; ++slot) {
+        float fade = 1.0f - renderer->swayBlastAge[slot] / 1.2f;
+
+        sway.blasts[slot] = renderer->swayBlasts[slot];
+        sway.blasts[slot].w *= fade > 0.0f ? fade : 0.0f;
+    }
+    return sway;
 }
 
 void RendererRenderScene(Renderer *renderer, GameState *game,
@@ -431,6 +486,21 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
     EnvironmentRendererSyncSeed(&renderer->environment, game->worldSeed);
     SkyRendererSyncSeed(&renderer->sky, game->worldSeed);
     SpaceRendererSyncSeed(&renderer->space, game->worldSeed);
+    /* The weather over the view, stepped at the presentation's own rate: the
+       drops, the lightning, and what the clouds show. */
+    {
+        float step = renderer->presentationTime - renderer->weatherTime;
+
+        if (step < 0.0f || step > 0.25f) step = 0.0f;
+        renderer->weatherTime = renderer->presentationTime;
+        WeatherRendererUpdate(&renderer->weather, &game->weather, &game->world, visible, step);
+        SkyRendererSetWeather(&renderer->sky, renderer->weather.sample.cloudCover,
+                              renderer->weather.sample.kind == WEATHER_STORM ||
+                                      renderer->weather.sample.kind == WEATHER_BLIZZARD ||
+                                      renderer->weather.sample.kind == WEATHER_SANDSTORM
+                                  ? renderer->weather.sample.intensity
+                                  : 0.3f * renderer->weather.sample.intensity);
+    }
     /* Comparing dimensions every frame is cheap and catches windowed,
        fullscreen and platform-driven resize paths. Allocation only happens
        when the dimensions really changed. */
@@ -524,7 +594,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                         (Rectangle){visible.x + renderer->travel, visible.y,
                                     visible.width, visible.height},
                         game->world.height, GameDaylightAt(game->dayPhase),
-                        renderer->presentationTime);
+                        renderer->weather.cloudTravel);
         rlPopMatrix();
         renderer->lastFrame.skyClouds = SkyRendererStatistics(&renderer->sky)->cloudsDrawn;
         renderer->lastFrame.spaceAmount =
@@ -536,6 +606,13 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                behind everything still standing. */
             BackWallDebrisDraw(&renderer->backWallDebris);
             WorldRendererDrawScene(&renderer->world, &game->world, visible);
+            {
+                LightSway sway = RendererSway(renderer, game);
+
+                LightRendererBeginSway(&renderer->light, &sway);
+                WorldRendererDrawFlora(&renderer->world, &game->world, visible);
+                LightRendererEndSway(&renderer->light);
+            }
             TerrainBodyRendererDrawScene(&renderer->terrainBodies,
                                          &game->dynamicTerrain, visible);
         LightRendererEnd(&renderer->light);
@@ -559,7 +636,12 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
         TerrainGrabRendererDrawScene(&game->interaction, &game->dynamicTerrain,
                                      &game->player, renderer->presentationTime);
         PresentationFxRendererDrawScene(&renderer->effects);
+        /* The weather in front of everything in the world: rain falls
+           before the character as much as behind. */
+        WeatherRendererDraw(&renderer->weather, visible);
     EndMode2D();
+    WeatherRendererDrawOverlay(&renderer->weather, renderer->targetWidth,
+                               renderer->targetHeight);
     /* The reticle uses exactly the stable transform that converted the mouse
        into aimWorld. Transient shake may move the presented world beneath the
        cursor, but it can never feed back into or visually displace aiming. */
@@ -605,7 +687,7 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
                                                 visible.height},
                                     game->world.height,
                                     GameDaylightAt(game->dayPhase),
-                                    renderer->presentationTime);
+                                    renderer->weather.cloudTravel);
             rlPopMatrix();
             /* Occluders first. The world and the bodies are opaque black
                wherever they do not glow, and the character draws its own
@@ -613,6 +695,13 @@ void RendererRenderScene(Renderer *renderer, GameState *game,
             LightRendererBegin(&renderer->light, &game->world,
                                LIGHT_PASS_EMISSIVE);
                 WorldRendererDrawEmissive(&renderer->world, &game->world, visible);
+                {
+                    LightSway sway = RendererSway(renderer, game);
+
+                    LightRendererBeginSway(&renderer->light, &sway);
+                    WorldRendererDrawFlora(&renderer->world, &game->world, visible);
+                    LightRendererEndSway(&renderer->light);
+                }
                 TerrainBodyRendererDrawEmissive(&renderer->terrainBodies,
                                                 &game->dynamicTerrain, visible);
             LightRendererEnd(&renderer->light);

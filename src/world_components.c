@@ -64,6 +64,32 @@ static inline bool ComponentIsStructural(CellMaterial material)
     return WorldMaterialIsSolid(material) && !MaterialIsDynamic(material);
 }
 
+/* Whether the plant rule lets (fromX, fromY) reach (toX, toY).
+
+   Every plant is its own object. Two trees whose crowns touch are two trees:
+   cells of two different plants are never a link, so felling one leaves the
+   other standing. A plant holds to the ground by its trunk, its stem or its
+   blade — never by a leaf that happens to rest against a cliff or a roof,
+   or a crown leaning on a rock would keep a tree standing after its trunk
+   was cut. */
+static bool ComponentPlantLinks(const World *world, int fromX, int fromY, int toX, int toY)
+{
+    CellMaterial from = WorldMaterialAt(world, fromX, fromY);
+    CellMaterial to = WorldMaterialAt(world, toX, toY);
+    bool fromPlant = MaterialIsFlora(from);
+    bool toPlant = MaterialIsFlora(to);
+
+    if (fromPlant && toPlant) {
+        return WorldGetPlant(world, fromX, fromY) == WorldGetPlant(world, toX, toY);
+    }
+    if (fromPlant != toPlant) {
+        CellMaterial plant = fromPlant ? from : to;
+
+        return plant != MATERIAL_LEAF && plant != MATERIAL_FUNGUS;
+    }
+    return true;
+}
+
 /* Adds a cell to the component when it is unvisited, inside the region and
    within the cell budget. Returns false only on the budget. */
 static bool ComponentAdd(WorldComponentWorkspace *workspace,
@@ -208,7 +234,8 @@ WorldComponentResult WorldFindComponent(const World *world,
             }
 
             material = WorldMaterialAt(world, neighbourX, neighbourY);
-            if (!WorldMaterialIsSolid(material)) {
+            if (!WorldMaterialIsSolid(material) ||
+                !ComponentPlantLinks(world, x, y, neighbourX, neighbourY)) {
                 continue;
             }
             /* Loose material is not a link, and only the grains resting on
@@ -262,6 +289,11 @@ WorldComponentResult WorldFindComponent(const World *world,
                 if (cornerX < firstX || cornerX > lastX || cornerY < firstY ||
                     cornerY > lastY ||
                     !ComponentIsStructural(WorldMaterialAt(world, cornerX, cornerY)) ||
+                    /* A speck rides with whatever it touches; only two
+                       different plants stay apart here too. */
+                    (MaterialIsFlora(WorldMaterialAt(world, x, y)) &&
+                     MaterialIsFlora(WorldMaterialAt(world, cornerX, cornerY)) &&
+                     WorldGetPlant(world, x, y) != WorldGetPlant(world, cornerX, cornerY)) ||
                     ComponentVisited(workspace,
                                      ComponentLocalIndex(cornerX - firstX,
                                                          cornerY - firstY,

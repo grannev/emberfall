@@ -87,7 +87,7 @@ static bool WorldRefreshLightBlock(World *world, int chunkX, int chunkY)
                     /* Plants stand behind the world, and cast nothing on
                        it: a tree that shaded the air under its crown down
                        to the ground read as a black pillar in the sky. */
-                    if (info->solid && !info->flora) {
+                    if (info->solid && !info->flora && !info->backdrop) {
                         ++solid;
                     }
                     /* The brightest cell in the block wins rather than the mean:

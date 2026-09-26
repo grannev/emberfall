@@ -18,6 +18,7 @@
 #include "terrain_fluid.h"
 #include "terrain_stability.h"
 #include "atmosphere.h"
+#include "weather.h"
 #include "terrain_interaction.h"
 #include "world.h"
 
@@ -43,6 +44,9 @@ typedef struct GameConfig {
        normal play session wants; a fixed value replays a session exactly,
        including the worlds that later regenerations produce. */
     uint64_t seed;
+    /* A weather held everywhere, or -1 for the ordinary schedule. For
+       looking at a kind of weather without waiting for it. */
+    int forcedWeather;
 } GameConfig;
 
 typedef struct GameState {
@@ -76,6 +80,9 @@ typedef struct GameState {
     /* Ceilings that were just opened up, waiting to be asked if they hold. */
     TerrainStabilitySystem stability;
     AtmosphereSystem atmosphere;
+    /* The wind and the weather: a schedule from the seed and the clock, and
+       what the wind does to loose ground, gases, particles and bodies. */
+    WeatherSystem weather;
     GameConfig config;
     /* The seed of the world currently loaded, and the stream that chooses the
        next one. Keeping the chooser in game state is what makes a whole session

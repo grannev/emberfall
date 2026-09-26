@@ -122,7 +122,8 @@ void WorldSetGeneratedCell(World *world, int x, int y,
     WorldCountMaterialChange(world, x, y, (CellMaterial)cell->material, material);
     cell->material = (uint8_t)material;
     cell->temperature = MaterialInitialTemperature(material);
-    cell->lifetime = 0;
+    /* A plant's cells carry the plant they belong to. */
+    cell->lifetime = MaterialIsFlora(material) ? world->generationPlant : 0u;
     cell->effectStamp = 0;
     cell->heatHeld = 0;
     cell->shade = WorldShadeFor(x, y, material) & 63u;
@@ -595,4 +596,14 @@ CellMaterial WorldGetBackWall(const World *world, int x, int y)
         return MATERIAL_EMPTY;
     }
     return WorldBackWallAt(world, x, y);
+}
+
+uint16_t WorldGetPlant(const World *world, int x, int y)
+{
+    if (world == NULL || world->cells == NULL || !WorldInBounds(world, x, y)) {
+        return 0u;
+    }
+    return MaterialIsFlora((CellMaterial)WorldCellConst(world, x, y)->material)
+               ? WorldCellConst(world, x, y)->lifetime
+               : 0u;
 }

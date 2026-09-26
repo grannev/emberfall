@@ -119,7 +119,7 @@ static Vector2 TerrainBodyPointVelocity(const TerrainBody *body, Vector2 at)
    and plants. */
 static bool TerrainInteractionBlocks(CellMaterial material)
 {
-    return material != MATERIAL_EMPTY && !MaterialIsFlora(material);
+    return material != MATERIAL_EMPTY && !MaterialIsBackdrop(material);
 }
 
 /* Solid cells past (x, y) in one direction before the raster opens, up to

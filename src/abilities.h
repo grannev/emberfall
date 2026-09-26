@@ -209,7 +209,6 @@ typedef struct AbilitySystem {
 
 const AbilityDefinition *AbilityDefinitionAt(AbilityId id);
 const AbilityState *AbilityStateAt(const AbilitySystem *abilities, AbilityId id);
-const char *AbilitiesCurrentName(const AbilitySystem *abilities);
 
 void AbilitiesInit(AbilitySystem *abilities, uint64_t seed);
 void AbilitiesCancelCharge(AbilitySystem *abilities);

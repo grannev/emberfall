@@ -41,6 +41,17 @@ static const SkyCloudLayer LAYERS[SKY_CLOUD_LAYERS] = {
         .bandHigh = 1.90f,
         .alpha = 0.62f,
     },
+    /* The low weather: big, dense and near, down among the mountain tops,
+       the layer a storm is made of. */
+    {
+        .spacing = 150.0f,
+        .drift = 7.0f,
+        .parallax = 0.9f,
+        .radius = 24.0f,
+        .bandLow = 1.10f,
+        .bandHigh = 2.60f,
+        .alpha = 0.72f,
+    },
 };
 
 /* A cloud's offset inside its slot never reaches the next slot, so the slot
@@ -52,6 +63,15 @@ static const SkyCloudLayer LAYERS[SKY_CLOUD_LAYERS] = {
 #define SKY_CLOUD_HALF_HEIGHT \
     ((float)(SKY_CLOUD_TEXTURE_HEIGHT * SKY_CLOUD_BLOCK) * 0.5f)
 
+void SkyRendererSetWeather(SkyRenderer *sky, float cover, float storm)
+{
+    if (sky == NULL) {
+        return;
+    }
+    sky->cover = cover < 0.0f ? 0.0f : (cover > 1.0f ? 1.0f : cover);
+    sky->storm = storm < 0.0f ? 0.0f : (storm > 1.0f ? 1.0f : storm);
+}
+
 void SkyRendererInit(SkyRenderer *sky, uint64_t seed)
 {
     int index;
@@ -61,6 +81,7 @@ void SkyRendererInit(SkyRenderer *sky, uint64_t seed)
     }
     memset(sky, 0, sizeof(*sky));
     sky->seed = seed;
+    sky->cover = 0.6f;
     for (index = 0; index < SKY_CLOUD_CACHE; ++index) {
         sky->clouds[index].layer = -1;
     }
@@ -386,8 +407,12 @@ static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
        above ground: a cloud behind half an atmosphere of dark blue loses most
        of its contrast, and one that reads as storm-grey at noon reads as
        nothing at dusk. */
-    unsigned char level = (unsigned char)(255.0f * (0.24f + 0.76f * daylight));
-    Color tint = occluder ? BLACK : (Color){level, level, level, 255};
+    float light = (0.24f + 0.76f * daylight) * (1.0f - 0.5f * sky->storm);
+    unsigned char level = (unsigned char)(255.0f * light);
+    Color tint = occluder ? BLACK
+                          : (Color){level, level,
+                                    (unsigned char)fminf(255.0f, (float)level * (1.0f + 0.12f * sky->storm)),
+                                    255};
     int layer;
 
     if (sky->cloudCapacity <= 0) {
@@ -410,6 +435,13 @@ static void SkyDrawClouds(SkyRenderer *sky, Rectangle visible, int worldHeight,
                 bounds.x > visible.x + visible.width ||
                 bounds.y + bounds.height < visible.y ||
                 bounds.y > visible.y + visible.height) {
+                continue;
+            }
+            /* The weather decides how many of the slots hold a cloud: a
+               clear sky keeps the thinner half, an overcast one all of
+               them, and the low layer only comes in with the weather. */
+            if (SkyUnit(sky->seed, slot, layer, 41) >
+                (layer == 2 ? -0.1f + 1.1f * sky->cover : 0.45f + 0.6f * sky->cover)) {
                 continue;
             }
             cloud = SkyAcquireCloud(sky, layer, slot);

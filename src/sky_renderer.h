@@ -46,7 +46,7 @@
 
 /* Two layers, far and near. The far one is smaller, fainter, higher and slower
    against the camera; the near one is what the player flies through. */
-#define SKY_CLOUD_LAYERS 2
+#define SKY_CLOUD_LAYERS 3
 /* Overlapping puffs per cloud, so a cloud has a silhouette rather than an
    outline. */
 #define SKY_CLOUD_PUFFS 7
@@ -60,7 +60,7 @@
 #define SKY_CLOUD_LEVELS 4
 /* Rasterised clouds kept on the GPU. More than fit on the widest view, so
    panning re-rasterises only what newly arrives. */
-#define SKY_CLOUD_CACHE 24
+#define SKY_CLOUD_CACHE 40
 
 typedef struct SkyCloudLayer {
     /* Cells between one cloud slot and the next. Every slot holds exactly one
@@ -105,6 +105,10 @@ typedef struct SkyRenderer {
     SkyCloudTexture clouds[SKY_CLOUD_CACHE];
     int cloudCapacity;
     uint32_t frame;
+    /* The weather over the view: how much of the sky is cloud (0..1) and how
+       dark and heavy it is (0..1, a storm). */
+    float cover;
+    float storm;
 } SkyRenderer;
 
 void SkyRendererInit(SkyRenderer *sky, uint64_t seed);
@@ -127,6 +131,10 @@ void SkyRendererDrawEmissive(SkyRenderer *sky, Rectangle visible,
                              int worldHeight, float daylight, float time);
 
 const SkyCloudLayer *SkyRendererLayer(int layer);
+/* The weather the clouds show: `cover` of the sky under cloud, `storm` how
+   dark it is. The clouds' drift is the `time` the draw calls are given:
+   the renderer passes the distance the wind has carried them. */
+void SkyRendererSetWeather(SkyRenderer *sky, float cover, float storm);
 
 /* Where a cloud's texture is drawn, in world cells, for the view `visible`:
    the block of SKY_CLOUD_TEXTURE_WIDTH by SKY_CLOUD_TEXTURE_HEIGHT blocks

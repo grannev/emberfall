@@ -124,7 +124,8 @@ static Vector2 ClampCameraTarget(Vector2 target, float zoom, const World *world)
 }
 
 static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
-                         const Renderer *renderer, Vector2 cursorCell)
+                         const Renderer *renderer, Vector2 cursorCell,
+                         AbilityId selected)
 {
     const World *world = &game->world;
     const Player *player = &game->player;
@@ -153,9 +154,12 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
                         world->activeChunkCount), 24, 69, 18,
              (Color){233, 198, 105, 255});
     {
-        const char *binding = InputAbilityBinding(abilities->lastUsed);
+        /* The power the wheel has selected, the one LMB will fire — the
+           same one the corner widget names. The last one fired is not
+           what the player is holding. */
+        const char *binding = InputAbilityBinding(selected);
 
-        DrawText(TextFormat("POWER: %s (%s)", AbilitiesCurrentName(abilities),
+        DrawText(TextFormat("POWER: %s (%s)", AbilityDefinitionAt(selected)->name,
                             binding != NULL ? binding : "—"),
                  24, 91, 18, (Color){255, 126, 86, 255});
     }
@@ -246,11 +250,16 @@ static void DrawDebugHud(const GameState *game, const GameEventBuffer *events,
              24, 261, 14, (Color){184, 210, 162, 255});
     /* The seed is here so that a bug report is reproducible: it plus the
        inputs is the whole state of a session. */
-    DrawText(TextFormat("SEED: 0x%llx | BIOME: %s",
-                        (unsigned long long)game->worldSeed,
-                        WorldBiomeName(WorldBiomeAt(world,
-                                                    (int)player->position.x))),
-             24, 279, 14, (Color){186, 194, 205, 255});
+    {
+        WeatherSample weather = WeatherAt(&game->weather, world, player->position.x);
+
+        DrawText(TextFormat("SEED: 0x%llx | BIOME: %s | WEATHER: %s %d%% | WIND %+.0f",
+                            (unsigned long long)game->worldSeed,
+                            WorldBiomeName(WorldBiomeAt(world, (int)player->position.x)),
+                            WeatherKindName(weather.kind),
+                            (int)(weather.intensity * 100.0f), (double)world->wind),
+                 24, 279, 14, (Color){186, 194, 205, 255});
+    }
     if (cooldown <= 0.0f) {
         DrawText("PUNCH: READY", 24, 297, 14, LIME);
     } else {
@@ -487,6 +496,10 @@ int main(int argc, char **argv)
     for (argument = 1; argument < argc; ++argument) {
         if (strcmp(argv[argument], "--smoke-test") == 0) {
             smokeTest = true;
+        } else if (strcmp(argv[argument], "--weather") == 0 && argument + 1 < argc) {
+            /* Holds one kind of weather everywhere: rain, storm, snow,
+               blizzard, sandstorm, ashfall, cloudy, clear. */
+            config.forcedWeather = WeatherKindParse(argv[++argument]);
         } else if (strcmp(argv[argument], "--seed") == 0 && argument + 1 < argc) {
             /* Replays a reported world exactly. strtoull takes 0x forms, which
                is how the debug HUD prints the seed. */
@@ -706,6 +719,19 @@ int main(int argc, char **argv)
                 sounding.drilling = game.player.drilledCells > 0;
                 sounding.drillMaterial = game.player.drillMaterial;
                 sounding.chill = AbilityStateAt(&game.abilities, ABILITY_CRYO)->active;
+                {
+                    WeatherSample weather = WeatherAt(&game.weather, &game.world,
+                                                      game.player.position.x);
+
+                    sounding.windStrength = fabsf(game.world.wind);
+                    sounding.rainIntensity =
+                        weather.kind == WEATHER_RAIN || weather.kind == WEATHER_STORM
+                            ? weather.intensity
+                            : 0.0f;
+                    sounding.thunder = renderer.weather.thunderThisFrame;
+                    sounding.leavesRustle = game.player.brushedLeaves > 0;
+                    sounding.sandBlowing = weather.kind == WEATHER_SANDSTORM;
+                }
                 GameAudioUpdate(&audio, sounding, deltaTime);
             }
             PresentGameAudio(&events, &audio);
@@ -811,7 +837,7 @@ int main(int argc, char **argv)
         } else {
             if ((smokeTest || settings.showDebugHud) &&
                 !(smokeTest && SmokeTestHidesHud(&smoke))) {
-                DrawDebugHud(&game, &events, &renderer, cursorCell);
+                DrawDebugHud(&game, &events, &renderer, cursorCell, selection.selected);
             }
             if (smokeTest || settings.showControls) {
                 DrawControlsHint();

@@ -59,6 +59,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
 {
     Color uploadPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     Color emissivePixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
+    Color floraPixels[WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE];
     int firstVisibleColumn;
     int lastVisibleColumn;
     int firstVisibleRow;
@@ -152,6 +153,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                 Color *scene = uploadPixels + (size_t)(y - minimumY) * (size_t)width;
                 Color *emissive =
                     emissivePixels + (size_t)(y - minimumY) * (size_t)width;
+                Color *flora = floraPixels + (size_t)(y - minimumY) * (size_t)width;
                 MaterialRenderSample air = MaterialRenderAir(y, world->height);
                 int x;
 
@@ -202,6 +204,21 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                         }
                     }
 
+                    flora[x] = BLANK;
+                    if (MaterialIsFlora(material)) {
+                        /* The plant goes to its own layer, and what stands
+                           behind it takes its place here. */
+                        CellMaterial wall = WorldBackWallAt(world, minimumX + x, y);
+                        float sway = MaterialRenderSway(material,
+                                                        (unsigned char)cell->shade);
+
+                        flora[x] = sample.scene;
+                        flora[x].a = (unsigned char)(MATERIAL_RENDER_FLORA_ALPHA +
+                                                     (unsigned char)(sway * 127.0f));
+                        sample = wall != MATERIAL_EMPTY
+                                     ? MaterialRenderBackWall(wall, minimumX + x, y)
+                                     : air;
+                    }
                     scene[x] = sample.scene;
                     emissive[x] = sample.emissive;
                 }
@@ -213,7 +230,7 @@ void WorldPrepareVisible(World *world, Rectangle visible,
             if (visitor(context,
                         (Rectangle){(float)minimumX, (float)minimumY,
                                     (float)width, (float)(maximumY - minimumY)},
-                        uploadPixels, emissivePixels)) {
+                        uploadPixels, emissivePixels, floraPixels)) {
                 world->dirtyChunks[chunkIndex] = 0u;
             }
         }

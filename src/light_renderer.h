@@ -55,6 +55,13 @@ typedef struct LightRenderer {
     int veilAlphaLocation;
     int airAlphaLocation;
     int emissivePassLocation;
+    int swayPassLocation;
+    int floraAlphaLocation;
+    int swayTimeLocation;
+    int swayWindLocation;
+    int swayPlayerLocation;
+    int swayBlastsLocation;
+    int pageTexelLocation;
     bool ready;
     int columns;
     int rows;
@@ -72,6 +79,15 @@ typedef struct LightRenderer {
     LightRendererStats lastFrame;
 } LightRenderer;
 
+/* What moves the plants this frame: the time, the wind, the character, and
+   up to four recent blasts (x, y, radius, strength in cells). */
+typedef struct LightSway {
+    float time;
+    float wind;
+    Vector4 player;
+    Vector4 blasts[4];
+} LightSway;
+
 bool LightRendererInit(LightRenderer *renderer, const World *world);
 /* Solves the world's light for `visible` and uploads whatever the texture is
    missing. Call once per frame before the lit passes. */
@@ -82,6 +98,10 @@ void LightRendererSync(LightRenderer *renderer, World *world, Rectangle visible)
 void LightRendererBegin(LightRenderer *renderer, const World *world,
                         LightPass pass);
 void LightRendererEnd(const LightRenderer *renderer);
+/* Between Begin and End: what is drawn next is the plants' layer, displaced
+   by `sway`, until LightRendererEndSway. */
+void LightRendererBeginSway(LightRenderer *renderer, const LightSway *sway);
+void LightRendererEndSway(LightRenderer *renderer);
 void LightRendererUnload(LightRenderer *renderer);
 const LightRendererStats *LightRendererStatistics(const LightRenderer *renderer);
 

@@ -45,6 +45,9 @@ typedef struct ParticleSystem {
     Particle particles[MAX_PARTICLES];
     int nextParticle;
     Rng rng;
+    /* The wind where the particles are, cells per second: what the air
+       pulls them toward wherever it is open to the sky. */
+    float wind;
 } ParticleSystem;
 
 /* `seed` makes debris reproducible: settling particles write real cells, so
@@ -64,6 +67,10 @@ void ParticlesSpawnDrillDebris(ParticleSystem *system, Vector2 position,
 void ParticlesSpawnForceBlast(ParticleSystem *system, Vector2 origin,
                               Vector2 direction);
 void ParticlesSpawnSteam(ParticleSystem *system, Vector2 position);
+void ParticlesSetWind(ParticleSystem *system, float wind);
+/* A loose grain the wind lifted: it flies and settles again as `material`. */
+void ParticlesSpawnWindGrain(ParticleSystem *system, Vector2 position, Vector2 velocity,
+                             CellMaterial material);
 /* Leaves knocked out of a canopy: they tumble away from the pass and flutter
    down. Only what was actually taken out of the world. */
 void ParticlesSpawnLeaves(ParticleSystem *system, Vector2 position, Vector2 velocity,

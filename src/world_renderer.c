@@ -56,16 +56,21 @@ static bool WorldRendererGrow(WorldRenderer *renderer, int wanted)
         renderer->pages[slot].texture = LoadTextureFromImage(sceneBlank);
         renderer->pages[slot].emissiveTexture =
             LoadTextureFromImage(emissiveBlank);
+        renderer->pages[slot].floraTexture = LoadTextureFromImage(emissiveBlank);
         renderer->pages[slot].pageX = -1;
         renderer->pages[slot].pageY = -1;
         renderer->pages[slot].lastUsedFrame = 0u;
         if (renderer->pages[slot].texture.id == 0u ||
-            renderer->pages[slot].emissiveTexture.id == 0u) {
+            renderer->pages[slot].emissiveTexture.id == 0u ||
+            renderer->pages[slot].floraTexture.id == 0u) {
             if (renderer->pages[slot].texture.id != 0u) {
                 UnloadTexture(renderer->pages[slot].texture);
             }
             if (renderer->pages[slot].emissiveTexture.id != 0u) {
                 UnloadTexture(renderer->pages[slot].emissiveTexture);
+            }
+            if (renderer->pages[slot].floraTexture.id != 0u) {
+                UnloadTexture(renderer->pages[slot].floraTexture);
             }
             renderer->pages[slot] = (WorldRenderPage){0};
             break;
@@ -76,6 +81,8 @@ static bool WorldRendererGrow(WorldRenderer *renderer, int wanted)
         SetTextureWrap(renderer->pages[slot].texture, TEXTURE_WRAP_CLAMP);
         SetTextureWrap(renderer->pages[slot].emissiveTexture,
                        TEXTURE_WRAP_CLAMP);
+        SetTextureFilter(renderer->pages[slot].floraTexture, TEXTURE_FILTER_POINT);
+        SetTextureWrap(renderer->pages[slot].floraTexture, TEXTURE_WRAP_CLAMP);
     }
     UnloadImage(sceneBlank);
     UnloadImage(emissiveBlank);
@@ -130,7 +137,8 @@ static int WorldRendererAcquirePage(WorldRenderer *renderer, int pageX, int page
 
 static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
                                      const Color *pixels,
-                                     const Color *emissivePixels)
+                                     const Color *emissivePixels,
+                                     const Color *floraPixels)
 {
     PageUploadContext *upload = context;
     WorldRenderer *renderer = upload->renderer;
@@ -153,10 +161,11 @@ static bool WorldRendererUploadChunk(void *context, Rectangle bounds,
     UpdateTextureRec(renderer->pages[slot].texture, local, pixels);
     UpdateTextureRec(renderer->pages[slot].emissiveTexture, local,
                      emissivePixels);
+    UpdateTextureRec(renderer->pages[slot].floraTexture, local, floraPixels);
     ++renderer->lastFrame.dirtyRegions;
-    renderer->lastFrame.textureUploads += 2u;
+    renderer->lastFrame.textureUploads += 3u;
     renderer->lastFrame.uploadedBytes +=
-        pixelCount * (sizeof(*pixels) + sizeof(*emissivePixels));
+        pixelCount * (sizeof(*pixels) + sizeof(*emissivePixels) + sizeof(*floraPixels));
     return true;
 }
 
@@ -180,9 +189,15 @@ static void WorldRenderPageAt(const World *world, int unwrapped, int *page,
     *turn = (unwrapped - wrapped) / columns;
 }
 
+typedef enum WorldRenderLayer {
+    WORLD_LAYER_SCENE,
+    WORLD_LAYER_EMISSIVE,
+    WORLD_LAYER_FLORA,
+} WorldRenderLayer;
+
 static void WorldRendererDrawLayer(const WorldRenderer *renderer,
                                    const World *world, Rectangle visible,
-                                   bool emissive)
+                                   WorldRenderLayer layer)
 {
     int firstPageX = (int)floorf(visible.x / (float)WORLD_RENDER_PAGE_SIZE);
     int lastPageX = (int)floorf((visible.x + visible.width) /
@@ -219,8 +234,9 @@ static void WorldRendererDrawLayer(const WorldRenderer *renderer,
             }
             if (originX + width > world->width) width = world->width - originX;
             if (originY + height > world->height) height = world->height - originY;
-            texture = emissive ? renderer->pages[slot].emissiveTexture
-                               : renderer->pages[slot].texture;
+            texture = layer == WORLD_LAYER_EMISSIVE ? renderer->pages[slot].emissiveTexture
+                      : layer == WORLD_LAYER_FLORA  ? renderer->pages[slot].floraTexture
+                                                    : renderer->pages[slot].texture;
             DrawTextureRec(texture,
                            (Rectangle){0.0f, 0.0f, (float)width, (float)height},
                            (Vector2){(float)(originX + turn * world->width),
@@ -330,7 +346,16 @@ void WorldRendererDrawScene(WorldRenderer *renderer, const World *world,
     if (renderer == NULL || world == NULL || renderer->pages == NULL) {
         return;
     }
-    WorldRendererDrawLayer(renderer, world, visible, false);
+    WorldRendererDrawLayer(renderer, world, visible, WORLD_LAYER_SCENE);
+}
+
+void WorldRendererDrawFlora(const WorldRenderer *renderer, const World *world,
+                            Rectangle visible)
+{
+    if (renderer == NULL || world == NULL || renderer->pages == NULL) {
+        return;
+    }
+    WorldRendererDrawLayer(renderer, world, visible, WORLD_LAYER_FLORA);
 }
 
 void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world,
@@ -339,7 +364,7 @@ void WorldRendererDrawEmissive(const WorldRenderer *renderer, const World *world
     if (renderer == NULL || world == NULL || renderer->pages == NULL) {
         return;
     }
-    WorldRendererDrawLayer(renderer, world, visible, true);
+    WorldRendererDrawLayer(renderer, world, visible, WORLD_LAYER_EMISSIVE);
 }
 
 void WorldRendererUnload(WorldRenderer *renderer)
@@ -355,6 +380,9 @@ void WorldRendererUnload(WorldRenderer *renderer)
         }
         if (renderer->pages[slot].emissiveTexture.id != 0u) {
             UnloadTexture(renderer->pages[slot].emissiveTexture);
+        }
+        if (renderer->pages[slot].floraTexture.id != 0u) {
+            UnloadTexture(renderer->pages[slot].floraTexture);
         }
     }
     free(renderer->pages);

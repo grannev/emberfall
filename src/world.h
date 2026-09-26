@@ -65,6 +65,13 @@ typedef enum CellMaterial {
        limestone instead: sand that is generated already falling costs the
        whole desert a simulation the moment it is streamed into play. */
     MATERIAL_LIMESTONE,
+    /* What the builders put up to stand behind the character: girders and
+       trusses of plate, columns of relic stone, planks for furniture and
+       crates. Backdrop (see MaterialInfo.backdrop): walked past, not into,
+       and solid to everything else. */
+    MATERIAL_GIRDER,
+    MATERIAL_PILLAR,
+    MATERIAL_PLANK,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -351,6 +358,15 @@ typedef struct World {
     int backWallRows;
     /* Workspace for the back layer's hold check, a window of
        WORLD_BACK_WALL_WINDOW blocks square: visit marks and a queue. */
+    /* The plant being generated: every flora cell the generator writes is
+       stamped with it (Cell.lifetime, which no plant otherwise uses), so
+       each tree, cactus and blade is one object however its cells touch
+       its neighbours'. Zero outside a plant. */
+    uint16_t generationPlant;
+    /* The wind in the part of the world being played, cells per second,
+       set by the game each tick from the weather. Smoke, steam and flame in
+       open air drift with it. */
+    float wind;
     uint8_t *backWallVisit;
     int *backWallQueue;
     /* Coarse light field. `emission` and `opacity` are derived from the cells and
@@ -685,6 +701,9 @@ const char *WorldMaterialName(CellMaterial material);
 /* What stands behind cell (x, y) in the back layer; MATERIAL_EMPTY for the
    open sky. Columns wrap. */
 CellMaterial WorldGetBackWall(const World *world, int x, int y);
+/* The plant a flora cell belongs to; zero for anything that is not a plant,
+   and for a plant cell that was not generated as part of one. */
+uint16_t WorldGetPlant(const World *world, int x, int y);
 /* After something was cut out of the box: every part of the back layer near
    it that no longer touches a static solid cell anywhere comes away. It is
    removed from the layer and handed back as pieces of up to 4x4 blocks, at

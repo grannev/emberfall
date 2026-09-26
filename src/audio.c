@@ -343,6 +343,15 @@ static float DrillPitchFor(CellMaterial material)
 
 void GameAudioUpdate(GameAudio *audio, GameAudioState state, float deltaTime)
 {
+    /* Placeholders: windStrength, rainIntensity, thunder, leavesRustle and
+       sandBlowing have no sounds yet. The whole sound set is to be replaced
+       with recorded sounds and music; until then the weather is silent. */
+    (void)state.windStrength;
+    (void)state.rainIntensity;
+    (void)state.thunder;
+    (void)state.leavesRustle;
+    (void)state.sandBlowing;
+
     if (audio == NULL) {
         return;
     }
