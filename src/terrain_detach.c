@@ -31,11 +31,12 @@ TerrainDetachConfig TerrainDetachDefaultConfig(void)
     /* Roughly a 100x100 block. It has been raised twice for the same reason:
        what a beam or a blast actually cuts free is bigger than the limit
        allowed, and a piece the detector refuses does not stay put, it hangs in
-       the air. At 10240 the piece of cliff a player can cut loose and shove is
-       a slab the size of a building. Still inside MAX_TERRAIN_BODY_CELLS, and
+       the air. At 40960 — four times what it was, at the player's request —
+       the piece of cliff a player can cut loose and shove is the size of a
+       hall. Still inside MAX_TERRAIN_BODY_CELLS, and
        still the bound on how far a detection search may walk — which is what
        makes it the most expensive number in this file. */
-    config.maximumBodyCells = 10240;
+    config.maximumBodyCells = 40960;
     config.maxCandidatesPerRegion = 24;
     config.maxExtractionsPerTick = 4;
     return config;

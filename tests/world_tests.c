@@ -3935,10 +3935,12 @@ static void test_an_oversized_or_malformed_query_is_refused(void)
     World world;
     WorldComponentResult found;
 
-    CHECK(WorldInit(&world, 256, 144), "world allocation failed");
+    CHECK(WorldInit(&world, 512, 144), "world allocation failed");
     FillRect(&world, 40, 40, 44, 44, MATERIAL_ROCK);
 
-    found = FindComponent(&world, (Rectangle){0.0f, 0.0f, 200.0f, 100.0f}, 42, 42);
+    found = FindComponent(&world,
+                          (Rectangle){0.0f, 0.0f, (float)(WORLD_COMPONENT_MAX_SPAN + 1), 100.0f},
+                          42, 42);
     CHECK(found.status == WORLD_COMPONENT_INVALID,
           "a %d-wide region reported %s instead of being refused",
           WORLD_COMPONENT_MAX_SPAN + 1, ComponentStatusName(found.status));
@@ -3946,7 +3948,9 @@ static void test_an_oversized_or_malformed_query_is_refused(void)
     /* The span is judged on what the caller asked for, before the world clips
        it. Otherwise the same oversized region would be refused in open ground
        and accepted at the border, purely because the map trimmed it. */
-    found = FindComponent(&world, (Rectangle){-160.0f, 0.0f, 200.0f, 100.0f},
+    found = FindComponent(&world,
+                          (Rectangle){(float)(40 - WORLD_COMPONENT_MAX_SPAN), 0.0f,
+                                      (float)(WORLD_COMPONENT_MAX_SPAN + 1), 100.0f},
                           42, 42);
     CHECK(found.status == WORLD_COMPONENT_INVALID,
           "an oversized region was accepted at the map border, reporting %s",
@@ -4343,56 +4347,43 @@ static void test_extraction_without_a_free_body_slot_changes_nothing(void)
     WorldUnload(&world);
 }
 
-/* A ring: few enough cells to pass the detector, but a bounding box larger than
-   any body's raster. The store must say so rather than tear out what fits. */
-static void test_a_component_too_wide_for_a_body_changes_nothing(void)
+/* A hollow ring nearly as wide and tall as the largest slot — a few
+   thousand cells of wall round a box of a hundred and forty thousand — comes
+   loose as one body: the size of a hall, which is what the largest slot is
+   for. */
+static void test_a_ring_the_size_of_the_largest_slot_becomes_one_body(void)
 {
     World world;
     WorldComponentResult component;
-    /* As wide as a body may be and one row taller than its raster can hold, so
-       what refuses it is the bounding box and not the span. Written from the
-       constants: a hard-coded 128x128 stopped exceeding anything the moment the
-       budgets were raised, and a test that no longer tests its own rule fails
-       silently in the useful direction. */
-    const int ringWidth = TERRAIN_BODY_MAX_SPAN;
-    const int ringHeight = TERRAIN_BODY_RASTER_CAPACITY / TERRAIN_BODY_MAX_SPAN + 1;
+    TerrainExtractResult extracted;
+    const int side = TERRAIN_BODY_MAX_SPAN - 4;
     const int firstX = 30;
     const int firstY = 20;
-    const int lastX = firstX + ringWidth - 1;
-    const int lastY = firstY + ringHeight - 1;
-    Rectangle region = {(float)firstX, (float)firstY, (float)ringWidth,
-                        (float)ringHeight};
-    uint64_t before;
+    const int lastX = firstX + side - 1;
+    const int lastY = firstY + side - 1;
+    Rectangle region = {(float)(firstX - 2), (float)(firstY - 2), (float)(side + 4),
+                        (float)(side + 4)};
+    const TerrainBody *body;
 
-    CHECK(ringHeight <= WORLD_COMPONENT_MAX_SPAN,
-          "the fixture needs a search region %d cells tall", ringHeight);
     CHECK(WorldInit(&world, lastX + 40, lastY + 40), "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
-    /* A hollow square: a large bounding box around a few hundred cells of wall.
-       It is the shape that separates the two capacity rules, because a body is
-       refused on the box it needs and not on the material in it. */
-    FillRect(&world, firstX, firstY, lastX, firstY, MATERIAL_ROCK);
-    FillRect(&world, firstX, lastY, lastX, lastY, MATERIAL_ROCK);
-    FillRect(&world, firstX, firstY, firstX, lastY, MATERIAL_ROCK);
-    FillRect(&world, lastX, firstY, lastX, lastY, MATERIAL_ROCK);
-    before = WorldDigest(&world);
+    FillRect(&world, firstX, firstY, lastX, firstY + 3, MATERIAL_ROCK);
+    FillRect(&world, firstX, lastY - 3, lastX, lastY, MATERIAL_ROCK);
+    FillRect(&world, firstX, firstY, firstX + 3, lastY, MATERIAL_ROCK);
+    FillRect(&world, lastX - 3, firstY, lastX, lastY, MATERIAL_ROCK);
 
-    component = WorldFindComponent(&world, &componentWorkspace, region,
-                                   firstX + 30, firstY,
+    component = WorldFindComponent(&world, &componentWorkspace, region, firstX + 30, firstY,
                                    WORLD_COMPONENT_MAX_CELLS);
-    CHECK(component.status == WORLD_COMPONENT_DETACHED,
-          "the ring fixture reported %s", ComponentStatusName(component.status));
-    CHECK((component.maximumX - component.minimumX + 1) *
-                  (component.maximumY - component.minimumY + 1) >
-              TERRAIN_BODY_RASTER_CAPACITY,
-          "the ring no longer exceeds a body raster");
-    CHECK(component.cellCount < MAX_TERRAIN_BODY_CELLS,
-          "the ring was meant to fail on its bounding box, not its cell count");
-
-    CheckExtractionRefused(
-        &world, &terrain,
-        TerrainExtractComponent(&world, &terrain, &componentWorkspace, component),
-        TERRAIN_EXTRACT_CELL_CAPACITY, before, 0, "extracting an oversized ring");
+    CHECK(component.status == WORLD_COMPONENT_DETACHED, "the ring fixture reported %s",
+          ComponentStatusName(component.status));
+    extracted = TerrainExtractComponent(&world, &terrain, &componentWorkspace, component);
+    CHECK(extracted.status == TERRAIN_EXTRACT_OK, "the ring was refused: %s",
+          TerrainExtractStatusName(extracted.status));
+    body = DynamicTerrainGetConst(&terrain, extracted.body);
+    CHECK(body != NULL && body->width == side && body->height == side &&
+              extracted.body.index >= TERRAIN_BODY_SMALL_SLOTS + TERRAIN_BODY_MEDIUM_SLOTS,
+          "the ring did not land in a large slot as one body");
+    CHECK(CountMaterial(&world, MATERIAL_ROCK) == 0, "part of the ring stayed in the world");
     DynamicTerrainUnload(&terrain);
     WorldUnload(&world);
 }
@@ -7190,15 +7181,15 @@ static void test_a_fragment_that_escapes_the_search_window_stays_static(void)
     World world;
     uint64_t before;
 
-    CHECK(WorldInit(&world, 400, 200), "world allocation failed");
+    CHECK(WorldInit(&world, 1400, 200), "world allocation failed");
     CHECK(DynamicTerrainInit(&terrain), "dynamic terrain allocation failed");
     TerrainDetachInit(&detach);
-    FillRect(&world, 0, 180, 399, 199, MATERIAL_ROCK);
+    FillRect(&world, 0, 180, 1399, 199, MATERIAL_ROCK);
     /* A beam three times wider than the window, on one pillar. */
-    FillRect(&world, 10, 100, 380, 101, MATERIAL_ROCK);
-    FillRect(&world, 200, 102, 200, 179, MATERIAL_ROCK);
+    FillRect(&world, 10, 100, 1380, 101, MATERIAL_ROCK);
+    FillRect(&world, 700, 102, 700, 179, MATERIAL_ROCK);
 
-    WorldDestroyCircle(&world, 200, 140, 5, 0.0f);
+    WorldDestroyCircle(&world, 700, 140, 5, 0.0f);
     before = WorldDigest(&world);
 
     CHECK(RunDetach(&world, &terrain) == 0,
@@ -14805,7 +14796,7 @@ int main(void)
     RUN(test_an_unknown_component_is_never_extracted);
     RUN(test_a_component_the_detector_refused_is_never_extracted);
     RUN(test_extraction_without_a_free_body_slot_changes_nothing);
-    RUN(test_a_component_too_wide_for_a_body_changes_nothing);
+    RUN(test_a_ring_the_size_of_the_largest_slot_becomes_one_body);
     RUN(test_a_malformed_component_changes_nothing);
     RUN(test_a_component_the_world_has_moved_past_changes_nothing);
     RUN(test_reset_after_extraction_returns_the_store_to_empty);

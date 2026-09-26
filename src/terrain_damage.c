@@ -208,7 +208,7 @@ static int TerrainDamageLabelComponents(TerrainDamageSystem *system,
         }
         ++count;
         system->component[index] = (uint8_t)count;
-        system->queue[tail++] = (uint16_t)index;
+        system->queue[tail++] = (uint32_t)index;
         while (head < tail) {
             static const int offsets[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
             int current = (int)system->queue[head++];
@@ -235,7 +235,7 @@ static int TerrainDamageLabelComponents(TerrainDamageSystem *system,
                     continue;
                 }
                 system->component[neighbour] = (uint8_t)count;
-                system->queue[tail++] = (uint16_t)neighbour;
+                system->queue[tail++] = (uint32_t)neighbour;
             }
         }
         sizes[count - 1] = size;

@@ -259,7 +259,7 @@ static bool TerrainWeldBody(TerrainWeldSystem *system, World *world,
 static bool TerrainWeldIsSupported(const DynamicTerrainSystem *terrain, int slot,
                                    const TerrainBody *body, const World *world)
 {
-    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(slot);
     int index;
 
     for (index = 0; index < body->surfaceCount; ++index) {
@@ -292,7 +292,7 @@ static bool TerrainWeldIsSupported(const DynamicTerrainSystem *terrain, int slot
 static int TerrainWeldDropDistance(const DynamicTerrainSystem *terrain, int slot,
                                    const TerrainBody *body, const World *world)
 {
-    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(slot);
     int drop = TERRAIN_WELD_MAX_DROP;
     int index;
 

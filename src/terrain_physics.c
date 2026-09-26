@@ -156,7 +156,7 @@ static void TerrainCollectContacts(const DynamicTerrainSystem *system,
                                    const World *world, const TerrainBody *body,
                                    int slot, TerrainContactSet *set)
 {
-    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(slot);
     float cosine = cosf(body->angle);
     float sine = sinf(body->angle);
     int index;

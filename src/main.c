@@ -464,10 +464,14 @@ static void PresentGameAudio(const GameEventBuffer *events, GameAudio *audio)
 int main(int argc, char **argv)
 {
     GameConfig config = GameDefaultConfig();
-    GameState game = {0};
+    /* Static, not on main's stack: both carry fixed arenas a few megabytes
+       deep between them — the detach workspace, the fracture scratch, the
+       body upload staging — and Windows gives a program one megabyte of
+       stack. */
+    static GameState game;
     GameEventBuffer events = {0};
     GameAudio audio = {0};
-    Renderer renderer = {0};
+    static Renderer renderer;
     CameraFeedback cameraFeedback = {0};
     Camera2D stableCamera = {0};
     EnvironmentPalette environmentPalette = ENVIRONMENT_PALETTE_AUTO;

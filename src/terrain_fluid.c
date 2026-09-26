@@ -47,7 +47,7 @@ static float TerrainFluidSubmerged(const DynamicTerrainSystem *terrain, int slot
                                    const TerrainBody *body, const World *world,
                                    CellMaterial *liquid)
 {
-    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(slot);
     int stride = body->surfaceCount / TERRAIN_FLUID_SAMPLES + 1;
     int counts[MATERIAL_COUNT] = {0};
     int best = MATERIAL_EMPTY;
@@ -162,7 +162,7 @@ static void TerrainFluidDisplace(TerrainFluidSystem *system,
                                  const DynamicTerrainSystem *terrain, int slot,
                                  const TerrainBody *body, World *world, float speed)
 {
-    size_t surfaceBase = (size_t)slot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(slot);
     int stride = body->surfaceCount / TERRAIN_FLUID_DISPLACE_SAMPLES + 1;
     int strength = 2 + (int)(speed / 30.0f) + (int)(sqrtf((float)body->cellCount) / 4.0f);
     int index;

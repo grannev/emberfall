@@ -74,7 +74,7 @@ static bool TerrainPairCellOccupied(const DynamicTerrainSystem *system, int slot
         localY >= body->height) {
         return false;
     }
-    base = (size_t)slot * (size_t)TERRAIN_BODY_RASTER_CAPACITY;
+    base = TerrainSlotRasterBase(slot);
     return system->material[base + (size_t)localY * (size_t)body->width +
                             (size_t)localX] != (uint8_t)MATERIAL_EMPTY;
 }
@@ -123,7 +123,7 @@ static bool TerrainPairSample(const TerrainContactWorkspace *workspace,
 {
     const TerrainBody *sampler = &system->bodies[samplerSlot];
     const TerrainBody *raster = &system->bodies[rasterSlot];
-    size_t surfaceBase = (size_t)samplerSlot * (size_t)MAX_TERRAIN_BODY_CELLS;
+    size_t surfaceBase = TerrainSlotSurfaceBase(samplerSlot);
     float samplerCosine = cosf(sampler->angle);
     float samplerSine = sinf(sampler->angle);
     float rasterCosine = cosf(raster->angle);

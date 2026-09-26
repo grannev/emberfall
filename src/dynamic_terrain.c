@@ -83,7 +83,7 @@ static bool TerrainSlotIsLive(const DynamicTerrainSystem *system,
 
 static size_t TerrainRasterBase(uint16_t index)
 {
-    return (size_t)index * (size_t)TERRAIN_BODY_RASTER_CAPACITY;
+    return TerrainSlotRasterBase(index);
 }
 
 bool DynamicTerrainInit(DynamicTerrainSystem *system)
@@ -105,11 +105,9 @@ bool DynamicTerrainInit(DynamicTerrainSystem *system)
                                  sizeof(*system->temperature));
     system->shade = calloc((size_t)MAX_TERRAIN_RASTER_CELLS,
                            sizeof(*system->shade));
-    system->surfaceX = calloc((size_t)MAX_TERRAIN_BODIES *
-                                  (size_t)MAX_TERRAIN_BODY_CELLS,
+    system->surfaceX = calloc((size_t)MAX_TERRAIN_SURFACE_CELLS,
                               sizeof(*system->surfaceX));
-    system->surfaceY = calloc((size_t)MAX_TERRAIN_BODIES *
-                                  (size_t)MAX_TERRAIN_BODY_CELLS,
+    system->surfaceY = calloc((size_t)MAX_TERRAIN_SURFACE_CELLS,
                               sizeof(*system->surfaceY));
     if (system->material == NULL || system->temperature == NULL ||
         system->shade == NULL || system->surfaceX == NULL || system->surfaceY == NULL) {
@@ -173,8 +171,10 @@ TerrainBodyHandle DynamicTerrainAllocBody(DynamicTerrainSystem *system,
         return handle;
     }
 
+    /* The smallest slot the box fits, then larger ones. */
     for (index = 0; index < MAX_TERRAIN_BODIES; ++index) {
-        if (!system->bodies[index].active) {
+        if (!system->bodies[index].active &&
+            width * height <= TerrainSlotRasterCapacity(index)) {
             break;
         }
     }
@@ -515,7 +515,7 @@ void DynamicTerrainFinalizeBody(DynamicTerrainSystem *system,
        of the raster, so computing them once here is what keeps collision from
        rediscovering them every substep. */
     {
-        size_t surfaceBase = (size_t)handle.index * (size_t)MAX_TERRAIN_BODY_CELLS;
+        size_t surfaceBase = TerrainSlotSurfaceBase(handle.index);
         float farthest = 0.0f;
 
         body->surfaceCount = 0;

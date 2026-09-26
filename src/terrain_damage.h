@@ -75,10 +75,11 @@ typedef struct TerrainDamageSystem {
     TerrainDamageConfig config;
     TerrainDamageStats stats;
     /* Scratch for one connectivity pass over one body's raster. Owned here
-       rather than on a stack because it is 24 KiB, and rather than as a global
-       because this module has one owner like every other subsystem. */
+       rather than on a stack because it is most of a megabyte at the largest
+       raster, and rather than as a global because this module has one owner
+       like every other subsystem. Indices run past sixteen bits. */
     uint8_t component[TERRAIN_BODY_RASTER_CAPACITY];
-    uint16_t queue[TERRAIN_BODY_RASTER_CAPACITY];
+    uint32_t queue[TERRAIN_BODY_RASTER_CAPACITY];
 } TerrainDamageSystem;
 
 /* The largest number of separate pieces one fracture will track: every label

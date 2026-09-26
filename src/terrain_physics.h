@@ -55,14 +55,14 @@
    trade — substeps are taken from the motion a body actually has, so an
    ordinary one still takes one or two, and only the largest, fastest, fastest
    spinning body ever reaches the ceiling. */
-#define TERRAIN_MAX_SUBSTEPS 24
+#define TERRAIN_MAX_SUBSTEPS 32
 /* The largest bounding radius any body can have. A raster is at most
    TERRAIN_BODY_RASTER_CAPACITY cells with neither side over
-   TERRAIN_BODY_MAX_SPAN, so the widest it can be is 192x144 and the farthest a
-   corner can sit from the centre is sqrt(96^2 + 72^2). Rounded up, this is what
-   the speed ceilings are chosen against, which is why no body can tunnel rather
-   than merely no body anyone has tried. */
-#define TERRAIN_BODY_MAX_BOUNDING_RADIUS 120.0f
+   TERRAIN_BODY_MAX_SPAN, so the widest it can be is 384x384 and the farthest a
+   corner can sit from the centre is sqrt(192^2 + 192^2). Rounded up, this is
+   what the speed ceilings are chosen against, which is why no body can tunnel
+   rather than merely no body anyone has tried. */
+#define TERRAIN_BODY_MAX_BOUNDING_RADIUS 272.0f
 
 /* Advances every awake body by `deltaTime`, colliding against `world`.
  *
