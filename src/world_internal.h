@@ -23,6 +23,11 @@
 /* And the most it warms anything that does not burn: under what sets dirt
    smouldering, so a burning tree does not light the ground. */
 #define WORLD_CINDER_WARMTH_CAP 150.0f
+/* Ticks a cell of steam can last, and for how many of them it is hot enough
+   to shoot upward. */
+#define WORLD_STEAM_LIFE 480u
+#define WORLD_STEAM_RISE_TICKS 90u
+#define WORLD_SMOKE_LIFE 260u
 /* Lava heats whatever it touches, but a rock cell must never reach its melt
    threshold from lava alone: otherwise one pocket turns the entire map to lava,
    the way an unbudgeted fire would burn every connected dirt cell. Rock relaxes

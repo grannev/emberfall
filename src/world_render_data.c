@@ -225,6 +225,17 @@ void WorldPrepareVisible(World *world, Rectangle visible,
                                                                         : 0;
                         sample = MaterialRenderCell(material, cell->temperature,
                                                     minimumX + x, y, around);
+                        /* Steam and smoke thin as they age: more and more
+                           see-through until the last cell goes. */
+                        if (material == MATERIAL_STEAM || material == MATERIAL_SMOKE) {
+                            float life = (float)(material == MATERIAL_STEAM
+                                                     ? WORLD_STEAM_LIFE
+                                                     : WORLD_SMOKE_LIFE);
+                            float age = fminf(1.0f, (float)cell->lifetime / life);
+                            float thin = 1.0f - 0.8f * age * age;
+
+                            sample.scene.a = (unsigned char)((float)sample.scene.a * thin);
+                        }
                         /* See-through stuff in front of a wall is seen
                            against the wall, not against the backdrop. */
                         if (sample.scene.a < 255) {

@@ -318,23 +318,70 @@ static void WorldUpdateGasMotion(World *world, int x, int y, int direction, bool
     (void)WorldTryMoveInto(world, x, y, x - direction, y, false);
 }
 
-static void WorldUpdateGas(World *world, int x, int y, int direction, bool smoke)
+/* Smoke rises slowly, drifts with the wind and thins away as steam does, a
+   cell at a time. */
+static void WorldUpdateSmoke(World *world, int x, int y, int direction)
 {
     Cell *cell = WorldCell(world, x, y);
-    uint16_t maximumLife = smoke
-                               ? (uint16_t)(150u + CoordinateHash(x, y) % 100u)
-                               : 420u;
+    uint32_t roll = CoordinateHash(x, y) ^ (world->tick * 0x9e3779b1u);
 
     if (cell->lifetime < UINT16_MAX) {
         ++cell->lifetime;
     }
-    if (cell->lifetime >= maximumLife) {
+    if (cell->lifetime >= WORLD_SMOKE_LIFE ||
+        (cell->lifetime > WORLD_SMOKE_LIFE / 2u &&
+         roll % 4096u < ((uint32_t)cell->lifetime - WORLD_SMOKE_LIFE / 2u) * 16u)) {
         WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
         WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
         return;
     }
 
-    WorldUpdateGasMotion(world, x, y, direction, smoke);
+    WorldUpdateGasMotion(world, x, y, direction, true);
+}
+
+/* Steam. Young and hot, it shoots up — two cells a tick — and billows out
+   sideways as it goes, turned by a slowly drifting swirl so a plume curls
+   rather than rising in columns; spreads out under a ceiling; slows as it
+   cools; and thins away, a cell here and a cell there, instead of the
+   whole cloud going at once. How thin it has got is its age, which the
+   page draws as how see-through it is. */
+static void WorldUpdateSteam(World *world, int x, int y, int direction)
+{
+    Cell *cell = WorldCell(world, x, y);
+    uint32_t roll = CoordinateHash(x, y) ^ (world->tick * 0x9e3779b1u);
+    uint32_t age;
+    int swirl;
+
+    if (cell->lifetime < UINT16_MAX) {
+        ++cell->lifetime;
+    }
+    age = cell->lifetime;
+    /* Thinning: past its prime a growing chance each tick to be gone. */
+    if (age >= WORLD_STEAM_LIFE ||
+        (age > WORLD_STEAM_LIFE / 2u &&
+         roll % 4096u < (age - WORLD_STEAM_LIFE / 2u) * 8u)) {
+        WorldSetCellRaw(world, x, y, MATERIAL_EMPTY);
+        WorldCell(world, x, y)->updatedTick = WorldTickStamp(world);
+        return;
+    }
+    /* A swirl field of blobs a few cells across, drifting upward with time:
+       neighbouring cells turn the same way, which is what reads as a curl. */
+    swirl = ((CoordinateHash(x / 6, (y + (int)(world->tick / 4u)) / 6) >> 7) & 1u) != 0u
+                ? 1
+                : -1;
+    if (age < WORLD_STEAM_RISE_TICKS && WorldGasRisesInto(world, x, y, x, y - 1)) {
+        int nextX = x + ((roll & 3u) == 0u ? swirl : 0);
+
+        (void)WorldGasRisesInto(world, x, y - 1, nextX, y - 2);
+        return;
+    }
+    /* Billowing: a puff sideways now and then, more as it slows. */
+    if (roll % (age < WORLD_STEAM_RISE_TICKS ? 5u : 3u) == 0u &&
+        WorldTryMoveInto(world, x, y, x + swirl, y, false)) {
+        return;
+    }
+    WorldUpdateGasMotion(world, x, y, swirl != 0 ? swirl : direction,
+                         age > WORLD_STEAM_LIFE / 2u);
 }
 
 static void WorldUpdateFire(World *world, int x, int y, int direction)
@@ -494,10 +541,10 @@ static void WorldUpdateCellAt(World *world, int x, int y)
             }
             break;
         case MATERIAL_STEAM:
-            WorldUpdateGas(world, x, y, direction, false);
+            WorldUpdateSteam(world, x, y, direction);
             break;
         case MATERIAL_SMOKE:
-            WorldUpdateGas(world, x, y, direction, true);
+            WorldUpdateSmoke(world, x, y, direction);
             break;
         case MATERIAL_FIRE:
             WorldUpdateFire(world, x, y, direction);
