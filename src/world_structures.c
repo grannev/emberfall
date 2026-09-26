@@ -1,4 +1,4 @@
-/* What was built here before the player came, and what floats above it.
+/* What was built here before the player came.
  *
  * The landscape world_biomes.c makes is a place; these are what make it a
  * place something happened in. Two peoples left their mark. The precursors,
@@ -7,8 +7,7 @@
  * reliquaries deep in the rock. The explorers who came after them, and did
  * not stay, left metal: ships broken open where they came down, outposts on
  * stilts with their antennas still lit, mine workings driven down through the
- * rock with grates and lamps along the shafts. Above everything, in space,
- * islands of earth hang where nothing pulls them down.
+ * rock with grates and lamps along the shafts.
  *
  * Everything is built on the scale of the landscape, not of the character:
  * he is sixteen cells tall, a doorway is thirty-four rows, a corridor
@@ -36,15 +35,12 @@ enum StructureChannel {
     STRUCTURE_DUNGEONS = 42,
     STRUCTURE_SHAFTS = 43,
     STRUCTURE_CRYPTS = 44,
-    STRUCTURE_ISLANDS = 45,
-    STRUCTURE_ISLAND_SHAPE = 46,
 };
 
 #define RUIN_SPACING 1100
 #define DUNGEON_SPACING 2600
 #define SHAFT_SPACING 3000
 #define CRYPT_SPACING 3000
-#define ISLAND_SPACING 1500
 
 /* What a character needs to pass: a door this tall, a corridor this tall. */
 #define STRUCTURE_DOOR_ROWS 34
@@ -1459,133 +1455,4 @@ void WorldGenerateUnderground(World *world)
     GenerateVaults(world);
     GenerateMines(world);
     GenerateReliquaries(world);
-}
-
-/* ---- islands in the sky ---------------------------------------------------- */
-
-/* The top of an island's column: the first solid cell at or below `fromY`,
-   within `reach`. The ground search the rest of the generator uses starts
-   at the ground band and would never see an island in space. */
-static int IslandTopY(const World *world, int x, int fromY, int reach)
-{
-    int y;
-
-    for (y = fromY; y < fromY + reach && y < world->height; ++y) {
-        if (MaterialIsSolid(WorldMaterialAt(world, x, y))) {
-            return y;
-        }
-    }
-    return -1;
-}
-
-/* An island: a flat top of soil under grass, gently domed, and an underside
-   of rock that hangs down in a rough point, as if it were torn out of the
-   ground below and never fell. Wider than the detach search window, so it
-   is not a thing that comes loose; the few small rocks drifting beside it
-   are, and fall when they are hit. */
-static void PlaceIsland(World *world, Rng *rng, int centerX, int baseY, int halfWidth,
-                        int depth)
-{
-    int x;
-
-    for (x = -halfWidth; x <= halfWidth; ++x) {
-        float t = (float)x / (float)halfWidth;
-        float body = powf(fmaxf(0.0f, 1.0f - t * t), 0.7f);
-        float rough = WorldGenUnit(world->seed, (centerX + x) / 3, baseY,
-                                   STRUCTURE_ISLAND_SHAPE);
-        int top = baseY - (int)(4.0f * body + 2.0f * rough * body);
-        int bottom = baseY + (int)((float)depth * body * (0.7f + 0.3f * rough));
-        int soil = 4 + (int)(4.0f * body);
-        int y;
-
-        if (body <= 0.02f) continue;
-        for (y = top; y <= bottom; ++y) {
-            StructureSet(world, centerX + x, y,
-                         y < top + soil ? MATERIAL_DIRT : MATERIAL_ROCK);
-        }
-    }
-    /* Trees, away from the edges, before the grass: a tree needs clear
-       ground either side of its trunk. */
-    for (x = -halfWidth + 20; x < halfWidth - 20; x += RngRange(rng, 14, 32)) {
-        int top = IslandTopY(world, centerX + x, baseY - 12, 24);
-
-        if (top > 0 && top < baseY + 4) {
-            WorldGenPlaceTree(world, centerX + x, top, rng);
-        }
-    }
-    /* Grass on every piece of the top still open to the sky. */
-    for (x = -halfWidth; x <= halfWidth; ++x) {
-        int top = IslandTopY(world, centerX + x, baseY - 12, 24);
-
-        if (top > 0 && top < baseY + 12 &&
-            WorldMaterialAt(world, centerX + x, top) == MATERIAL_DIRT &&
-            WorldMaterialAt(world, centerX + x, top - 1) == MATERIAL_EMPTY) {
-            WorldGenGrowGrass(world, centerX + x, top, rng);
-        }
-    }
-    /* On some, what the precursors left up here: an obelisk lamp on a
-       plinth of relic stone, still lit. */
-    if (RngRange(rng, 0, 99) < 45) {
-        int shrineX = centerX + RngRange(rng, -halfWidth / 3, halfWidth / 3);
-        int ground = IslandTopY(world, shrineX, baseY - 12, 24);
-
-        if (ground > 0) {
-            if (WorldMaterialAt(world, shrineX, ground) == MATERIAL_GRASS) ++ground;
-            StructureFill(world, shrineX - 14, ground - 3, shrineX + 14, ground - 1,
-                          MATERIAL_RELIC);
-            StructureFill(world, shrineX - 14, ground - 3, shrineX + 14, ground + 3,
-                          MATERIAL_RELIC);
-            StructureObeliskLamp(world, shrineX, ground - 3, RngRange(rng, 30, 44), 4,
-                                 MATERIAL_RELIC, MATERIAL_LUMEN);
-            StructureSweep(world, shrineX - 16, ground - 60, shrineX + 16, ground + 4);
-        }
-    }
-    /* Rocks drifting beside it: small enough to fall when they are hit. */
-    for (x = 0; x < 4; ++x) {
-        int side = RngRange(rng, 0, 1) != 0 ? 1 : -1;
-        int rockX = centerX + side * (halfWidth + RngRange(rng, 8, 40));
-        int rockY = baseY + RngRange(rng, -30, depth);
-        int radius = RngRange(rng, 2, 6);
-        int oy;
-
-        for (oy = -radius; oy <= radius; ++oy) {
-            int ox;
-
-            for (ox = -radius - 1; ox <= radius + 1; ++ox) {
-                if (ox * ox + oy * oy * 2 <= radius * radius) {
-                    StructureSet(world, rockX + ox, rockY + oy, MATERIAL_ROCK);
-                }
-            }
-        }
-    }
-}
-
-void WorldGenerateIslands(World *world)
-{
-    int count;
-    int feature;
-
-    if (world->height < 1600 || world->width < 1024) return;
-    count = (world->width + ISLAND_SPACING - 1) / ISLAND_SPACING;
-    for (feature = 0; feature < count; ++feature) {
-        Rng rng = WorldGenFeatureRng(world->seed, feature, STRUCTURE_ISLANDS);
-        int centerX = StructureModulo(feature * ISLAND_SPACING + ISLAND_SPACING / 2 +
-                                          RngRange(&rng, -400, 400),
-                                      world->width);
-        int halfWidth = RngRange(&rng, 100, 170);
-        int depth = RngRange(&rng, 40, 90);
-        int lowest;
-        int baseY;
-
-        if (RngRange(&rng, 0, 99) >= 70) continue;
-        /* Only where nothing pulls: above the space line, the whole island
-           — its trees on top and its hanging underside — clear of the top
-           of the world and of the band where the pull begins. An island in
-           the air under the clouds would be the one thing there that does
-           not fall. */
-        lowest = (int)WorldSpaceLineY(world) - depth - 24;
-        if (lowest < 90) continue;
-        baseY = RngRange(&rng, 90, lowest);
-        PlaceIsland(world, &rng, centerX, baseY, halfWidth, depth);
-    }
 }

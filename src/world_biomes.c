@@ -1157,8 +1157,7 @@ static int SurfaceSolidY(const World *world, int x)
     int y;
 
     /* From the top of the ground band, not of the world: the generator puts
-       nothing in the sky above it but the islands, which are made last, and
-       reading three thousand rows of untouched sky per column was most of
+       nothing in the sky above it, and reading three thousand rows of untouched sky per column was most of
        the time it took to make a world. */
     for (y = WorldSkyRows(world); y < world->height; ++y) {
         CellMaterial material = WorldMaterialAt(world, x, y);
@@ -1747,6 +1746,232 @@ static void FloraGrowGrass(World *world, int x, int groundY, Rng *rng)
     world->generationPlant = 0u;
 }
 
+/* ---- the undergrowth -------------------------------------------------------
+
+   What grows between the trees, each one a plant of its own (see PlantIdAt):
+   bushes in the temperate lands, dry brush and the tumbleweeds the wind
+   rolls on the dunes, low needle-bushes on the frost, ember blooms among the
+   rocks of the wastes, kelp on the sea floor, vines hanging in the caves and
+   glowing moss on their floors. */
+
+/* Sets a cell to `material` when it is empty (or, for kelp, water). */
+static void FloraPut(World *world, int x, int y, CellMaterial material)
+{
+    CellMaterial there;
+
+    if (!WorldInBounds(world, x, y)) return;
+    there = WorldMaterialAt(world, x, y);
+    if (there == MATERIAL_EMPTY || (material == MATERIAL_KELP && there == MATERIAL_WATER)) {
+        WorldSetGeneratedCell(world, x, y, material);
+    }
+}
+
+/* A bush: a few short stems from one root and leaves heaped round them,
+   low and wider than it is tall. */
+static void FloraPlaceBush(World *world, int x, int groundY, Rng *rng, CellMaterial leaves)
+{
+    int stems = RngRange(rng, 2, 4);
+    int stem;
+
+    world->generationPlant = PlantIdAt(x, groundY);
+    for (stem = 0; stem < stems; ++stem) {
+        int height = RngRange(rng, 6, 16);
+        int lean = RngRange(rng, -8, 8);
+        int step;
+        int tipX = x;
+        int tipY = groundY - 1;
+
+        for (step = 0; step < height; ++step) {
+            tipX = x + lean * step / height;
+            tipY = groundY - 1 - step;
+            FloraPut(world, tipX, tipY, MATERIAL_WOOD);
+        }
+        FloraFillDisc(world, tipX, tipY, RngRange(rng, 6, 11), RngRange(rng, 4, 8), leaves,
+                      world->seed, RngRange(rng, 0, 255));
+    }
+    world->generationPlant = 0u;
+}
+
+/* Dry brush: a tangle of thin twigs from one root. */
+static void FloraPlaceDryShrub(World *world, int x, int groundY, Rng *rng)
+{
+    int twigs = RngRange(rng, 5, 9);
+    int twig;
+
+    world->generationPlant = PlantIdAt(x, groundY);
+    for (twig = 0; twig < twigs; ++twig) {
+        float angle = -1.5708f + (float)RngRange(rng, -80, 80) * 0.01f;
+        float length = (float)RngRange(rng, 8, 20);
+        float step;
+
+        for (step = 0.0f; step < length; step += 0.7f) {
+            float bend = sinf(step * 0.3f + (float)twig) * 1.5f;
+
+            FloraPut(world, x + (int)(cosf(angle) * step + bend), groundY - 1 + (int)(sinf(angle) * step),
+                     MATERIAL_DRYBRUSH);
+        }
+    }
+    world->generationPlant = 0u;
+}
+
+/* A tumbleweed: a loose ball of brush sitting on the sand, remembered so the
+   wind can take it. */
+static void FloraPlaceTumbleweed(World *world, int x, int groundY, Rng *rng)
+{
+    int radius = RngRange(rng, 5, 8);
+    int centreY = groundY - radius;
+    int dy;
+
+    if (world->tumbleweedCount >= WORLD_MAX_TUMBLEWEEDS) return;
+    world->generationPlant = PlantIdAt(x, groundY);
+    for (dy = -radius; dy <= radius; ++dy) {
+        int dx;
+
+        for (dx = -radius; dx <= radius; ++dx) {
+            int distance = dx * dx + dy * dy;
+
+            /* A shell of twigs round a hollow, with gaps in it. */
+            if (distance > radius * radius || distance < (radius - 3) * (radius - 3)) continue;
+            if (PatchUnit(world->seed, (x + dx) * 5, (centreY + dy) * 5) < 0.3f) continue;
+            FloraPut(world, x + dx, centreY + dy, MATERIAL_DRYBRUSH);
+        }
+    }
+    FloraPut(world, x, groundY - 1, MATERIAL_DRYBRUSH);
+    world->generationPlant = 0u;
+    world->tumbleweeds[world->tumbleweedCount++] =
+        (WorldTumbleweed){(int16_t)radius, false, x, centreY};
+}
+
+/* An ember bloom: a charred stem and a glowing head, in clusters. */
+static void FloraPlaceEmberBlooms(World *world, int x, int groundY, Rng *rng)
+{
+    int blooms = RngRange(rng, 1, 4);
+    int bloom;
+
+    for (bloom = 0; bloom < blooms; ++bloom) {
+        int bx = x + RngRange(rng, -6, 6);
+        int top = groundY - 1 - RngRange(rng, 4, 9);
+        int y;
+
+        world->generationPlant = PlantIdAt(bx, groundY + bloom);
+        for (y = groundY - 1; y > top; --y) {
+            FloraPut(world, bx, y, MATERIAL_WOOD);
+        }
+        FloraPut(world, bx, top, MATERIAL_EMBERBLOOM);
+        FloraPut(world, bx - 1, top, MATERIAL_EMBERBLOOM);
+        FloraPut(world, bx + 1, top, MATERIAL_EMBERBLOOM);
+        FloraPut(world, bx, top - 1, MATERIAL_EMBERBLOOM);
+    }
+    world->generationPlant = 0u;
+}
+
+/* Kelp: strands up from the sea floor through the water, waving, with a
+   blade off each side now and then. */
+static void FloraPlaceKelp(World *world, int x, int floorY, Rng *rng)
+{
+    int height = RngRange(rng, 30, 110);
+    float phase = (float)RngRange(rng, 0, 628) * 0.01f;
+    int row;
+
+    world->generationPlant = PlantIdAt(x, floorY);
+    for (row = 1; row <= height; ++row) {
+        int y = floorY - row;
+        int cx = x + (int)(sinf((float)row * 0.12f + phase) * 3.0f);
+
+        if (WorldMaterialAt(world, cx, y) != MATERIAL_WATER) break;
+        FloraPut(world, cx, y, MATERIAL_KELP);
+        FloraPut(world, cx + 1, y, MATERIAL_KELP);
+        if (row % 7 == 3) {
+            FloraPut(world, cx + 2, y - 1, MATERIAL_KELP);
+            FloraPut(world, cx + 3, y - 2, MATERIAL_KELP);
+        } else if (row % 7 == 6) {
+            FloraPut(world, cx - 1, y - 1, MATERIAL_KELP);
+            FloraPut(world, cx - 2, y - 2, MATERIAL_KELP);
+        }
+    }
+    world->generationPlant = 0u;
+}
+
+/* A fallen log along the ground. */
+static void FloraPlaceLog(World *world, int x, int groundY, Rng *rng)
+{
+    int length = RngRange(rng, 26, 56);
+    int thick = RngRange(rng, 4, 6);
+    int column;
+
+    world->generationPlant = PlantIdAt(x, groundY);
+    for (column = 0; column < length; ++column) {
+        int top = WorldGenSolidY(world, x + column);
+        int row;
+
+        if (top < 0 || top < groundY - 6 || top > groundY + 6) break;
+        for (row = 1; row <= thick; ++row) {
+            FloraPut(world, x + column, top - row, MATERIAL_WOOD);
+        }
+    }
+    world->generationPlant = 0u;
+}
+
+/* Vines from cave ceilings and moss on cave floors, wherever the ground is
+   hollow: the one pass that walks the underground, at generation only. */
+static void GenerateCaveGrowth(World *world)
+{
+    int x;
+    int top = (int)WorldGroundY(world, 0.05f);
+
+    for (x = 0; x < world->width; x += 3) {
+        int y;
+
+        if (IsNearSpawn(world, x)) continue;
+        for (y = top; y < world->height - 1; ++y) {
+            CellMaterial here = WorldMaterialAt(world, x, y);
+            CellMaterial above;
+            CellMaterial below;
+            uint32_t roll;
+
+            if (here != MATERIAL_EMPTY ||
+                WorldBackWallAt(world, x, y) == MATERIAL_EMPTY) {
+                continue;
+            }
+            above = WorldMaterialAt(world, x, y - 1);
+            below = WorldMaterialAt(world, x, y + 1);
+            roll = (uint32_t)(GenerationUnit(world->seed, x, y, GENERATION_SURFACE_FEATURES + 77u) *
+                              1000.0f);
+            /* Nothing live hangs in the caves of the ember wastes. */
+            if (MaterialIsSolid(above) && !MaterialIsBackdrop(above) &&
+                !MaterialIsDynamic(above) && roll < 45 &&
+                WorldBiomeAt(world, x) != WORLD_BIOME_VOLCANIC) {
+                /* A vine: a strand hanging, with leaves along it. */
+                int length = 8 + (int)(roll % 40u);
+                int step;
+
+                world->generationPlant = PlantIdAt(x, y);
+                for (step = 0; step < length; ++step) {
+                    int vx = x + (int)(sinf((float)step * 0.35f) * 1.2f);
+
+                    if (WorldMaterialAt(world, vx, y + step) != MATERIAL_EMPTY) break;
+                    FloraPut(world, vx, y + step, MATERIAL_LEAF);
+                }
+                world->generationPlant = 0u;
+            } else if (MaterialIsSolid(below) && !MaterialIsBackdrop(below) &&
+                       !MaterialIsDynamic(below) && roll > 985) {
+                /* A patch of glowing moss along the floor. */
+                int length = 3 + (int)(roll % 7u);
+                int step;
+
+                world->generationPlant = PlantIdAt(x, y);
+                for (step = 0; step < length; ++step) {
+                    if (WorldMaterialAt(world, x + step, y) == MATERIAL_EMPTY &&
+                        MaterialIsSolid(WorldMaterialAt(world, x + step, y + 1))) {
+                        FloraPut(world, x + step, y, MATERIAL_FUNGUS);
+                    }
+                }
+                world->generationPlant = 0u;
+            }
+        }
+    }
+}
+
 /* Whether the ground at (x, y) is something built — a roof, a plinth, a
    hull — under at most a drift of snow. Nothing grows on a roof: a pine on
    the snow on an outpost's roof was a pine standing in the air. */
@@ -1799,6 +2024,12 @@ static void GenerateFlora(World *world)
                                         RngRange(&rng, 96, 150),
                                         RngRange(&rng, 12, 18), MATERIAL_LEAF);
                 }
+                /* The undergrowth: bushes, now and then a fallen log. */
+                if (RngRange(&rng, 0, 999) < 22) {
+                    FloraPlaceBush(world, x, surface, &rng, MATERIAL_LEAF);
+                } else if (RngRange(&rng, 0, 999) < 4) {
+                    FloraPlaceLog(world, x, surface, &rng);
+                }
                 /* Grass on almost every exposed cell of soil: it is the
                    cheapest thing that makes ground read as living. */
                 FloraGrowGrass(world, x, surface, &rng);
@@ -1810,6 +2041,10 @@ static void GenerateFlora(World *world)
                 if (RngRange(&rng, 0, 999) < 22) {
                     FloraPlaceCactus(world, x, surface, &rng,
                                      RngRange(&rng, 76, 130));
+                } else if (RngRange(&rng, 0, 999) < 16) {
+                    FloraPlaceDryShrub(world, x, surface, &rng);
+                } else if (RngRange(&rng, 0, 999) < 5) {
+                    FloraPlaceTumbleweed(world, x, surface, &rng);
                 }
                 break;
             case WORLD_BIOME_FROST:
@@ -1822,6 +2057,9 @@ static void GenerateFlora(World *world)
                 if (RngRange(&rng, 0, 999) < 8) {
                     FloraPlaceConifer(world, x, surface, &rng,
                                       RngRange(&rng, 130, 220), MATERIAL_LEAF);
+                } else if (RngRange(&rng, 0, 999) < 14) {
+                    /* Low needle-bushes, hunched against the cold. */
+                    FloraPlaceBush(world, x, surface, &rng, MATERIAL_LEAF);
                 }
                 break;
             case WORLD_BIOME_VOLCANIC:
@@ -1833,14 +2071,16 @@ static void GenerateFlora(World *world)
                     FloraPlaceBroadleaf(world, x, surface, &rng,
                                         RngRange(&rng, 64, 110), 0,
                                         MATERIAL_EMPTY);
+                } else if (RngRange(&rng, 0, 999) < 30) {
+                    FloraPlaceEmberBlooms(world, x, surface, &rng);
                 }
                 break;
             case WORLD_BIOME_OCEAN:
-                /* Nothing grows on the shelf. Every plant here is placed into
-                   empty air above the ground it stands on, and there is no
-                   empty air under the sea — the clearance test rejects the
-                   water, so this is a statement of intent rather than a
-                   guard. */
+                /* Kelp from the sea floor, where the floor is under water. */
+                if (WorldMaterialAt(world, x, surface - 1) == MATERIAL_WATER &&
+                    RngRange(&rng, 0, 999) < 40) {
+                    FloraPlaceKelp(world, x, surface, &rng);
+                }
                 break;
             case WORLD_BIOME_COUNT:
                 break;
@@ -2494,9 +2734,7 @@ void WorldGenerateBiomeTerrain(World *world)
     /* Last, so that every plant grows on the surface as it finally is rather
        than on one a later feature was going to bury. */
     GenerateFlora(world);
-    /* The islands in the sky last: they carry their own soil, grass and
-       trees, and nothing below should grow up into them. */
-    WorldGenerateIslands(world);
+    GenerateCaveGrowth(world);
 }
 
 void WorldGenSetBackWall(World *world, int firstX, int firstY, int lastX, int lastY,

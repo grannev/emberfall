@@ -446,16 +446,6 @@ static void EnvironmentGenerateFeatures(EnvironmentRenderer *renderer,
             .phase = EnvironmentUnit(seed, (uint64_t)index + 721u) * 6.2831853f,
         };
     }
-    for (index = 0; index < ENVIRONMENT_ISLAND_COUNT; ++index) {
-        renderer->islands[index] = (EnvironmentFeature){
-            .x = ((float)index + 0.2f + EnvironmentUnit(seed, (uint64_t)index + 1001u) * 0.6f) /
-                 (float)ENVIRONMENT_ISLAND_COUNT,
-            .y = 0.14f + EnvironmentUnit(seed, (uint64_t)index + 1031u) * 0.22f,
-            .width = 0.5f + EnvironmentUnit(seed, (uint64_t)index + 1061u),
-            .height = 0.4f + EnvironmentUnit(seed, (uint64_t)index + 1091u),
-            .phase = EnvironmentUnit(seed, (uint64_t)index + 1121u) * 6.2831853f,
-        };
-    }
     for (index = 0; index < ENVIRONMENT_NEAR_SPIRE_COUNT; ++index) {
         renderer->nearSpires[index] = (EnvironmentFeature){
             .x = ((float)index + EnvironmentUnit(seed, (uint64_t)index + 801u)) /
@@ -626,7 +616,6 @@ bool EnvironmentRendererStateIsValid(const EnvironmentRenderer *renderer)
         renderer != NULL ? renderer->hazeBands : NULL,
         renderer != NULL ? renderer->skyDetails : NULL,
         renderer != NULL ? renderer->nearSpires : NULL,
-        renderer != NULL ? renderer->islands : NULL,
     };
     const int counts[] = {
         ENVIRONMENT_FAR_PEAK_COUNT,
@@ -634,7 +623,6 @@ bool EnvironmentRendererStateIsValid(const EnvironmentRenderer *renderer)
         ENVIRONMENT_HAZE_BAND_COUNT,
         ENVIRONMENT_SKY_DETAIL_COUNT,
         ENVIRONMENT_NEAR_SPIRE_COUNT,
-        ENVIRONMENT_ISLAND_COUNT,
     };
     size_t group;
 

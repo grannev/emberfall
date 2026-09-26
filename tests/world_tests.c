@@ -1691,8 +1691,11 @@ static void test_flora_grows_on_the_biome_it_belongs_to(void)
                   found[WORLD_BIOME_DUNES][MATERIAL_CACTUS]);
         }
         if (biome != WORLD_BIOME_TEMPERATE) {
-            /* Grass is one column wide and cannot overhang at all. */
-            CHECK(found[biome][MATERIAL_GRASS] == 0,
+            /* A blade leans a few cells at most, so at a border a tuft may
+               bend over the line; a meadow grown on the wrong side would be
+               a share of the temperate count, not a few cells. */
+            CHECK(found[biome][MATERIAL_GRASS] * 200 <
+                      found[WORLD_BIOME_TEMPERATE][MATERIAL_GRASS],
                   "%s grew %d cells of grass",
                   WorldBiomeName((WorldBiome)biome),
                   found[biome][MATERIAL_GRASS]);
@@ -7762,14 +7765,14 @@ static void test_generation_is_seamless_across_the_wrap(void)
 
 /* The production world has the things the generator is meant to make: rock
    under snow, the deep basalt, crystal and fungus in the caverns, ruins and
-   dungeons in brick, and islands in the sky well above any ground. And the
-   same seed makes the same world. */
+   dungeons in brick, and nothing at all hanging in the sky: floating islands
+   were taken out of the game. And the same seed makes the same world. */
 static void test_the_generated_world_has_its_landmarks(void)
 {
     static World world;
     int counts[MATERIAL_COUNT];
     uint64_t digest;
-    int islandCells = 0;
+    int skyCells = 0;
     int x;
     int y;
 
@@ -7793,21 +7796,13 @@ static void test_the_generated_world_has_its_landmarks(void)
           counts[MATERIAL_CRYSTAL]);
     CHECK(counts[MATERIAL_FUNGUS] > 10, "only %d fungus samples",
           counts[MATERIAL_FUNGUS]);
-    /* Islands: solid ground with more than a hundred cells of open air
-       straight under it. */
-    for (x = 0; x < world.width; x += 16) {
-        int top = FirstSolidY(&world, x);
-        int gap = 0;
-
-        if (top < 0) continue;
-        for (y = top; y < world.height && WorldGetCell(&world, x, y) != MATERIAL_EMPTY; ++y) {
+    /* The sky over the ground band is empty all the way up to space. */
+    for (y = 0; y < WorldSkyRows(&world); y += 4) {
+        for (x = 0; x < world.width; x += 4) {
+            if (WorldGetCell(&world, x, y) != MATERIAL_EMPTY) ++skyCells;
         }
-        for (; y < world.height && WorldGetCell(&world, x, y) == MATERIAL_EMPTY; ++y) {
-            ++gap;
-        }
-        if (gap > 100) ++islandCells;
     }
-    CHECK(islandCells > 10, "only %d columns stand over open sky", islandCells);
+    CHECK(skyCells == 0, "%d samples of something in the sky above the ground", skyCells);
 
     digest = WorldDigest(&world);
     WorldGenerate(&world, 0x1234u);
@@ -13669,6 +13664,49 @@ static void test_the_walker_walks_and_runs_on_the_ground(void)
     WorldUnload(&world);
 }
 
+/* Falling grains are specks in the air, not walls: a stream of sand poured
+   onto the character from above neither shoves him sideways nor lifts him
+   while it falls. */
+static void test_falling_grains_pass_through_the_character(void)
+{
+    World world;
+    bool landed = false;
+    Player player;
+    float startX;
+    float startFeet;
+    int tick;
+    int column;
+
+    CHECK(WorldInit(&world, 1024, 256), "world allocation failed");
+    FillRect(&world, 0, 200, 1023, 255, MATERIAL_ROCK);
+    StandOnFloor(&player, &world, 100.0f, 200);
+    WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 20);
+    startX = player.position.x;
+    startFeet = player.position.y + PlayerExtent(&player);
+    for (tick = 0; tick < 90; ++tick) {
+        for (column = 96; column <= 104; column += 2) {
+            if (WorldGetCell(&world, column, 150) == MATERIAL_EMPTY) {
+                WorldSetCell(&world, column, 150, MATERIAL_SAND);
+            }
+        }
+        WorldUpdate(&world);
+        WalkSteps(&player, &world, (Vector2){0.0f, 0.0f}, false, false, false, 1);
+        CHECK(fabsf(player.position.x - startX) < 0.5f,
+              "falling sand pushed the character from %.2f to %.2f", (double)startX,
+              (double)player.position.x);
+        /* Until the first grain lands: what lies at his feet afterwards
+           is ground, and he stands on it. */
+        if (landed) continue;
+        for (column = 96; column <= 104; ++column) {
+            if (WorldGetCell(&world, column, 199) == MATERIAL_SAND) landed = true;
+        }
+        CHECK(player.position.y + PlayerExtent(&player) > startFeet - 0.5f,
+              "falling sand lifted the character's feet from %.2f to %.2f",
+              (double)startFeet, (double)(player.position.y + PlayerExtent(&player)));
+    }
+    WorldUnload(&world);
+}
+
 /* A step no higher than PLAYER_STEP_HEIGHT is walked up; a wall is not. */
 static void test_the_walker_climbs_a_step_and_stops_at_a_wall(void)
 {
@@ -14623,6 +14661,7 @@ int main(void)
     RUN(test_player_never_ends_a_frame_inside_solid_terrain);
     RUN(test_the_walker_walks_and_runs_on_the_ground);
     RUN(test_the_walker_climbs_a_step_and_stops_at_a_wall);
+    RUN(test_falling_grains_pass_through_the_character);
     RUN(test_jumping_double_jump_flight_and_landing);
     RUN(test_trees_stand_behind_the_character_and_lose_leaves_to_him);
     RUN(test_the_ground_has_a_wall_behind_it_and_the_sky_does_not);

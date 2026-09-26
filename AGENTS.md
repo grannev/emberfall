@@ -252,6 +252,15 @@ coherent phase with an explanatory message.
   (`PlayerBrushFlora`, which also sweeps the leaves it leaves orphaned).
   Everything else — drill, fire, laser, blasts, detachment — still treats a
   tree as solid.
+- A grain in flight is not ground. `WorldCellBlocksBodies` is the one answer
+  player collision and body-world collision share: a dynamic cell stops them
+  only when it has not moved for `WORLD_GRAIN_FALLING_TICKS` and lies on
+  something that holds it, so falling sand, dust, drill debris and grains the
+  wind carries pass through the character and the bodies without a shove; a
+  resting pile is ground as before.
+- There are no floating islands. The sky above the ground band is generated
+  empty, and the backdrop has no islands either: the player asked for them
+  to be taken out of the game entirely.
 - Generated dynamics are generated at rest, never walled in. Sand is a
   blanket over `LIMESTONE`, and any grain that would move on its first tick is
   laid as limestone (`SettleSand`). The sea is poured by a flood fill into
@@ -261,7 +270,7 @@ coherent phase with an explanatory message.
 - World features are sized against the landscape, not the character: trees,
   caves, halls and gateways are many times his sixteen cells. Do not shrink
   them to keep a count in a test.
-- `EnvironmentRenderer` is renderer-owned presentation state. Its 51 bounded
+- `EnvironmentRenderer` is renderer-owned presentation state. Its 47 bounded
   procedural descriptors (four ranges of continuous ridge lines are drawn
   from noise, not descriptors) and palette are derived from the world seed without
   consuming gameplay RNG; it draws into the existing scene/emissive passes and
@@ -417,7 +426,7 @@ coherent phase with an explanatory message.
   `world_components.c`, `world_fluid.c`, `world_back_walls.c` (the back
   layer coming away where nothing holds it) and `world_structures.c` (precursor
   gateways, terraces, obelisks, vaults and reliquaries; wrecked ships,
-  outposts and mines; sky islands — built on what `world_biomes.c`
+  outposts and mines — built on what `world_biomes.c`
   made through the `WorldGen*` helpers in `world_internal.h`).
   `world_internal.h`, `world_thermal.h`, `world_lighting.h` and `world_fluid.h`
   are private to those files. Hot accessors live in the internal headers as `static inline` on

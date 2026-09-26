@@ -263,12 +263,11 @@ void WorldGenSetBackWall(World *world, int firstX, int firstY, int lastX, int la
 /* The natural back layer: rock behind everything under the ground's
    surface, by biome and depth. */
 void WorldGenerateBackWalls(World *world);
-/* The structures and the sky islands, in the order the landscape needs
-   them: underground before the surface is finished, the surface ruins before
-   the sea is poured, the islands last of all. */
+/* The structures, in the order the landscape needs them: underground
+   before the surface is finished, the surface ruins before the sea is
+   poured. */
 void WorldGenerateUnderground(World *world);
 void WorldGenerateRuins(World *world);
-void WorldGenerateIslands(World *world);
 
 /* world_simulation.c */
 void WorldMoveCell(World *world, int fromX, int fromY, int toX, int toY);

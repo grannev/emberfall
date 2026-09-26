@@ -63,6 +63,7 @@ void WorldGenerate(World *world, uint64_t seed)
        across would send the next detach check to coordinates that now describe
        completely different terrain. */
     world->destructionCount = 0;
+    world->tumbleweedCount = 0;
     world->destructionDropped = 0;
     /* Likewise the pushes still travelling through liquid that is gone. */
     world->fluid = (WorldFluidStats){0};
@@ -82,9 +83,8 @@ Vector2 WorldPlayerSpawn(const World *world)
 
     /* The central plateau is feature-free, but derive the spawn from actual
        cells so tuning any biome surface cannot place the player inside it.
-       The ground, not the first solid thing down the column: that was an
-       island in orbit, and the crown of a tree on it — and plants are not
-       ground to stand on any more. */
+       The ground, not the first solid thing down the column: that was the
+       crown of a tree — and plants are not ground to stand on any more. */
     x = world->width / 2;
     for (y = WorldSkyRows(world); y < world->height; ++y) {
         CellMaterial material = WorldMaterialAt(world, x, y);

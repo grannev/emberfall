@@ -393,6 +393,13 @@ float MaterialRenderSway(CellMaterial material, unsigned char shade)
         return 0.25f;
     case MATERIAL_WOOD:
         return 0.06f;
+    case MATERIAL_DRYBRUSH:
+        return 0.45f;
+    case MATERIAL_KELP:
+        /* Swayed by the sea, which moves whatever the wind does. */
+        return 1.0f;
+    case MATERIAL_EMBERBLOOM:
+        return 0.3f;
     default:
         return 0.0f;
     }

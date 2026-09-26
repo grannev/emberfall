@@ -112,12 +112,11 @@ bool PlayerCollidesAt(const Player *player, const World *world, Vector2 position
             float dx;
             float dy;
 
-            CellMaterial material = WorldGetCell(world, x, y);
-
-            /* Plants stand behind the character, like the back wall: he
-               walks and flies through a tree, and it is the tree that pays
-               for it (PlayerBrushFlora), never him. */
-            if (!WorldMaterialIsSolid(material) || MaterialIsBackdrop(material)) {
+            /* Plants and girders stand behind the character, like the back
+               wall: he walks and flies through them. A grain in flight —
+               dust, a pinch of sand on the wind — passes through him too;
+               only ground that lies still holds him. */
+            if (!WorldCellBlocksBodies(world, x, y)) {
                 continue;
             }
 

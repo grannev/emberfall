@@ -72,6 +72,12 @@ typedef enum CellMaterial {
     MATERIAL_GIRDER,
     MATERIAL_PILLAR,
     MATERIAL_PLANK,
+    /* More that grows. Dry brush is the desert's tinder: shrubs, and the
+       balls of it the wind rolls across the dunes. Kelp stands in the sea.
+       Ember bloom is the one flower of the ember wastes, and glows. */
+    MATERIAL_DRYBRUSH,
+    MATERIAL_KELP,
+    MATERIAL_EMBERBLOOM,
     MATERIAL_COUNT
 } CellMaterial;
 
@@ -262,6 +268,18 @@ typedef struct WorldTickStats {
     uint32_t processedChunks;
 } WorldTickStats;
 
+/* Tumbleweeds the generator left on the dunes: where each stands, and
+   whether the wind has taken it yet. The wind lets one go only near the
+   character, through the ordinary detach check. */
+#define WORLD_MAX_TUMBLEWEEDS 160
+
+typedef struct WorldTumbleweed {
+    int16_t radius;
+    bool released;
+    int x;
+    int y;
+} WorldTumbleweed;
+
 /* Cells per side of one back-wall block. */
 #define WORLD_BACK_WALL_SCALE 4
 /* Blocks per side of the window the back layer's hold is checked in. A part
@@ -363,6 +381,8 @@ typedef struct World {
        each tree, cactus and blade is one object however its cells touch
        its neighbours'. Zero outside a plant. */
     uint16_t generationPlant;
+    WorldTumbleweed tumbleweeds[WORLD_MAX_TUMBLEWEEDS];
+    int tumbleweedCount;
     /* The wind in the part of the world being played, cells per second,
        set by the game each tick from the weather. Smoke, steam and flame in
        open air drift with it. */
@@ -701,6 +721,13 @@ const char *WorldMaterialName(CellMaterial material);
 /* What stands behind cell (x, y) in the back layer; MATERIAL_EMPTY for the
    open sky. Columns wrap. */
 CellMaterial WorldGetBackWall(const World *world, int x, int y);
+/* Whether the cell stops the character and the bodies: solid, not backdrop,
+   and — if it is a loose grain — lying on something. A grain in flight, a
+   speck of dust or a pinch of sand the wind is carrying, passes through
+   them: only a resting pile is ground. A grain that moved within the last
+   WORLD_GRAIN_FALLING_TICKS ticks is still in flight. */
+#define WORLD_GRAIN_FALLING_TICKS 3
+bool WorldCellBlocksBodies(const World *world, int x, int y);
 /* The plant a flora cell belongs to; zero for anything that is not a plant,
    and for a plant cell that was not generated as part of one. */
 uint16_t WorldGetPlant(const World *world, int x, int y);

@@ -607,3 +607,44 @@ uint16_t WorldGetPlant(const World *world, int x, int y)
                ? WorldCellConst(world, x, y)->lifetime
                : 0u;
 }
+
+/* Something a grain can lie on: not air, not a liquid, not a gas. */
+static bool WorldCellHolds(const World *world, int x, int y)
+{
+    CellMaterial material = WorldMaterialAt(world, x, y);
+
+    return material != MATERIAL_EMPTY && MaterialIsSolid(material);
+}
+
+bool WorldCellBlocksBodies(const World *world, int x, int y)
+{
+    CellMaterial material;
+
+    if (world == NULL || world->cells == NULL) {
+        return false;
+    }
+    material = WorldMaterialAt(world, x, y);
+    if (!MaterialIsSolid(material) || MaterialIsBackdrop(material)) {
+        return false;
+    }
+    if (!MaterialIsDynamic(material)) {
+        return true;
+    }
+    /* A grain counts when it rests. One that moved in the last few ticks is
+       in the air — falling, sliding down a pile, thrown — and passes
+       through the character and the bodies like a speck of dust. */
+    if ((uint16_t)(WorldTickStamp(world) - WorldCellConst(world, x, y)->updatedTick) <=
+        WORLD_GRAIN_FALLING_TICKS) {
+        return false;
+    }
+    /* And it must rest on something that holds it, and if that is a grain
+       too, on something under that — a stream of falling sand is grains on
+       grains all the way down to nothing. */
+    if (!WorldCellHolds(world, x, y + 1)) {
+        return false;
+    }
+    if (MaterialIsDynamic(WorldMaterialAt(world, x, y + 1))) {
+        return WorldCellHolds(world, x, y + 2);
+    }
+    return true;
+}

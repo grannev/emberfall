@@ -168,7 +168,7 @@ static void WorldSeedSky(const WorldLightView *view)
                 /* Open air under an overhang still has the rest of the sky
                    round it: the shade fades out below whatever cast it,
                    over some hundred cells, instead of running down to the
-                   ground from an island in orbit. */
+                   ground from a ledge a thousand rows up. */
                 row[lightX] = fminf(1.0f, above[lightX] + WORLD_SKY_RECOVERY);
             } else {
                 row[lightX] = above[lightX];

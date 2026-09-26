@@ -17,6 +17,7 @@ AtmosphereConfig AtmosphereDefaultConfig(void)
        boosted dive or a slab falling out of orbit is going fast enough, and
        both pass 300. */
     config.entrySpeed = 300.0f;
+    config.bodyEntrySpeed = 190.0f;
     /* Heat per second per unit of speed over the entry speed, in units of
        the entry speed: a full boost (380, 0.9 over) in the thick of the
        corridor is ablaze in a fifth of a second; just over the threshold it
@@ -70,17 +71,18 @@ float AtmosphereCorridorAt(const World *world, float y)
 }
 
 /* Heat after one step at `speed` through `corridor`. */
-static float AtmosphereExcess(const AtmosphereConfig *config, float speed)
+static float AtmosphereExcess(float entrySpeed, float speed)
 {
-    float excess = (speed - config->entrySpeed) / config->entrySpeed;
+    float excess = (speed - entrySpeed) / entrySpeed;
 
     return excess > 0.0f ? excess : 0.0f;
 }
 
-static float AtmosphereStepHeat(const AtmosphereConfig *config, float heat,
-                                float corridor, float speed, float deltaTime)
+static float AtmosphereStepHeat(const AtmosphereConfig *config, float entrySpeed,
+                                float heat, float corridor, float speed,
+                                float deltaTime)
 {
-    float excess = AtmosphereExcess(config, speed);
+    float excess = AtmosphereExcess(entrySpeed, speed);
 
     if (corridor > 0.0f && excess > 0.0f) {
         heat += config->heatRate * corridor * excess * deltaTime;
@@ -160,7 +162,8 @@ void AtmosphereUpdatePlayer(AtmosphereSystem *system, const Player *player,
     speed = sqrtf(player->velocity.x * player->velocity.x +
                   player->velocity.y * player->velocity.y);
     corridor = AtmosphereCorridorAt(world, player->position.y);
-    system->playerHeat = AtmosphereStepHeat(&system->config, system->playerHeat,
+    system->playerHeat = AtmosphereStepHeat(&system->config, system->config.entrySpeed,
+                                            system->playerHeat,
                                             corridor, speed, deltaTime);
     system->playerEventCooldown -= deltaTime;
     burning = AtmosphereBurning(&system->config, system->playerBurning,
@@ -238,15 +241,16 @@ void AtmosphereUpdateBodies(AtmosphereSystem *system,
            is no friction at all, so a slab drifting through the band or
            thrown about at ordinary speeds is not held back by it. */
         if (body->awake && corridor > 0.0f &&
-            AtmosphereExcess(&system->config, speed) > 0.0f) {
+            AtmosphereExcess(system->config.bodyEntrySpeed, speed) > 0.0f) {
             float keep = expf(-system->config.bodyDrag * corridor *
-                              AtmosphereExcess(&system->config, speed) * 4.0f *
+                              AtmosphereExcess(system->config.bodyEntrySpeed, speed) * 4.0f *
                               deltaTime);
 
             body->velocity.x *= keep;
             body->velocity.y *= keep;
         }
-        heat = AtmosphereStepHeat(&system->config, system->bodyHeat[slot],
+        heat = AtmosphereStepHeat(&system->config, system->config.bodyEntrySpeed,
+                                  system->bodyHeat[slot],
                                   corridor, speed, deltaTime);
         system->bodyHeatCooldown[slot] -= deltaTime;
         system->bodyEventCooldown[slot] -= deltaTime;

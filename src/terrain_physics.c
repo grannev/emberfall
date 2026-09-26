@@ -82,9 +82,12 @@ static bool TerrainWorldCellIsSolid(const World *world, int x, int y)
        Plants are the back of the picture for bodies as for the character: a
        felled crown drops past the trees behind it instead of catching on a
        stray leaf. */
-    CellMaterial material = WorldGetCell(world, x, y);
-
-    return WorldMaterialIsSolid(material) && !MaterialIsBackdrop(material);
+    /* Past the rows of the world everything reads as rock; a grain falling
+       past a slab does not shove it. */
+    if (y < 0 || y >= world->height) {
+        return true;
+    }
+    return WorldCellBlocksBodies(world, x, y);
 }
 
 /* Chooses which way to push a sample out of the solid cell it landed in.

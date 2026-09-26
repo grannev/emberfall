@@ -44,6 +44,11 @@ typedef struct AtmosphereConfig {
        above the character's cruise, so only boosted flight burns. Heat and
        drag grow with the speed over it. */
     float entrySpeed;
+    /* The same for a body. Lower than the character's: a body can fall no
+       faster than the terrain's speed ceiling (DynamicTerrainConfig
+       .maximumSpeed, 300), and a slab dropped from orbit reaches that — at
+       the character's threshold it would never burn at all. */
+    float bodyEntrySpeed;
     /* Heat gained per second in the densest part of the corridor per unit of
        speed over the entry speed (in units of it), on a scale where one is
        fully ablaze, and lost per second out of it. */
